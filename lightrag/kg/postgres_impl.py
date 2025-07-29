@@ -1738,7 +1738,6 @@ class PGDocStatusStorage(DocStatusStorage):
             updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
 
             return dict(
-                # content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
@@ -1778,7 +1777,6 @@ class PGDocStatusStorage(DocStatusStorage):
 
             processed_results.append(
                 {
-                    # "content": row["content"],
                     "content_length": row["content_length"],
                     "content_summary": row["content_summary"],
                     "status": row["status"],
@@ -1827,7 +1825,6 @@ class PGDocStatusStorage(DocStatusStorage):
             updated_at = self._format_datetime_with_timezone(element["updated_at"])
 
             docs_by_status[element["id"]] = DocProcessingStatus(
-                # content=element["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -1863,7 +1860,6 @@ class PGDocStatusStorage(DocStatusStorage):
             updated_at = self._format_datetime_with_timezone(element["updated_at"])
 
             docs_by_track_id[element["id"]] = DocProcessingStatus(
-                # content=element["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -1970,7 +1966,6 @@ class PGDocStatusStorage(DocStatusStorage):
                 {
                     "workspace": self.db.workspace,
                     "id": k,
-                    # "content": v["content"],
                     "content_summary": v["content_summary"],
                     "content_length": v["content_length"],
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,
@@ -3467,12 +3462,10 @@ TABLES = {
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
                     )"""
     },
-    # content column in LIGHTRAG_DOC_STATUS is deprecated, use the same column in LIGHTRAG_DOC_FULL instead
     "LIGHTRAG_DOC_STATUS": {
         "ddl": """CREATE TABLE LIGHTRAG_DOC_STATUS (
 	               workspace varchar(255) NOT NULL,
 	               id varchar(255) NOT NULL,
-	               content TEXT NULL,
 	               content_summary varchar(255) NULL,
 	               content_length int4 NULL,
 	               chunks_count int4 NULL,
