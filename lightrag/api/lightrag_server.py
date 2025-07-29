@@ -209,6 +209,7 @@ def create_app(args):
         from lightrag.llm.lollms import lollms_model_complete, lollms_embed
     if args.llm_binding == "ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+        from lightrag.llm.binding_options import OllamaLLMOptions
     if args.llm_binding == "openai" or args.embedding_binding == "openai":
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
     if args.llm_binding == "azure_openai" or args.embedding_binding == "azure_openai":
@@ -221,6 +222,7 @@ def create_app(args):
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
+        from lightrag.llm.binding_options import OllamaEmbeddingOptions
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
 
@@ -296,7 +298,6 @@ def create_app(args):
 
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        max_token_size=args.max_embed_tokens,
         func=lambda texts: lollms_embed(
             texts,
             embed_model=args.embedding_model,
@@ -309,6 +310,7 @@ def create_app(args):
             embed_model=args.embedding_model,
             host=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
+            options=OllamaEmbeddingOptions.options_dict(args),
         )
         if args.embedding_binding == "ollama"
         else azure_openai_embed(
@@ -394,7 +396,7 @@ def create_app(args):
             llm_model_kwargs={
                 "host": args.llm_binding_host,
                 "timeout": args.timeout,
-                "options": {"num_ctx": args.ollama_num_ctx},
+                "options": OllamaLLMOptions.options_dict(args),
                 "api_key": args.llm_binding_api_key,
             }
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"

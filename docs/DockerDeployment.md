@@ -84,7 +84,6 @@ LightRAG can be configured using environment variables in the `.env` file:
 - `MAX_ASYNC`: Maximum async operations
 - `MAX_TOKENS`: Maximum token size
 - `EMBEDDING_DIM`: Embedding dimensions
-- `MAX_EMBED_TOKENS`: Maximum embedding token size
 
 #### Security
 - `LIGHTRAG_API_KEY`: API key for authentication
