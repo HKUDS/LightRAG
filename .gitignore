@@ -65,8 +65,19 @@ download_models_hf.py
 lightrag-dev/
 gui/
 
-# unit-test files
-test_*
+# Test files and outputs (keep organized in testing/ directory)
+test_document_*.pdf
+*_test_output_*.txt
+check_docling_api.py
+docling_test_*.txt
+
+# Temporary development files
+*_temp.py
+*_backup.*
+*.tmp
+
+# Enhanced Docling cache
+rag_storage/docling_cache/
 
 # Cline files
 memory-bank/
