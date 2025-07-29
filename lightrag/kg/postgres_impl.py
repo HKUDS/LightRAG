@@ -568,7 +568,7 @@ class PostgreSQLDB:
             )
 
     async def _migrate_doc_status_add_track_id(self):
-        """Add track_id column to LIGHTRAG_DOC_STATUS table if it doesn't exist"""
+        """Add track_id column to LIGHTRAG_DOC_STATUS table if it doesn't exist and create index"""
         try:
             # Check if track_id column exists
             check_column_sql = """
@@ -593,8 +593,36 @@ class PostgreSQLDB:
                 logger.info(
                     "track_id column already exists in LIGHTRAG_DOC_STATUS table"
                 )
+
+            # Check if track_id index exists
+            check_index_sql = """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+            AND indexname = 'idx_lightrag_doc_status_track_id'
+            """
+
+            index_info = await self.query(check_index_sql)
+            if not index_info:
+                logger.info(
+                    "Creating index on track_id column for LIGHTRAG_DOC_STATUS table"
+                )
+                create_index_sql = """
+                CREATE INDEX idx_lightrag_doc_status_track_id ON LIGHTRAG_DOC_STATUS (track_id)
+                """
+                await self.execute(create_index_sql)
+                logger.info(
+                    "Successfully created index on track_id column for LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "Index on track_id column already exists for LIGHTRAG_DOC_STATUS table"
+                )
+
         except Exception as e:
-            logger.warning(f"Failed to add track_id column to LIGHTRAG_DOC_STATUS: {e}")
+            logger.warning(
+                f"Failed to add track_id column or index to LIGHTRAG_DOC_STATUS: {e}"
+            )
 
     async def _migrate_field_lengths(self):
         """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
