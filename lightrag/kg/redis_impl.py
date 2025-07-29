@@ -789,6 +789,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         # If file_path is not in data, use document id as file path
                                         if "file_path" not in data:
                                             data["file_path"] = "no-file-path"
+                                        # Ensure new fields exist with default values
+                                        if "metadata" not in data:
+                                            data["metadata"] = {}
+                                        if "error_msg" not in data:
+                                            data["error_msg"] = None
 
                                         result[doc_id] = DocProcessingStatus(**data)
                                 except (json.JSONDecodeError, KeyError) as e:
@@ -838,6 +843,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         # If file_path is not in data, use document id as file path
                                         if "file_path" not in data:
                                             data["file_path"] = "no-file-path"
+                                        # Ensure new fields exist with default values
+                                        if "metadata" not in data:
+                                            data["metadata"] = {}
+                                        if "error_msg" not in data:
+                                            data["error_msg"] = None
 
                                         result[doc_id] = DocProcessingStatus(**data)
                                 except (json.JSONDecodeError, KeyError) as e:
