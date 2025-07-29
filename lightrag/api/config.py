@@ -138,8 +138,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--timeout",
-        default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT,
-                              int, special_none=True),
+        default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
         type=int,
         help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
@@ -240,8 +239,7 @@ def parse_args() -> argparse.Namespace:
         "--llm-binding",
         type=str,
         default=get_env_value("LLM_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai",
-                 "openai-ollama", "azure_openai"],
+        choices=["lollms", "ollama", "openai", "openai-ollama", "azure_openai"],
         help="LLM binding type (default: from env or ollama)",
     )
     parser.add_argument(
@@ -255,24 +253,24 @@ def parse_args() -> argparse.Namespace:
     # Conditionally add binding options defined in binding_options module
     # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
     # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
-    if '--llm-binding' in sys.argv:
+    if "--llm-binding" in sys.argv:
         try:
-            idx = sys.argv.index('--llm-binding')
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == 'ollama':
+            idx = sys.argv.index("--llm-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
                 OllamaLLMOptions.add_args(parser)
         except IndexError:
             pass
-    elif os.environ.get('LLM_BINDING') == 'ollama':
+    elif os.environ.get("LLM_BINDING") == "ollama":
         OllamaLLMOptions.add_args(parser)
 
-    if '--embedding-binding' in sys.argv:
+    if "--embedding-binding" in sys.argv:
         try:
-            idx = sys.argv.index('--embedding-binding')
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == 'ollama':
+            idx = sys.argv.index("--embedding-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
                 OllamaEmbeddingOptions.add_args(parser)
         except IndexError:
             pass
-    elif os.environ.get('EMBEDDING_BINDING') == 'ollama':
+    elif os.environ.get("EMBEDDING_BINDING") == "ollama":
         OllamaEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
@@ -316,8 +314,7 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_BINDING_HOST", get_default_host(args.embedding_binding)
     )
     args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
-    args.embedding_binding_api_key = get_env_value(
-        "EMBEDDING_BINDING_API_KEY", "")
+    args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
@@ -339,8 +336,7 @@ def parse_args() -> argparse.Namespace:
     args.temperature = get_env_value("TEMPERATURE", 0.5, float)
 
     # Select Document loading tool (DOCLING, DEFAULT)
-    args.document_loading_engine = get_env_value(
-        "DOCUMENT_LOADING_ENGINE", "DEFAULT")
+    args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
@@ -349,16 +345,13 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
-    args.token_secret = get_env_value(
-        "TOKEN_SECRET", "lightrag-jwt-default-secret")
+    args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
-    args.guest_token_expire_hours = get_env_value(
-        "GUEST_TOKEN_EXPIRE_HOURS", 24, int)
+    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
 
     # Rerank model configuration
-    args.rerank_model = get_env_value(
-        "RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    args.rerank_model = get_env_value("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
     args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
     args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
 
@@ -368,8 +361,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Query configuration
-    args.history_turns = get_env_value(
-        "HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)
+    args.history_turns = get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)
     args.top_k = get_env_value("TOP_K", DEFAULT_TOP_K, int)
     args.chunk_top_k = get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int)
     args.max_entity_tokens = get_env_value(

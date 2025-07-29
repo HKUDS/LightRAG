@@ -286,7 +286,7 @@ def create_app(args):
             embed_model=args.embedding_model,
             host=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
-            options=OllamaEmbeddingOptions.options_dict(args)
+            options=OllamaEmbeddingOptions.options_dict(args),
         )
         if args.embedding_binding == "ollama"
         else azure_openai_embed(
