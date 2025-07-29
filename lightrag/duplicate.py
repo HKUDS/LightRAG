@@ -164,30 +164,6 @@ class ConfigFactory:
         return config_class(**config_data)
 
 
-# ======================= Enhanced Model Manager =======================
-class EmbeddingModelManager:
-    """Universal embedding model manager supporting multiple model types"""
-
-    _instance = None
-    _models: Dict[str, Any] = {}
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(EmbeddingModelManager, cls).__new__(cls)
-        return cls._instance
-
-    def get_model(self, model_type: str, model_name: str) -> Any:
-        """Get model by type and name"""
-        if model_type == "sentence_transformer":
-            return self.get_sentence_transformer(model_name)
-        else:
-            raise ValueError(f"Unsupported model type: {model_type}")
-
-    def clear_models(self):
-        """Clear all loaded models to free memory"""
-        self._models.clear()
-
-
 # ======================= Clustering Processor =======================
 class SemanticClusterBatcher:
     """Semantic clustering batch processor using RAG's embedding function"""

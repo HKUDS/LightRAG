@@ -355,43 +355,46 @@ Return only a number between 0-1, without any additional content.
 """
 
 PROMPTS["goal_clean"] = """
----Goal---
-    You are a knowledge point filtering and merging assistant. You will strictly output according to the specified format.
-    Merge duplicate or similar knowledge points.
-    Merge similar knowledge points under the same broad category into one summarized knowledge point, making it suitable as a major node in a knowledge graph.
+--- Goal ---
+    You are a knowledge point deduplication specialist. Merge nodes ONLY if they represent the exact same real-world concept (e.g., spelling variations, synonyms, or explicit duplicates). Never merge nodes that are merely topically related. Output strictly follows the format below.
 
----Format Requirements---
-    "merge" section:
-        - "summary": Name of the summarized knowledge point
-        - "keywords": Selected knowledge points to be merged (from input)
+--- Format Requirements ---
+    "merge" section:A list of nodes to merge, each containing:
+        'summary': Standardized node name (use the longest/most complete phrasing from input keywords)
+        'keywords': List of merged nodes (≥2 elements, verbatim from input, preserving case/special characters)
+--- Critical Rules ---
+1. Allowed Merges (must meet ≥1 condition):
+    - Spelling errors (e.g., lomCost → lowCost)
+    - Lexical variants (e.g., Retrieval paradigms vs. dual-level retrieval paradigm)
+    - Full-form/abbreviation (e.g., Indigenous perspectives vs. indigenous ownership)
+    - Explicit duplicates (e.g., identical phrases like community structure repeated)
+2. Forbidden Merges:
+    - Thematically related but distinct concepts (e.g., Agriculture and Mix are separate domains)
+    - General categories with sub-concepts (e.g., Diversity ≠ Response Diversity)
+3.Output Handling:
+    - If no nodes meet merge criteria, output null
+    - Keywords must EXACTLY MATCH INPUT (no creation, no modification)
 
----Important Notes---
-    1. "keywords" must ONLY be selected from input. Do NOT create new nodes. Must contain ≥2 elements.
-    2. Keep "summary" concise.
-    3. Must output in JSON format, do not add any extra content.
-    4. Output null if no merging is needed.
 """
 
 PROMPTS["goal_clean_examples"] = """
---- Examples---
+--- Examples of Valid vs Invalid Merges ---
+    VALID:
     {
     "merge": [
         {
-        "summary": "Quicksort",
+        "summary": "Retrieval paradigms",
         "keywords": [
-            "Quicksort",
-            "Pivot element",
-            "Pivot selection",
-            "Recursive algorithm",
-            "Quicksort runtime"
+            "lomCost Retrievel",
+            "high-level-0nly Retrieval",
+            "dual-level retrieval paradigm"
         ]
         },
         {
-        "summary": "Heapsort",
+        "summary": "Indigenous perspectives",
         "keywords": [
-            "Heapsort",
-            "Binary heap construction",
-            "Delete minimum element"
+            "Indigenous perspectives",
+            "indigenous ownership"
         ]
         }
     ]
