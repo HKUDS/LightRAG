@@ -397,7 +397,6 @@ async def initialize_rag():
         llm_model_func=llm_model_func,
         embedding_func=EmbeddingFunc(
             embedding_dim=4096,
-            max_token_size=8192,
             func=embedding_func
         )
     )
@@ -426,7 +425,6 @@ rag = LightRAG(
     # Use Hugging Face embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        max_token_size=5000,
         func=lambda texts: hf_embed(
             texts,
             tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
@@ -455,7 +453,6 @@ rag = LightRAG(
     # Use Ollama embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
-        max_token_size=8192,
         func=lambda texts: ollama_embed(
             texts,
             embed_model="nomic-embed-text"
@@ -507,7 +504,6 @@ rag = LightRAG(
     # Use Ollama embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
-        max_token_size=8192,
         func=lambda texts: ollama_embed(
             texts,
             embed_model="nomic-embed-text"
@@ -550,7 +546,6 @@ async def initialize_rag():
         llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
         embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
             embedding_dim=1536,
-            max_token_size=8192,
             func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
         ),
     )
@@ -872,7 +867,6 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        max_token_size=8192,
         func=embedding_func,
     ),
     vector_storage="FaissVectorDBStorage",
@@ -1278,7 +1272,6 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 ),
                 embedding_func=EmbeddingFunc(
                     embedding_dim=3072,
-                    max_token_size=8192,
                     func=lambda texts: openai_embed(
                         texts,
                         model="text-embedding-3-large",

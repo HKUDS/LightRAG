@@ -268,8 +268,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.summary_language}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
     ASCIIColors.yellow(f"{args.max_parallel_insert}")
-    ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")
-    ASCIIColors.yellow(f"{args.max_embed_tokens}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")
     ASCIIColors.yellow(f"{args.chunk_size}")
     ASCIIColors.white("    ├─ Chunk Overlap Size: ", end="")

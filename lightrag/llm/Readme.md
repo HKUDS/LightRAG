@@ -58,7 +58,6 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=1536,
-        max_token_size=8192,
         func=lambda texts: llama_index_embed(
             texts,
             embed_model=OpenAIEmbedding(
@@ -114,7 +113,6 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=1536,
-        max_token_size=8192,
         func=lambda texts: llama_index_embed(
             texts,
             embed_model=LiteLLMEmbedding(
@@ -143,7 +141,6 @@ LITELLM_KEY=your-litellm-key
 # Model Configuration
 LLM_MODEL=gpt-4
 EMBEDDING_MODEL=text-embedding-3-large
-EMBEDDING_MAX_TOKEN_SIZE=8192
 ```
 
 ### Key Differences

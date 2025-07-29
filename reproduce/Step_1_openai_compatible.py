@@ -67,9 +67,7 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=4096, max_token_size=8192, func=embedding_func
-        ),
+        embedding_func=EmbeddingFunc(embedding_dim=4096, func=embedding_func),
     )
 
     await rag.initialize_storages()

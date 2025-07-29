@@ -237,9 +237,8 @@ class UnlimitedSemaphore:
 @dataclass
 class EmbeddingFunc:
     embedding_dim: int
-    max_token_size: int
     func: callable
-    # concurrent_limit: int = 16
+    max_token_size: int | None = None  # deprecated keep it for compatible only
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)

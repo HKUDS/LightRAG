@@ -320,7 +320,6 @@ def parse_args() -> argparse.Namespace:
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
     args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
     args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
-    args.max_embed_tokens = get_env_value("MAX_EMBED_TOKENS", 8192, int)
 
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
