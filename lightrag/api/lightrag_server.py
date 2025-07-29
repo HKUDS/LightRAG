@@ -216,6 +216,8 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+    if args.llm_binding == "xai" or args.embedding_binding == "xai":
+        from lightrag.llm.xai import xai_complete_if_cache, xai_embed
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
@@ -236,6 +238,29 @@ def create_app(args):
             history_messages = []
         kwargs["temperature"] = args.temperature
         return await openai_complete_if_cache(
+            args.llm_model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            base_url=args.llm_binding_host,
+            api_key=args.llm_binding_api_key,
+            **kwargs,
+        )
+
+    async def xai_model_complete(
+        prompt,
+        system_prompt=None,
+        history_messages=None,
+        keyword_extraction=False,
+        **kwargs,
+    ) -> str:
+        keyword_extraction = kwargs.pop("keyword_extraction", None)
+        if keyword_extraction:
+            kwargs["response_format"] = GPTKeywordExtractionFormat
+        if history_messages is None:
+            history_messages = []
+        kwargs["temperature"] = args.temperature
+        return await xai_complete_if_cache(
             args.llm_model,
             prompt,
             system_prompt=system_prompt,
@@ -299,6 +324,13 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "jina"
+        else xai_embed(
+            texts,
+            model=args.embedding_model,
+            base_url=args.embedding_binding_host,
+            api_key=args.embedding_binding_api_key,
+        )
+        if args.embedding_binding == "xai"
         else openai_embed(
             texts,
             model=args.embedding_model,
@@ -343,7 +375,7 @@ def create_app(args):
     )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai"]:
+    if args.llm_binding in ["lollms", "ollama", "openai", "xai"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
@@ -351,6 +383,8 @@ def create_app(args):
             if args.llm_binding == "lollms"
             else ollama_model_complete
             if args.llm_binding == "ollama"
+            else xai_model_complete
+            if args.llm_binding == "xai"
             else openai_alike_model_complete,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,

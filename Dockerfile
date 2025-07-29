@@ -1,10 +1,13 @@
 # Build stage
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bullseye AS builder
+
+# Ensure all system packages are up-to-date to reduce vulnerabilities
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Install Rust and required build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     curl \
     build-essential \
     pkg-config \
@@ -30,7 +33,7 @@ RUN pip install --user --no-cache-dir openai ollama tiktoken
 RUN pip install --user --no-cache-dir pypdf2 python-docx python-pptx openpyxl
 
 # Final stage
-FROM python:3.11-slim
+FROM python:3.11-slim-bullseye
 
 WORKDIR /app
 
@@ -39,7 +42,8 @@ COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
 
-RUN pip install ".[api]"
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+    && pip install ".[api]"
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 
