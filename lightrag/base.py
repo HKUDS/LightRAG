@@ -647,7 +647,7 @@ class DocProcessingStatus:
     """Number of chunks after splitting, used for processing"""
     chunks_list: list[str] | None = field(default_factory=list)
     """List of chunk IDs associated with this document, used for deletion"""
-    error: str | None = None
+    error_msg: str | None = None
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""

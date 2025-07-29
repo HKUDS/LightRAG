@@ -749,8 +749,8 @@ export default function DocumentManager() {
                             {doc.status === 'failed' && (
                               <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
                             )}
-                            {doc.error && (
-                              <span className="ml-2 text-red-500" title={doc.error}>
+                            {doc.error_msg && (
+                              <span className="ml-2 text-red-500" title={doc.error_msg}>
                                 ⚠️
                               </span>
                             )}
