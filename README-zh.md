@@ -690,7 +690,7 @@ rag.insert(["文本1", "文本2",...], ids=["文本1的ID", "文本2的ID"])
 </details>
 
 <details>
-  <summary><b>使用管道插入</b></summary>
+  <summary><b>使用流水线插入</b></summary>
 
 `apipeline_enqueue_documents`和`apipeline_process_enqueue_documents`函数允许您对文档进行增量插入到图中。
 
