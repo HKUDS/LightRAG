@@ -95,9 +95,6 @@ class JsonDocStatusStorage(DocStatusStorage):
                     try:
                         # Make a copy of the data to avoid modifying the original
                         data = v.copy()
-                        # If content is missing, use content_summary as content
-                        if "content" not in data and "content_summary" in data:
-                            data["content"] = data["content_summary"]
                         # If file_path is not in data, use document id as file path
                         if "file_path" not in data:
                             data["file_path"] = "no-file-path"
