@@ -786,6 +786,8 @@ class RedisDocStatusStorage(DocStatusStorage):
 
                                         # Make a copy of the data to avoid modifying the original
                                         data = doc_data.copy()
+                                        # Remove deprecated content field if it exists
+                                        data.pop("content", None)
                                         # If file_path is not in data, use document id as file path
                                         if "file_path" not in data:
                                             data["file_path"] = "no-file-path"
@@ -840,6 +842,8 @@ class RedisDocStatusStorage(DocStatusStorage):
 
                                         # Make a copy of the data to avoid modifying the original
                                         data = doc_data.copy()
+                                        # Remove deprecated content field if it exists
+                                        data.pop("content", None)
                                         # If file_path is not in data, use document id as file path
                                         if "file_path" not in data:
                                             data["file_path"] = "no-file-path"
