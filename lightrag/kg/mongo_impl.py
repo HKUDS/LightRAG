@@ -374,14 +374,13 @@ class MongoDocStatusStorage(DocStatusStorage):
         result = await cursor.to_list()
         return {
             doc["_id"]: DocProcessingStatus(
-                content=doc["content"],
                 content_summary=doc.get("content_summary"),
                 content_length=doc["content_length"],
+                file_path=doc.get("file_path", doc["_id"]),
                 status=doc["status"],
                 created_at=doc.get("created_at"),
                 updated_at=doc.get("updated_at"),
                 chunks_count=doc.get("chunks_count", -1),
-                file_path=doc.get("file_path", doc["_id"]),
                 chunks_list=doc.get("chunks_list", []),
             )
             for doc in result

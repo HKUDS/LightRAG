@@ -629,8 +629,6 @@ class DocStatus(str, Enum):
 class DocProcessingStatus:
     """Document processing status data structure"""
 
-    content: str
-    """Original content of the document"""
     content_summary: str
     """First 100 chars of document content, used for preview"""
     content_length: int

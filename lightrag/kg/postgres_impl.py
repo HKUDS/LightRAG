@@ -1673,7 +1673,7 @@ class PGDocStatusStorage(DocStatusStorage):
             updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
 
             return dict(
-                content=result[0]["content"],
+                # content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
@@ -1713,7 +1713,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
             processed_results.append(
                 {
-                    "content": row["content"],
+                    # "content": row["content"],
                     "content_length": row["content_length"],
                     "content_summary": row["content_summary"],
                     "status": row["status"],
@@ -1762,7 +1762,7 @@ class PGDocStatusStorage(DocStatusStorage):
             updated_at = self._format_datetime_with_timezone(element["updated_at"])
 
             docs_by_status[element["id"]] = DocProcessingStatus(
-                content=element["content"],
+                # content=element["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -1845,10 +1845,9 @@ class PGDocStatusStorage(DocStatusStorage):
 
         # Modified SQL to include created_at, updated_at, and chunks_list in both INSERT and UPDATE operations
         # All fields are updated from the input data in both INSERT and UPDATE cases
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status,file_path,chunks_list,created_at,updated_at)
-                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                   on conflict(id,workspace) do update set
-                  content = EXCLUDED.content,
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
                   chunks_count = EXCLUDED.chunks_count,
@@ -1868,7 +1867,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 {
                     "workspace": self.db.workspace,
                     "id": k,
-                    "content": v["content"],
+                    # "content": v["content"],
                     "content_summary": v["content_summary"],
                     "content_length": v["content_length"],
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,
@@ -3364,6 +3363,7 @@ TABLES = {
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
                     )"""
     },
+    # content column in LIGHTRAG_DOC_STATUS is deprecated, use the same column in LIGHTRAG_DOC_FULL instead
     "LIGHTRAG_DOC_STATUS": {
         "ddl": """CREATE TABLE LIGHTRAG_DOC_STATUS (
 	               workspace varchar(255) NOT NULL,
