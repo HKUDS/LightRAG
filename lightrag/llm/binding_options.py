@@ -240,7 +240,7 @@ class _OllamaOptionsMixin:
     """Options for Ollama bindings."""
 
     # Core context and generation parameters
-    num_ctx: int = 4096  # Context window size (number of tokens)
+    num_ctx: int = 32768  # Context window size (number of tokens)
     num_predict: int = 128  # Maximum number of tokens to predict
     num_keep: int = 0  # Number of tokens to keep from the initial prompt
     seed: int = -1  # Random seed for generation (-1 for random)
@@ -438,7 +438,7 @@ if __name__ == "__main__":
         # test LLM options
         ollama_options = OllamaLLMOptions.options_dict(args)
         print(ollama_options)
-        print(OllamaLLMOptions(num_ctx=32768).asdict())
+        print(OllamaLLMOptions(num_ctx=30000).asdict())
 
         # test embedding options
         embedding_options = OllamaEmbeddingOptions.options_dict(args)
