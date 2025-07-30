@@ -1109,6 +1109,9 @@ class LightRAG:
                             if not chunks:
                                 logger.warning("No document chunks to process")
 
+                            # Record processing start time
+                            processing_start_time = int(time.time())
+
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)
                             doc_status_task = asyncio.create_task(
@@ -1127,6 +1130,10 @@ class LightRAG:
                                                 timezone.utc
                                             ).isoformat(),
                                             "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "metadata": {
+                                                "processing_start_time": processing_start_time
+                                            },
                                         }
                                     }
                                 )
@@ -1184,12 +1191,15 @@ class LightRAG:
                             if self.llm_response_cache:
                                 await self.llm_response_cache.index_done_callback()
 
+                            # Record processing end time for failed case
+                            processing_end_time = int(time.time())
+
                             # Update document status to failed
                             await self.doc_status.upsert(
                                 {
                                     doc_id: {
                                         "status": DocStatus.FAILED,
-                                        "error": str(e),
+                                        "error_msg": str(e),
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
@@ -1197,6 +1207,11 @@ class LightRAG:
                                             timezone.utc
                                         ).isoformat(),
                                         "file_path": file_path,
+                                        "track_id": status_doc.track_id,  # Preserve existing track_id
+                                        "metadata": {
+                                            "processing_start_time": processing_start_time,
+                                            "processing_end_time": processing_end_time,
+                                        },
                                     }
                                 }
                             )
@@ -1220,6 +1235,9 @@ class LightRAG:
                                     file_path=file_path,
                                 )
 
+                                # Record processing end time
+                                processing_end_time = int(time.time())
+
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
@@ -1235,6 +1253,11 @@ class LightRAG:
                                                 timezone.utc
                                             ).isoformat(),
                                             "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "metadata": {
+                                                "processing_start_time": processing_start_time,
+                                                "processing_end_time": processing_end_time,
+                                            },
                                         }
                                     }
                                 )
@@ -1268,17 +1291,25 @@ class LightRAG:
                                 if self.llm_response_cache:
                                     await self.llm_response_cache.index_done_callback()
 
+                                # Record processing end time for failed case
+                                processing_end_time = int(time.time())
+
                                 # Update document status to failed
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
                                             "status": DocStatus.FAILED,
-                                            "error": str(e),
+                                            "error_msg": str(e),
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now().isoformat(),
                                             "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "metadata": {
+                                                "processing_start_time": processing_start_time,
+                                                "processing_end_time": processing_end_time,
+                                            },
                                         }
                                     }
                                 )

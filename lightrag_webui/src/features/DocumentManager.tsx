@@ -420,12 +420,13 @@ export default function DocumentManager() {
       // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
 
-      const { status } = await scanNewDocuments();
+      const { status, message, track_id: _track_id } = await scanNewDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
 
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
 
-      toast.message(status);
+      // Note: _track_id is available for future use (e.g., progress tracking)
+      toast.message(message || status);
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
@@ -749,8 +750,8 @@ export default function DocumentManager() {
                             {doc.status === 'failed' && (
                               <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
                             )}
-                            {doc.error && (
-                              <span className="ml-2 text-red-500" title={doc.error}>
+                            {doc.error_msg && (
+                              <span className="ml-2 text-red-500" title={doc.error_msg}>
                                 ⚠️
                               </span>
                             )}

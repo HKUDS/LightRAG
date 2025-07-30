@@ -95,9 +95,16 @@ class JsonDocStatusStorage(DocStatusStorage):
                     try:
                         # Make a copy of the data to avoid modifying the original
                         data = v.copy()
+                        # Remove deprecated content field if it exists
+                        data.pop("content", None)
                         # If file_path is not in data, use document id as file path
                         if "file_path" not in data:
                             data["file_path"] = "no-file-path"
+                        # Ensure new fields exist with default values
+                        if "metadata" not in data:
+                            data["metadata"] = {}
+                        if "error_msg" not in data:
+                            data["error_msg"] = None
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(f"Missing required field for document {k}: {e}")
@@ -115,9 +122,16 @@ class JsonDocStatusStorage(DocStatusStorage):
                     try:
                         # Make a copy of the data to avoid modifying the original
                         data = v.copy()
+                        # Remove deprecated content field if it exists
+                        data.pop("content", None)
                         # If file_path is not in data, use document id as file path
                         if "file_path" not in data:
                             data["file_path"] = "no-file-path"
+                        # Ensure new fields exist with default values
+                        if "metadata" not in data:
+                            data["metadata"] = {}
+                        if "error_msg" not in data:
+                            data["error_msg"] = None
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(f"Missing required field for document {k}: {e}")

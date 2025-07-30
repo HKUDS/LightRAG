@@ -143,6 +143,13 @@ export type QueryResponse = {
 export type DocActionResponse = {
   status: 'success' | 'partial_success' | 'failure' | 'duplicated'
   message: string
+  track_id?: string
+}
+
+export type ScanResponse = {
+  status: 'scanning_started'
+  message: string
+  track_id: string
 }
 
 export type DeleteDocResponse = {
@@ -160,14 +167,22 @@ export type DocStatusResponse = {
   status: DocStatus
   created_at: string
   updated_at: string
+  track_id?: string
   chunks_count?: number
-  error?: string
+  error_msg?: string
   metadata?: Record<string, any>
   file_path: string
 }
 
 export type DocsStatusesResponse = {
   statuses: Record<DocStatus, DocStatusResponse[]>
+}
+
+export type TrackStatusResponse = {
+  track_id: string
+  documents: DocStatusResponse[]
+  total_count: number
+  status_summary: Record<string, number>
 }
 
 export type AuthStatusResponse = {
@@ -293,7 +308,7 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   return response.data
 }
 
-export const scanNewDocuments = async (): Promise<{ status: string }> => {
+export const scanNewDocuments = async (): Promise<ScanResponse> => {
   const response = await axiosInstance.post('/documents/scan')
   return response.data
 }
@@ -688,4 +703,14 @@ export const checkEntityNameExists = async (entityName: string): Promise<boolean
     console.error('Error checking entity name:', error)
     return false
   }
+}
+
+/**
+ * Get the processing status of documents by tracking ID
+ * @param trackId The tracking ID returned from upload, text, or texts endpoints
+ * @returns Promise with the track status response containing documents and summary
+ */
+export const getTrackStatus = async (trackId: string): Promise<TrackStatusResponse> => {
+  const response = await axiosInstance.get(`/documents/track_status/${encodeURIComponent(trackId)}`)
+  return response.data
 }
