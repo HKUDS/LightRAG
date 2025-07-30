@@ -143,7 +143,8 @@ class RedisRateLimitStore:
             return True, {}
 
         try:
-            current_time = int(time.time())
+            current_time_ms = time.time()
+            current_time = int(current_time_ms)
             window_start = current_time - window_seconds
 
             # Use sliding window counter
@@ -155,8 +156,9 @@ class RedisRateLimitStore:
             # Count current requests
             pipe.zcard(key)
 
-            # Add current request
-            pipe.zadd(key, {str(current_time): current_time})
+            # Add current request with a unique member
+            unique_member = f"{current_time_ms}:{hashlib.sha1(str(current_time_ms).encode()).hexdigest()[:8]}"
+            pipe.zadd(key, {unique_member: current_time})
 
             # Set expiration
             pipe.expire(key, window_seconds + 1)
@@ -303,8 +305,8 @@ class InMemoryRateLimitStore:
 
             rate_limit_info = {
                 "limit": limit,
-                "current": current_count + 1,
-                "remaining": max(0, limit - (current_count + 1)),
+                "current": current_count + (1 if is_allowed else 0),
+                "remaining": max(0, limit - current_count - (1 if is_allowed else 0)),
                 "reset_time": int(current_time + window_seconds),
                 "retry_after": 1 if not is_allowed else 0,
             }
