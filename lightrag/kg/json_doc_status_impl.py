@@ -95,12 +95,43 @@ class JsonDocStatusStorage(DocStatusStorage):
                     try:
                         # Make a copy of the data to avoid modifying the original
                         data = v.copy()
-                        # If content is missing, use content_summary as content
-                        if "content" not in data and "content_summary" in data:
-                            data["content"] = data["content_summary"]
+                        # Remove deprecated content field if it exists
+                        data.pop("content", None)
                         # If file_path is not in data, use document id as file path
                         if "file_path" not in data:
                             data["file_path"] = "no-file-path"
+                        # Ensure new fields exist with default values
+                        if "metadata" not in data:
+                            data["metadata"] = {}
+                        if "error_msg" not in data:
+                            data["error_msg"] = None
+                        result[k] = DocProcessingStatus(**data)
+                    except KeyError as e:
+                        logger.error(f"Missing required field for document {k}: {e}")
+                        continue
+        return result
+
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+        result = {}
+        async with self._storage_lock:
+            for k, v in self._data.items():
+                if v.get("track_id") == track_id:
+                    try:
+                        # Make a copy of the data to avoid modifying the original
+                        data = v.copy()
+                        # Remove deprecated content field if it exists
+                        data.pop("content", None)
+                        # If file_path is not in data, use document id as file path
+                        if "file_path" not in data:
+                            data["file_path"] = "no-file-path"
+                        # Ensure new fields exist with default values
+                        if "metadata" not in data:
+                            data["metadata"] = {}
+                        if "error_msg" not in data:
+                            data["error_msg"] = None
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(f"Missing required field for document {k}: {e}")

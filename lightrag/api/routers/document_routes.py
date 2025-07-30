@@ -27,6 +27,7 @@ import json
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
+from lightrag.utils import generate_track_id
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -298,6 +299,7 @@ class ScanResponse(BaseModel):
     Attributes:
         status: Status of the scanning operation
         message: Optional message with additional details
+        track_id: Tracking ID for monitoring scanning progress
     """
 
     status: Literal["scanning_started"] = Field(
@@ -306,12 +308,14 @@ class ScanResponse(BaseModel):
     message: Optional[str] = Field(
         default=None, description="Additional details about the scanning operation"
     )
+    track_id: str = Field(description="Tracking ID for monitoring scanning progress")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "scanning_started",
                 "message": "Scanning process has been initiated in the background",
+                "track_id": "scan_20250729_170612_abc123",
             }
         }
 
@@ -395,18 +399,21 @@ class InsertResponse(BaseModel):
     Attributes:
         status: Status of the operation (success, duplicated, partial_success, failure)
         message: Detailed message describing the operation result
+        track_id: Tracking ID for monitoring processing status
     """
 
     status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
         description="Status of the operation"
     )
     message: str = Field(description="Message describing the operation result")
+    track_id: str = Field(description="Tracking ID for monitoring processing status")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "success",
                 "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
+                "track_id": "upload_20250729_170612_abc123",
             }
         }
 
@@ -545,10 +552,13 @@ class DocStatusResponse(BaseModel):
     status: DocStatus = Field(description="Current processing status")
     created_at: str = Field(description="Creation timestamp (ISO format string)")
     updated_at: str = Field(description="Last update timestamp (ISO format string)")
+    track_id: Optional[str] = Field(
+        default=None, description="Tracking ID for monitoring progress"
+    )
     chunks_count: Optional[int] = Field(
         default=None, description="Number of chunks the document was split into"
     )
-    error: Optional[str] = Field(
+    error_msg: Optional[str] = Field(
         default=None, description="Error message if processing failed"
     )
     metadata: Optional[dict[str, Any]] = Field(
@@ -565,6 +575,7 @@ class DocStatusResponse(BaseModel):
                 "status": "PROCESSED",
                 "created_at": "2025-03-31T12:34:56",
                 "updated_at": "2025-03-31T12:35:30",
+                "track_id": "upload_20250729_170612_abc123",
                 "chunks_count": 12,
                 "error": None,
                 "metadata": {"author": "John Doe", "year": 2025},
@@ -597,6 +608,10 @@ class DocsStatusesResponse(BaseModel):
                             "status": "PENDING",
                             "created_at": "2025-03-31T10:00:00",
                             "updated_at": "2025-03-31T10:00:00",
+                            "track_id": "upload_20250331_100000_abc123",
+                            "chunks_count": None,
+                            "error": None,
+                            "metadata": None,
                             "file_path": "pending_doc.pdf",
                         }
                     ],
@@ -608,11 +623,56 @@ class DocsStatusesResponse(BaseModel):
                             "status": "PROCESSED",
                             "created_at": "2025-03-31T09:00:00",
                             "updated_at": "2025-03-31T09:05:00",
+                            "track_id": "insert_20250331_090000_def456",
                             "chunks_count": 8,
+                            "error": None,
+                            "metadata": {"author": "John Doe"},
                             "file_path": "processed_doc.pdf",
                         }
                     ],
                 }
+            }
+        }
+
+
+class TrackStatusResponse(BaseModel):
+    """Response model for tracking document processing status by track_id
+
+    Attributes:
+        track_id: The tracking ID
+        documents: List of documents associated with this track_id
+        total_count: Total number of documents for this track_id
+        status_summary: Count of documents by status
+    """
+
+    track_id: str = Field(description="The tracking ID")
+    documents: List[DocStatusResponse] = Field(
+        description="List of documents associated with this track_id"
+    )
+    total_count: int = Field(description="Total number of documents for this track_id")
+    status_summary: Dict[str, int] = Field(description="Count of documents by status")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "track_id": "upload_20250729_170612_abc123",
+                "documents": [
+                    {
+                        "id": "doc_123456",
+                        "content_summary": "Research paper on machine learning",
+                        "content_length": 15240,
+                        "status": "PROCESSED",
+                        "created_at": "2025-03-31T12:34:56",
+                        "updated_at": "2025-03-31T12:35:30",
+                        "track_id": "upload_20250729_170612_abc123",
+                        "chunks_count": 12,
+                        "error": None,
+                        "metadata": {"author": "John Doe", "year": 2025},
+                        "file_path": "research_paper.pdf",
+                    }
+                ],
+                "total_count": 1,
+                "status_summary": {"PROCESSED": 1},
             }
         }
 
@@ -734,14 +794,17 @@ class DocumentManager:
         return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
 
 
-async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
+async def pipeline_enqueue_file(
+    rag: LightRAG, file_path: Path, track_id: str = None
+) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
+        track_id: Optional tracking ID, if not provided will be generated
     Returns:
-        bool: True if the file was successfully enqueued, False otherwise
+        tuple: (success: bool, track_id: str)
     """
 
     try:
@@ -891,9 +954,16 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     f"File contains only whitespace characters. file_paths={file_path.name}"
                 )
 
-            await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
+            # Generate track_id if not provided
+            if track_id is None:
+                track_id = generate_track_id("unkown")
+
+            await rag.apipeline_enqueue_documents(
+                content, file_paths=file_path.name, track_id=track_id
+            )
+
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
-            return True
+            return True, track_id
         else:
             logger.error(f"No content could be extracted from file: {file_path.name}")
 
@@ -906,18 +976,22 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 file_path.unlink()
             except Exception as e:
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
-    return False
+    return False, ""
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path):
-    """Index a file
+async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+    """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
+        track_id: Optional tracking ID
     """
     try:
-        if await pipeline_enqueue_file(rag, file_path):
+        success, returned_track_id = await pipeline_enqueue_file(
+            rag, file_path, track_id
+        )
+        if success:
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
@@ -925,12 +999,15 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
+async def pipeline_index_files(
+    rag: LightRAG, file_paths: List[Path], track_id: str = None
+):
     """Index multiple files sequentially to avoid high CPU load
 
     Args:
         rag: LightRAG instance
         file_paths: Paths to the files to index
+        track_id: Optional tracking ID to pass to all files
     """
     if not file_paths:
         return
@@ -941,9 +1018,10 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         collator = Collator()
         sorted_file_paths = sorted(file_paths, key=lambda p: collator.sort_key(str(p)))
 
-        # Process files sequentially
+        # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            if await pipeline_enqueue_file(rag, file_path):
+            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            if success:
                 enqueued = True
 
         # Process the queue only if at least one file was successfully enqueued
@@ -955,14 +1033,18 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
 
 
 async def pipeline_index_texts(
-    rag: LightRAG, texts: List[str], file_sources: List[str] = None
+    rag: LightRAG,
+    texts: List[str],
+    file_sources: List[str] = None,
+    track_id: str = None,
 ):
-    """Index a list of texts
+    """Index a list of texts with track_id
 
     Args:
         rag: LightRAG instance
         texts: The texts to index
         file_sources: Sources of the texts
+        track_id: Optional tracking ID
     """
     if not texts:
         return
@@ -972,36 +1054,22 @@ async def pipeline_index_texts(
                 file_sources.append("unknown_source")
                 for _ in range(len(file_sources), len(texts))
             ]
-    await rag.apipeline_enqueue_documents(input=texts, file_paths=file_sources)
+    await rag.apipeline_enqueue_documents(
+        input=texts, file_paths=file_sources, track_id=track_id
+    )
     await rag.apipeline_process_enqueue_documents()
 
 
-# TODO: deprecate after /insert_file is removed
-async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
-    """Save the uploaded file to a temporary location
+async def run_scanning_process(
+    rag: LightRAG, doc_manager: DocumentManager, track_id: str = None
+):
+    """Background task to scan and index documents
 
     Args:
-        file: The uploaded file
-
-    Returns:
-        Path: The path to the saved file
+        rag: LightRAG instance
+        doc_manager: DocumentManager instance
+        track_id: Optional tracking ID to pass to all scanned files
     """
-    # Generate unique filename to avoid conflicts
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    unique_filename = f"{temp_prefix}{timestamp}_{file.filename}"
-
-    # Create a temporary file to save the uploaded content
-    temp_path = input_dir / "temp" / unique_filename
-    temp_path.parent.mkdir(exist_ok=True)
-
-    # Save the file
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return temp_path
-
-
-async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
-    """Background task to scan and index documents"""
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
@@ -1010,8 +1078,8 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         if not new_files:
             return
 
-        # Process all files at once
-        await pipeline_index_files(rag, new_files)
+        # Process all files at once with track_id
+        await pipeline_index_files(rag, new_files, track_id)
         logger.info(f"Scanning process completed: {total_files} files Processed.")
 
     except Exception as e:
@@ -1192,13 +1260,17 @@ def create_document_routes(
         that fact.
 
         Returns:
-            ScanResponse: A response object containing the scanning status
+            ScanResponse: A response object containing the scanning status and track_id
         """
-        # Start the scanning process in the background
-        background_tasks.add_task(run_scanning_process, rag, doc_manager)
+        # Generate track_id with "scan" prefix for scanning operation
+        track_id = generate_track_id("scan")
+
+        # Start the scanning process in the background with track_id
+        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
+            track_id=track_id,
         )
 
     @router.post(
@@ -1241,18 +1313,23 @@ def create_document_routes(
                 return InsertResponse(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in the input directory.",
+                    track_id="",
                 )
 
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            # Add to background tasks
-            background_tasks.add_task(pipeline_index_file, rag, file_path)
+            track_id = generate_track_id("upload")
+
+            # Add to background tasks and get track_id
+            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
 
             return InsertResponse(
                 status="success",
                 message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
+                track_id=track_id,
             )
+
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
@@ -1281,15 +1358,21 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Generate track_id for text insertion
+            track_id = generate_track_id("insert")
+
             background_tasks.add_task(
                 pipeline_index_texts,
                 rag,
                 [request.text],
                 file_sources=[request.file_source],
+                track_id=track_id,
             )
+
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
+                track_id=track_id,
             )
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
@@ -1321,18 +1404,24 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Generate track_id for texts insertion
+            track_id = generate_track_id("insert")
+
             background_tasks.add_task(
                 pipeline_index_texts,
                 rag,
                 request.texts,
                 file_sources=request.file_sources,
+                track_id=track_id,
             )
+
             return InsertResponse(
                 status="success",
-                message="Text successfully received. Processing will continue in background.",
+                message="Texts successfully received. Processing will continue in background.",
+                track_id=track_id,
             )
         except Exception as e:
-            logger.error(f"Error /documents/text: {str(e)}")
+            logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -1634,8 +1723,9 @@ def create_document_routes(
                             status=doc_status.status,
                             created_at=format_datetime(doc_status.created_at),
                             updated_at=format_datetime(doc_status.updated_at),
+                            track_id=doc_status.track_id,
                             chunks_count=doc_status.chunks_count,
-                            error=doc_status.error,
+                            error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
                             file_path=doc_status.file_path,
                         )
@@ -1859,5 +1949,79 @@ def create_document_routes(
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=error_msg)
+
+    @router.get(
+        "/track_status/{track_id}",
+        response_model=TrackStatusResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_track_status(track_id: str) -> TrackStatusResponse:
+        """
+        Get the processing status of documents by tracking ID.
+
+        This endpoint retrieves all documents associated with a specific tracking ID,
+        allowing users to monitor the processing progress of their uploaded files or inserted texts.
+
+        Args:
+            track_id (str): The tracking ID returned from upload, text, or texts endpoints
+
+        Returns:
+            TrackStatusResponse: A response object containing:
+                - track_id: The tracking ID
+                - documents: List of documents associated with this track_id
+                - total_count: Total number of documents for this track_id
+
+        Raises:
+            HTTPException: If track_id is invalid (400) or an error occurs (500).
+        """
+        try:
+            # Validate track_id
+            if not track_id or not track_id.strip():
+                raise HTTPException(status_code=400, detail="Track ID cannot be empty")
+
+            track_id = track_id.strip()
+
+            # Get documents by track_id
+            docs_by_track_id = await rag.aget_docs_by_track_id(track_id)
+
+            # Convert to response format
+            documents = []
+            status_summary = {}
+
+            for doc_id, doc_status in docs_by_track_id.items():
+                documents.append(
+                    DocStatusResponse(
+                        id=doc_id,
+                        content_summary=doc_status.content_summary,
+                        content_length=doc_status.content_length,
+                        status=doc_status.status,
+                        created_at=format_datetime(doc_status.created_at),
+                        updated_at=format_datetime(doc_status.updated_at),
+                        track_id=doc_status.track_id,
+                        chunks_count=doc_status.chunks_count,
+                        error_msg=doc_status.error_msg,
+                        metadata=doc_status.metadata,
+                        file_path=doc_status.file_path,
+                    )
+                )
+
+                # Build status summary
+                # Handle both DocStatus enum and string cases for robust deserialization
+                status_key = str(doc_status.status)
+                status_summary[status_key] = status_summary.get(status_key, 0) + 1
+
+            return TrackStatusResponse(
+                track_id=track_id,
+                documents=documents,
+                total_count=len(documents),
+                status_summary=status_summary,
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting track status for {track_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
 
     return router

@@ -321,6 +321,10 @@ class MongoDocStatusStorage(DocStatusStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
             self._data = await get_or_create_collection(self.db, self._collection_name)
+
+            # Create track_id index for better query performance
+            await self.create_track_id_index_if_not_exists()
+
             logger.debug(f"Use MongoDB as DocStatus {self._collection_name}")
 
     async def finalize(self):
@@ -372,20 +376,57 @@ class MongoDocStatusStorage(DocStatusStorage):
         """Get all documents with a specific status"""
         cursor = self._data.find({"status": status.value})
         result = await cursor.to_list()
-        return {
-            doc["_id"]: DocProcessingStatus(
-                content=doc["content"],
-                content_summary=doc.get("content_summary"),
-                content_length=doc["content_length"],
-                status=doc["status"],
-                created_at=doc.get("created_at"),
-                updated_at=doc.get("updated_at"),
-                chunks_count=doc.get("chunks_count", -1),
-                file_path=doc.get("file_path", doc["_id"]),
-                chunks_list=doc.get("chunks_list", []),
-            )
-            for doc in result
-        }
+        processed_result = {}
+        for doc in result:
+            try:
+                # Make a copy of the data to avoid modifying the original
+                data = doc.copy()
+                # Remove deprecated content field if it exists
+                data.pop("content", None)
+                # Remove MongoDB _id field if it exists
+                data.pop("_id", None)
+                # If file_path is not in data, use document id as file path
+                if "file_path" not in data:
+                    data["file_path"] = "no-file-path"
+                # Ensure new fields exist with default values
+                if "metadata" not in data:
+                    data["metadata"] = {}
+                if "error_msg" not in data:
+                    data["error_msg"] = None
+                processed_result[doc["_id"]] = DocProcessingStatus(**data)
+            except KeyError as e:
+                logger.error(f"Missing required field for document {doc['_id']}: {e}")
+                continue
+        return processed_result
+
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+        cursor = self._data.find({"track_id": track_id})
+        result = await cursor.to_list()
+        processed_result = {}
+        for doc in result:
+            try:
+                # Make a copy of the data to avoid modifying the original
+                data = doc.copy()
+                # Remove deprecated content field if it exists
+                data.pop("content", None)
+                # Remove MongoDB _id field if it exists
+                data.pop("_id", None)
+                # If file_path is not in data, use document id as file path
+                if "file_path" not in data:
+                    data["file_path"] = "no-file-path"
+                # Ensure new fields exist with default values
+                if "metadata" not in data:
+                    data["metadata"] = {}
+                if "error_msg" not in data:
+                    data["error_msg"] = None
+                processed_result[doc["_id"]] = DocProcessingStatus(**data)
+            except KeyError as e:
+                logger.error(f"Missing required field for document {doc['_id']}: {e}")
+                continue
+        return processed_result
 
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
@@ -414,6 +455,31 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     async def delete(self, ids: list[str]) -> None:
         await self._data.delete_many({"_id": {"$in": ids}})
+
+    async def create_track_id_index_if_not_exists(self):
+        """Create track_id index for better query performance"""
+        try:
+            # Check if index already exists
+            indexes_cursor = await self._data.list_indexes()
+            existing_indexes = await indexes_cursor.to_list(length=None)
+            track_id_index_exists = any(
+                "track_id" in idx.get("key", {}) for idx in existing_indexes
+            )
+
+            if not track_id_index_exists:
+                await self._data.create_index("track_id")
+                logger.info(
+                    f"Created track_id index for collection {self._collection_name}"
+                )
+            else:
+                logger.debug(
+                    f"track_id index already exists for collection {self._collection_name}"
+                )
+
+        except PyMongoError as e:
+            logger.error(
+                f"Error creating track_id index for {self._collection_name}: {e}"
+            )
 
 
 @final

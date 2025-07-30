@@ -9,7 +9,9 @@ import logging
 import logging.handlers
 import os
 import re
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from functools import wraps
 from hashlib import md5
 from typing import Any, Protocol, Callable, TYPE_CHECKING, List
@@ -1979,3 +1981,17 @@ def build_file_path(already_file_paths, data_list, target):
             f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
         )
     return file_paths
+
+
+def generate_track_id(prefix: str = "upload") -> str:
+    """Generate a unique tracking ID with timestamp and UUID
+
+    Args:
+        prefix: Prefix for the track ID (e.g., 'upload', 'insert')
+
+    Returns:
+        str: Unique tracking ID in format: {prefix}_{timestamp}_{uuid}
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid.uuid4())[:8]  # Use first 8 characters of UUID
+    return f"{prefix}_{timestamp}_{unique_id}"
