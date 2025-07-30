@@ -303,8 +303,8 @@ class InMemoryRateLimitStore:
 
             rate_limit_info = {
                 "limit": limit,
-                "current": current_count + (1 if is_allowed else 0),
-                "remaining": max(0, limit - current_count - (1 if is_allowed else 0)),
+                "current": current_count + 1,
+                "remaining": max(0, limit - (current_count + 1)),
                 "reset_time": int(current_time + window_seconds),
                 "retry_after": 1 if not is_allowed else 0,
             }
