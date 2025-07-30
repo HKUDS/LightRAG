@@ -33,7 +33,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -606,6 +606,62 @@ export default function DocumentManager() {
     await fetchDocuments()
   }, [fetchDocuments])
 
+  // Handle manual refresh with pagination reset logic
+  const handleManualRefresh = useCallback(async () => {
+    try {
+      setIsRefreshing(true);
+
+      // Fetch documents from the first page
+      const request: DocumentsRequest = {
+        status_filter: statusFilter === 'all' ? null : statusFilter,
+        page: 1,
+        page_size: pagination.page_size,
+        sort_field: sortField,
+        sort_direction: sortDirection
+      };
+
+      const response = await getDocumentsPaginated(request);
+
+      if (!isMountedRef.current) return;
+
+      // Check if total count is less than current page size and page size is not already 10
+      if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
+        // Reset page size to 10 which will trigger a new fetch
+        handlePageSizeChange(10);
+      } else {
+        // Update pagination state
+        setPagination(response.pagination);
+        setCurrentPageDocs(response.documents);
+        setStatusCounts(response.status_counts);
+
+        // Update legacy docs state for backward compatibility
+        const legacyDocs: DocsStatusesResponse = {
+          statuses: {
+            processed: response.documents.filter(doc => doc.status === 'processed'),
+            processing: response.documents.filter(doc => doc.status === 'processing'),
+            pending: response.documents.filter(doc => doc.status === 'pending'),
+            failed: response.documents.filter(doc => doc.status === 'failed')
+          }
+        };
+
+        if (response.pagination.total_count > 0) {
+          setDocs(legacyDocs);
+        } else {
+          setDocs(null);
+        }
+      }
+
+    } catch (err) {
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsRefreshing(false);
+      }
+    }
+  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
+
 
   // Handle showFileName change - switch sort field if currently sorting by first column
   useEffect(() => {
@@ -707,7 +763,6 @@ export default function DocumentManager() {
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
-                <FilterIcon className="h-4 w-4" />
                 <div className="flex gap-1" dir={i18n.dir()}>
                   <Button
                     size="sm"
@@ -769,6 +824,16 @@ export default function DocumentManager() {
                     {t('documentPanel.documentManager.status.failed')} ({statusCounts.FAILED || statusCounts.failed || 0})
                   </Button>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleManualRefresh}
+                  disabled={isRefreshing}
+                  side="bottom"
+                  tooltip={t('documentPanel.documentManager.refreshTooltip')}
+                >
+                  <RotateCcwIcon className="h-4 w-4" />
+                </Button>
               </div>
               <div className="flex items-center gap-2">
                 <label

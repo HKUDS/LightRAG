@@ -117,6 +117,7 @@
       "title": "Document Management",
       "scanButton": "Scan",
       "scanTooltip": "Scan documents in input folder",
+      "refreshTooltip": "Reset document list",
       "pipelineStatusButton": "Pipeline Status",
       "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
