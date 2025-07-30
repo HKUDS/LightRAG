@@ -863,11 +863,10 @@ class LightRAG:
             for content, (id_, file_path) in unique_contents.items()
         }
 
-        # 3. Generate document initial status
+        # 3. Generate document initial status (without content)
         new_docs: dict[str, Any] = {
             id_: {
                 "status": DocStatus.PENDING,
-                "content": content_data["content"],
                 "content_summary": get_content_summary(content_data["content"]),
                 "content_length": len(content_data["content"]),
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -907,7 +906,15 @@ class LightRAG:
             logger.info("No new unique documents were found.")
             return
 
-        # 5. Store status document
+        # 5. Store document content in full_docs and status in doc_status
+        # Store full document content separately
+        full_docs_data = {
+            doc_id: {"content": contents[doc_id]["content"]}
+            for doc_id in new_docs.keys()
+        }
+        await self.full_docs.upsert(full_docs_data)
+
+        # Store document status (without content)
         await self.doc_status.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
@@ -1049,6 +1056,14 @@ class LightRAG:
                                 pipeline_status["latest_message"] = log_message
                                 pipeline_status["history_messages"].append(log_message)
 
+                            # Get document content from full_docs
+                            content_data = await self.full_docs.get_by_id(doc_id)
+                            if not content_data:
+                                raise Exception(
+                                    f"Document content not found in full_docs for doc_id: {doc_id}"
+                                )
+                            content = content_data["content"]
+
                             # Generate chunks from document
                             chunks: dict[str, Any] = {
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -1059,7 +1074,7 @@ class LightRAG:
                                 }
                                 for dp in self.chunking_func(
                                     self.tokenizer,
-                                    status_doc.content,
+                                    content,
                                     split_by_character,
                                     split_by_character_only,
                                     self.chunk_overlap_token_size,
@@ -1081,7 +1096,6 @@ class LightRAG:
                                             "chunks_list": list(
                                                 chunks.keys()
                                             ),  # Save chunks list
-                                            "content": status_doc.content,
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
@@ -1096,11 +1110,6 @@ class LightRAG:
                             chunks_vdb_task = asyncio.create_task(
                                 self.chunks_vdb.upsert(chunks)
                             )
-                            full_docs_task = asyncio.create_task(
-                                self.full_docs.upsert(
-                                    {doc_id: {"content": status_doc.content}}
-                                )
-                            )
                             text_chunks_task = asyncio.create_task(
                                 self.text_chunks.upsert(chunks)
                             )
@@ -1109,7 +1118,6 @@ class LightRAG:
                             first_stage_tasks = [
                                 doc_status_task,
                                 chunks_vdb_task,
-                                full_docs_task,
                                 text_chunks_task,
                             ]
                             entity_relation_task = None
@@ -1158,7 +1166,6 @@ class LightRAG:
                                     doc_id: {
                                         "status": DocStatus.FAILED,
                                         "error": str(e),
-                                        "content": status_doc.content,
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
@@ -1197,7 +1204,6 @@ class LightRAG:
                                             "chunks_list": list(
                                                 chunks.keys()
                                             ),  # 保留 chunks_list
-                                            "content": status_doc.content,
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
@@ -1244,7 +1250,6 @@ class LightRAG:
                                         doc_id: {
                                             "status": DocStatus.FAILED,
                                             "error": str(e),
-                                            "content": status_doc.content,
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
