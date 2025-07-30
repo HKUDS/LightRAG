@@ -651,7 +651,7 @@ export default function DocumentManager() {
     return () => {
       clearPollingInterval();
     }
-  }, [health, t, currentTab, statusCounts.processing, statusCounts.pending, startPollingInterval, clearPollingInterval])
+  }, [health, t, currentTab, statusCounts, startPollingInterval, clearPollingInterval])
 
   // Monitor docs changes to check status counts and trigger health check if needed
   useEffect(() => {
@@ -714,11 +714,35 @@ export default function DocumentManager() {
     startPollingInterval(2000)
   }, [startPollingInterval])
 
-  // Handle documents cleared callback with delayed health check timer reset
+  // Handle documents cleared callback with proper interval reset
   const handleDocumentsCleared = useCallback(async () => {
-    // Schedule a health check 0.5 seconds after successful clear
-    startPollingInterval(500)
-  }, [startPollingInterval])
+    // Clear current polling interval
+    clearPollingInterval();
+
+    // Reset status counts to ensure proper state
+    setStatusCounts({
+      all: 0,
+      processed: 0,
+      processing: 0,
+      pending: 0,
+      failed: 0
+    });
+
+    // Perform one immediate refresh to confirm clear operation
+    if (isMountedRef.current) {
+      try {
+        await fetchDocuments();
+      } catch (err) {
+        console.error('Error fetching documents after clear:', err);
+      }
+    }
+
+    // Set appropriate polling interval based on current state
+    // Since documents are cleared, use idle interval (30 seconds)
+    if (currentTab === 'documents' && health && isMountedRef.current) {
+      startPollingInterval(30000); // 30 seconds for idle state
+    }
+  }, [clearPollingInterval, setStatusCounts, fetchDocuments, currentTab, health, startPollingInterval])
 
 
   // Handle showFileName change - switch sort field if currently sorting by first column
