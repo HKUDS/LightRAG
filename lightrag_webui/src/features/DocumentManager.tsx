@@ -177,11 +177,17 @@ export default function DocumentManager() {
   // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
+  const currentTab = useSettingsStore.use.currentTab()
+  const showFileName = useSettingsStore.use.showFileName()
+  const setShowFileName = useSettingsStore.use.setShowFileName()
+  const documentsPageSize = useSettingsStore.use.documentsPageSize()
+  const setDocumentsPageSize = useSettingsStore.use.setDocumentsPageSize()
+
   // New pagination state
   const [, setCurrentPageDocs] = useState<DocStatusResponse[]>([])
   const [pagination, setPagination] = useState<PaginationInfo>({
     page: 1,
-    page_size: 20,
+    page_size: documentsPageSize,
     total_count: 0,
     total_pages: 0,
     has_next: false,
@@ -189,10 +195,6 @@ export default function DocumentManager() {
   })
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
   const [isRefreshing, setIsRefreshing] = useState(false)
-
-  const currentTab = useSettingsStore.use.currentTab()
-  const showFileName = useSettingsStore.use.showFileName()
-  const setShowFileName = useSettingsStore.use.setShowFileName()
 
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
@@ -557,9 +559,12 @@ export default function DocumentManager() {
     setPagination(prev => ({ ...prev, page: newPage }));
   }, [pagination.page, statusFilter]);
 
-  // Handle page size change - only update state
+  // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
     if (newPageSize === pagination.page_size) return;
+
+    // Save the new page size to the store
+    setDocumentsPageSize(newPageSize);
 
     // Reset all status filters to page 1 when page size changes
     setPageByStatus({
@@ -571,7 +576,7 @@ export default function DocumentManager() {
     });
 
     setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
-  }, [pagination.page_size]);
+  }, [pagination.page_size, setDocumentsPageSize]);
 
   // Handle status filter change - only update state
   const handleStatusFilterChange = useCallback((newStatusFilter: StatusFilter) => {
