@@ -67,7 +67,7 @@ jobs:
 
     services:
       postgres:
-        image: shangor/postgres-for-rag:latest
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: test_user
           POSTGRES_PASSWORD: test_password
