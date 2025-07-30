@@ -104,6 +104,26 @@ class JsonDocStatusStorage(DocStatusStorage):
                         continue
         return result
 
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+        result = {}
+        async with self._storage_lock:
+            for k, v in self._data.items():
+                if v.get("track_id") == track_id:
+                    try:
+                        # Make a copy of the data to avoid modifying the original
+                        data = v.copy()
+                        # If file_path is not in data, use document id as file path
+                        if "file_path" not in data:
+                            data["file_path"] = "no-file-path"
+                        result[k] = DocProcessingStatus(**data)
+                    except KeyError as e:
+                        logger.error(f"Missing required field for document {k}: {e}")
+                        continue
+        return result
+
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
             if self.storage_updated.value:

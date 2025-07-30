@@ -641,6 +641,8 @@ class DocProcessingStatus:
     """ISO format timestamp when document was created"""
     updated_at: str
     """ISO format timestamp when document was last updated"""
+    track_id: str | None = None
+    """Tracking ID for monitoring progress"""
     chunks_count: int | None = None
     """Number of chunks after splitting, used for processing"""
     chunks_list: list[str] | None = field(default_factory=list)
@@ -664,6 +666,12 @@ class DocStatusStorage(BaseKVStorage, ABC):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+
+    @abstractmethod
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
 
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Drop cache is not supported for Doc Status storage"""

@@ -804,6 +804,55 @@ class RedisDocStatusStorage(DocStatusStorage):
 
         return result
 
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+        result = {}
+        async with self._get_redis_connection() as redis:
+            try:
+                # Use SCAN to iterate through all keys in the namespace
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(
+                        cursor, match=f"{self.namespace}:*", count=1000
+                    )
+                    if keys:
+                        # Get all values in batch
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.get(key)
+                        values = await pipe.execute()
+
+                        # Filter by track_id and create DocProcessingStatus objects
+                        for key, value in zip(keys, values):
+                            if value:
+                                try:
+                                    doc_data = json.loads(value)
+                                    if doc_data.get("track_id") == track_id:
+                                        # Extract document ID from key
+                                        doc_id = key.split(":", 1)[1]
+
+                                        # Make a copy of the data to avoid modifying the original
+                                        data = doc_data.copy()
+                                        # If file_path is not in data, use document id as file path
+                                        if "file_path" not in data:
+                                            data["file_path"] = "no-file-path"
+
+                                        result[doc_id] = DocProcessingStatus(**data)
+                                except (json.JSONDecodeError, KeyError) as e:
+                                    logger.error(
+                                        f"Error processing document {key}: {e}"
+                                    )
+                                    continue
+
+                    if cursor == 0:
+                        break
+            except Exception as e:
+                logger.error(f"Error getting docs by track_id: {e}")
+
+        return result
+
     async def index_done_callback(self) -> None:
         """Redis handles persistence automatically"""
         pass

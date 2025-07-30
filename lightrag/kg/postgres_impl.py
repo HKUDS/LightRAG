@@ -567,6 +567,63 @@ class PostgreSQLDB:
                 f"Failed to add llm_cache_list column to LIGHTRAG_DOC_CHUNKS: {e}"
             )
 
+    async def _migrate_doc_status_add_track_id(self):
+        """Add track_id column to LIGHTRAG_DOC_STATUS table if it doesn't exist and create index"""
+        try:
+            # Check if track_id column exists
+            check_column_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_status'
+            AND column_name = 'track_id'
+            """
+
+            column_info = await self.query(check_column_sql)
+            if not column_info:
+                logger.info("Adding track_id column to LIGHTRAG_DOC_STATUS table")
+                add_column_sql = """
+                ALTER TABLE LIGHTRAG_DOC_STATUS
+                ADD COLUMN track_id VARCHAR(255) NULL
+                """
+                await self.execute(add_column_sql)
+                logger.info(
+                    "Successfully added track_id column to LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "track_id column already exists in LIGHTRAG_DOC_STATUS table"
+                )
+
+            # Check if track_id index exists
+            check_index_sql = """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+            AND indexname = 'idx_lightrag_doc_status_track_id'
+            """
+
+            index_info = await self.query(check_index_sql)
+            if not index_info:
+                logger.info(
+                    "Creating index on track_id column for LIGHTRAG_DOC_STATUS table"
+                )
+                create_index_sql = """
+                CREATE INDEX idx_lightrag_doc_status_track_id ON LIGHTRAG_DOC_STATUS (track_id)
+                """
+                await self.execute(create_index_sql)
+                logger.info(
+                    "Successfully created index on track_id column for LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "Index on track_id column already exists for LIGHTRAG_DOC_STATUS table"
+                )
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to add track_id column or index to LIGHTRAG_DOC_STATUS: {e}"
+            )
+
     async def _migrate_field_lengths(self):
         """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
         # Define the field changes needed
@@ -784,6 +841,14 @@ class PostgreSQLDB:
             await self._migrate_field_lengths()
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to migrate field lengths: {e}")
+
+        # Migrate doc status to add track_id field if needed
+        try:
+            await self._migrate_doc_status_add_track_id()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate doc status track_id field: {e}"
+            )
 
     async def query(
         self,
@@ -1775,6 +1840,43 @@ class PGDocStatusStorage(DocStatusStorage):
 
         return docs_by_status
 
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and track_id=$2"
+        params = {"workspace": self.db.workspace, "track_id": track_id}
+        result = await self.db.query(sql, params, True)
+
+        docs_by_track_id = {}
+        for element in result:
+            # Parse chunks_list JSON string back to list
+            chunks_list = element.get("chunks_list", [])
+            if isinstance(chunks_list, str):
+                try:
+                    chunks_list = json.loads(chunks_list)
+                except json.JSONDecodeError:
+                    chunks_list = []
+
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(element["created_at"])
+            updated_at = self._format_datetime_with_timezone(element["updated_at"])
+
+            docs_by_track_id[element["id"]] = DocProcessingStatus(
+                # content=element["content"],
+                content_summary=element["content_summary"],
+                content_length=element["content_length"],
+                status=element["status"],
+                created_at=created_at,
+                updated_at=updated_at,
+                chunks_count=element["chunks_count"],
+                file_path=element["file_path"],
+                chunks_list=chunks_list,
+                track_id=element.get("track_id"),
+            )
+
+        return docs_by_track_id
+
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
@@ -1843,10 +1945,10 @@ class PGDocStatusStorage(DocStatusStorage):
                 logger.warning(f"Unable to parse datetime string: {dt_str}")
                 return None
 
-        # Modified SQL to include created_at, updated_at, and chunks_list in both INSERT and UPDATE operations
+        # Modified SQL to include created_at, updated_at, chunks_list, and track_id in both INSERT and UPDATE operations
         # All fields are updated from the input data in both INSERT and UPDATE cases
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,created_at,updated_at)
-                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                   on conflict(id,workspace) do update set
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
@@ -1854,6 +1956,7 @@ class PGDocStatusStorage(DocStatusStorage):
                   status = EXCLUDED.status,
                   file_path = EXCLUDED.file_path,
                   chunks_list = EXCLUDED.chunks_list,
+                  track_id = EXCLUDED.track_id,
                   created_at = EXCLUDED.created_at,
                   updated_at = EXCLUDED.updated_at"""
         for k, v in data.items():
@@ -1861,7 +1964,7 @@ class PGDocStatusStorage(DocStatusStorage):
             created_at = parse_datetime(v.get("created_at"))
             updated_at = parse_datetime(v.get("updated_at"))
 
-            # chunks_count and chunks_list are optional
+            # chunks_count, chunks_list, and track_id are optional
             await self.db.execute(
                 sql,
                 {
@@ -1874,6 +1977,7 @@ class PGDocStatusStorage(DocStatusStorage):
                     "status": v["status"],
                     "file_path": v["file_path"],
                     "chunks_list": json.dumps(v.get("chunks_list", [])),
+                    "track_id": v.get("track_id"),  # Add track_id support
                     "created_at": created_at,  # Use the converted datetime object
                     "updated_at": updated_at,  # Use the converted datetime object
                 },
@@ -3375,6 +3479,7 @@ TABLES = {
 	               status varchar(64) NULL,
 	               file_path TEXT NULL,
 	               chunks_list JSONB NULL DEFAULT '[]'::jsonb,
+	               track_id varchar(255) NULL,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)

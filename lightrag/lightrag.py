@@ -88,6 +88,7 @@ from .utils import (
     get_content_summary,
     clean_text,
     check_storage_env_vars,
+    generate_track_id,
     logger,
 )
 from .types import KnowledgeGraph
@@ -659,7 +660,8 @@ class LightRAG:
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
-    ) -> None:
+        track_id: str | None = None,
+    ) -> str:
         """Sync Insert documents with checkpoint support
 
         Args:
@@ -670,11 +672,20 @@ class LightRAG:
             split_by_character is None, this parameter is ignored.
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
+            track_id: tracking ID for monitoring processing status, if not provided, will be generated
+
+        Returns:
+            str: tracking ID for monitoring processing status
         """
         loop = always_get_an_event_loop()
-        loop.run_until_complete(
+        return loop.run_until_complete(
             self.ainsert(
-                input, split_by_character, split_by_character_only, ids, file_paths
+                input,
+                split_by_character,
+                split_by_character_only,
+                ids,
+                file_paths,
+                track_id,
             )
         )
 
@@ -685,7 +696,8 @@ class LightRAG:
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
-    ) -> None:
+        track_id: str | None = None,
+    ) -> str:
         """Async Insert documents with checkpoint support
 
         Args:
@@ -696,11 +708,21 @@ class LightRAG:
             split_by_character is None, this parameter is ignored.
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
+            track_id: tracking ID for monitoring processing status, if not provided, will be generated
+
+        Returns:
+            str: tracking ID for monitoring processing status
         """
-        await self.apipeline_enqueue_documents(input, ids, file_paths)
+        # Generate track_id if not provided
+        if track_id is None:
+            track_id = generate_track_id("insert")
+
+        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
+
+        return track_id
 
     # TODO: deprecated, use insert instead
     def insert_custom_chunks(
@@ -779,6 +801,7 @@ class LightRAG:
         input: str | list[str],
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
+        track_id: str | None = None,
     ) -> None:
         """
         Pipeline for Processing Documents
@@ -874,6 +897,7 @@ class LightRAG:
                 "file_path": content_data[
                     "file_path"
                 ],  # Store file path in document status
+                "track_id": track_id,  # Store track_id in document status
             }
             for id_, content_data in contents.items()
         }
@@ -2198,6 +2222,19 @@ class LightRAG:
             Dict with counts for each status
         """
         return await self.doc_status.get_status_counts()
+
+    async def aget_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get documents by track_id
+
+        Args:
+            track_id: The tracking ID to search for
+
+        Returns:
+            Dict with document id as keys and document status as values
+        """
+        return await self.doc_status.get_docs_by_track_id(track_id)
 
     async def get_entity_info(
         self, entity_name: str, include_vector_data: bool = False
