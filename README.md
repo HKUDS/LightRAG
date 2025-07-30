@@ -48,6 +48,7 @@
 
 ---
 ## 🎉 News
+- [X] [2025.01.30]🎯📢**NEW**: LightRAG now includes enterprise-grade authentication and security features! Phase 1 enhancements include bcrypt password security, advanced rate limiting, comprehensive security headers (95/100 security score), and complete audit logging. Perfect for production deployments. See [Authentication Documentation](docs/security/AUTHENTICATION_IMPROVEMENT_PLAN.md) for details.
 - [X] [2025.01.29]🎯📢**NEW**: LightRAG now supports [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/servers) integration! Use LightRAG directly with Claude CLI through 11 MCP tools and 3 resources. Get started with `python -m lightrag_mcp` and `claude mcp lightrag_query "your question"`. See [MCP Documentation](docs/integration_guides/MCP_IMPLEMENTATION_SUMMARY.md) for details.
 - [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
 - [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
@@ -225,6 +226,37 @@ claude mcp resource "lightrag://system/config"
 - 📊 **System Monitoring**: Health checks and usage analytics
 
 **📖 For complete MCP documentation, see**: [MCP Implementation Guide](docs/integration_guides/MCP_IMPLEMENTATION_SUMMARY.md)
+
+### Enhanced Authentication & Security (NEW!)
+
+LightRAG now includes enterprise-grade authentication and security features for production deployments:
+
+**🔐 Phase 1 Security Enhancements**:
+- **Enhanced Password Security**: bcrypt hashing, strength validation, and policy enforcement
+- **Advanced Rate Limiting**: Multi-tier throttling with Redis backend and IP blocking
+- **Comprehensive Security Headers**: CSP, HSTS, X-Frame-Options, and security analysis
+- **Complete Audit Logging**: Structured security events with analytics and anomaly detection
+
+**Quick Setup**:
+```bash
+# Configure authentication in .env
+AUTH_ENABLED=true
+BCRYPT_ROUNDS=12
+RATE_LIMIT_REQUESTS_PER_MINUTE=60
+SECURITY_HEADERS_ENABLED=true
+AUDIT_LOGGING_ENABLED=true
+
+# Start server with authentication
+lightrag-server
+```
+
+**Key Features**:
+- 🛡️ **Password Security**: Configurable policies, strength assessment, account lockout protection
+- 🚦 **Rate Limiting**: Per-endpoint limits, burst protection, IP-based blocking
+- 📋 **Security Headers**: 95/100 security score with comprehensive header protection
+- 📝 **Audit Logging**: Real-time security event tracking with structured analytics
+
+**📖 For complete authentication documentation, see**: [Authentication Improvement Plan](docs/security/AUTHENTICATION_IMPROVEMENT_PLAN.md)
 
 ## Programing with LightRAG Core
 
