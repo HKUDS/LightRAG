@@ -212,6 +212,7 @@ class TestRateLimiter:
             general_api_limit="10/minute",
         )
         self.rate_limiter = AdvancedRateLimiter(self.config)
+        self.user_id = f"test_user_{os.urandom(4).hex()}"
 
     @pytest.mark.asyncio
     async def test_rate_limiter_initialization(self):
@@ -226,7 +227,7 @@ class TestRateLimiter:
 
         # Mock request
         mock_request = Mock()
-        mock_request.state.user_id = "test_user"
+        mock_request.state.user_id = self.user_id
         mock_request.headers = {}
         mock_request.client.host = "127.0.0.1"
         mock_request.url.path = "/login"
@@ -292,7 +293,7 @@ class TestRateLimiter:
         await warning_limiter.initialize()
 
         mock_request = Mock()
-        mock_request.state.user_id = "test_user"
+        mock_request.state.user_id = self.user_id
         mock_request.headers = {}
         mock_request.client.host = "127.0.0.1"
         mock_request.url.path = "/login"
