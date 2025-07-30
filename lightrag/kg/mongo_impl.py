@@ -366,7 +366,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
-        cursor = self._data.aggregate(pipeline, allowDiskUse=True)
+        cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
         result = await cursor.to_list()
         counts = {}
         for doc in result:
@@ -620,7 +620,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             Dictionary mapping status names to counts, including 'all' field
         """
         pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
-        cursor = self._data.aggregate(pipeline, allowDiskUse=True)
+        cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
         result = await cursor.to_list()
 
         counts = {}
