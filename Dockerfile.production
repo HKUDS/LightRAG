@@ -1,0 +1,356 @@
+# ====================================================================
+# Production-Optimized Dockerfile for LightRAG
+# ====================================================================
+# This Dockerfile is specifically designed for production deployments
+# with security, performance, and reliability optimizations.
+
+ARG PYTHON_VERSION=3.11
+ARG DEBIAN_VERSION=bookworm
+
+# ===================================================================
+# Builder Stage - Dependencies and Build
+# ===================================================================
+FROM python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION} AS builder
+
+# Build arguments
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+
+# Labels for container metadata
+LABEL maintainer="LightRAG Team" \
+      org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="lightrag" \
+      org.label-schema.description="Production LightRAG Container" \
+      org.label-schema.url="https://github.com/HKUDS/LightRAG" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url="https://github.com/HKUDS/LightRAG" \
+      org.label-schema.vendor="HKUDS" \
+      org.label-schema.version=$VERSION \
+      org.label-schema.schema-version="1.0"
+
+# Set environment variables for build
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    POETRY_VENV_IN_PROJECT=1
+
+WORKDIR /build
+
+# Install system dependencies and security updates
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        curl \
+        git \
+        ca-certificates \
+        && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install Rust for cryptographic dependencies
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy dependency definitions
+COPY pyproject.toml setup.py MANIFEST.in ./
+COPY lightrag/ ./lightrag/
+
+# Create virtual environment and install dependencies
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python dependencies with security and performance optimizations
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir \
+        ".[api]" \
+        # Core dependencies
+        nano-vectordb \
+        networkx \
+        # LLM and embedding dependencies
+        openai \
+        ollama \
+        tiktoken \
+        # Document processing dependencies
+        pypdf2 \
+        python-docx \
+        python-pptx \
+        openpyxl \
+        # Production dependencies
+        gunicorn \
+        uvicorn[standard] \
+        prometheus-client \
+        # Security dependencies
+        cryptography \
+        bcrypt \
+        # Monitoring and logging
+        structlog \
+        opentelemetry-api \
+        opentelemetry-sdk \
+        opentelemetry-exporter-otlp \
+        opentelemetry-instrumentation-fastapi \
+        opentelemetry-instrumentation-psycopg2 \
+    && pip check
+
+# ===================================================================
+# Final Production Stage
+# ===================================================================
+FROM python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION} AS production
+
+# Build arguments
+ARG BUILD_DATE
+ARG VCS_REF  
+ARG VERSION
+
+# Labels
+LABEL maintainer="LightRAG Team" \
+      org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="lightrag-production" \
+      org.label-schema.description="Production LightRAG Container" \
+      org.label-schema.version=$VERSION
+
+# Set production environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PATH="/opt/venv/bin:$PATH" \
+    NODE_ENV=production \
+    PYTHON_ENV=production
+
+# Install runtime dependencies and security updates
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        # Runtime dependencies
+        curl \
+        ca-certificates \
+        # Health check dependencies
+        netcat-traditional \
+        # File processing dependencies
+        poppler-utils \
+        # Process monitoring
+        procps \
+        # Time zone data
+        tzdata \
+    && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Create application user and group for security
+RUN groupadd --system --gid 1001 lightrag && \
+    useradd --system --uid 1001 --gid lightrag --shell /bin/bash \
+           --home-dir /app --create-home lightrag
+
+# Set up directory structure
+WORKDIR /app
+
+# Create necessary directories with proper permissions
+RUN mkdir -p \
+        /app/data/rag_storage \
+        /app/data/inputs \
+        /app/data/backups \
+        /app/logs \
+        /app/certs \
+        /app/tmp && \
+    chown -R lightrag:lightrag /app
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy application code
+COPY --chown=lightrag:lightrag lightrag/ ./lightrag/
+COPY --chown=lightrag:lightrag setup.py ./
+
+# Copy configuration files
+COPY --chown=lightrag:lightrag production.env ./production.env
+COPY --chown=lightrag:lightrag lightrag/api/gunicorn_config.py ./gunicorn_config.py
+
+# Create production startup script
+RUN cat > /app/start-production.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Set default environment
+export NODE_ENV=${NODE_ENV:-production}
+export PYTHON_ENV=${PYTHON_ENV:-production}
+
+# Health check function
+health_check() {
+    echo "Performing health checks..."
+    
+    # Check database connectivity
+    if [ "${POSTGRES_HOST:-}" ]; then
+        echo "Checking database connectivity..."
+        timeout 10 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}" || {
+            echo "ERROR: Cannot connect to database"
+            exit 1
+        }
+    fi
+    
+    # Check Redis connectivity
+    if [ "${REDIS_URI:-}" ]; then
+        echo "Checking Redis connectivity..."
+        redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
+        redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
+        timeout 5 bash -c "</dev/tcp/${redis_host}/${redis_port:-6379}" || {
+            echo "ERROR: Cannot connect to Redis"
+            exit 1
+        }
+    fi
+    
+    echo "Health checks passed!"
+}
+
+# Wait for dependencies
+wait_for_dependencies() {
+    echo "Waiting for dependencies..."
+    
+    if [ "${POSTGRES_HOST:-}" ]; then
+        echo "Waiting for PostgreSQL..."
+        while ! timeout 1 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}"; do
+            echo "PostgreSQL is unavailable - sleeping"
+            sleep 2
+        done
+        echo "PostgreSQL is up!"
+    fi
+    
+    if [ "${REDIS_URI:-}" ]; then
+        redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
+        redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
+        echo "Waiting for Redis..."
+        while ! timeout 1 bash -c "</dev/tcp/${redis_host}/${redis_port:-6379}"; do
+            echo "Redis is unavailable - sleeping"
+            sleep 2
+        done
+        echo "Redis is up!"
+    fi
+}
+
+# Run database migrations if needed
+run_migrations() {
+    if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
+        echo "Running database migrations..."
+        python -c "
+import asyncio
+from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
+from lightrag import LightRAG
+from lightrag.kg.shared_storage import initialize_pipeline_status
+
+async def run_migrations():
+    try:
+        migration = AuthPhase1Migration()
+        await migration.run()
+        print('Migrations completed successfully')
+    except Exception as e:
+        print(f'Migration error: {e}')
+        # Don't fail startup for migration errors in production
+        pass
+
+asyncio.run(run_migrations())
+        "
+    fi
+}
+
+# Start the application
+start_application() {
+    echo "Starting LightRAG in production mode..."
+    
+    # Use Gunicorn for production
+    if [ "${USE_GUNICORN:-true}" = "true" ]; then
+        exec gunicorn \
+            --config gunicorn_config.py \
+            --worker-class uvicorn.workers.UvicornWorker \
+            --workers ${WORKERS:-4} \
+            --bind 0.0.0.0:${PORT:-9621} \
+            --timeout ${WORKER_TIMEOUT:-300} \
+            --keepalive ${KEEPALIVE:-5} \
+            --max-requests ${MAX_REQUESTS:-1000} \
+            --max-requests-jitter ${MAX_REQUESTS_JITTER:-100} \
+            --preload \
+            --log-level ${LOG_LEVEL:-info} \
+            --access-logfile - \
+            --error-logfile - \
+            lightrag.api.lightrag_server:app
+    else
+        # Fallback to direct uvicorn
+        exec python -m uvicorn \
+            lightrag.api.lightrag_server:app \
+            --host 0.0.0.0 \
+            --port ${PORT:-9621} \
+            --workers ${WORKERS:-1} \
+            --log-level ${LOG_LEVEL:-info}
+    fi
+}
+
+# Main execution
+main() {
+    echo "LightRAG Production Startup"
+    echo "=========================="
+    
+    # Wait for dependencies
+    wait_for_dependencies
+    
+    # Run health checks
+    health_check
+    
+    # Run migrations
+    run_migrations
+    
+    # Start application
+    start_application
+}
+
+# Execute main function
+main "$@"
+EOF
+
+# Make startup script executable
+RUN chmod +x /app/start-production.sh
+
+# Create health check script
+RUN cat > /app/health-check.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Basic health check
+curl -f http://localhost:${PORT:-9621}/health || exit 1
+
+# Additional checks
+if [ "${HEALTH_CHECK_DATABASE:-true}" = "true" ] && [ "${POSTGRES_HOST:-}" ]; then
+    timeout 5 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}" || exit 1
+fi
+
+if [ "${HEALTH_CHECK_REDIS:-true}" = "true" ] && [ "${REDIS_URI:-}" ]; then
+    redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
+    redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
+    timeout 5 bash -c "</dev/tcp/${redis_host}/${redis_port:-6379}" || exit 1
+fi
+
+echo "Health check passed!"
+EOF
+
+RUN chmod +x /app/health-check.sh
+
+# Switch to application user
+USER lightrag
+
+# Set working directory
+WORKDIR /app
+
+# Expose port
+EXPOSE 9621
+
+# Health check configuration
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["/app/health-check.sh"]
+
+# Set the entrypoint
+ENTRYPOINT ["/app/start-production.sh"]
+
+# Default command (can be overridden)
+CMD []

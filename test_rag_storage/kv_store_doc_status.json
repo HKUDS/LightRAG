@@ -1,0 +1,17 @@
+{
+  "doc-b6554d933abac987bb0f076ca3fcb667": {
+    "status": "failed",
+    "error_msg": "XAI_API_KEY or OPENAI_API_KEY environment variable is required",
+    "content_summary": "LightRAG is a powerful retrieval-augmented generation system that combines knowledge graphs and vector retrieval.\n        It provides enterprise-grade authentication features including bcrypt password hashing, rate limiting, and audit logging.\n      ...",
+    "content_length": 477,
+    "created_at": "2025-07-30T13:34:44.815036+00:00",
+    "updated_at": "2025-07-30T13:34:44.823240+00:00",
+    "file_path": "unknown_source",
+    "track_id": "insert_20250730_143444_9561e703",
+    "metadata": {
+      "processing_start_time": 1753882484,
+      "processing_end_time": 1753882484
+    },
+    "chunks_list": []
+  }
+}
