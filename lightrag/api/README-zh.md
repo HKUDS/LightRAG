@@ -598,15 +598,15 @@ LightRAG 中的文档处理流程有些复杂，分为两个主要阶段：提�
 LightRAG采用异步文档索引机制，便于前端监控和查询文档处理进度。用户通过指定端点上传文件或插入文本时，系统将返回唯一的跟踪ID，以便实时监控处理进度。
 
 **支持生成跟踪ID的API端点：**
-*   `/documents/upload`
-*   `/documents/text`
-*   `/documents/texts`
+* `/documents/upload`
+* `/documents/text`
+* `/documents/texts`
 
 **文档处理状态查询端点：**
-*   `/track_status/{track_id}`
+* `/track_status/{track_id}`
 
 该端点提供全面的状态信息，包括：
-*   文档处理状态（待处理/处理中/已处理/失败）
-*   内容摘要和元数据
-*   处理失败时的错误信息
-*   创建和更新时间戳
+* 文档处理状态（待处理/处理中/已处理/失败）
+* 内容摘要和元数据
+* 处理失败时的错误信息
+* 创建和更新时间戳
