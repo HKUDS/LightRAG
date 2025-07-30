@@ -593,112 +593,20 @@ LightRAG 中的文档处理流程有些复杂，分为两个主要阶段：提�
 4. 使用查询端点查询系统
 5. 如果在输入目录中放入新文件，触发文档扫描
 
-### 查询端点
+## 异步文档索引与进度跟踪
 
-#### POST /query
-使用不同搜索模式查询 RAG 系统。
+LightRAG采用异步文档索引机制，便于前端监控和查询文档处理进度。用户通过指定端点上传文件或插入文本时，系统将返回唯一的跟踪ID，以便实时监控处理进度。
 
-```bash
-curl -X POST "http://localhost:9621/query" \
-    -H "Content-Type: application/json" \
-    -d '{"query": "您的问题", "mode": "hybrid", ""}'
-```
+**支持生成跟踪ID的API端点：**
+*   `/documents/upload`
+*   `/documents/text`
+*   `/documents/texts`
 
-#### POST /query/stream
-从 RAG 系统流式获取响应。
+**文档处理状态查询端点：**
+*   `/track_status/{track_id}`
 
-```bash
-curl -X POST "http://localhost:9621/query/stream" \
-    -H "Content-Type: application/json" \
-    -d '{"query": "您的问题", "mode": "hybrid"}'
-```
-
-### 文档管理端点
-
-#### POST /documents/text
-直接将文本插入 RAG 系统。
-
-```bash
-curl -X POST "http://localhost:9621/documents/text" \
-    -H "Content-Type: application/json" \
-    -d '{"text": "您的文本内容", "description": "可选描述"}'
-```
-
-#### POST /documents/file
-向 RAG 系统上传单个文件。
-
-```bash
-curl -X POST "http://localhost:9621/documents/file" \
-    -F "file=@/path/to/your/document.txt" \
-    -F "description=可选描述"
-```
-
-#### POST /documents/batch
-一次上传多个文件。
-
-```bash
-curl -X POST "http://localhost:9621/documents/batch" \
-    -F "files=@/path/to/doc1.txt" \
-    -F "files=@/path/to/doc2.txt"
-```
-
-#### POST /documents/scan
-
-触发输入目录中新文件的文档扫描。
-
-```bash
-curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
-```
-
-> 根据所有新文件的预计索引时间调整 max-time。
-
-#### DELETE /documents
-
-从 RAG 系统中清除所有文档。
-
-```bash
-curl -X DELETE "http://localhost:9621/documents"
-```
-
-### Ollama 模拟端点
-
-#### GET /api/version
-
-获取 Ollama 版本信息。
-
-```bash
-curl http://localhost:9621/api/version
-```
-
-#### GET /api/tags
-
-获取 Ollama 可用模型。
-
-```bash
-curl http://localhost:9621/api/tags
-```
-
-#### POST /api/chat
-
-处理聊天补全请求。通过根据查询前缀选择查询模式将用户查询路由到 LightRAG。检测并将 OpenWebUI 会话相关请求（用于元数据生成任务）直接转发给底层 LLM。
-
-```shell
-curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
-  '{"model":"lightrag:latest","messages":[{"role":"user","content":"猪八戒是谁"}],"stream":true}'
-```
-
-> 有关 Ollama API 的更多信息，请访问：[Ollama API 文档](https://github.com/ollama/ollama/blob/main/docs/api.md)
-
-#### POST /api/generate
-
-处理生成补全请求。为了兼容性目的，该请求不由 LightRAG 处理，而是由底层 LLM 模型处理。
-
-### 实用工具端点
-
-#### GET /health
-检查服务器健康状况和配置。
-
-```bash
-curl "http://localhost:9621/health"
-
-```
+该端点提供全面的状态信息，包括：
+*   文档处理状态（待处理/处理中/已处理/失败）
+*   内容摘要和元数据
+*   处理失败时的错误信息
+*   创建和更新时间戳

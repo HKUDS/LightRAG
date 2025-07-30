@@ -534,111 +534,26 @@ You can test the API endpoints using the provided curl commands or through the S
 4. Query the system using the query endpoints
 5. Trigger document scan if new files are put into the inputs directory
 
-### Query Endpoints:
+## Asynchronous Document Indexing with Progress Tracking
 
-#### POST /query
-Query the RAG system with options for different search modes.
+LightRAG implements asynchronous document indexing to enable frontend monitoring and querying of document processing progress. Upon uploading files or inserting text through designated endpoints, a unique Track ID is returned to facilitate real-time progress monitoring.
 
-```bash
-curl -X POST "http://localhost:9621/query" \
-    -H "Content-Type: application/json" \
-    -d '{"query": "Your question here", "mode": "hybrid"}'
-```
+**API Endpoints Supporting Track ID Generation:**
 
-#### POST /query/stream
-Stream responses from the RAG system.
+*   `/documents/upload`
+*   `/documents/text`  
+*   `/documents/texts`
 
-```bash
-curl -X POST "http://localhost:9621/query/stream" \
-    -H "Content-Type: application/json" \
-    -d '{"query": "Your question here", "mode": "hybrid"}'
-```
+**Document Processing Status Query Endpoint:**
+*   `/track_status/{track_id}`
 
-### Document Management Endpoints:
+This endpoint provides comprehensive status information including:
+*   Document processing status (pending/processing/processed/failed)
+*   Content summary and metadata
+*   Error messages if processing failed
+*   Timestamps for creation and updates
 
-#### POST /documents/text
-Insert text directly into the RAG system.
 
-```bash
-curl -X POST "http://localhost:9621/documents/text" \
-    -H "Content-Type: application/json" \
-    -d '{"text": "Your text content here", "description": "Optional description"}'
-```
 
-#### POST /documents/file
-Upload a single file to the RAG system.
 
-```bash
-curl -X POST "http://localhost:9621/documents/file" \
-    -F "file=@/path/to/your/document.txt" \
-    -F "description=Optional description"
-```
 
-#### POST /documents/batch
-Upload multiple files at once.
-
-```bash
-curl -X POST "http://localhost:9621/documents/batch" \
-    -F "files=@/path/to/doc1.txt" \
-    -F "files=@/path/to/doc2.txt"
-```
-
-#### POST /documents/scan
-
-Trigger document scan for new files in the input directory.
-
-```bash
-curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
-```
-
-> Adjust max-time according to the estimated indexing time for all new files.
-
-#### DELETE /documents
-
-Clear all documents from the RAG system.
-
-```bash
-curl -X DELETE "http://localhost:9621/documents"
-```
-
-### Ollama Emulation Endpoints:
-
-#### GET /api/version
-
-Get Ollama version information.
-
-```bash
-curl http://localhost:9621/api/version
-```
-
-#### GET /api/tags
-
-Get available Ollama models.
-
-```bash
-curl http://localhost:9621/api/tags
-```
-
-#### POST /api/chat
-
-Handle chat completion requests. Routes user queries through LightRAG by selecting query mode based on query prefix. Detects and forwards OpenWebUI session-related requests (for metadata generation task) directly to the underlying LLM.
-
-```shell
-curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
-  '{"model":"lightrag:latest","messages":[{"role":"user","content":"猪八戒是谁"}],"stream":true}'
-```
-
-> For more information about Ollama API, please visit: [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
-
-#### POST /api/generate
-
-Handle generate completion requests. For compatibility purposes, the request is not processed by LightRAG, and will be handled by the underlying LLM model.
-
-### Utility Endpoints:
-
-#### GET /health
-Check server health and configuration.
-
-```bash
-curl "http://localhost:9621/health"
-```
