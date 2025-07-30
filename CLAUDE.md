@@ -11,6 +11,7 @@ LightRAG is a Python-based retrieval-augmented generation (RAG) system that comb
 ### Core Architecture
 - **LightRAG Core (`lightrag/`)**: Main library with knowledge graph processing, LLM integrations, and storage backends
 - **API Server (`lightrag/api/`)**: FastAPI-based web server with REST API and Ollama-compatible interface
+- **MCP Server (`lightrag_mcp/`)**: Model Context Protocol server for Claude CLI integration with 11 tools and 3 resources
 - **Web UI (`lightrag_webui/`)**: React/TypeScript frontend for document management and graph visualization
 - **Storage Backends (`lightrag/kg/`)**: Multiple implementations for KV, vector, graph, and document status storage
 
@@ -70,6 +71,49 @@ python -m pytest tests/
 # Run specific examples
 cd LightRAG  # Must be in project root
 python examples/lightrag_openai_demo.py
+```
+
+### MCP Server (Model Context Protocol)
+```bash
+# Install MCP dependencies
+pip install mcp httpx pydantic aiofiles typing-extensions
+
+# Start MCP server
+python -m lightrag_mcp
+
+# Run MCP functionality tests
+python lightrag_mcp/examples/test_basic_functionality.py
+
+# Run MCP usage demonstration
+python lightrag_mcp/examples/usage_example.py
+
+# Configure environment for MCP
+# See env.example for complete MCP configuration options
+LIGHTRAG_API_URL=http://localhost:9621
+MCP_ENABLE_STREAMING=true
+MCP_ENABLE_DOCUMENT_UPLOAD=true
+MCP_CACHE_ENABLED=true
+```
+
+### Claude CLI Integration
+```bash
+# Setup Claude CLI with MCP server
+claude config mcp add lightrag-mcp python -m lightrag_mcp
+
+# Query through Claude CLI
+claude mcp lightrag_query "What are the main themes in my documents?" --mode hybrid
+
+# Document operations
+claude mcp lightrag_insert_file "/path/to/document.pdf"
+claude mcp lightrag_list_documents --limit 10
+
+# Knowledge graph exploration
+claude mcp lightrag_get_graph --max-nodes 50 --format json
+claude mcp lightrag_search_entities "artificial intelligence"
+
+# System monitoring
+claude mcp lightrag_health_check
+claude mcp resource "lightrag://system/config"
 ```
 
 ### Web UI (TypeScript/React)

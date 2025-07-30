@@ -1,0 +1,21 @@
+# LightRAG MCP Server Dependencies
+
+# Core MCP requirements
+mcp>=1.2.0
+httpx>=0.27.0
+pydantic>=2.5.0
+typing-extensions>=4.8.0
+
+# Async support
+aiofiles>=23.0.0
+
+# Optional dependencies for direct mode
+# Uncomment if using direct library access
+# lightrag-hku>=0.1.0
+
+# Development dependencies (optional)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# ruff>=0.1.0
+# mypy>=1.7.0

@@ -48,6 +48,7 @@
 
 ---
 ## 🎉 News
+- [X] [2025.01.29]🎯📢**NEW**: LightRAG now supports [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/servers) integration! Use LightRAG directly with Claude CLI through 11 MCP tools and 3 resources. Get started with `python -m lightrag_mcp` and `claude mcp lightrag_query "your question"`. See [MCP Documentation](docs/integration_guides/MCP_IMPLEMENTATION_SUMMARY.md) for details.
 - [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
 - [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
@@ -174,6 +175,56 @@ For a streaming response implementation example, please see `examples/lightrag_o
 **Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
 
 **Note 2**: Only `lightrag_openai_demo.py` and `lightrag_openai_compatible_demo.py` are officially supported sample codes. Other sample files are community contributions that haven't undergone full testing and optimization.
+
+### Quick Start for MCP Integration (NEW!)
+
+LightRAG now supports the Model Context Protocol (MCP), enabling direct integration with Claude CLI for natural language interactions with your knowledge base.
+
+**Prerequisites**: 
+- LightRAG server running (`lightrag-server`)
+- Claude CLI installed (`npm install -g @anthropic-ai/claude-cli`)
+
+**Installation**:
+```bash
+# Install MCP dependencies
+pip install mcp httpx pydantic aiofiles typing-extensions
+
+# Start MCP server (runs alongside LightRAG)
+python -m lightrag_mcp
+```
+
+**Setup Claude CLI**:
+```bash
+# Add LightRAG MCP server to Claude CLI
+claude config mcp add lightrag-mcp python -m lightrag_mcp
+```
+
+**Usage Examples**:
+```bash
+# Query your knowledge base with natural language
+claude mcp lightrag_query "What are the main themes in my documents?" --mode hybrid
+
+# Insert documents
+claude mcp lightrag_insert_text "Your research content here..." --title "Research Notes"
+claude mcp lightrag_insert_file "/path/to/document.pdf"
+
+# Explore knowledge graph
+claude mcp lightrag_search_entities "artificial intelligence" --limit 10
+claude mcp lightrag_get_graph --max-nodes 50 --format json
+
+# System monitoring
+claude mcp lightrag_health_check
+claude mcp resource "lightrag://system/config"
+```
+
+**Key Features**:
+- 🔍 **11 MCP Tools**: Complete RAG operations through Claude CLI
+- 📝 **Document Management**: Upload, process, and manage documents
+- 🕸️ **Knowledge Graph**: Explore entities and relationships
+- ⚡ **Streaming Support**: Real-time query responses
+- 📊 **System Monitoring**: Health checks and usage analytics
+
+**📖 For complete MCP documentation, see**: [MCP Implementation Guide](docs/integration_guides/MCP_IMPLEMENTATION_SUMMARY.md)
 
 ## Programing with LightRAG Core
 
