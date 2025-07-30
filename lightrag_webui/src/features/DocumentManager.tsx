@@ -485,6 +485,36 @@ export default function DocumentManager() {
     await fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
   }, [fetchPaginatedDocuments, pagination.page, pagination.page_size, statusFilter]);
 
+  // Add refs to track previous pipelineBusy state and current interval
+  const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Function to clear current polling interval
+  const clearPollingInterval = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  // Function to start polling with given interval
+  const startPollingInterval = useCallback((intervalMs: number) => {
+    clearPollingInterval();
+
+    pollingIntervalRef.current = setInterval(async () => {
+      try {
+        // Only perform fetch if component is still mounted
+        if (isMountedRef.current) {
+          await fetchDocuments()
+        }
+      } catch (err) {
+        // Only show error if component is still mounted
+        if (isMountedRef.current) {
+          toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+        }
+      }
+    }, intervalMs);
+  }, [fetchDocuments, t, clearPollingInterval]);
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -498,73 +528,19 @@ export default function DocumentManager() {
 
       // Note: _track_id is available for future use (e.g., progress tracking)
       toast.message(message || status);
+
+      // Reset health check timer with 1 second delay to avoid race condition
+      useBackendState.getState().resetHealthCheckTimerDelayed(1000);
+
+      // Schedule a health check 2 seconds after successful scan
+      startPollingInterval(2000);
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
         toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
       }
     }
-  }, [t])
-
-  // Set up polling when the documents tab is active and health is good
-  useEffect(() => {
-    if (currentTab !== 'documents' || !health) {
-      return
-    }
-
-    const interval = setInterval(async () => {
-      try {
-        // Only perform fetch if component is still mounted
-        if (isMountedRef.current) {
-          await fetchDocuments()
-        }
-      } catch (err) {
-        // Only show error if component is still mounted
-        if (isMountedRef.current) {
-          toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
-        }
-      }
-    }, 5000)
-
-    return () => {
-      clearInterval(interval)
-    }
-  }, [health, fetchDocuments, t, currentTab])
-
-  // Monitor docs changes to check status counts and trigger health check if needed
-  useEffect(() => {
-    if (!docs) return;
-
-    // Get new status counts
-    const newStatusCounts = {
-      processed: docs?.statuses?.processed?.length || 0,
-      processing: docs?.statuses?.processing?.length || 0,
-      pending: docs?.statuses?.pending?.length || 0,
-      failed: docs?.statuses?.failed?.length || 0
-    }
-
-    // Check if any status count has changed
-    const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
-      status => newStatusCounts[status] !== prevStatusCounts.current[status]
-    )
-
-    // Trigger health check if changes detected and component is still mounted
-    if (hasStatusCountChange && isMountedRef.current) {
-      useBackendState.getState().check()
-    }
-
-    // Update previous status counts
-    prevStatusCounts.current = newStatusCounts
-  }, [docs]);
-
-  // Handle page change - only update state
-  const handlePageChange = useCallback((newPage: number) => {
-    if (newPage === pagination.page) return;
-
-    // Save the new page for current status filter
-    setPageByStatus(prev => ({ ...prev, [statusFilter]: newPage }));
-    setPagination(prev => ({ ...prev, page: newPage }));
-  }, [pagination.page, statusFilter]);
+  }, [t, startPollingInterval])
 
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
@@ -584,27 +560,6 @@ export default function DocumentManager() {
 
     setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
   }, [pagination.page_size, setDocumentsPageSize]);
-
-  // Handle status filter change - only update state
-  const handleStatusFilterChange = useCallback((newStatusFilter: StatusFilter) => {
-    if (newStatusFilter === statusFilter) return;
-
-    // Save current page for the current status filter
-    setPageByStatus(prev => ({ ...prev, [statusFilter]: pagination.page }));
-
-    // Get the saved page for the new status filter
-    const newPage = pageByStatus[newStatusFilter];
-
-    // Update status filter and restore the saved page
-    setStatusFilter(newStatusFilter);
-    setPagination(prev => ({ ...prev, page: newPage }));
-  }, [statusFilter, pagination.page, pageByStatus]);
-
-  // Handle documents deleted callback
-  const handleDocumentsDeleted = useCallback(async () => {
-    setSelectedDocIds([])
-    await fetchDocuments()
-  }, [fetchDocuments])
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
@@ -661,6 +616,109 @@ export default function DocumentManager() {
       }
     }
   }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
+
+  // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
+  useEffect(() => {
+    // Skip the first render when prevPipelineBusyRef is undefined
+    if (prevPipelineBusyRef.current !== undefined && prevPipelineBusyRef.current !== pipelineBusy) {
+      // pipelineBusy state has changed, trigger immediate refresh
+      if (currentTab === 'documents' && health && isMountedRef.current) {
+        handleManualRefresh();
+
+        // Reset polling timer after manual refresh
+        const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
+        const pollingInterval = hasActiveDocuments ? 5000 : 30000;
+        startPollingInterval(pollingInterval);
+      }
+    }
+    // Update the previous state
+    prevPipelineBusyRef.current = pipelineBusy;
+  }, [pipelineBusy, currentTab, health, handleManualRefresh, statusCounts.processing, statusCounts.pending, startPollingInterval]);
+
+  // Set up intelligent polling with dynamic interval based on document status
+  useEffect(() => {
+    if (currentTab !== 'documents' || !health) {
+      clearPollingInterval();
+      return
+    }
+
+    // Determine polling interval based on document status
+    const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
+    const pollingInterval = hasActiveDocuments ? 5000 : 30000; // 5s if active, 30s if idle
+
+    startPollingInterval(pollingInterval);
+
+    return () => {
+      clearPollingInterval();
+    }
+  }, [health, t, currentTab, statusCounts.processing, statusCounts.pending, startPollingInterval, clearPollingInterval])
+
+  // Monitor docs changes to check status counts and trigger health check if needed
+  useEffect(() => {
+    if (!docs) return;
+
+    // Get new status counts
+    const newStatusCounts = {
+      processed: docs?.statuses?.processed?.length || 0,
+      processing: docs?.statuses?.processing?.length || 0,
+      pending: docs?.statuses?.pending?.length || 0,
+      failed: docs?.statuses?.failed?.length || 0
+    }
+
+    // Check if any status count has changed
+    const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
+      status => newStatusCounts[status] !== prevStatusCounts.current[status]
+    )
+
+    // Trigger health check if changes detected and component is still mounted
+    if (hasStatusCountChange && isMountedRef.current) {
+      useBackendState.getState().check()
+    }
+
+    // Update previous status counts
+    prevStatusCounts.current = newStatusCounts
+  }, [docs]);
+
+  // Handle page change - only update state
+  const handlePageChange = useCallback((newPage: number) => {
+    if (newPage === pagination.page) return;
+
+    // Save the new page for current status filter
+    setPageByStatus(prev => ({ ...prev, [statusFilter]: newPage }));
+    setPagination(prev => ({ ...prev, page: newPage }));
+  }, [pagination.page, statusFilter]);
+
+  // Handle status filter change - only update state
+  const handleStatusFilterChange = useCallback((newStatusFilter: StatusFilter) => {
+    if (newStatusFilter === statusFilter) return;
+
+    // Save current page for the current status filter
+    setPageByStatus(prev => ({ ...prev, [statusFilter]: pagination.page }));
+
+    // Get the saved page for the new status filter
+    const newPage = pageByStatus[newStatusFilter];
+
+    // Update status filter and restore the saved page
+    setStatusFilter(newStatusFilter);
+    setPagination(prev => ({ ...prev, page: newPage }));
+  }, [statusFilter, pagination.page, pageByStatus]);
+
+  // Handle documents deleted callback
+  const handleDocumentsDeleted = useCallback(async () => {
+    setSelectedDocIds([])
+
+    // Reset health check timer with 1 second delay to avoid race condition
+    useBackendState.getState().resetHealthCheckTimerDelayed(1000)
+
+    // Schedule a health check 2 seconds after successful clear
+    startPollingInterval(2000)
+  }, [startPollingInterval])
+
+  // Handle documents cleared callback with delayed health check timer reset
+  const handleDocumentsCleared = useCallback(async () => {
+    // Schedule a health check 0.5 seconds after successful clear
+    startPollingInterval(500)
+  }, [startPollingInterval])
 
 
   // Handle showFileName change - switch sort field if currently sorting by first column
@@ -748,7 +806,7 @@ export default function DocumentManager() {
                 onDeselect={handleDeselectAll}
               />
             ) : (
-              <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
+              <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             )}
             <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
             <PipelineStatusDialog
