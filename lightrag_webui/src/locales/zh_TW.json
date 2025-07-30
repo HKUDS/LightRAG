@@ -117,6 +117,7 @@
       "title": "文件管理",
       "scanButton": "掃描",
       "scanTooltip": "掃描輸入目錄中的文件",
+      "refreshTooltip": "重設文件清單",
       "pipelineStatusButton": "pipeline 狀態",
       "pipelineStatusTooltip": "查看pipeline 狀態",
       "uploadedTitle": "已上傳文件",
@@ -125,6 +126,7 @@
       "emptyDescription": "尚未上傳任何文件",
       "columns": {
         "id": "ID",
+        "fileName": "檔案名稱",
         "summary": "摘要",
         "status": "狀態",
         "length": "長度",
@@ -401,5 +403,14 @@
     "description": "請輸入您的 API key 以存取服務",
     "placeholder": "請輸入 API key",
     "save": "儲存"
+  },
+  "pagination": {
+    "showing": "顯示第 {{start}} 到 {{end}} 筆，共 {{total}} 筆記錄",
+    "page": "頁",
+    "pageSize": "每頁顯示",
+    "firstPage": "第一頁",
+    "prevPage": "上一頁",
+    "nextPage": "下一頁",
+    "lastPage": "最後一頁"
   }
 }

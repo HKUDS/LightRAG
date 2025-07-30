@@ -123,6 +123,7 @@ class LightragPathFilter(logging.Filter):
         # Define paths to be filtered
         self.filtered_paths = [
             "/documents",
+            "/documents/paginated",
             "/health",
             "/webui/",
             "/documents/pipeline_status",
@@ -145,6 +146,7 @@ class LightragPathFilter(logging.Filter):
             # Filter out successful GET requests to filtered paths
             if (
                 method == "GET"
+                or method == "POST"
                 and (status == 200 or status == 304)
                 and path in self.filtered_paths
             ):

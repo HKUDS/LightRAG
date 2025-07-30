@@ -673,6 +673,36 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific track_id"""
 
+    @abstractmethod
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+
+    @abstractmethod
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts
+        """
+
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Drop cache is not supported for Doc Status storage"""
         return False

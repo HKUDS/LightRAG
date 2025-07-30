@@ -325,6 +325,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Create track_id index for better query performance
             await self.create_track_id_index_if_not_exists()
 
+            # Create pagination indexes for better query performance
+            await self.create_pagination_indexes_if_not_exists()
+
             logger.debug(f"Use MongoDB as DocStatus {self._collection_name}")
 
     async def finalize(self):
@@ -363,7 +366,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
-        cursor = self._data.aggregate(pipeline, allowDiskUse=True)
+        cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
         result = await cursor.to_list()
         counts = {}
         for doc in result:
@@ -480,6 +483,156 @@ class MongoDocStatusStorage(DocStatusStorage):
             logger.error(
                 f"Error creating track_id index for {self._collection_name}: {e}"
             )
+
+    async def create_pagination_indexes_if_not_exists(self):
+        """Create indexes to optimize pagination queries"""
+        try:
+            indexes_cursor = await self._data.list_indexes()
+            existing_indexes = await indexes_cursor.to_list(length=None)
+
+            # Define indexes needed for pagination
+            pagination_indexes = [
+                {
+                    "name": "status_updated_at",
+                    "keys": [("status", 1), ("updated_at", -1)],
+                },
+                {
+                    "name": "status_created_at",
+                    "keys": [("status", 1), ("created_at", -1)],
+                },
+                {"name": "updated_at", "keys": [("updated_at", -1)]},
+                {"name": "created_at", "keys": [("created_at", -1)]},
+                {"name": "id", "keys": [("_id", 1)]},
+                {"name": "file_path", "keys": [("file_path", 1)]},
+            ]
+
+            # Check which indexes already exist
+            existing_index_names = {idx.get("name", "") for idx in existing_indexes}
+
+            for index_info in pagination_indexes:
+                index_name = index_info["name"]
+                if index_name not in existing_index_names:
+                    await self._data.create_index(index_info["keys"], name=index_name)
+                    logger.info(
+                        f"Created pagination index '{index_name}' for collection {self._collection_name}"
+                    )
+                else:
+                    logger.debug(
+                        f"Pagination index '{index_name}' already exists for collection {self._collection_name}"
+                    )
+
+        except PyMongoError as e:
+            logger.error(
+                f"Error creating pagination indexes for {self._collection_name}: {e}"
+            )
+
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', '_id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+        # Validate parameters
+        if page < 1:
+            page = 1
+        if page_size < 10:
+            page_size = 10
+        elif page_size > 200:
+            page_size = 200
+
+        if sort_field not in ["created_at", "updated_at", "_id", "file_path"]:
+            sort_field = "updated_at"
+
+        if sort_direction.lower() not in ["asc", "desc"]:
+            sort_direction = "desc"
+
+        # Build query filter
+        query_filter = {}
+        if status_filter is not None:
+            query_filter["status"] = status_filter.value
+
+        # Get total count
+        total_count = await self._data.count_documents(query_filter)
+
+        # Calculate skip value
+        skip = (page - 1) * page_size
+
+        # Build sort criteria
+        sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
+        sort_criteria = [(sort_field, sort_direction_value)]
+
+        # Query for paginated data
+        cursor = (
+            self._data.find(query_filter)
+            .sort(sort_criteria)
+            .skip(skip)
+            .limit(page_size)
+        )
+        result = await cursor.to_list(length=page_size)
+
+        # Convert to (doc_id, DocProcessingStatus) tuples
+        documents = []
+        for doc in result:
+            try:
+                doc_id = doc["_id"]
+
+                # Make a copy of the data to avoid modifying the original
+                data = doc.copy()
+                # Remove deprecated content field if it exists
+                data.pop("content", None)
+                # Remove MongoDB _id field if it exists
+                data.pop("_id", None)
+                # If file_path is not in data, use document id as file path
+                if "file_path" not in data:
+                    data["file_path"] = "no-file-path"
+                # Ensure new fields exist with default values
+                if "metadata" not in data:
+                    data["metadata"] = {}
+                if "error_msg" not in data:
+                    data["error_msg"] = None
+
+                doc_status = DocProcessingStatus(**data)
+                documents.append((doc_id, doc_status))
+            except KeyError as e:
+                logger.error(f"Missing required field for document {doc['_id']}: {e}")
+                continue
+
+        return documents, total_count
+
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts, including 'all' field
+        """
+        pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+        cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
+        result = await cursor.to_list()
+
+        counts = {}
+        total_count = 0
+        for doc in result:
+            counts[doc["_id"]] = doc["count"]
+            total_count += doc["count"]
+
+        # Add 'all' field with total count
+        counts["all"] = total_count
+
+        return counts
 
 
 @final

@@ -13,6 +13,9 @@ interface SettingsState {
   showFileName: boolean
   setShowFileName: (show: boolean) => void
 
+  documentsPageSize: number
+  setDocumentsPageSize: (size: number) => void
+
   // Graph viewer settings
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
@@ -104,6 +107,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       currentTab: 'documents',
       showFileName: false,
+      documentsPageSize: 10,
 
       retrievalHistory: [],
 
@@ -187,12 +191,13 @@ const useSettingsStoreBase = create<SettingsState>()(
         })),
 
       setShowFileName: (show: boolean) => set({ showFileName: show }),
-      setShowLegend: (show: boolean) => set({ showLegend: show })
+      setShowLegend: (show: boolean) => set({ showLegend: show }),
+      setDocumentsPageSize: (size: number) => set({ documentsPageSize: size })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 15,
+      version: 16,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -274,6 +279,10 @@ const useSettingsStoreBase = create<SettingsState>()(
             enable_rerank: true,
             history_turns: 0,
           }
+        }
+        if (version < 16) {
+          // Add documentsPageSize field for older versions
+          state.documentsPageSize = 10
         }
         return state
       }

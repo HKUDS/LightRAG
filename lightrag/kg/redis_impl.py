@@ -919,6 +919,138 @@ class RedisDocStatusStorage(DocStatusStorage):
                 f"Deleted {deleted_count} of {len(doc_ids)} doc status entries from {self.namespace}"
             )
 
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+        # Validate parameters
+        if page < 1:
+            page = 1
+        if page_size < 10:
+            page_size = 10
+        elif page_size > 200:
+            page_size = 200
+
+        if sort_field not in ["created_at", "updated_at", "id", "file_path"]:
+            sort_field = "updated_at"
+
+        if sort_direction.lower() not in ["asc", "desc"]:
+            sort_direction = "desc"
+
+        # For Redis, we need to load all data and sort/filter in memory
+        all_docs = []
+        total_count = 0
+
+        async with self._get_redis_connection() as redis:
+            try:
+                # Use SCAN to iterate through all keys in the namespace
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(
+                        cursor, match=f"{self.namespace}:*", count=1000
+                    )
+                    if keys:
+                        # Get all values in batch
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.get(key)
+                        values = await pipe.execute()
+
+                        # Process documents
+                        for key, value in zip(keys, values):
+                            if value:
+                                try:
+                                    doc_data = json.loads(value)
+
+                                    # Apply status filter
+                                    if (
+                                        status_filter is not None
+                                        and doc_data.get("status")
+                                        != status_filter.value
+                                    ):
+                                        continue
+
+                                    # Extract document ID from key
+                                    doc_id = key.split(":", 1)[1]
+
+                                    # Prepare document data
+                                    data = doc_data.copy()
+                                    data.pop("content", None)
+                                    if "file_path" not in data:
+                                        data["file_path"] = "no-file-path"
+                                    if "metadata" not in data:
+                                        data["metadata"] = {}
+                                    if "error_msg" not in data:
+                                        data["error_msg"] = None
+
+                                    # Calculate sort key for sorting (but don't add to data)
+                                    if sort_field == "id":
+                                        sort_key = doc_id
+                                    else:
+                                        sort_key = data.get(sort_field, "")
+
+                                    doc_status = DocProcessingStatus(**data)
+                                    all_docs.append((doc_id, doc_status, sort_key))
+
+                                except (json.JSONDecodeError, KeyError) as e:
+                                    logger.error(
+                                        f"Error processing document {key}: {e}"
+                                    )
+                                    continue
+
+                    if cursor == 0:
+                        break
+
+            except Exception as e:
+                logger.error(f"Error getting paginated docs: {e}")
+                return [], 0
+
+        # Sort documents using the separate sort key
+        reverse_sort = sort_direction.lower() == "desc"
+        all_docs.sort(key=lambda x: x[2], reverse=reverse_sort)
+
+        # Remove sort key from tuples and keep only (doc_id, doc_status)
+        all_docs = [(doc_id, doc_status) for doc_id, doc_status, _ in all_docs]
+
+        total_count = len(all_docs)
+
+        # Apply pagination
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_docs = all_docs[start_idx:end_idx]
+
+        return paginated_docs, total_count
+
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts, including 'all' field
+        """
+        counts = await self.get_status_counts()
+
+        # Add 'all' field with total count
+        total_count = sum(counts.values())
+        counts["all"] = total_count
+
+        return counts
+
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
         try:

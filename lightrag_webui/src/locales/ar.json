@@ -117,6 +117,7 @@
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
       "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
+      "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "حالة خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
@@ -125,6 +126,7 @@
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
       "columns": {
         "id": "المعرف",
+        "fileName": "اسم الملف",
         "summary": "الملخص",
         "status": "الحالة",
         "length": "الطول",
@@ -401,5 +403,14 @@
     "description": "الرجاء إدخال مفتاح واجهة برمجة التطبيقات للوصول إلى الخدمة",
     "placeholder": "أدخل مفتاح واجهة برمجة التطبيقات",
     "save": "حفظ"
+  },
+  "pagination": {
+    "showing": "عرض {{start}} إلى {{end}} من أصل {{total}} إدخالات",
+    "page": "الصفحة",
+    "pageSize": "حجم الصفحة",
+    "firstPage": "الصفحة الأولى",
+    "prevPage": "الصفحة السابقة",
+    "nextPage": "الصفحة التالية",
+    "lastPage": "الصفحة الأخيرة"
   }
 }

@@ -117,6 +117,7 @@
       "title": "Gestion des documents",
       "scanButton": "Scanner",
       "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "refreshTooltip": "Réinitialiser la liste des documents",
       "pipelineStatusButton": "État du Pipeline",
       "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
@@ -125,6 +126,7 @@
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
       "columns": {
         "id": "ID",
+        "fileName": "Nom du fichier",
         "summary": "Résumé",
         "status": "Statut",
         "length": "Longueur",
@@ -401,5 +403,14 @@
     "description": "Veuillez entrer votre clé API pour accéder au service",
     "placeholder": "Entrez votre clé API",
     "save": "Sauvegarder"
+  },
+  "pagination": {
+    "showing": "Affichage de {{start}} à {{end}} sur {{total}} entrées",
+    "page": "Page",
+    "pageSize": "Taille de la page",
+    "firstPage": "Première page",
+    "prevPage": "Page précédente",
+    "nextPage": "Page suivante",
+    "lastPage": "Dernière page"
   }
 }

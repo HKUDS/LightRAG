@@ -914,6 +914,69 @@ class PostgreSQLDB:
                 f"PostgreSQL, Failed to migrate doc status metadata/error_msg fields: {e}"
             )
 
+        # Create pagination optimization indexes for LIGHTRAG_DOC_STATUS
+        try:
+            await self._create_pagination_indexes()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to create pagination indexes: {e}")
+
+    async def _create_pagination_indexes(self):
+        """Create indexes to optimize pagination queries for LIGHTRAG_DOC_STATUS"""
+        indexes = [
+            {
+                "name": "idx_lightrag_doc_status_workspace_status_updated_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_status_updated_at ON LIGHTRAG_DOC_STATUS (workspace, status, updated_at DESC)",
+                "description": "Composite index for workspace + status + updated_at pagination",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_status_created_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_status_created_at ON LIGHTRAG_DOC_STATUS (workspace, status, created_at DESC)",
+                "description": "Composite index for workspace + status + created_at pagination",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_updated_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_updated_at ON LIGHTRAG_DOC_STATUS (workspace, updated_at DESC)",
+                "description": "Index for workspace + updated_at pagination (all statuses)",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_created_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_created_at ON LIGHTRAG_DOC_STATUS (workspace, created_at DESC)",
+                "description": "Index for workspace + created_at pagination (all statuses)",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_id",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_id ON LIGHTRAG_DOC_STATUS (workspace, id)",
+                "description": "Index for workspace + id sorting",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_file_path",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_file_path ON LIGHTRAG_DOC_STATUS (workspace, file_path)",
+                "description": "Index for workspace + file_path sorting",
+            },
+        ]
+
+        for index in indexes:
+            try:
+                # Check if index already exists
+                check_sql = """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE tablename = 'lightrag_doc_status'
+                AND indexname = $1
+                """
+
+                existing = await self.query(check_sql, {"indexname": index["name"]})
+
+                if not existing:
+                    logger.info(f"Creating pagination index: {index['description']}")
+                    await self.execute(index["sql"])
+                    logger.info(f"Successfully created index: {index['name']}")
+                else:
+                    logger.debug(f"Index already exists: {index['name']}")
+
+            except Exception as e:
+                logger.warning(f"Failed to create index {index['name']}: {e}")
+
     async def query(
         self,
         sql: str,
@@ -1979,6 +2042,141 @@ class PGDocStatusStorage(DocStatusStorage):
             )
 
         return docs_by_track_id
+
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+        # Validate parameters
+        if page < 1:
+            page = 1
+        if page_size < 10:
+            page_size = 10
+        elif page_size > 200:
+            page_size = 200
+
+        if sort_field not in ["created_at", "updated_at", "id", "file_path"]:
+            sort_field = "updated_at"
+
+        if sort_direction.lower() not in ["asc", "desc"]:
+            sort_direction = "desc"
+
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Build WHERE clause
+        where_clause = "WHERE workspace=$1"
+        params = {"workspace": self.db.workspace}
+        param_count = 1
+
+        if status_filter is not None:
+            param_count += 1
+            where_clause += f" AND status=${param_count}"
+            params["status"] = status_filter.value
+
+        # Build ORDER BY clause
+        order_clause = f"ORDER BY {sort_field} {sort_direction.upper()}"
+
+        # Query for total count
+        count_sql = f"SELECT COUNT(*) as total FROM LIGHTRAG_DOC_STATUS {where_clause}"
+        count_result = await self.db.query(count_sql, params)
+        total_count = count_result["total"] if count_result else 0
+
+        # Query for paginated data
+        data_sql = f"""
+            SELECT * FROM LIGHTRAG_DOC_STATUS
+            {where_clause}
+            {order_clause}
+            LIMIT ${param_count + 1} OFFSET ${param_count + 2}
+        """
+        params["limit"] = page_size
+        params["offset"] = offset
+
+        result = await self.db.query(data_sql, params, True)
+
+        # Convert to (doc_id, DocProcessingStatus) tuples
+        documents = []
+        for element in result:
+            doc_id = element["id"]
+
+            # Parse chunks_list JSON string back to list
+            chunks_list = element.get("chunks_list", [])
+            if isinstance(chunks_list, str):
+                try:
+                    chunks_list = json.loads(chunks_list)
+                except json.JSONDecodeError:
+                    chunks_list = []
+
+            # Parse metadata JSON string back to dict
+            metadata = element.get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(element["created_at"])
+            updated_at = self._format_datetime_with_timezone(element["updated_at"])
+
+            doc_status = DocProcessingStatus(
+                content_summary=element["content_summary"],
+                content_length=element["content_length"],
+                status=element["status"],
+                created_at=created_at,
+                updated_at=updated_at,
+                chunks_count=element["chunks_count"],
+                file_path=element["file_path"],
+                chunks_list=chunks_list,
+                track_id=element.get("track_id"),
+                metadata=metadata,
+                error_msg=element.get("error_msg"),
+            )
+            documents.append((doc_id, doc_status))
+
+        return documents, total_count
+
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts, including 'all' field
+        """
+        sql = """
+            SELECT status, COUNT(*) as count
+            FROM LIGHTRAG_DOC_STATUS
+            WHERE workspace=$1
+            GROUP BY status
+        """
+        params = {"workspace": self.db.workspace}
+        result = await self.db.query(sql, params, True)
+
+        counts = {}
+        total_count = 0
+        for row in result:
+            counts[row["status"]] = row["count"]
+            total_count += row["count"]
+
+        # Add 'all' field with total count
+        counts["all"] = total_count
+
+        return counts
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically

@@ -492,6 +492,150 @@ class TrackStatusResponse(BaseModel):
         }
 
 
+class DocumentsRequest(BaseModel):
+    """Request model for paginated document queries
+
+    Attributes:
+        status_filter: Filter by document status, None for all statuses
+        page: Page number (1-based)
+        page_size: Number of documents per page (10-200)
+        sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+        sort_direction: Sort direction ('asc' or 'desc')
+    """
+
+    status_filter: Optional[DocStatus] = Field(
+        default=None, description="Filter by document status, None for all statuses"
+    )
+    page: int = Field(default=1, ge=1, description="Page number (1-based)")
+    page_size: int = Field(
+        default=50, ge=10, le=200, description="Number of documents per page (10-200)"
+    )
+    sort_field: Literal["created_at", "updated_at", "id", "file_path"] = Field(
+        default="updated_at", description="Field to sort by"
+    )
+    sort_direction: Literal["asc", "desc"] = Field(
+        default="desc", description="Sort direction"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status_filter": "PROCESSED",
+                "page": 1,
+                "page_size": 50,
+                "sort_field": "updated_at",
+                "sort_direction": "desc",
+            }
+        }
+
+
+class PaginationInfo(BaseModel):
+    """Pagination information
+
+    Attributes:
+        page: Current page number
+        page_size: Number of items per page
+        total_count: Total number of items
+        total_pages: Total number of pages
+        has_next: Whether there is a next page
+        has_prev: Whether there is a previous page
+    """
+
+    page: int = Field(description="Current page number")
+    page_size: int = Field(description="Number of items per page")
+    total_count: int = Field(description="Total number of items")
+    total_pages: int = Field(description="Total number of pages")
+    has_next: bool = Field(description="Whether there is a next page")
+    has_prev: bool = Field(description="Whether there is a previous page")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "page": 1,
+                "page_size": 50,
+                "total_count": 150,
+                "total_pages": 3,
+                "has_next": True,
+                "has_prev": False,
+            }
+        }
+
+
+class PaginatedDocsResponse(BaseModel):
+    """Response model for paginated document queries
+
+    Attributes:
+        documents: List of documents for the current page
+        pagination: Pagination information
+        status_counts: Count of documents by status for all documents
+    """
+
+    documents: List[DocStatusResponse] = Field(
+        description="List of documents for the current page"
+    )
+    pagination: PaginationInfo = Field(description="Pagination information")
+    status_counts: Dict[str, int] = Field(
+        description="Count of documents by status for all documents"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "documents": [
+                    {
+                        "id": "doc_123456",
+                        "content_summary": "Research paper on machine learning",
+                        "content_length": 15240,
+                        "status": "PROCESSED",
+                        "created_at": "2025-03-31T12:34:56",
+                        "updated_at": "2025-03-31T12:35:30",
+                        "track_id": "upload_20250729_170612_abc123",
+                        "chunks_count": 12,
+                        "error_msg": None,
+                        "metadata": {"author": "John Doe", "year": 2025},
+                        "file_path": "research_paper.pdf",
+                    }
+                ],
+                "pagination": {
+                    "page": 1,
+                    "page_size": 50,
+                    "total_count": 150,
+                    "total_pages": 3,
+                    "has_next": True,
+                    "has_prev": False,
+                },
+                "status_counts": {
+                    "PENDING": 10,
+                    "PROCESSING": 5,
+                    "PROCESSED": 130,
+                    "FAILED": 5,
+                },
+            }
+        }
+
+
+class StatusCountsResponse(BaseModel):
+    """Response model for document status counts
+
+    Attributes:
+        status_counts: Count of documents by status
+    """
+
+    status_counts: Dict[str, int] = Field(description="Count of documents by status")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status_counts": {
+                    "PENDING": 10,
+                    "PROCESSING": 5,
+                    "PROCESSED": 130,
+                    "FAILED": 5,
+                }
+            }
+        }
+
+
 class PipelineStatusResponse(BaseModel):
     """Response model for pipeline status
 
@@ -1860,6 +2004,120 @@ def create_document_routes(
             raise
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/paginated",
+        response_model=PaginatedDocsResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_documents_paginated(
+        request: DocumentsRequest,
+    ) -> PaginatedDocsResponse:
+        """
+        Get documents with pagination support.
+
+        This endpoint retrieves documents with pagination, filtering, and sorting capabilities.
+        It provides better performance for large document collections by loading only the
+        requested page of data.
+
+        Args:
+            request (DocumentsRequest): The request body containing pagination parameters
+
+        Returns:
+            PaginatedDocsResponse: A response object containing:
+                - documents: List of documents for the current page
+                - pagination: Pagination information (page, total_count, etc.)
+                - status_counts: Count of documents by status for all documents
+
+        Raises:
+            HTTPException: If an error occurs while retrieving documents (500).
+        """
+        try:
+            # Get paginated documents and status counts in parallel
+            docs_task = rag.doc_status.get_docs_paginated(
+                status_filter=request.status_filter,
+                page=request.page,
+                page_size=request.page_size,
+                sort_field=request.sort_field,
+                sort_direction=request.sort_direction,
+            )
+            status_counts_task = rag.doc_status.get_all_status_counts()
+
+            # Execute both queries in parallel
+            (documents_with_ids, total_count), status_counts = await asyncio.gather(
+                docs_task, status_counts_task
+            )
+
+            # Convert documents to response format
+            doc_responses = []
+            for doc_id, doc in documents_with_ids:
+                doc_responses.append(
+                    DocStatusResponse(
+                        id=doc_id,
+                        content_summary=doc.content_summary,
+                        content_length=doc.content_length,
+                        status=doc.status,
+                        created_at=format_datetime(doc.created_at),
+                        updated_at=format_datetime(doc.updated_at),
+                        track_id=doc.track_id,
+                        chunks_count=doc.chunks_count,
+                        error_msg=doc.error_msg,
+                        metadata=doc.metadata,
+                        file_path=doc.file_path,
+                    )
+                )
+
+            # Calculate pagination info
+            total_pages = (total_count + request.page_size - 1) // request.page_size
+            has_next = request.page < total_pages
+            has_prev = request.page > 1
+
+            pagination = PaginationInfo(
+                page=request.page,
+                page_size=request.page_size,
+                total_count=total_count,
+                total_pages=total_pages,
+                has_next=has_next,
+                has_prev=has_prev,
+            )
+
+            return PaginatedDocsResponse(
+                documents=doc_responses,
+                pagination=pagination,
+                status_counts=status_counts,
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting paginated documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get(
+        "/status_counts",
+        response_model=StatusCountsResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_document_status_counts() -> StatusCountsResponse:
+        """
+        Get counts of documents by status.
+
+        This endpoint retrieves the count of documents in each processing status
+        (PENDING, PROCESSING, PROCESSED, FAILED) for all documents in the system.
+
+        Returns:
+            StatusCountsResponse: A response object containing status counts
+
+        Raises:
+            HTTPException: If an error occurs while retrieving status counts (500).
+        """
+        try:
+            status_counts = await rag.doc_status.get_all_status_counts()
+            return StatusCountsResponse(status_counts=status_counts)
+
+        except Exception as e:
+            logger.error(f"Error getting document status counts: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

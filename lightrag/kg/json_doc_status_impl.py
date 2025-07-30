@@ -173,6 +173,111 @@ class JsonDocStatusStorage(DocStatusStorage):
         async with self._storage_lock:
             return self._data.get(id)
 
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+        # Validate parameters
+        if page < 1:
+            page = 1
+        if page_size < 10:
+            page_size = 10
+        elif page_size > 200:
+            page_size = 200
+
+        if sort_field not in ["created_at", "updated_at", "id", "file_path"]:
+            sort_field = "updated_at"
+
+        if sort_direction.lower() not in ["asc", "desc"]:
+            sort_direction = "desc"
+
+        # For JSON storage, we load all data and sort/filter in memory
+        all_docs = []
+
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                # Apply status filter
+                if (
+                    status_filter is not None
+                    and doc_data.get("status") != status_filter.value
+                ):
+                    continue
+
+                try:
+                    # Prepare document data
+                    data = doc_data.copy()
+                    data.pop("content", None)
+                    if "file_path" not in data:
+                        data["file_path"] = "no-file-path"
+                    if "metadata" not in data:
+                        data["metadata"] = {}
+                    if "error_msg" not in data:
+                        data["error_msg"] = None
+
+                    doc_status = DocProcessingStatus(**data)
+
+                    # Add sort key for sorting
+                    if sort_field == "id":
+                        doc_status._sort_key = doc_id
+                    else:
+                        doc_status._sort_key = getattr(doc_status, sort_field, "")
+
+                    all_docs.append((doc_id, doc_status))
+
+                except KeyError as e:
+                    logger.error(f"Error processing document {doc_id}: {e}")
+                    continue
+
+        # Sort documents
+        reverse_sort = sort_direction.lower() == "desc"
+        all_docs.sort(
+            key=lambda x: getattr(x[1], "_sort_key", ""), reverse=reverse_sort
+        )
+
+        # Remove sort key from documents
+        for doc_id, doc in all_docs:
+            if hasattr(doc, "_sort_key"):
+                delattr(doc, "_sort_key")
+
+        total_count = len(all_docs)
+
+        # Apply pagination
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_docs = all_docs[start_idx:end_idx]
+
+        return paginated_docs, total_count
+
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts, including 'all' field
+        """
+        counts = await self.get_status_counts()
+
+        # Add 'all' field with total count
+        total_count = sum(counts.values())
+        counts["all"] = total_count
+
+        return counts
+
     async def delete(self, doc_ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
 

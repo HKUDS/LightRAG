@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
+import { healthCheckInterval } from '@/lib/constants'
 
 interface BackendState {
   health: boolean
@@ -10,11 +11,18 @@ interface BackendState {
   status: LightragStatus | null
   lastCheckTime: number
   pipelineBusy: boolean
+  healthCheckIntervalId: ReturnType<typeof setInterval> | null
+  healthCheckFunction: (() => void) | null
+  healthCheckIntervalValue: number
 
   check: () => Promise<boolean>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
   setPipelineBusy: (busy: boolean) => void
+  setHealthCheckFunction: (fn: () => void) => void
+  resetHealthCheckTimer: () => void
+  resetHealthCheckTimerDelayed: (delayMs: number) => void
+  clearHealthCheckTimer: () => void
 }
 
 interface AuthState {
@@ -32,13 +40,16 @@ interface AuthState {
   setCustomTitle: (webuiTitle: string | null, webuiDescription: string | null) => void;
 }
 
-const useBackendStateStoreBase = create<BackendState>()((set) => ({
+const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   health: true,
   message: null,
   messageTitle: null,
   lastCheckTime: Date.now(),
   status: null,
   pipelineBusy: false,
+  healthCheckIntervalId: null,
+  healthCheckFunction: null,
+  healthCheckIntervalValue: healthCheckInterval * 1000, // Use constant from lib/constants
 
   check: async () => {
     const health = await checkHealth()
@@ -108,6 +119,36 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
 
   setPipelineBusy: (busy: boolean) => {
     set({ pipelineBusy: busy })
+  },
+
+  setHealthCheckFunction: (fn: () => void) => {
+    set({ healthCheckFunction: fn })
+  },
+
+  resetHealthCheckTimer: () => {
+    const { healthCheckIntervalId, healthCheckFunction, healthCheckIntervalValue } = get()
+    if (healthCheckIntervalId) {
+      clearInterval(healthCheckIntervalId)
+    }
+    if (healthCheckFunction) {
+      healthCheckFunction() // run health check immediately
+      const newIntervalId = setInterval(healthCheckFunction, healthCheckIntervalValue)
+      set({ healthCheckIntervalId: newIntervalId })
+    }
+  },
+
+  resetHealthCheckTimerDelayed: (delayMs: number) => {
+    setTimeout(() => {
+      get().resetHealthCheckTimer()
+    }, delayMs)
+  },
+
+  clearHealthCheckTimer: () => {
+    const { healthCheckIntervalId } = get()
+    if (healthCheckIntervalId) {
+      clearInterval(healthCheckIntervalId)
+      set({ healthCheckIntervalId: null })
+    }
   }
 }))
 

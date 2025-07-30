@@ -185,6 +185,33 @@ export type TrackStatusResponse = {
   status_summary: Record<string, number>
 }
 
+export type DocumentsRequest = {
+  status_filter?: DocStatus | null
+  page: number
+  page_size: number
+  sort_field: 'created_at' | 'updated_at' | 'id' | 'file_path'
+  sort_direction: 'asc' | 'desc'
+}
+
+export type PaginationInfo = {
+  page: number
+  page_size: number
+  total_count: number
+  total_pages: number
+  has_next: boolean
+  has_prev: boolean
+}
+
+export type PaginatedDocsResponse = {
+  documents: DocStatusResponse[]
+  pagination: PaginationInfo
+  status_counts: Record<string, number>
+}
+
+export type StatusCountsResponse = {
+  status_counts: Record<string, number>
+}
+
 export type AuthStatusResponse = {
   auth_configured: boolean
   access_token?: string
@@ -712,5 +739,24 @@ export const checkEntityNameExists = async (entityName: string): Promise<boolean
  */
 export const getTrackStatus = async (trackId: string): Promise<TrackStatusResponse> => {
   const response = await axiosInstance.get(`/documents/track_status/${encodeURIComponent(trackId)}`)
+  return response.data
+}
+
+/**
+ * Get documents with pagination support
+ * @param request The pagination request parameters
+ * @returns Promise with paginated documents response
+ */
+export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
+  const response = await axiosInstance.post('/documents/paginated', request)
+  return response.data
+}
+
+/**
+ * Get counts of documents by status
+ * @returns Promise with status counts response
+ */
+export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
+  const response = await axiosInstance.get('/documents/status_counts')
   return response.data
 }
