@@ -13,9 +13,20 @@ import redis
 import psycopg2
 from psycopg2 import OperationalError as PgOperationalError
 
-from lightrag.api.config import config
+from lightrag.api.config import global_args
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def get_config(key: str, default: Any = None) -> Any:
+    """Get configuration value from global_args or environment variables."""
+    # First try to get from global_args
+    if hasattr(global_args, key.lower()):
+        return getattr(global_args, key.lower())
+
+    # Fall back to environment variables
+    return os.getenv(key, default)
 
 
 @dataclass
@@ -58,13 +69,13 @@ class HealthChecker:
                 overall_healthy = False
 
             # Database connectivity
-            if config.get("POSTGRES_HOST"):
+            if get_config("POSTGRES_HOST"):
                 checks["database"] = await self._check_database()
                 if not checks["database"]["healthy"]:
                     overall_healthy = False
 
             # Redis connectivity
-            if config.get("REDIS_URI"):
+            if get_config("REDIS_URI"):
                 checks["redis"] = await self._check_redis()
                 if not checks["redis"]["healthy"]:
                     overall_healthy = False
@@ -75,7 +86,7 @@ class HealthChecker:
                 overall_healthy = False
 
             # LLM connectivity (optional)
-            if config.get("LLM_API_KEY"):
+            if get_config("LLM_API_KEY"):
                 checks["llm"] = await self._check_llm()
                 # Don't fail overall health for LLM issues
 
@@ -117,11 +128,11 @@ class HealthChecker:
         try:
             if not self.postgres_conn:
                 self.postgres_conn = psycopg2.connect(
-                    host=config.get("POSTGRES_HOST", "localhost"),
-                    port=config.get("POSTGRES_PORT", 5432),
-                    user=config.get("POSTGRES_USER", "postgres"),
-                    password=config.get("POSTGRES_PASSWORD", ""),
-                    database=config.get("POSTGRES_DATABASE", "lightrag"),
+                    host=get_config("POSTGRES_HOST", "localhost"),
+                    port=get_config("POSTGRES_PORT", 5432),
+                    user=get_config("POSTGRES_USER", "postgres"),
+                    password=get_config("POSTGRES_PASSWORD", ""),
+                    database=get_config("POSTGRES_DATABASE", "lightrag"),
                     connect_timeout=5,
                 )
 
@@ -133,8 +144,8 @@ class HealthChecker:
             return {
                 "healthy": True,
                 "status": "connected",
-                "host": config.get("POSTGRES_HOST"),
-                "database": config.get("POSTGRES_DATABASE"),
+                "host": get_config("POSTGRES_HOST"),
+                "database": get_config("POSTGRES_DATABASE"),
                 "test_query_result": result[0] if result else None,
             }
 
@@ -149,7 +160,7 @@ class HealthChecker:
         """Check Redis connectivity"""
         try:
             if not self.redis_client:
-                redis_uri = config.get("REDIS_URI", "redis://localhost:6379/0")
+                redis_uri = get_config("REDIS_URI", "redis://localhost:6379/0")
                 self.redis_client = redis.from_url(
                     redis_uri,
                     socket_connect_timeout=5,
@@ -221,8 +232,8 @@ class HealthChecker:
             return {
                 "healthy": True,
                 "status": "configured",
-                "provider": config.get("LLM_BINDING", "unknown"),
-                "model": config.get("LLM_MODEL", "unknown"),
+                "provider": get_config("LLM_BINDING", "unknown"),
+                "model": get_config("LLM_MODEL", "unknown"),
             }
 
         except Exception as e:
