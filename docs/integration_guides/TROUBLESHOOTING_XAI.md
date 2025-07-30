@@ -7,7 +7,7 @@ This guide helps resolve common issues when using xAI Grok models with LightRAG.
 ### The Problem
 You see this error:
 ```
-ValueError: all the input array dimensions except for the concatenation axis must match exactly, 
+ValueError: all the input array dimensions except for the concatenation axis must match exactly,
 but along dimension 1, the array at index 0 has size 1024 and the array at index 1 has size 768
 ```
 
@@ -101,7 +101,7 @@ rag = LightRAG(
 # Check if Ollama is running
 systemctl status ollama
 
-# Check available models  
+# Check available models
 ollama list
 
 # Test Ollama directly
@@ -169,7 +169,7 @@ import asyncio
 
 async def test_embed():
     result = await ollama_embed(
-        ["test text"], 
+        ["test text"],
         embed_model="bge-m3:latest",
         host="http://localhost:11434"
     )
@@ -194,7 +194,7 @@ source lightrag_xai_env/bin/activate  # On Windows: lightrag_xai_env\Scripts\act
 pip install lightrag-hku
 ```
 
-### 2. Consistent Configuration  
+### 2. Consistent Configuration
 Always use the same embedding model and dimensions:
 ```python
 # In your scripts
@@ -231,7 +231,7 @@ except ValueError as e:
 If you continue to have issues:
 
 1. **Check the error message carefully** - dimension mismatches are usually clear
-2. **Clean your working directory** - this fixes 90% of embedding issues  
+2. **Clean your working directory** - this fixes 90% of embedding issues
 3. **Verify your API keys** - both xAI and any embedding service keys
 4. **Use consistent configurations** - don't mix different embedding models
 5. **Check the example scripts** - they show working configurations
@@ -240,7 +240,7 @@ If you continue to have issues:
 
 **Update (2025-01-28)**: All major xAI integration issues have been resolved:
 - ✅ Unicode decode error fixed
-- ✅ Stream parameter conflict fixed  
+- ✅ Stream parameter conflict fixed
 - ✅ Timeout issues addressed with retry logic
 - ✅ Embedding dimension conflicts prevented
 - ✅ Working demo scripts available
@@ -279,7 +279,7 @@ async def main():
             )
         )
     )
-    
+
     await rag.initialize_storages()
     await rag.ainsert("Test document content")
     response = await rag.aquery("What is this about?")

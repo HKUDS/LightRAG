@@ -28,15 +28,12 @@ from tenacity import (
 )
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
-    safe_unicode_decode,
     logger,
 )
-from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 
 import numpy as np
-from typing import Any, Union
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -48,6 +45,7 @@ load_dotenv(dotenv_path=".env", override=False)
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
+
     pass
 
 
@@ -141,10 +139,10 @@ async def xai_complete_if_cache(
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    
+
     # Add history messages
     messages.extend(history_messages)
-    
+
     # Add current prompt
     messages.append({"role": "user", "content": prompt})
 
@@ -155,7 +153,7 @@ async def xai_complete_if_cache(
         "messages": messages,
         "stream": stream,
     }
-    
+
     # Add common parameters if present
     if "temperature" in kwargs:
         openai_kwargs["temperature"] = kwargs["temperature"]
@@ -171,7 +169,7 @@ async def xai_complete_if_cache(
         content = response.choices[0].message.content
         if content is None:
             raise InvalidResponseError("xAI API returned empty response")
-        
+
         verbose_debug(f"xAI API response: {content}")
         return content
 
@@ -207,11 +205,11 @@ async def xai_embed(
     **kwargs: Any,
 ) -> np.ndarray:
     """Create embeddings using xAI embedding models.
-    
-    Note: xAI doesn't have dedicated embedding models yet, 
-    so this uses OpenAI embeddings as fallback. This can be updated 
+
+    Note: xAI doesn't have dedicated embedding models yet,
+    so this uses OpenAI embeddings as fallback. This can be updated
     when xAI releases embedding models.
-    
+
     To avoid dimension conflicts, it's recommended to use a consistent
     embedding model throughout your LightRAG workflow.
     """
@@ -219,22 +217,20 @@ async def xai_embed(
         # Try xAI API key first, then OpenAI as fallback
         api_key = os.environ.get("XAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("XAI_API_KEY or OPENAI_API_KEY environment variable is required")
+            raise ValueError(
+                "XAI_API_KEY or OPENAI_API_KEY environment variable is required"
+            )
 
     # For now, we'll use OpenAI embeddings as xAI doesn't have dedicated embedding models
     # This can be updated when xAI releases embedding models
     from .openai import openai_embed
-    
+
     # Use OpenAI API for embeddings since xAI doesn't have embedding models yet
     openai_api_key = os.environ.get("OPENAI_API_KEY", api_key)
     openai_base_url = "https://api.openai.com/v1"
-    
+
     return await openai_embed(
-        texts, 
-        model=model, 
-        api_key=openai_api_key, 
-        base_url=openai_base_url, 
-        **kwargs
+        texts, model=model, api_key=openai_api_key, base_url=openai_base_url, **kwargs
     )
 
 

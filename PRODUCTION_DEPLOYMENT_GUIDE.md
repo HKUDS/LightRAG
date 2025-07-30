@@ -250,7 +250,7 @@ The production deployment includes Phase 1 authentication features:
 curl -X POST http://localhost/auth/register \
   -H "Content-Type: application/json" \
   -d '{
-    "username": "admin", 
+    "username": "admin",
     "password": "SecurePass123!",
     "email": "admin@example.com"
   }'

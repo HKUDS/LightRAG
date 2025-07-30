@@ -181,7 +181,7 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 LightRAG now supports the Model Context Protocol (MCP), enabling direct integration with Claude CLI for natural language interactions with your knowledge base.
 
-**Prerequisites**: 
+**Prerequisites**:
 - LightRAG server running (`lightrag-server`)
 - Claude CLI installed (`npm install -g @anthropic-ai/claude-cli`)
 

@@ -219,9 +219,9 @@ When contributing to security documentation:
 
 ---
 
-**Last Updated**: 2025-01-30  
-**Security Documentation Version**: 1.0  
-**Implementation Status**: Planning Phase  
-**Next Review Date**: 2025-02-15  
+**Last Updated**: 2025-01-30
+**Security Documentation Version**: 1.0
+**Implementation Status**: Planning Phase
+**Next Review Date**: 2025-02-15
 
 For questions about security implementations or to report security issues, contact the security team or create an issue in the repository with appropriate security labels.

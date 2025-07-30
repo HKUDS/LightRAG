@@ -7,8 +7,4 @@ security headers, and comprehensive audit logging.
 
 from .password_manager import PasswordManager, PasswordPolicy, PasswordStrength
 
-__all__ = [
-    "PasswordManager",
-    "PasswordPolicy", 
-    "PasswordStrength"
-]
+__all__ = ["PasswordManager", "PasswordPolicy", "PasswordStrength"]

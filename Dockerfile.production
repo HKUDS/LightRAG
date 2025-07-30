@@ -103,7 +103,7 @@ FROM python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION} AS production
 
 # Build arguments
 ARG BUILD_DATE
-ARG VCS_REF  
+ARG VCS_REF
 ARG VERSION
 
 # Labels
@@ -182,7 +182,7 @@ export PYTHON_ENV=${PYTHON_ENV:-production}
 # Health check function
 health_check() {
     echo "Performing health checks..."
-    
+
     # Check database connectivity
     if [ "${POSTGRES_HOST:-}" ]; then
         echo "Checking database connectivity..."
@@ -191,7 +191,7 @@ health_check() {
             exit 1
         }
     fi
-    
+
     # Check Redis connectivity
     if [ "${REDIS_URI:-}" ]; then
         echo "Checking Redis connectivity..."
@@ -202,14 +202,14 @@ health_check() {
             exit 1
         }
     fi
-    
+
     echo "Health checks passed!"
 }
 
 # Wait for dependencies
 wait_for_dependencies() {
     echo "Waiting for dependencies..."
-    
+
     if [ "${POSTGRES_HOST:-}" ]; then
         echo "Waiting for PostgreSQL..."
         while ! timeout 1 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}"; do
@@ -218,7 +218,7 @@ wait_for_dependencies() {
         done
         echo "PostgreSQL is up!"
     fi
-    
+
     if [ "${REDIS_URI:-}" ]; then
         redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
         redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
@@ -259,7 +259,7 @@ asyncio.run(run_migrations())
 # Start the application
 start_application() {
     echo "Starting LightRAG in production mode..."
-    
+
     # Use Gunicorn for production
     if [ "${USE_GUNICORN:-true}" = "true" ]; then
         exec gunicorn \
@@ -291,16 +291,16 @@ start_application() {
 main() {
     echo "LightRAG Production Startup"
     echo "=========================="
-    
+
     # Wait for dependencies
     wait_for_dependencies
-    
+
     # Run health checks
     health_check
-    
+
     # Run migrations
     run_migrations
-    
+
     # Start application
     start_application
 }

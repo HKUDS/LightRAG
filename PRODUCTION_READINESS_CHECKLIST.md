@@ -302,7 +302,7 @@ Use this checklist to ensure your LightRAG deployment is ready for production us
 
 **Calculate your readiness score**:
 - Security & Authentication: ___/25 items
-- Infrastructure & Configuration: ___/15 items  
+- Infrastructure & Configuration: ___/15 items
 - Data & Storage: ___/12 items
 - Monitoring & Observability: ___/18 items
 - Performance & Scalability: ___/10 items

@@ -22,7 +22,6 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, field_validator
 import hashlib
-import os
 import json
 
 from lightrag import LightRAG
@@ -35,30 +34,29 @@ from ..config import global_args
 async def _process_with_enhanced_docling(file_path: Path) -> str:
     """
     Process documents using enhanced Docling configuration with comprehensive options.
-    
+
     Args:
         file_path: Path to the document file
-        
+
     Returns:
         str: Processed content in the specified format
     """
     # Install docling if needed
     if not pm.is_installed("docling"):  # type: ignore
         pm.install("docling")
-    
+
     try:
         from docling.document_converter import DocumentConverter  # type: ignore
         from docling.datamodel.base_models import ConversionStatus  # type: ignore
         from docling.datamodel.document import ConversionResult  # type: ignore
-        
+
         # Check cache if enabled
         cache_dir = None
-        cached_content = None
-        
+
         if global_args.docling_enable_cache:
             cache_dir = Path(global_args.working_dir) / global_args.docling_cache_dir
             cache_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Generate cache key based on file path, modification time, and config
             file_stat = file_path.stat()
             cache_key_data = {
@@ -70,119 +68,137 @@ async def _process_with_enhanced_docling(file_path: Path) -> str:
                 "enable_table_structure": global_args.docling_enable_table_structure,
                 "enable_figures": global_args.docling_enable_figures,
             }
-            cache_key = hashlib.md5(json.dumps(cache_key_data, sort_keys=True).encode()).hexdigest()
+            cache_key = hashlib.md5(
+                json.dumps(cache_key_data, sort_keys=True).encode()
+            ).hexdigest()
             cache_file = cache_dir / f"{cache_key}.json"
-            
+
             # Check if cached version exists and is not expired
             if cache_file.exists():
                 cache_stat = cache_file.stat()
-                cache_age_hours = (datetime.now().timestamp() - cache_stat.st_mtime) / 3600
-                
+                cache_age_hours = (
+                    datetime.now().timestamp() - cache_stat.st_mtime
+                ) / 3600
+
                 if cache_age_hours < global_args.docling_cache_ttl_hours:
                     logger.info(f"Using cached Docling result for {file_path.name}")
-                    async with aiofiles.open(cache_file, 'r', encoding='utf-8') as f:
+                    async with aiofiles.open(cache_file, "r", encoding="utf-8") as f:
                         cache_data = json.loads(await f.read())
                         return cache_data["content"]
-        
+
         # Create document converter with current API
         # Note: Current Docling API doesn't expose detailed configuration options
         # but we'll use what's available and log the configuration being used
         converter = DocumentConverter()
-        
+
         # Log the configuration that would be applied
         logger.info(f"Enhanced Docling configuration for {file_path.name}:")
         logger.info(f"  Export format: {global_args.docling_export_format}")
         logger.info(f"  OCR enabled: {global_args.docling_enable_ocr}")
         logger.info(f"  Table structure: {global_args.docling_enable_table_structure}")
         logger.info(f"  Figure extraction: {global_args.docling_enable_figures}")
-        logger.info(f"  Include page numbers: {global_args.docling_include_page_numbers}")
+        logger.info(
+            f"  Include page numbers: {global_args.docling_include_page_numbers}"
+        )
         logger.info(f"  Include headings: {global_args.docling_include_headings}")
         logger.info(f"  Extract metadata: {global_args.docling_extract_metadata}")
         logger.info(f"  OCR confidence: {global_args.docling_ocr_confidence}")
         logger.info(f"  Table confidence: {global_args.docling_table_confidence}")
         logger.info(f"  Image DPI: {global_args.docling_image_dpi}")
-        
+
         # Convert the document
         logger.info(f"Processing {file_path.name} with enhanced Docling configuration")
         result: ConversionResult = converter.convert(file_path)
-        
+
         # Check conversion status
         if result.status != ConversionStatus.SUCCESS:
-            logger.warning(f"Docling conversion had status: {result.status} for {file_path.name}")
-        
+            logger.warning(
+                f"Docling conversion had status: {result.status} for {file_path.name}"
+            )
+
         # Export content in the specified format
         content = ""
-        
+
         export_format = global_args.docling_export_format.lower()
         if export_format == "markdown":
             # Use available parameters for markdown export
             content = result.document.export_to_markdown()
         elif export_format == "json":
             # For JSON export, convert to dict and then to JSON string
-            content = json.dumps(result.document.export_to_dict(), ensure_ascii=False, indent=2)
+            content = json.dumps(
+                result.document.export_to_dict(), ensure_ascii=False, indent=2
+            )
         elif export_format == "html":
-            if hasattr(result.document, 'export_to_html'):
+            if hasattr(result.document, "export_to_html"):
                 content = result.document.export_to_html()
             else:
                 # Fallback to markdown if HTML not supported
                 content = result.document.export_to_markdown()
-                logger.warning(f"HTML export not supported, using markdown for {file_path.name}")
+                logger.warning(
+                    f"HTML export not supported, using markdown for {file_path.name}"
+                )
         elif export_format == "doctags":
-            if hasattr(result.document, 'export_to_doctags'):
+            if hasattr(result.document, "export_to_doctags"):
                 content = result.document.export_to_doctags()
             else:
                 # Fallback to markdown if doctags not supported
                 content = result.document.export_to_markdown()
-                logger.warning(f"DocTags export not supported, using markdown for {file_path.name}")
+                logger.warning(
+                    f"DocTags export not supported, using markdown for {file_path.name}"
+                )
         elif export_format == "text":
-            if hasattr(result.document, 'export_to_text'):
+            if hasattr(result.document, "export_to_text"):
                 content = result.document.export_to_text()
             else:
                 # Fallback to markdown
                 content = result.document.export_to_markdown()
-                logger.warning(f"Text export not supported, using markdown for {file_path.name}")
+                logger.warning(
+                    f"Text export not supported, using markdown for {file_path.name}"
+                )
         else:
             # Default to markdown
             content = result.document.export_to_markdown()
-            logger.warning(f"Unknown export format '{export_format}', using markdown for {file_path.name}")
-        
+            logger.warning(
+                f"Unknown export format '{export_format}', using markdown for {file_path.name}"
+            )
+
         # Add metadata if enabled and available
         if global_args.docling_extract_metadata:
             # Try to get metadata from various sources
             metadata_added = False
-            
+
             # Check if document has origin metadata
-            if hasattr(result.document, 'origin') and result.document.origin:
-                metadata_str = f"\n\n## Document Metadata\n"
+            if hasattr(result.document, "origin") and result.document.origin:
+                metadata_str = "\n\n## Document Metadata\n"
                 origin = result.document.origin
-                if hasattr(origin, 'filename') and origin.filename:
+                if hasattr(origin, "filename") and origin.filename:
                     metadata_str += f"- **Filename**: {origin.filename}\n"
                     metadata_added = True
-                if hasattr(origin, 'mimetype') and origin.mimetype:
+                if hasattr(origin, "mimetype") and origin.mimetype:
                     metadata_str += f"- **MIME Type**: {origin.mimetype}\n"
                     metadata_added = True
-                if hasattr(origin, 'size') and origin.size:
+                if hasattr(origin, "size") and origin.size:
                     metadata_str += f"- **File Size**: {origin.size} bytes\n"
                     metadata_added = True
-            
+
             # Add conversion metadata
             if not metadata_added:
-                metadata_str = f"\n\n## Document Processing Metadata\n"
-            
+                metadata_str = "\n\n## Document Processing Metadata\n"
+
             metadata_str += f"- **Processed At**: {datetime.now().isoformat()}\n"
             metadata_str += f"- **Conversion Status**: {result.status}\n"
             metadata_str += f"- **Export Format**: {export_format}\n"
             metadata_str += f"- **Page Count**: {len(result.pages) if result.pages else 'Unknown'}\n"
-            
+
             if global_args.docling_enable_ocr:
                 metadata_str += f"- **OCR Enabled**: Yes (confidence: {global_args.docling_ocr_confidence})\n"
             if global_args.docling_enable_table_structure:
                 metadata_str += f"- **Table Recognition**: Yes (confidence: {global_args.docling_table_confidence})\n"
             if global_args.docling_enable_figures:
-                metadata_str += f"- **Figure Extraction**: Yes\n"
-            
+                metadata_str += "- **Figure Extraction**: Yes\n"
+
             content += metadata_str
-        
+
         # Cache the result if caching is enabled
         if cache_dir is not None:
             cache_data = {
@@ -196,19 +212,21 @@ async def _process_with_enhanced_docling(file_path: Path) -> str:
                     "ocr_enabled": global_args.docling_enable_ocr,
                     "table_structure": global_args.docling_enable_table_structure,
                     "figure_extraction": global_args.docling_enable_figures,
-                    "export_format": export_format
-                }
+                    "export_format": export_format,
+                },
             }
             try:
-                async with aiofiles.open(cache_file, 'w', encoding='utf-8') as f:
+                async with aiofiles.open(cache_file, "w", encoding="utf-8") as f:
                     await f.write(json.dumps(cache_data, ensure_ascii=False, indent=2))
                 logger.info(f"Cached Docling result for {file_path.name}")
             except Exception as e:
                 logger.warning(f"Failed to cache Docling result: {e}")
-        
-        logger.info(f"Successfully processed {file_path.name} with Docling (format: {export_format}, length: {len(content)} chars)")
+
+        logger.info(
+            f"Successfully processed {file_path.name} with Docling (format: {export_format}, length: {len(content)} chars)"
+        )
         return content
-        
+
     except Exception as e:
         logger.error(f"Enhanced Docling processing failed for {file_path.name}: {e}")
         raise

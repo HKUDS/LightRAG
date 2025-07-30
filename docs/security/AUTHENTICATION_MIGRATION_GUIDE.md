@@ -1,8 +1,8 @@
 # LightRAG Authentication Migration Guide
 
-**Version**: 1.0  
-**Date**: 2025-01-30  
-**Status**: Implementation Ready  
+**Version**: 1.0
+**Date**: 2025-01-30
+**Status**: Implementation Ready
 
 ## 📋 Table of Contents
 
@@ -27,7 +27,7 @@
 ### Migration Timeline
 - **Preparation**: 2-3 days
 - **Phase 1**: 3-4 days (Security Foundations)
-- **Phase 2**: 4-5 days (Advanced Authentication)  
+- **Phase 2**: 4-5 days (Advanced Authentication)
 - **Phase 3**: 5-6 days (Access Control & Monitoring)
 - **Validation**: 2-3 days
 - **Total Duration**: 16-21 days
@@ -41,7 +41,7 @@ graph TD
     D --> E[Phase 3: Access Control]
     E --> F[Validation & Testing]
     F --> G[Production Deployment]
-    
+
     G --> H{Success?}
     H -->|Yes| I[Post-Migration Tasks]
     H -->|No| J[Rollback Procedure]
@@ -77,8 +77,8 @@ graph TD
 
 #### 1.1 Password Security Migration
 
-**Duration**: 1-2 days  
-**Risk Level**: LOW  
+**Duration**: 1-2 days
+**Risk Level**: LOW
 
 ##### Migration Steps:
 
@@ -125,33 +125,33 @@ async def migrate_passwords():
     """Migrate all existing passwords to bcrypt."""
     db = await get_database_connection()
     password_manager = PasswordManager()
-    
+
     # Get all users with old password format
     users = await db.fetch("SELECT id, password FROM users WHERE password_hash_new IS NULL")
-    
+
     migrated_count = 0
     failed_count = 0
-    
+
     for user in users:
         try:
             # Hash the existing password (if it's plain text)
             # Note: This assumes passwords were stored as plain text
             # Adjust based on your current hashing method
             new_hash = password_manager.hash_password(user['password'])
-            
+
             # Update user record
             await db.execute(
                 "UPDATE users SET password_hash_new = ?, password_changed_at = ? WHERE id = ?",
                 new_hash, datetime.utcnow(), user['id']
             )
-            
+
             migrated_count += 1
             print(f"Migrated password for user: {user['id']}")
-            
+
         except Exception as e:
             print(f"Failed to migrate password for user {user['id']}: {e}")
             failed_count += 1
-    
+
     print(f"Migration complete: {migrated_count} migrated, {failed_count} failed")
 
 if __name__ == "__main__":
@@ -167,26 +167,26 @@ async def authenticate_user(username: str, password: str) -> Optional[User]:
     user = await get_user_by_username(username)
     if not user:
         return None
-    
+
     # Try new password hash first
     if user.password_hash_new:
         if password_manager.verify_password(password, user.password_hash_new):
             return user
-    
+
     # Fallback to old password method (for gradual migration)
     elif user.password and verify_old_password(password, user.password):
         # Upgrade to new hash format
         new_hash = password_manager.hash_password(password)
         await update_user_password_hash(user.id, new_hash)
         return user
-    
+
     return None
 ```
 
 #### 1.2 Rate Limiting Migration
 
-**Duration**: 1 day  
-**Risk Level**: MEDIUM  
+**Duration**: 1 day
+**Risk Level**: MEDIUM
 
 ##### Migration Steps:
 
@@ -212,14 +212,14 @@ class GradualRateLimiter:
     def __init__(self):
         self.enabled = os.getenv("RATE_LIMITING_ENABLED", "false").lower() == "true"
         self.warning_mode = os.getenv("RATE_LIMITING_WARNING_MODE", "true").lower() == "true"
-    
+
     async def check_rate_limit(self, request: Request):
         if not self.enabled:
             return True
-        
+
         # Check rate limit
         is_allowed = await self._check_limit(request)
-        
+
         if not is_allowed:
             if self.warning_mode:
                 # Log but don't block in warning mode
@@ -228,14 +228,14 @@ class GradualRateLimiter:
             else:
                 # Block in enforcement mode
                 raise RateLimitExceeded("Rate limit exceeded")
-        
+
         return True
 ```
 
 #### 1.3 Security Headers Migration
 
-**Duration**: 0.5 days  
-**Risk Level**: LOW  
+**Duration**: 0.5 days
+**Risk Level**: LOW
 
 ##### Migration Steps:
 
@@ -259,8 +259,8 @@ HSTS_MAX_AGE=31536000
 
 #### 2.1 Multi-Factor Authentication Setup
 
-**Duration**: 2-3 days  
-**Risk Level**: MEDIUM  
+**Duration**: 2-3 days
+**Risk Level**: MEDIUM
 
 ##### Migration Steps:
 
@@ -293,8 +293,8 @@ MFA_GRACE_PERIOD_DAYS=30
 
 #### 2.2 OAuth Integration Setup
 
-**Duration**: 2-3 days  
-**Risk Level**: MEDIUM  
+**Duration**: 2-3 days
+**Risk Level**: MEDIUM
 
 ##### Migration Steps:
 
@@ -336,8 +336,8 @@ CREATE TABLE user_oauth_accounts (
 
 #### 3.1 RBAC System Migration
 
-**Duration**: 3-4 days  
-**Risk Level**: HIGH  
+**Duration**: 3-4 days
+**Risk Level**: HIGH
 
 ##### Migration Steps:
 
@@ -380,13 +380,13 @@ async def migrate_to_rbac():
     """Migrate existing user roles to RBAC."""
     db = await get_database_connection()
     rbac = RBACManager()
-    
+
     # Create default roles
     await rbac.create_default_roles_in_db(db)
-    
+
     # Migrate existing users
     users = await db.fetch("SELECT id, role FROM users")
-    
+
     for user in users:
         # Map old roles to new RBAC roles
         old_role = user.get('role', 'user')
@@ -395,13 +395,13 @@ async def migrate_to_rbac():
             'user': 'user',
             'guest': 'guest'
         }.get(old_role, 'user')
-        
+
         # Assign role to user
         await db.execute(
             "INSERT INTO user_roles (user_id, role_name, assigned_by) VALUES (?, ?, ?)",
             user['id'], new_role, 'system'
         )
-    
+
     print("RBAC migration completed")
 
 if __name__ == "__main__":
@@ -410,8 +410,8 @@ if __name__ == "__main__":
 
 #### 3.2 API Key Management Migration
 
-**Duration**: 2-3 days  
-**Risk Level**: MEDIUM  
+**Duration**: 2-3 days
+**Risk Level**: MEDIUM
 
 ##### Migration Steps:
 
@@ -452,10 +452,10 @@ async def migrate_api_keys():
     """Migrate existing API keys."""
     db = await get_database_connection()
     api_key_manager = APIKeyManager(db, rbac_manager)
-    
+
     # Get existing API keys (assuming they're stored in environment or config)
     existing_keys = get_existing_api_keys()  # Implement based on current storage
-    
+
     for key_info in existing_keys:
         # Create new managed API key
         await api_key_manager.migrate_existing_key(
@@ -464,7 +464,7 @@ async def migrate_api_keys():
             created_by='system',
             permissions=['document:read', 'document:write', 'query:execute']
         )
-    
+
     print("API key migration completed")
 ```
 
@@ -486,12 +486,12 @@ class AuthenticationMigration:
     def __init__(self):
         self.db = None
         self.migration_log = []
-    
+
     async def initialize(self):
         """Initialize migration environment."""
         self.db = await get_database_connection()
         await self.log_migration_start()
-    
+
     async def log_migration_start(self):
         """Log migration start."""
         await self.db.execute("""
@@ -505,12 +505,12 @@ class AuthenticationMigration:
                 migration_data JSON NULL
             )
         """)
-        
+
         await self.db.execute(
             "INSERT INTO migration_log (migration_name, status) VALUES (?, ?)",
             "authentication_enhancement_v1", "started"
         )
-    
+
     async def run_migration(self):
         """Run complete migration process."""
         try:
@@ -518,38 +518,38 @@ class AuthenticationMigration:
             await self.migrate_password_security()
             await self.setup_rate_limiting()
             await self.setup_audit_logging()
-            
+
             # Phase 2: Advanced Authentication
             await self.setup_mfa_tables()
             await self.setup_oauth_tables()
             await self.setup_session_management()
-            
+
             # Phase 3: Access Control
             await self.setup_rbac_tables()
             await self.setup_api_key_management()
-            
+
             # Data Migration
             await self.migrate_existing_data()
-            
+
             await self.log_migration_success()
-            
+
         except Exception as e:
             await self.log_migration_failure(str(e))
             raise
-    
+
     async def migrate_password_security(self):
         """Migrate password security."""
         print("Migrating password security...")
-        
+
         # Add new password columns
         await self.db.execute("""
-            ALTER TABLE users 
+            ALTER TABLE users
             ADD COLUMN IF NOT EXISTS password_hash_new VARCHAR(255),
             ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP,
             ADD COLUMN IF NOT EXISTS password_attempts INTEGER DEFAULT 0,
             ADD COLUMN IF NOT EXISTS account_locked_until TIMESTAMP NULL
         """)
-        
+
         # Create password history table
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS password_history (
@@ -562,13 +562,13 @@ class AuthenticationMigration:
                 INDEX idx_created_at (created_at)
             )
         """)
-        
+
         print("Password security migration completed")
-    
+
     async def setup_mfa_tables(self):
         """Setup MFA tables."""
         print("Setting up MFA tables...")
-        
+
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS user_mfa (
                 user_id VARCHAR(255) PRIMARY KEY,
@@ -580,7 +580,7 @@ class AuthenticationMigration:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
-        
+
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS mfa_attempts (
                 id SERIAL PRIMARY KEY,
@@ -594,13 +594,13 @@ class AuthenticationMigration:
                 INDEX idx_user_attempts (user_id, created_at)
             )
         """)
-        
+
         print("MFA tables setup completed")
-    
+
     async def setup_rbac_tables(self):
         """Setup RBAC tables."""
         print("Setting up RBAC tables...")
-        
+
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS roles (
                 id SERIAL PRIMARY KEY,
@@ -614,7 +614,7 @@ class AuthenticationMigration:
                 INDEX idx_name (name)
             )
         """)
-        
+
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS user_roles (
                 id SERIAL PRIMARY KEY,
@@ -630,53 +630,53 @@ class AuthenticationMigration:
                 INDEX idx_user_id (user_id)
             )
         """)
-        
+
         print("RBAC tables setup completed")
-    
+
     async def migrate_existing_data(self):
         """Migrate existing user data to new system."""
         print("Migrating existing data...")
-        
+
         # Create default roles
         default_roles = [
             ('admin', '["system:admin", "document:*", "query:*", "graph:*"]', 'Full system access'),
             ('user', '["document:read", "document:write", "query:execute", "graph:read"]', 'Standard user'),
             ('viewer', '["document:read", "query:execute", "graph:read"]', 'Read-only access')
         ]
-        
+
         for role_name, permissions, description in default_roles:
             await self.db.execute("""
                 INSERT IGNORE INTO roles (name, permissions, description, is_system_role)
                 VALUES (?, ?, ?, TRUE)
             """, role_name, permissions, description)
-        
+
         # Migrate existing users to RBAC
         users = await self.db.fetch("SELECT id, role FROM users WHERE role IS NOT NULL")
-        
+
         for user in users:
             old_role = user.get('role', 'user')
             new_role = {'admin': 'admin', 'user': 'user'}.get(old_role, 'user')
-            
+
             await self.db.execute("""
                 INSERT IGNORE INTO user_roles (user_id, role_name, assigned_by)
                 VALUES (?, ?, 'system')
             """, user['id'], new_role)
-        
+
         print("Data migration completed")
-    
+
     async def log_migration_success(self):
         """Log successful migration."""
         await self.db.execute("""
-            UPDATE migration_log 
+            UPDATE migration_log
             SET status = 'completed', completed_at = CURRENT_TIMESTAMP
             WHERE migration_name = 'authentication_enhancement_v1' AND status = 'started'
         """)
         print("Migration completed successfully!")
-    
+
     async def log_migration_failure(self, error_message: str):
         """Log migration failure."""
         await self.db.execute("""
-            UPDATE migration_log 
+            UPDATE migration_log
             SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = ?
             WHERE migration_name = 'authentication_enhancement_v1' AND status = 'started'
         """, error_message)
@@ -685,12 +685,12 @@ class AuthenticationMigration:
 async def main():
     """Run migration."""
     migration = AuthenticationMigration()
-    
+
     try:
         await migration.initialize()
         await migration.run_migration()
         print("\n✅ Authentication migration completed successfully!")
-        
+
     except Exception as e:
         print(f"\n❌ Migration failed: {e}")
         sys.exit(1)
@@ -710,17 +710,17 @@ if __name__ == "__main__":
 - [ ] **API Testing**: Ensure all API endpoints work with current authentication
 
 #### Post-Phase Testing
-- [ ] **Phase 1 Validation**: 
+- [ ] **Phase 1 Validation**:
   - [ ] Password hashing works correctly
   - [ ] Rate limiting functions properly
   - [ ] Security headers are applied
   - [ ] Audit logging captures events
-  
+
 - [ ] **Phase 2 Validation**:
   - [ ] MFA setup and verification works
   - [ ] OAuth flows complete successfully
   - [ ] Session management functions properly
-  
+
 - [ ] **Phase 3 Validation**:
   - [ ] RBAC permissions are enforced
   - [ ] API key management works
@@ -738,40 +738,40 @@ import asyncio
 from lightrag.api.auth import AuthenticationService
 
 class TestAuthenticationMigration:
-    
+
     @pytest.mark.asyncio
     async def test_password_migration(self):
         """Test password migration."""
         auth_service = AuthenticationService()
-        
+
         # Test old password still works during migration
         user = await auth_service.authenticate("testuser", "oldpassword")
         assert user is not None
-        
+
         # Test new password hash is created
         assert user.password_hash_new is not None
-    
+
     @pytest.mark.asyncio
     async def test_rbac_migration(self):
         """Test RBAC migration."""
         from lightrag.api.auth.rbac import RBACManager
-        
+
         rbac = RBACManager()
-        
+
         # Test default roles exist
         roles = rbac.list_roles()
         assert len(roles) >= 3
-        
+
         # Test user role assignment
         assert rbac.check_permission("testuser", Permission.DOCUMENT_READ)
-    
+
     @pytest.mark.asyncio
     async def test_api_key_migration(self):
         """Test API key migration."""
         from lightrag.api.auth.api_key_manager import APIKeyManager
-        
+
         api_manager = APIKeyManager()
-        
+
         # Test existing API keys still work
         key_info = await api_manager.validate_api_key("existing_api_key")
         assert key_info is not None
@@ -797,34 +797,34 @@ Rollback script for authentication migration.
 async def rollback_migration():
     """Rollback authentication migration."""
     db = await get_database_connection()
-    
+
     try:
         # Phase 3 Rollback: Remove RBAC tables
         await db.execute("DROP TABLE IF EXISTS user_roles")
         await db.execute("DROP TABLE IF EXISTS roles")
         await db.execute("DROP TABLE IF EXISTS api_keys")
-        
+
         # Phase 2 Rollback: Remove advanced auth tables
         await db.execute("DROP TABLE IF EXISTS user_mfa")
         await db.execute("DROP TABLE IF EXISTS mfa_attempts")
         await db.execute("DROP TABLE IF EXISTS user_oauth_accounts")
-        
+
         # Phase 1 Rollback: Remove security enhancement columns
         await db.execute("ALTER TABLE users DROP COLUMN IF EXISTS password_hash_new")
         await db.execute("ALTER TABLE users DROP COLUMN IF EXISTS password_changed_at")
         await db.execute("ALTER TABLE users DROP COLUMN IF EXISTS password_attempts")
         await db.execute("ALTER TABLE users DROP COLUMN IF EXISTS account_locked_until")
         await db.execute("DROP TABLE IF EXISTS password_history")
-        
+
         # Log rollback
         await db.execute("""
-            UPDATE migration_log 
+            UPDATE migration_log
             SET status = 'rolled_back', completed_at = CURRENT_TIMESTAMP
             WHERE migration_name = 'authentication_enhancement_v1'
         """)
-        
+
         print("Rollback completed successfully")
-        
+
     except Exception as e:
         print(f"Rollback failed: {e}")
         raise

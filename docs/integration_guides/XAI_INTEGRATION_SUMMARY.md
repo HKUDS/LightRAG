@@ -37,7 +37,7 @@ Successfully integrated xAI Grok models (Grok 3 Mini, Grok 2, Grok 2 Vision) wit
 
 ### 3. Connection Timeouts ✅
 **Problem**: `httpcore.ConnectTimeout` during embedding operations
-**Solution**: 
+**Solution**:
 - Created timeout-resistant demo with 2-minute timeout
 - Added exponential backoff retry logic
 - Reduced concurrency (`MAX_ASYNC=2`) to prevent Ollama overload
