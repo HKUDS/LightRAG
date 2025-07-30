@@ -1391,6 +1391,9 @@ async def merge_nodes_and_edges(
                         "similarity_threshold", 0.85
                     ),
                     "system_prompt": strategy_config.get("system_prompt"),
+                    "strictness_level": strategy_config.get(
+                        "strictness_level", "strict"
+                    ),
                 },
             )
         except Exception as e:

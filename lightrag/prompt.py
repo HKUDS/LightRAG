@@ -354,7 +354,7 @@ Similarity score criteria:
 Return only a number between 0-1, without any additional content.
 """
 
-PROMPTS["goal_clean"] = """
+PROMPTS["goal_clean_strict"] = """
 --- Goal ---
     You are a knowledge point deduplication specialist. Merge nodes ONLY if they represent the exact same real-world concept (e.g., spelling variations, synonyms, or explicit duplicates). Never merge nodes that are merely topically related. Output strictly follows the format below.
 
@@ -374,7 +374,52 @@ PROMPTS["goal_clean"] = """
 3.Output Handling:
     - If no nodes meet merge criteria, output null
     - Keywords must EXACTLY MATCH INPUT (no creation, no modification)
+"""
 
+PROMPTS["goal_clean_medium"] = """
+--- Goal ---
+You are a knowledge point deduplication specialist. Merge nodes if they represent the same core concept, including near-synonyms or semantically equivalent phrasing. Output strictly follows the format below.
+
+--- Format Requirements ---
+"merge" section: A list of nodes to merge, each containing:
+    'summary': Standardized node name (prefer complete phrasing from keywords)
+    'keywords': List of merged nodes (≥2 elements, verbatim from input)
+
+--- Critical Rules ---
+1. Allowed Merges (must meet ≥1 condition):
+    - Spelling/typo variations (e.g., climte → climate)
+    - Lexical variants (e.g., retrieval frameworks ↔ retrieval paradigm)
+    - Full-form/abbreviation (e.g., Environmental Protection vs. EP)
+    - Contextually equivalent phrases (e.g., soil health ↔ soil fertility in agriculture contexts)
+2. Forbidden Merges:
+    - Indirectly related concepts without semantic equivalence (e.g., Waste ≠ Plastic Waste)
+    - Hierarchical relationships (e.g., Energy → Solar Energy)
+3. Output Handling:
+    - If no nodes meet criteria, output null
+    - Keywords must EXACTLY MATCH INPUT (no modification)
+"""
+
+PROMPTS["goal_clean_loose"] = """
+--- Goal ---
+You are a knowledge point deduplication specialist. Merge nodes sharing conceptual affinity, including topic-level associations. Output strictly follows the format below.
+
+--- Format Requirements ---
+"merge" section: A list of nodes to merge, each containing:
+    'summary': Conceptual theme name (based on strongest commonality)
+    'keywords': List of merged nodes (≥2 elements, verbatim from input)
+
+--- Critical Rules ---
+1. Allowed Merges (must meet ≥1 condition):
+    - Thematic synonymity (e.g., coastal protection ↔ shoreline conservation)
+    - Causal/functional relations (e.g., deforestation → habitat loss)
+    - Co-occurring domain terms (e.g., urban planning + zoning ↔ city development)
+2. Forbidden Merges:
+    - Cross-domain terms without contextual overlap (e.g., Battery ≠ Marine Battery)
+    - Explicitly disjoint concepts (e.g., Software ≠ Hardware)
+3. Output Handling:
+    - Prioritize clusters of ≥3 related terms
+    - Keywords must EXACTLY MATCH INPUT
+    - Allow single-connection pairs if contextually justified
 """
 
 PROMPTS["goal_clean_examples"] = """

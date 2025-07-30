@@ -513,8 +513,20 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
     async def _process_single_batch(self, batch: List[str]) -> bool:
         """Process a single batch with proper error handling"""
         try:
-            # Prepare system prompt
-            system_prompt = self.config.system_prompt or PROMPTS["goal_clean"]
+            # Prepare system prompt based on strictness level
+            if self.config.system_prompt:
+                system_prompt = self.config.system_prompt
+            else:
+                # Choose prompt based on strictness level
+                strictness_prompts = {
+                    "strict": PROMPTS["goal_clean_strict"],
+                    "medium": PROMPTS["goal_clean_medium"],
+                    "loose": PROMPTS["goal_clean_loose"],
+                }
+                system_prompt = strictness_prompts.get(
+                    self.config.strictness_level,
+                    PROMPTS["goal_clean_medium"],  # Default to medium if invalid level
+                )
             system_prompt = str(system_prompt) + "\n" + PROMPTS["goal_clean_examples"]
 
             # Call LLM
