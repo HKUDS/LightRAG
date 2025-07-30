@@ -999,14 +999,14 @@ class RedisDocStatusStorage(DocStatusStorage):
                                     if "error_msg" not in data:
                                         data["error_msg"] = None
 
-                                    # Add sort key for sorting
+                                    # Calculate sort key for sorting (but don't add to data)
                                     if sort_field == "id":
-                                        data["_sort_key"] = doc_id
+                                        sort_key = doc_id
                                     else:
-                                        data["_sort_key"] = data.get(sort_field, "")
+                                        sort_key = data.get(sort_field, "")
 
                                     doc_status = DocProcessingStatus(**data)
-                                    all_docs.append((doc_id, doc_status))
+                                    all_docs.append((doc_id, doc_status, sort_key))
 
                                 except (json.JSONDecodeError, KeyError) as e:
                                     logger.error(
@@ -1021,16 +1021,12 @@ class RedisDocStatusStorage(DocStatusStorage):
                 logger.error(f"Error getting paginated docs: {e}")
                 return [], 0
 
-        # Sort documents
+        # Sort documents using the separate sort key
         reverse_sort = sort_direction.lower() == "desc"
-        all_docs.sort(
-            key=lambda x: getattr(x[1], "_sort_key", ""), reverse=reverse_sort
-        )
+        all_docs.sort(key=lambda x: x[2], reverse=reverse_sort)
 
-        # Remove sort key from documents
-        for doc_id, doc in all_docs:
-            if hasattr(doc, "_sort_key"):
-                delattr(doc, "_sort_key")
+        # Remove sort key from tuples and keep only (doc_id, doc_status)
+        all_docs = [(doc_id, doc_status) for doc_id, doc_status, _ in all_docs]
 
         total_count = len(all_docs)
 

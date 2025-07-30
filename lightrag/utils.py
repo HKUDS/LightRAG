@@ -145,7 +145,8 @@ class LightragPathFilter(logging.Filter):
 
             # Filter out successful GET requests to filtered paths
             if (
-                method == "GET" or method == "POST"
+                method == "GET"
+                or method == "POST"
                 and (status == 200 or status == 304)
                 and path in self.filtered_paths
             ):
