@@ -899,30 +899,6 @@ async def pipeline_index_texts(
     await rag.apipeline_process_enqueue_documents()
 
 
-# TODO: deprecate after /insert_file is removed
-async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
-    """Save the uploaded file to a temporary location
-
-    Args:
-        file: The uploaded file
-
-    Returns:
-        Path: The path to the saved file
-    """
-    # Generate unique filename to avoid conflicts
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    unique_filename = f"{temp_prefix}{timestamp}_{file.filename}"
-
-    # Create a temporary file to save the uploaded content
-    temp_path = input_dir / "temp" / unique_filename
-    temp_path.parent.mkdir(exist_ok=True)
-
-    # Save the file
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return temp_path
-
-
 async def run_scanning_process(
     rag: LightRAG, doc_manager: DocumentManager, track_id: str = None
 ):
