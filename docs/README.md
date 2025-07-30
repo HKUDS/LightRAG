@@ -2,6 +2,7 @@
 
 This directory contains comprehensive documentation for LightRAG, including core algorithms, deployment guides, integration documentation, and advanced features.
 
+
 ## Directory Structure
 
 ### Core Documentation
@@ -33,6 +34,7 @@ Complete guides for integrating LightRAG with external services and protocols:
 ### For Developers
 - [Concurrent Processing](LightRAG_concurrent_explain.md) - Parallel processing details
 - [MCP Implementation Guide](integration_guides/MCP_IMPLEMENTATION_GUIDE.md) - Build MCP integrations
+
 - [Integration Guides](integration_guides/) - External service integrations
 
 ### For DevOps
