@@ -802,7 +802,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
-    ) -> None:
+    ) -> str:
         """
         Pipeline for Processing Documents
 
@@ -816,7 +816,14 @@ class LightRAG:
             input: Single document string or list of document strings
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
+            track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+
+        Returns:
+            str: tracking ID for monitoring processing status
         """
+        # Generate track_id if not provided
+        if track_id is None or track_id.strip() == "":
+            track_id = generate_track_id("enqueue")
         if isinstance(input, str):
             input = [input]
         if isinstance(ids, str):
@@ -941,6 +948,8 @@ class LightRAG:
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
+
+        return track_id
 
     async def apipeline_process_enqueue_documents(
         self,
