@@ -99,7 +99,7 @@ services:
   # ===================================================================
   postgres:
     container_name: lightrag_postgres
-    image: pgvector/pgvector:pg16
+    image: shangor/postgres-for-rag:v1.0
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lightrag_prod}

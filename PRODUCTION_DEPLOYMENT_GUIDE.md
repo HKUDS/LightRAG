@@ -195,7 +195,7 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 - **Security**: Non-root user, readonly filesystem options
 
 #### Database Service
-- **Image**: pgvector/pgvector:pg16 (PostgreSQL + pgvector extension)
+- **Image**: shangor/postgres-for-rag:v1.0 (PostgreSQL + pgvector + AGE)
 - **Performance**: Tuned for RAG workloads
 - **Persistence**: Named volume with backup integration
 - **Security**: Network isolation, credential management
