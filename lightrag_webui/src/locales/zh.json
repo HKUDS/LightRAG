@@ -401,5 +401,14 @@
     "description": "请输入您的 API Key 以访问服务",
     "placeholder": "请输入 API Key",
     "save": "保存"
+  },
+  "pagination": {
+    "showing": "显示第 {{start}} 到 {{end}} 条，共 {{total}} 条记录",
+    "page": "页",
+    "pageSize": "每页显示",
+    "firstPage": "首页",
+    "prevPage": "上一页",
+    "nextPage": "下一页",
+    "lastPage": "末页"
   }
 }
