@@ -145,7 +145,7 @@ const pulseStyle = `
 `;
 
 // Type definitions for sort field and direction
-type SortField = 'created_at' | 'updated_at' | 'id';
+type SortField = 'created_at' | 'updated_at' | 'id' | 'file_path';
 type SortDirection = 'asc' | 'desc';
 
 export default function DocumentManager() {
@@ -234,9 +234,16 @@ export default function DocumentManager() {
 
   // Handle sort column click
   const handleSort = (field: SortField) => {
-    const newDirection = (sortField === field && sortDirection === 'desc') ? 'asc' : 'desc';
+    let actualField = field;
 
-    setSortField(field);
+    // When clicking the first column, determine the actual sort field based on showFileName
+    if (field === 'id') {
+      actualField = showFileName ? 'file_path' : 'id';
+    }
+
+    const newDirection = (sortField === actualField && sortDirection === 'desc') ? 'asc' : 'desc';
+
+    setSortField(actualField);
     setSortDirection(newDirection);
 
     // Reset page to 1 when sorting changes
@@ -600,6 +607,17 @@ export default function DocumentManager() {
   }, [fetchDocuments])
 
 
+  // Handle showFileName change - switch sort field if currently sorting by first column
+  useEffect(() => {
+    // Only switch if currently sorting by the first column (id or file_path)
+    if (sortField === 'id' || sortField === 'file_path') {
+      const newSortField = showFileName ? 'file_path' : 'id';
+      if (sortField !== newSortField) {
+        setSortField(newSortField);
+      }
+    }
+  }, [showFileName, sortField]);
+
   // Central effect to handle all data fetching
   useEffect(() => {
     if (currentTab === 'documents') {
@@ -796,8 +814,11 @@ export default function DocumentManager() {
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
-                            {t('documentPanel.documentManager.columns.id')}
-                            {sortField === 'id' && (
+                            {showFileName
+                              ? t('documentPanel.documentManager.columns.fileName')
+                              : t('documentPanel.documentManager.columns.id')
+                            }
+                            {((sortField === 'id' && !showFileName) || (sortField === 'file_path' && showFileName)) && (
                               <span className="ml-1">
                                 {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                               </span>

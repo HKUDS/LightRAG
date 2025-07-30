@@ -503,6 +503,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                 {"name": "updated_at", "keys": [("updated_at", -1)]},
                 {"name": "created_at", "keys": [("created_at", -1)]},
                 {"name": "id", "keys": [("_id", 1)]},
+                {"name": "file_path", "keys": [("file_path", 1)]},
             ]
 
             # Check which indexes already exist
@@ -553,7 +554,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         elif page_size > 200:
             page_size = 200
 
-        if sort_field not in ["created_at", "updated_at", "_id"]:
+        if sort_field not in ["created_at", "updated_at", "_id", "file_path"]:
             sort_field = "updated_at"
 
         if sort_direction.lower() not in ["asc", "desc"]:

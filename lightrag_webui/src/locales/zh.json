@@ -125,6 +125,7 @@
       "emptyDescription": "还没有上传任何文档",
       "columns": {
         "id": "ID",
+        "fileName": "文件名",
         "summary": "摘要",
         "status": "状态",
         "length": "长度",

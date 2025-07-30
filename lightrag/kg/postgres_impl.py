@@ -948,6 +948,11 @@ class PostgreSQLDB:
                 "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_id ON LIGHTRAG_DOC_STATUS (workspace, id)",
                 "description": "Index for workspace + id sorting",
             },
+            {
+                "name": "idx_lightrag_doc_status_workspace_file_path",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_file_path ON LIGHTRAG_DOC_STATUS (workspace, file_path)",
+                "description": "Index for workspace + file_path sorting",
+            },
         ]
 
         for index in indexes:
@@ -2066,7 +2071,7 @@ class PGDocStatusStorage(DocStatusStorage):
         elif page_size > 200:
             page_size = 200
 
-        if sort_field not in ["created_at", "updated_at", "id"]:
+        if sort_field not in ["created_at", "updated_at", "id", "file_path"]:
             sort_field = "updated_at"
 
         if sort_direction.lower() not in ["asc", "desc"]:

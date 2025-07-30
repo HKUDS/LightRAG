@@ -510,7 +510,7 @@ class DocumentsRequest(BaseModel):
     page_size: int = Field(
         default=50, ge=10, le=200, description="Number of documents per page (10-200)"
     )
-    sort_field: Literal["created_at", "updated_at", "id"] = Field(
+    sort_field: Literal["created_at", "updated_at", "id", "file_path"] = Field(
         default="updated_at", description="Field to sort by"
     )
     sort_direction: Literal["asc", "desc"] = Field(

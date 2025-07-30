@@ -201,7 +201,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         elif page_size > 200:
             page_size = 200
 
-        if sort_field not in ["created_at", "updated_at", "id"]:
+        if sort_field not in ["created_at", "updated_at", "id", "file_path"]:
             sort_field = "updated_at"
 
         if sort_direction.lower() not in ["asc", "desc"]:
