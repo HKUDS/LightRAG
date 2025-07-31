@@ -165,6 +165,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Lowercase repository name
+        id: repo
+        run: echo "name=${{ github.repository | tolower }}" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -206,7 +210,7 @@ jobs:
 
       - name: Output image
         id: image
-        run: echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" >> $GITHUB_OUTPUT
+        run: echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:${{ steps.meta.outputs.version }}" >> $GITHUB_OUTPUT
 
   # ===================================================================
   # Security Scan of Docker Image
@@ -219,7 +223,7 @@ jobs:
       - name: Run Trivy vulnerability scanner on image
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          image-ref: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}@${{ needs.build.outputs.digest }}
           format: 'sarif'
           output: 'trivy-image-results.sarif'
 
