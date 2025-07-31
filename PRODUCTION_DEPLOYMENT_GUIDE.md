@@ -102,13 +102,13 @@ GRAFANA_ADMIN_PASSWORD=your-grafana-password
 
 ```bash
 # Start production environment
-docker-compose -f docker-compose.production.yml up -d
+docker compose -f docker-compose.production.yml up -d
 
 # Check status
-docker-compose -f docker-compose.production.yml ps
+docker compose -f docker-compose.production.yml ps
 
 # View logs
-docker-compose -f docker-compose.production.yml logs -f lightrag
+docker compose -f docker-compose.production.yml logs -f lightrag
 ```
 
 ### 4. Verify Deployment
