@@ -129,7 +129,7 @@ services:
     networks:
       - lightrag-network
     ports:
-      - "127.0.0.1:5432:5432"  # Only bind to localhost for security
+      - "127.0.0.1:5433:5432"  # Only bind to localhost for security (changed to 5433 to avoid port conflict)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag_prod} -d ${POSTGRES_DATABASE:-lightrag_production}"]
       interval: 10s
@@ -183,7 +183,7 @@ services:
     networks:
       - lightrag-network
     ports:
-      - "127.0.0.1:6379:6379"  # Only bind to localhost for security
+      - "127.0.0.1:6380:6379"  # Only bind to localhost for security (changed to 6380 to avoid port conflict)
     healthcheck:
       test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-}", "ping"]
       interval: 10s
@@ -281,7 +281,7 @@ services:
     networks:
       - lightrag-network
     ports:
-      - "127.0.0.1:9090:9090"  # Only bind to localhost for security
+      - "127.0.0.1:9091:9090"  # Only bind to localhost for security (changed to 9091 to avoid port conflict)
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
       interval: 30s

@@ -129,17 +129,16 @@ main() {
 
     # Start the application server
     exec gunicorn \
-        --config "/app/gunicorn_config.py" \
-        --bind "0.0.0.0:${PORT:-9621}" \
-        --workers "${WORKERS:-4}" \
+        --bind "0.0.0.0:9621" \
+        --workers 4 \
         --worker-class "uvicorn.workers.UvicornWorker" \
-        --worker-timeout "${WORKER_TIMEOUT:-300}" \
-        --max-requests "${MAX_REQUESTS:-1000}" \
-        --max-requests-jitter "${MAX_REQUESTS_JITTER:-50}" \
+        --worker-timeout 300 \
+        --max-requests 1000 \
+        --max-requests-jitter 50 \
         --preload \
         --access-logfile - \
         --error-logfile - \
-        --log-level "${LOG_LEVEL:-info}" \
+        --log-level info \
         "lightrag.api.app:app"
 }
 
