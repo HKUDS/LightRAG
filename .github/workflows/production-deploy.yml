@@ -160,6 +160,7 @@ jobs:
     outputs:
       image: ${{ steps.image.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
+      repo_name: ${{ steps.repo.outputs.name }}
 
     steps:
       - name: Checkout code
@@ -223,7 +224,7 @@ jobs:
       - name: Run Trivy vulnerability scanner on image
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}@${{ needs.build.outputs.digest }}
+          image-ref: ${{ env.REGISTRY }}/${{ needs.build.outputs.repo_name }}@${{ needs.build.outputs.digest }}
           format: 'sarif'
           output: 'trivy-image-results.sarif'
 
