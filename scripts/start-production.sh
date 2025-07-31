@@ -66,14 +66,29 @@ initialize_database() {
 import asyncio
 import sys
 import os
+import psycopg2
+
 sys.path.insert(0, '/app')
 
 async def main():
     try:
         from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
-        migration = AuthPhase1Migration()
-        await migration.run()
+
+        # Create a database connection
+        conn = psycopg2.connect(
+            dbname=os.environ['POSTGRES_DATABASE'],
+            user=os.environ['POSTGRES_USER'],
+            password=os.environ['POSTGRES_PASSWORD'],
+            host=os.environ['POSTGRES_HOST'],
+            port=os.environ.get('POSTGRES_PORT', 5432)
+        )
+
+        migration = AuthPhase1Migration(db_connection=conn)
+        await migration.migrate()  # Corrected method call
         print('Database migration completed successfully')
+
+        conn.close()
+
     except Exception as e:
         print(f'Database migration failed: {e}')
         # Don't exit - continue startup
