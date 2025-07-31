@@ -28,7 +28,7 @@ Before you begin, ensure you have the following installed and configured:
 First, clone the LightRAG repository to your local machine and navigate into the directory.
 
 ```bash
-git clone https://github.com/HKUDS/LightRAG.git
+git clone https://github.com/Ajith-82/LightRAG.git
 cd LightRAG
 ```
 

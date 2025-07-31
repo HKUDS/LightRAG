@@ -27,7 +27,7 @@ Makefile
 
 # Exclude other projects
 /tests
-/scripts
+# /scripts  # Commented out - needed for production startup script
 
 # Python version manager file
 .python-version

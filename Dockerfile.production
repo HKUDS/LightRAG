@@ -22,10 +22,10 @@ LABEL maintainer="LightRAG Team" \
       org.label-schema.build-date=$BUILD_DATE \
       org.label-schema.name="lightrag" \
       org.label-schema.description="Production LightRAG Container" \
-      org.label-schema.url="https://github.com/HKUDS/LightRAG" \
+      org.label-schema.url="https://github.com/Ajith-82/LightRAG" \
       org.label-schema.vcs-ref=$VCS_REF \
-      org.label-schema.vcs-url="https://github.com/HKUDS/LightRAG" \
-      org.label-schema.vendor="HKUDS" \
+      org.label-schema.vcs-url="https://github.com/Ajith-82/LightRAG" \
+      org.label-schema.vendor="Ajith-82" \
       org.label-schema.version=$VERSION \
       org.label-schema.schema-version="1.0"
 
@@ -170,171 +170,14 @@ COPY --chown=lightrag:lightrag setup.py ./
 COPY --chown=lightrag:lightrag production.env ./production.env
 COPY --chown=lightrag:lightrag lightrag/api/gunicorn_config.py ./gunicorn_config.py
 
-# Create production startup script
-RUN cat > /app/start-production.sh << 'EOF'
-#!/bin/bash
-set -e
-
-# Set default environment
-export NODE_ENV=${NODE_ENV:-production}
-export PYTHON_ENV=${PYTHON_ENV:-production}
-
-# Health check function
-health_check() {
-    echo "Performing health checks..."
-
-    # Check database connectivity
-    if [ "${POSTGRES_HOST:-}" ]; then
-        echo "Checking database connectivity..."
-        timeout 10 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}" || {
-            echo "ERROR: Cannot connect to database"
-            exit 1
-        }
-    fi
-
-    # Check Redis connectivity
-    if [ "${REDIS_URI:-}" ]; then
-        echo "Checking Redis connectivity..."
-        redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
-        redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
-        timeout 5 bash -c "</dev/tcp/${redis_host}/${redis_port:-6379}" || {
-            echo "ERROR: Cannot connect to Redis"
-            exit 1
-        }
-    fi
-
-    echo "Health checks passed!"
-}
-
-# Wait for dependencies
-wait_for_dependencies() {
-    echo "Waiting for dependencies..."
-
-    if [ "${POSTGRES_HOST:-}" ]; then
-        echo "Waiting for PostgreSQL..."
-        while ! timeout 1 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}"; do
-            echo "PostgreSQL is unavailable - sleeping"
-            sleep 2
-        done
-        echo "PostgreSQL is up!"
-    fi
-
-    if [ "${REDIS_URI:-}" ]; then
-        redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
-        redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
-        echo "Waiting for Redis..."
-        while ! timeout 1 bash -c "</dev/tcp/${redis_host}/${redis_port:-6379}"; do
-            echo "Redis is unavailable - sleeping"
-            sleep 2
-        done
-        echo "Redis is up!"
-    fi
-}
-
-# Run database migrations if needed
-run_migrations() {
-    if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
-        echo "Running database migrations..."
-        python -c "
-import asyncio
-from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
-from lightrag import LightRAG
-from lightrag.kg.shared_storage import initialize_pipeline_status
-
-async def run_migrations():
-    try:
-        migration = AuthPhase1Migration()
-        await migration.run()
-        print('Migrations completed successfully')
-    except Exception as e:
-        print(f'Migration error: {e}')
-        # Don't fail startup for migration errors in production
-        pass
-
-asyncio.run(run_migrations())
-        "
-    fi
-}
-
-# Start the application
-start_application() {
-    echo "Starting LightRAG in production mode..."
-
-    # Use Gunicorn for production
-    if [ "${USE_GUNICORN:-true}" = "true" ]; then
-        exec gunicorn \
-            --config gunicorn_config.py \
-            --worker-class uvicorn.workers.UvicornWorker \
-            --workers ${WORKERS:-4} \
-            --bind 0.0.0.0:${PORT:-9621} \
-            --timeout ${WORKER_TIMEOUT:-300} \
-            --keepalive ${KEEPALIVE:-5} \
-            --max-requests ${MAX_REQUESTS:-1000} \
-            --max-requests-jitter ${MAX_REQUESTS_JITTER:-100} \
-            --preload \
-            --log-level ${LOG_LEVEL:-info} \
-            --access-logfile - \
-            --error-logfile - \
-            lightrag.api.lightrag_server:app
-    else
-        # Fallback to direct uvicorn
-        exec python -m uvicorn \
-            lightrag.api.lightrag_server:app \
-            --host 0.0.0.0 \
-            --port ${PORT:-9621} \
-            --workers ${WORKERS:-1} \
-            --log-level ${LOG_LEVEL:-info}
-    fi
-}
-
-# Main execution
-main() {
-    echo "LightRAG Production Startup"
-    echo "=========================="
-
-    # Wait for dependencies
-    wait_for_dependencies
-
-    # Run health checks
-    health_check
-
-    # Run migrations
-    run_migrations
-
-    # Start application
-    start_application
-}
-
-# Execute main function
-main "$@"
-EOF
-
-# Make startup script executable
-RUN chmod +x /app/start-production.sh
+# Copy production startup script
+COPY --chown=lightrag:lightrag scripts/start-production.sh ./start-production.sh
+RUN chmod +x ./start-production.sh
 
 # Create health check script
-RUN cat > /app/health-check.sh << 'EOF'
-#!/bin/bash
-set -e
-
-# Basic health check
-curl -f http://localhost:${PORT:-9621}/health || exit 1
-
-# Additional checks
-if [ "${HEALTH_CHECK_DATABASE:-true}" = "true" ] && [ "${POSTGRES_HOST:-}" ]; then
-    timeout 5 bash -c "</dev/tcp/${POSTGRES_HOST}/${POSTGRES_PORT:-5432}" || exit 1
-fi
-
-if [ "${HEALTH_CHECK_REDIS:-true}" = "true" ] && [ "${REDIS_URI:-}" ]; then
-    redis_host=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f1)
-    redis_port=$(echo $REDIS_URI | cut -d/ -f3 | cut -d: -f2)
-    timeout 5 bash -c "</dev/tcp/${redis_host}/${redis_port:-6379}" || exit 1
-fi
-
-echo "Health check passed!"
-EOF
-
-RUN chmod +x /app/health-check.sh
+RUN echo '#!/bin/bash' > /app/health-check.sh && \
+    echo 'curl -f http://localhost:${PORT:-9621}/health || exit 1' >> /app/health-check.sh && \
+    chmod +x /app/health-check.sh
 
 # Switch to application user
 USER lightrag
