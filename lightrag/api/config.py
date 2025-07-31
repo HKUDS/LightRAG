@@ -84,9 +84,24 @@ class DefaultRAGStorageConfig:
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
 
+def get_ollama_host() -> str:
+    """Get Ollama host with proper environment variable priority and fallback."""
+    # Priority order: OLLAMA_HOST -> EMBEDDING_BINDING_HOST -> EMBEDDING_BASE_URL -> LLM_BINDING_HOST -> default
+    return (
+        os.getenv("OLLAMA_HOST")
+        or os.getenv("EMBEDDING_BINDING_HOST")
+        or os.getenv("EMBEDDING_BASE_URL", "").rstrip(
+            "/"
+        )  # Remove trailing slash if present
+        or os.getenv("LLM_BINDING_HOST")
+        or "http://localhost:11434"
+    )
+
+
 def get_default_host(binding_type: str) -> str:
+    """Get default host URL for different binding types with proper environment variable priority."""
     default_hosts = {
-        "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
+        "ollama": get_ollama_host(),
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
@@ -496,14 +511,28 @@ except (SystemExit, argparse.ArgumentError, Exception):
     global_args.temperature = get_env_value("TEMPERATURE", 0, float)
     global_args.llm_binding = get_env_value("LLM_BINDING", "openai")
     global_args.llm_model = get_env_value("LLM_MODEL", "gpt-4o")
-    global_args.llm_binding_host = get_env_value("LLM_BINDING_HOST", None)
+    # Use proper Ollama host resolution for LLM binding
+    if get_env_value("LLM_BINDING", "openai") == "ollama":
+        global_args.llm_binding_host = get_env_value(
+            "LLM_BINDING_HOST", get_ollama_host()
+        )
+    else:
+        global_args.llm_binding_host = get_env_value("LLM_BINDING_HOST", None)
     global_args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
     global_args.embedding_binding = get_env_value("EMBEDDING_BINDING", "openai")
     global_args.embedding_model = get_env_value(
         "EMBEDDING_MODEL", "text-embedding-3-small"
     )
     global_args.embedding_dim = get_env_value("EMBEDDING_DIM", 1536, int)
-    global_args.embedding_binding_host = get_env_value("EMBEDDING_BINDING_HOST", None)
+    # Use proper Ollama host resolution for embedding binding
+    if get_env_value("EMBEDDING_BINDING", "openai") == "ollama":
+        global_args.embedding_binding_host = get_env_value(
+            "EMBEDDING_BINDING_HOST", get_ollama_host()
+        )
+    else:
+        global_args.embedding_binding_host = get_env_value(
+            "EMBEDDING_BINDING_HOST", None
+        )
     global_args.embedding_binding_api_key = get_env_value(
         "EMBEDDING_BINDING_API_KEY", None
     )
