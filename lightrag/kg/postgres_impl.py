@@ -1976,6 +1976,14 @@ class PGDocStatusStorage(DocStatusStorage):
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
                     metadata = {}
+            # Ensure metadata is a dict
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            # Safe handling for file_path
+            file_path = element.get("file_path")
+            if file_path is None:
+                file_path = "no-file-path"
 
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(element["created_at"])
@@ -1988,7 +1996,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 created_at=created_at,
                 updated_at=updated_at,
                 chunks_count=element["chunks_count"],
-                file_path=element["file_path"],
+                file_path=file_path,
                 chunks_list=chunks_list,
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
@@ -2022,6 +2030,14 @@ class PGDocStatusStorage(DocStatusStorage):
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
                     metadata = {}
+            # Ensure metadata is a dict
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            # Safe handling for file_path
+            file_path = element.get("file_path")
+            if file_path is None:
+                file_path = "no-file-path"
 
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(element["created_at"])
@@ -2034,7 +2050,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 created_at=created_at,
                 updated_at=updated_at,
                 chunks_count=element["chunks_count"],
-                file_path=element["file_path"],
+                file_path=file_path,
                 chunks_list=chunks_list,
                 track_id=element.get("track_id"),
                 metadata=metadata,
