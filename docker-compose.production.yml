@@ -149,7 +149,6 @@ services:
       options:
         max-size: "100m"
         max-file: "3"
-    command: sh -c "service postgresql start && sleep infinity"
 
   # ===================================================================
   # Redis Cache Service

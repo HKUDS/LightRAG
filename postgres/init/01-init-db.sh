@@ -6,7 +6,7 @@ set -e
 
 # It is safe to run this script multiple times.
 
-export PGPASSWORD='${POSTGRES_PASSWORD}'
+export PGPASSWORD="${POSTGRES_PASSWORD}"
 
 psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "postgres" <<-EOSQL
     -- Create user if it does not exist

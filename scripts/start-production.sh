@@ -128,7 +128,19 @@ main() {
     echo "Starting Gunicorn server..."
 
     # Start the application server
-    exec gunicorn \n        --config "/app/gunicorn_config.py" \n        --bind "0.0.0.0:${PORT:-9621}" \n        --workers "${WORKERS:-4}" \n        --worker-class "uvicorn.workers.UvicornWorker" \n        --worker-timeout "${WORKER_TIMEOUT:-300}" \n        --max-requests "${MAX_REQUESTS:-1000}" \n        --max-requests-jitter "${MAX_REQUESTS_JITTER:-50}" \n        --preload \n        --access-logfile - \n        --error-logfile - \n        --log-level "${LOG_LEVEL:-info}" \n        "lightrag.api.app:app"
+    exec gunicorn \
+        --config "/app/gunicorn_config.py" \
+        --bind "0.0.0.0:${PORT:-9621}" \
+        --workers "${WORKERS:-4}" \
+        --worker-class "uvicorn.workers.UvicornWorker" \
+        --worker-timeout "${WORKER_TIMEOUT:-300}" \
+        --max-requests "${MAX_REQUESTS:-1000}" \
+        --max-requests-jitter "${MAX_REQUESTS_JITTER:-50}" \
+        --preload \
+        --access-logfile - \
+        --error-logfile - \
+        --log-level "${LOG_LEVEL:-info}" \
+        "lightrag.api.app:app"
 }
 
 # Handle signals gracefully
