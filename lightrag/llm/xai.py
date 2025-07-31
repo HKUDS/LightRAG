@@ -57,7 +57,7 @@ def create_xai_async_client(
     """Create an AsyncOpenAI client configured for xAI Grok API.
 
     Args:
-        api_key: xAI API key. If None, uses the XAI_API_KEY environment variable.
+        api_key: xAI API key. If None, uses environment variables with priority order.
         base_url: Base URL for the xAI API. Defaults to https://api.x.ai/v1
         client_configs: Additional configuration options for the AsyncOpenAI client.
 
@@ -65,9 +65,16 @@ def create_xai_async_client(
         An AsyncOpenAI client instance configured for xAI.
     """
     if not api_key:
-        api_key = os.environ.get("XAI_API_KEY")
+        # Priority order: XAI_API_KEY (standard pattern) -> LLM_BINDING_API_KEY -> LLM_API_KEY (backward compatibility)
+        api_key = (
+            os.environ.get("XAI_API_KEY")
+            or os.environ.get("LLM_BINDING_API_KEY")
+            or os.environ.get("LLM_API_KEY")
+        )
         if not api_key:
-            raise ValueError("XAI_API_KEY environment variable is required")
+            raise ValueError(
+                "XAI_API_KEY, LLM_BINDING_API_KEY, or LLM_API_KEY environment variable is required"
+            )
 
     default_headers = {
         "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
@@ -214,11 +221,16 @@ async def xai_embed(
     embedding model throughout your LightRAG workflow.
     """
     if not api_key:
-        # Try xAI API key first, then OpenAI as fallback
-        api_key = os.environ.get("XAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        # Priority order: XAI_API_KEY (standard pattern) -> LLM_BINDING_API_KEY -> LLM_API_KEY -> OPENAI_API_KEY (fallback)
+        api_key = (
+            os.environ.get("XAI_API_KEY")
+            or os.environ.get("LLM_BINDING_API_KEY")
+            or os.environ.get("LLM_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
         if not api_key:
             raise ValueError(
-                "XAI_API_KEY or OPENAI_API_KEY environment variable is required"
+                "XAI_API_KEY, LLM_BINDING_API_KEY, LLM_API_KEY, or OPENAI_API_KEY environment variable is required"
             )
 
     # For now, we'll use OpenAI embeddings as xAI doesn't have dedicated embedding models
