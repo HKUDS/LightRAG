@@ -6,6 +6,8 @@ set -e
 
 # It is safe to run this script multiple times.
 
+export PGPASSWORD='${POSTGRES_PASSWORD}'
+
 psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "postgres" <<-EOSQL
     -- Create user if it does not exist
     DO
@@ -45,5 +47,8 @@ psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "${POSTGRES_DATABASE}" <<
     GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DATABASE} TO ${POSTGRES_USER};
     GRANT USAGE, CREATE ON SCHEMA public TO ${POSTGRES_USER};
 EOSQL
+
+unset PGPASSWORD
+
 
 echo "****** Successfully configured user '${POSTGRES_USER}' and database '${POSTGRES_DATABASE}' ******"
