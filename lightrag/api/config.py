@@ -108,6 +108,23 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: Parsed arguments
     """
 
+    # For production deployment, if any unrecognized arguments are present,
+    # skip argument parsing and use environment variables only
+    production_indicators = [
+        "--bind",
+        "--worker-class",
+        "--workers",
+        "--timeout",
+        "--max-requests",
+        "--preload",
+        "--access-logfile",
+        "--error-logfile",
+    ]
+
+    if any(indicator in " ".join(sys.argv) for indicator in production_indicators):
+        # Running in production mode (likely gunicorn), skip argument parsing
+        return None
+
     parser = argparse.ArgumentParser(
         description="LightRAG FastAPI Server with separate working and input directories"
     )
@@ -446,4 +463,129 @@ def update_uvicorn_mode_config():
         )
 
 
-global_args = parse_args()
+# Try to parse arguments, fall back to environment-only configuration if parsing fails
+try:
+    global_args = parse_args()
+    if global_args is None:
+        raise ValueError("Gunicorn detected, using environment variables")
+except (SystemExit, argparse.ArgumentError, Exception):
+    # Argument parsing failed (likely due to gunicorn arguments)
+    # Create args from environment variables only
+    global_args = argparse.Namespace()
+
+    # Set all required attributes with defaults from environment
+    global_args.host = get_env_value("HOST", "0.0.0.0")
+    global_args.port = get_env_value("PORT", 9621, int)
+    global_args.working_dir = get_env_value("WORKING_DIR", "./rag_storage")
+    global_args.input_dir = get_env_value("INPUT_DIR", "./inputs")
+    global_args.timeout = get_env_value(
+        "TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True
+    )
+    global_args.max_async = get_env_value("MAX_ASYNC", DEFAULT_MAX_ASYNC, int)
+    global_args.max_tokens = get_env_value(
+        "MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int
+    )
+    global_args.log_level = get_env_value("LOG_LEVEL", "INFO")
+    global_args.verbose = get_env_value("VERBOSE", False, bool)
+    global_args.key = get_env_value("LIGHTRAG_API_KEY", None)
+    global_args.ssl = get_env_value("SSL", False, bool)
+    global_args.ssl_certfile = get_env_value("SSL_CERTFILE", None)
+    global_args.ssl_keyfile = get_env_value("SSL_KEYFILE", None)
+    global_args.workers = get_env_value("WORKERS", DEFAULT_WOKERS, int)
+    global_args.cors_origins = get_env_value("CORS_ORIGINS", "*")
+    global_args.temperature = get_env_value("TEMPERATURE", 0, float)
+    global_args.llm_binding = get_env_value("LLM_BINDING", "openai")
+    global_args.llm_model = get_env_value("LLM_MODEL", "gpt-4o")
+    global_args.llm_binding_host = get_env_value("LLM_BINDING_HOST", None)
+    global_args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
+    global_args.embedding_binding = get_env_value("EMBEDDING_BINDING", "openai")
+    global_args.embedding_model = get_env_value(
+        "EMBEDDING_MODEL", "text-embedding-3-small"
+    )
+    global_args.embedding_dim = get_env_value("EMBEDDING_DIM", 1536, int)
+    global_args.embedding_binding_host = get_env_value("EMBEDDING_BINDING_HOST", None)
+    global_args.embedding_binding_api_key = get_env_value(
+        "EMBEDDING_BINDING_API_KEY", None
+    )
+    global_args.kv_storage = get_env_value(
+        "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
+    )
+    global_args.vector_storage = get_env_value(
+        "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+    )
+    global_args.graph_storage = get_env_value(
+        "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
+    )
+    global_args.doc_status_storage = get_env_value(
+        "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
+    )
+    global_args.workspace = get_env_value("WORKSPACE", None)
+    global_args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
+    global_args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+    global_args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
+    global_args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
+    global_args.summary_language = get_env_value(
+        "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE
+    )
+    global_args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
+    global_args.enable_llm_cache_for_extract = get_env_value(
+        "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
+    )
+    global_args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
+    global_args.token_secret = get_env_value(
+        "TOKEN_SECRET", "lightrag-jwt-default-secret"
+    )
+    global_args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
+    global_args.guest_token_expire_hours = get_env_value(
+        "GUEST_TOKEN_EXPIRE_HOURS", 24, int
+    )
+    global_args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
+    global_args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
+    global_args.auto_scan_at_startup = get_env_value(
+        "AUTO_SCAN_AT_STARTUP", False, bool
+    )
+    global_args.simulated_model_name = get_env_value(
+        "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
+    )
+    global_args.simulated_model_tag = get_env_value(
+        "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
+    )
+    global_args.rerank_model = get_env_value("RERANK_MODEL", None)
+    global_args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
+    global_args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
+    global_args.min_rerank_score = get_env_value(
+        "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
+    )
+    global_args.history_turns = get_env_value(
+        "HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int
+    )
+    global_args.top_k = get_env_value("TOP_K", DEFAULT_TOP_K, int)
+    global_args.chunk_top_k = get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int)
+    global_args.max_entity_tokens = get_env_value(
+        "MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS, int
+    )
+    global_args.max_relation_tokens = get_env_value(
+        "MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS, int
+    )
+    global_args.max_total_tokens = get_env_value(
+        "MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS, int
+    )
+    global_args.cosine_threshold = get_env_value(
+        "COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float
+    )
+    global_args.related_chunk_number = get_env_value(
+        "RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int
+    )
+    global_args.force_llm_summary_on_merge = get_env_value(
+        "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
+    )
+    global_args.embedding_func_max_async = get_env_value(
+        "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
+    )
+    global_args.embedding_batch_num = get_env_value(
+        "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
+    )
+
+    # Set ollama server infos
+    ollama_server_infos.LIGHTRAG_NAME = global_args.simulated_model_name
+    ollama_server_infos.LIGHTRAG_TAG = global_args.simulated_model_tag

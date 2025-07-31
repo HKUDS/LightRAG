@@ -61,25 +61,48 @@ wait_for_dependencies() {
 initialize_database() {
     echo "Initializing database..."
 
-    # Run database migrations
-    python -c "
-import asyncio
+    # Test database connectivity
+    python <<EOF
 import sys
 import os
+import psycopg2
+
 sys.path.insert(0, '/app')
 
-async def main():
-    try:
-        from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
-        migration = AuthPhase1Migration()
-        await migration.run()
-        print('Database migration completed successfully')
-    except Exception as e:
-        print(f'Database migration failed: {e}')
-        # Don't exit - continue startup
+try:
+    # --- Start Debugging ---
+    print('--- DATABASE CONNECTION DEBUG INFO ---')
+    print(f"DB Host: {os.environ.get('POSTGRES_HOST')}")
+    print(f"DB Port: {os.environ.get('POSTGRES_PORT', 5432)}")
+    print(f"DB Name: {os.environ.get('POSTGRES_DATABASE')}")
+    print(f"DB User: {os.environ.get('POSTGRES_USER')}")
+    password = os.environ.get('POSTGRES_PASSWORD', '')
+    print(f"DB Password Length: {len(password)}")
+    if not password:
+        print('WARNING: POSTGRES_PASSWORD environment variable is not set!')
+    print('------------------------------------')
+    # --- End Debugging ---
 
-asyncio.run(main())
-"
+    # Test basic database connectivity
+    conn = psycopg2.connect(
+        dbname=os.environ['POSTGRES_DATABASE'],
+        user=os.environ['POSTGRES_USER'],
+        password=os.environ['POSTGRES_PASSWORD'],
+        host=os.environ['POSTGRES_HOST'],
+        port=os.environ.get('POSTGRES_PORT', 5432)
+    )
+
+    print('Database connection test successful')
+    conn.close()
+
+    # Note: Complex async migrations are handled by the application startup
+    # This script focuses on basic connectivity verification
+
+except Exception as e:
+    print(f'Database connection test failed: {e}')
+    # Don't exit - let the application handle initialization
+
+EOF
 }
 
 # Main startup sequence
@@ -99,20 +122,22 @@ main() {
 
     echo "Starting Gunicorn server..."
 
+    # Set environment variable to signal we're running under gunicorn
+    export GUNICORN_CMD_ARGS="true"
+
     # Start the application server
     exec gunicorn \
-        --config /app/gunicorn_config.py \
-        --bind 0.0.0.0:${PORT:-9621} \
-        --workers ${WORKERS:-4} \
-        --worker-class uvicorn.workers.UvicornWorker \
-        --worker-timeout ${WORKER_TIMEOUT:-300} \
-        --max-requests ${MAX_REQUESTS:-1000} \
-        --max-requests-jitter ${MAX_REQUESTS_JITTER:-50} \
+        --bind "0.0.0.0:9621" \
+        --workers 4 \
+        --worker-class "uvicorn.workers.UvicornWorker" \
+        --timeout 300 \
+        --max-requests 1000 \
+        --max-requests-jitter 50 \
         --preload \
         --access-logfile - \
         --error-logfile - \
-        --log-level ${LOG_LEVEL:-info} \
-        "lightrag.api.app:app"
+        --log-level INFO \
+        "lightrag.api.lightrag_server:app"
 }
 
 # Handle signals gracefully
