@@ -279,41 +279,6 @@ export default function QuerySettings() {
               </div>
             </>
 
-            {/* History Turns */}
-            <>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label htmlFor="history_turns" className="ml-1 cursor-help">
-                      {t('retrievePanel.querySettings.historyTurns')}
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">
-                    <p>{t('retrievePanel.querySettings.historyTurnsTooltip')}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-              <div>
-                <Input
-                  id="history_turns"
-                  type="number"
-                  value={querySettings.history_turns ?? ''}
-                  onChange={(e) => {
-                    const value = e.target.value
-                    handleChange('history_turns', value === '' ? '' : parseInt(value) || 0)
-                  }}
-                  onBlur={(e) => {
-                    const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('history_turns', 0)
-                    }
-                  }}
-                  min={0}
-                  placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
-                  className="h-9"
-                />
-              </div>
-            </>
 
             {/* User Prompt */}
             <>
