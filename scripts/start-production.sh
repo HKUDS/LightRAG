@@ -62,7 +62,7 @@ initialize_database() {
     echo "Initializing database..."
 
     # Run database migrations
-    python -c "
+    python <<EOF
 import asyncio
 import sys
 import os
@@ -72,8 +72,6 @@ sys.path.insert(0, '/app')
 
 async def main():
     try:
-        from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
-
         # --- Start Debugging ---
         print('--- DATABASE CONNECTION DEBUG INFO ---')
         print(f"DB Host: {os.environ.get('POSTGRES_HOST')}")
@@ -86,6 +84,8 @@ async def main():
             print('WARNING: POSTGRES_PASSWORD environment variable is not set!')
         print('------------------------------------')
         # --- End Debugging ---
+
+        from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
 
         # Create a database connection
         conn = psycopg2.connect(
@@ -107,7 +107,7 @@ async def main():
         # Don't exit - continue startup
 
 asyncio.run(main())
-"
+EOF
 }
 
 # Main startup sequence
