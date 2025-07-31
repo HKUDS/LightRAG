@@ -33,6 +33,9 @@ from lightrag.constants import (
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_MAX_GRAPH_NODES,
 )
 from lightrag.utils import get_env_value
 
@@ -283,7 +286,9 @@ class LightRAG:
     )
     """Maximum number of tokens allowed per LLM response."""
 
-    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))
+    llm_model_max_async: int = field(
+        default=int(os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC))
+    )
     """Maximum number of concurrent LLM calls."""
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -315,10 +320,14 @@ class LightRAG:
     # Extensions
     # ---
 
-    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 2)))
+    max_parallel_insert: int = field(
+        default=int(os.getenv("MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT))
+    )
     """Maximum number of parallel insert operations."""
 
-    max_graph_nodes: int = field(default=get_env_value("MAX_GRAPH_NODES", 1000, int))
+    max_graph_nodes: int = field(
+        default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
+    )
     """Maximum number of graph nodes to return in knowledge graph queries."""
 
     addon_params: dict[str, Any] = field(

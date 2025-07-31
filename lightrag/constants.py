@@ -8,7 +8,7 @@ consistency and makes maintenance easier.
 
 # Default values for server settings
 DEFAULT_WOKERS = 2
-DEFAULT_TIMEOUT = 150
+DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for summaries
@@ -34,15 +34,22 @@ DEFAULT_HISTORY_TURNS = 0
 DEFAULT_ENABLE_RERANK = True
 DEFAULT_MIN_RERANK_SCORE = 0.0
 
-# File path configuration for vector and graph database
+# File path configuration for vector and graph database(Should not be changed, used in Milvus Schema)
 DEFAULT_MAX_FILE_PATH_LENGTH = 4090
+
+# Default temperature for LLM
+DEFAULT_TEMPERATURE = 1.0
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
+DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
+
+# Ollama Server Timetout in seconds
+DEFAULT_TIMEOUT = 150
 
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB

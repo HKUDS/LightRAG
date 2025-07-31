@@ -33,6 +33,7 @@ from lightrag.constants import (
     DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
+    DEFAULT_TEMPERATURE,
 )
 
 # use the .env that is inside the current folder
@@ -332,7 +333,7 @@ def parse_args() -> argparse.Namespace:
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
     # Inject LLM temperature configuration
-    args.temperature = get_env_value("TEMPERATURE", 0.5, float)
+    args.temperature = get_env_value("TEMPERATURE", DEFAULT_TEMPERATURE, float)
 
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
