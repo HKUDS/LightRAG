@@ -59,7 +59,7 @@ This production deployment includes:
 
 ```bash
 # Clone repository
-git clone https://github.com/HKUDS/LightRAG.git
+git clone https://github.com/Ajith-82/LightRAG.git
 cd LightRAG
 
 # Copy production environment template
