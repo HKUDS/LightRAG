@@ -8,6 +8,7 @@ This comprehensive guide walks you through deploying LightRAG in a production en
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Detailed Configuration](#detailed-configuration)
+- [MCP Server Setup](#mcp-server-setup)
 - [Security Setup](#security-setup)
 - [Monitoring & Observability](#monitoring--observability)
 - [Backup & Disaster Recovery](#backup--disaster-recovery)
@@ -21,6 +22,7 @@ This production deployment includes:
 
 - **🔐 Enterprise Authentication**: Phase 1 security features with bcrypt, rate limiting, audit logging
 - **🐳 Container Orchestration**: Docker Compose with multi-service architecture
+- **🤖 MCP Integration**: Model Context Protocol server for Claude CLI integration
 - **📊 Monitoring Stack**: Prometheus, Grafana, Jaeger tracing
 - **🔄 Load Balancing**: Nginx reverse proxy with SSL termination
 - **💾 Data Persistence**: PostgreSQL with pgvector, Redis caching
@@ -194,6 +196,12 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 - **Health Checks**: Multi-tier health monitoring
 - **Security**: Non-root user, readonly filesystem options
 
+#### MCP Server Service
+- **Image**: Custom MCP server image
+- **Resources**: 2GB RAM, 2 CPU cores
+- **Features**: 11 tools, 3 resources for Claude CLI integration
+- **Security**: Isolated network, API authentication
+
 #### Database Service
 - **Image**: shangor/postgres-for-rag:v1.0 (PostgreSQL + pgvector + AGE)
 - **Performance**: Tuned for RAG workloads
@@ -206,9 +214,385 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 - **Jaeger**: Distributed tracing
 - **Loki**: Log aggregation (optional)
 
+## 🤖 MCP Server Setup
+
+### Overview
+
+The Model Context Protocol (MCP) server provides Claude CLI integration with 11 specialized tools and 3 resources for seamless LightRAG interaction. This enables natural language interaction with your RAG system through Claude.
+
+### MCP Server Features
+
+#### Available Tools (11)
+1. **lightrag_query** - Execute RAG queries with different modes
+2. **lightrag_insert_text** - Insert text documents directly
+3. **lightrag_insert_file** - Upload and process files
+4. **lightrag_batch_insert** - Batch document processing
+5. **lightrag_list_documents** - List processed documents
+6. **lightrag_get_document** - Retrieve document details
+7. **lightrag_delete_document** - Remove documents
+8. **lightrag_get_graph** - Export knowledge graph
+9. **lightrag_search_entities** - Search graph entities
+10. **lightrag_health_check** - System health monitoring
+11. **lightrag_clear_cache** - Cache management
+
+#### Available Resources (3)
+1. **lightrag://system/config** - System configuration
+2. **lightrag://system/stats** - Performance statistics
+3. **lightrag://system/health** - Health status
+
+### Production Configuration
+
+#### MCP Environment Variables
+
+Add these to your `.env` file:
+
+```bash
+# MCP Server Configuration
+MCP_SERVER_ENABLED=true
+MCP_SERVER_HOST=0.0.0.0
+MCP_SERVER_PORT=8080
+MCP_SERVER_WORKERS=2
+
+# LightRAG API Integration
+LIGHTRAG_API_URL=http://lightrag:9621
+LIGHTRAG_API_TIMEOUT=300
+LIGHTRAG_API_RETRIES=3
+
+# MCP Features
+MCP_ENABLE_STREAMING=true
+MCP_ENABLE_DOCUMENT_UPLOAD=true
+MCP_ENABLE_BATCH_PROCESSING=true
+MCP_ENABLE_GRAPH_OPERATIONS=true
+
+# MCP Security
+MCP_AUTH_ENABLED=true
+MCP_API_KEY=your-mcp-api-key
+MCP_CORS_ORIGINS=["https://claude.ai"]
+
+# MCP Performance
+MCP_MAX_CONCURRENT_REQUESTS=10
+MCP_REQUEST_TIMEOUT=300
+MCP_CACHE_ENABLED=true
+MCP_CACHE_TTL=3600
+
+# MCP Logging
+MCP_LOG_LEVEL=INFO
+MCP_LOG_FORMAT=json
+MCP_ENABLE_ACCESS_LOG=true
+```
+
+### Docker Compose Integration
+
+Add MCP server to your `docker-compose.production.yml`:
+
+```yaml
+services:
+  lightrag-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: lightrag_mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Load from .env file
+      - MCP_SERVER_HOST=0.0.0.0
+      - MCP_SERVER_PORT=8080
+      - LIGHTRAG_API_URL=http://lightrag:9621
+      - MCP_ENABLE_STREAMING=${MCP_ENABLE_STREAMING:-true}
+      - MCP_AUTH_ENABLED=${MCP_AUTH_ENABLED:-true}
+      - MCP_API_KEY=${MCP_API_KEY}
+    networks:
+      - lightrag-network
+    depends_on:
+      lightrag:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    volumes:
+      - ./logs:/app/logs:rw
+      - /tmp:/tmp:rw
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mcp.rule=Host(`mcp.yourdomain.com`)"
+      - "traefik.http.services.mcp.loadbalancer.server.port=8080"
+```
+
+### Claude CLI Integration
+
+#### 1. Install Claude CLI
+
+```bash
+# Install Claude CLI
+npm install -g @anthropic-ai/claude-cli
+
+# Or using pip
+pip install claude-cli
+```
+
+#### 2. Configure MCP Server
+
+```bash
+# Add MCP server to Claude CLI configuration
+claude config mcp add lightrag-mcp "http://localhost:8080" --api-key your-mcp-api-key
+
+# Or using local Python module
+claude config mcp add lightrag-mcp python -m lightrag_mcp
+```
+
+#### 3. Verify Integration
+
+```bash
+# Test MCP server connectivity
+claude mcp lightrag_health_check
+
+# List available tools
+claude mcp --list-tools
+
+# Test basic query
+claude mcp lightrag_query "What are the main themes in my documents?" --mode hybrid
+```
+
+### MCP Server Usage Examples
+
+#### Document Management
+
+```bash
+# Upload a document
+claude mcp lightrag_insert_file "/path/to/document.pdf" --description "Product manual"
+
+# Insert text directly
+claude mcp lightrag_insert_text "Important company policy update..." --title "Policy Update"
+
+# Batch processing
+claude mcp lightrag_batch_insert --directory "/path/to/documents" --file-types "pdf,docx,txt"
+
+# List all documents
+claude mcp lightrag_list_documents --limit 20 --offset 0
+```
+
+#### Knowledge Graph Operations
+
+```bash
+# Export knowledge graph
+claude mcp lightrag_get_graph --format json --max-nodes 100
+
+# Search entities
+claude mcp lightrag_search_entities "artificial intelligence" --limit 10
+
+# Get specific entity details
+claude mcp lightrag_search_entities "machine learning" --include-relationships true
+```
+
+#### Query Operations
+
+```bash
+# Local context queries
+claude mcp lightrag_query "How does authentication work?" --mode local
+
+# Global knowledge queries
+claude mcp lightrag_query "What are the system requirements?" --mode global
+
+# Hybrid queries (recommended)
+claude mcp lightrag_query "Explain the deployment process" --mode hybrid
+
+# Streaming queries
+claude mcp lightrag_query "Summarize all security features" --mode hybrid --stream true
+```
+
+### MCP Monitoring
+
+#### Health Checks
+
+```bash
+# Basic health check
+curl http://localhost:8080/health
+
+# Detailed system status
+claude mcp lightrag_health_check --detailed
+
+# Resource monitoring
+claude mcp resource "lightrag://system/stats"
+```
+
+#### Logs and Debugging
+
+```bash
+# View MCP server logs
+docker logs lightrag_mcp -f
+
+# Enable debug mode
+MCP_LOG_LEVEL=DEBUG docker-compose restart lightrag-mcp
+
+# Check resource usage
+claude mcp resource "lightrag://system/config"
+```
+
+### Performance Optimization
+
+#### MCP Server Tuning
+
+```bash
+# Adjust worker processes
+MCP_SERVER_WORKERS=4
+
+# Optimize timeouts
+MCP_REQUEST_TIMEOUT=600
+LIGHTRAG_API_TIMEOUT=600
+
+# Enable caching
+MCP_CACHE_ENABLED=true
+MCP_CACHE_TTL=7200
+
+# Concurrent request limits
+MCP_MAX_CONCURRENT_REQUESTS=20
+```
+
+#### Connection Pooling
+
+```bash
+# HTTP connection optimization
+MCP_HTTP_POOL_SIZE=20
+MCP_HTTP_POOL_MAXSIZE=50
+MCP_HTTP_KEEP_ALIVE=true
+
+# Retry configuration
+LIGHTRAG_API_RETRIES=5
+MCP_RETRY_BACKOFF=exponential
+```
+
+### Security Configuration
+
+#### Authentication
+
+```bash
+# Enable MCP authentication
+MCP_AUTH_ENABLED=true
+MCP_API_KEY=your-secure-mcp-api-key-here
+
+# Configure CORS for Claude.ai
+MCP_CORS_ORIGINS=["https://claude.ai", "https://your-domain.com"]
+
+# Rate limiting
+MCP_RATE_LIMIT_ENABLED=true
+MCP_RATE_LIMIT_REQUESTS=100
+MCP_RATE_LIMIT_WINDOW=60
+```
+
+#### Network Security
+
+```bash
+# Bind to specific interface
+MCP_SERVER_HOST=127.0.0.1  # Local only
+# or
+MCP_SERVER_HOST=0.0.0.0    # All interfaces
+
+# Use custom port
+MCP_SERVER_PORT=8080
+
+# Enable TLS (recommended for production)
+MCP_TLS_ENABLED=true
+MCP_TLS_CERT_PATH=/certs/mcp-cert.pem
+MCP_TLS_KEY_PATH=/certs/mcp-key.pem
+```
+
+### Troubleshooting MCP Issues
+
+#### Common Problems
+
+1. **Connection Refused**:
+```bash
+# Check if MCP server is running
+docker ps | grep lightrag_mcp
+
+# Verify port binding
+netstat -tlnp | grep 8080
+
+# Check firewall
+sudo ufw status | grep 8080
+```
+
+2. **Authentication Errors**:
+```bash
+# Verify API key
+echo $MCP_API_KEY
+
+# Test authentication
+curl -H "Authorization: Bearer $MCP_API_KEY" http://localhost:8080/health
+```
+
+3. **Performance Issues**:
+```bash
+# Monitor resource usage
+docker stats lightrag_mcp
+
+# Check API response times
+claude mcp lightrag_health_check --benchmark
+```
+
+#### Debug Configuration
+
+```bash
+# Enable verbose logging
+MCP_LOG_LEVEL=DEBUG
+MCP_ENABLE_ACCESS_LOG=true
+MCP_LOG_FORMAT=detailed
+
+# Restart with debug mode
+docker-compose restart lightrag-mcp
+```
+
+### MCP Server Scaling
+
+#### Horizontal Scaling
+
+```bash
+# Scale MCP server instances
+docker-compose up -d --scale lightrag-mcp=3
+
+# Load balancer configuration (Nginx)
+upstream mcp_backend {
+    server lightrag-mcp-1:8080;
+    server lightrag-mcp-2:8080;
+    server lightrag-mcp-3:8080;
+}
+```
+
+#### High Availability
+
+```yaml
+# docker-compose.production.yml
+services:
+  lightrag-mcp:
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+```
+
 ## 🔐 Security Setup
 
 ### SSL/TLS Configuration
+
+#### Production SSL Certificates
 
 1. **Generate SSL Certificates**:
 
@@ -220,6 +604,108 @@ certbot certonly --standalone -d your-domain.com
 cp /etc/letsencrypt/live/your-domain.com/fullchain.pem certs/cert.pem
 cp /etc/letsencrypt/live/your-domain.com/privkey.pem certs/key.pem
 ```
+
+#### Self-Signed SSL Certificates (Local Testing)
+
+For local development and testing environments, you can generate self-signed certificates:
+
+1. **Generate Self-Signed Certificate**:
+
+```bash
+# Create certificate directory
+mkdir -p certs
+
+# Generate private key
+openssl genrsa -out certs/key.pem 2048
+
+# Generate certificate signing request
+openssl req -new -key certs/key.pem -out certs/cert.csr -subj "/C=US/ST=State/L=City/O=Organization/OU=IT/CN=localhost"
+
+# Generate self-signed certificate (valid for 365 days)
+openssl x509 -req -in certs/cert.csr -signkey certs/key.pem -out certs/cert.pem -days 365
+
+# Clean up CSR file
+rm certs/cert.csr
+
+# Set proper permissions
+chmod 600 certs/key.pem
+chmod 644 certs/cert.pem
+```
+
+2. **Generate with Subject Alternative Names** (for multiple domains/IPs):
+
+```bash
+# Create config file for SAN certificate
+cat > certs/san.conf << EOF
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+C = US
+ST = State
+L = City
+O = Organization
+OU = IT Department
+CN = localhost
+
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = *.localhost
+DNS.3 = lightrag.local
+IP.1 = 127.0.0.1
+IP.2 = ::1
+EOF
+
+# Generate certificate with SAN
+openssl req -new -x509 -key certs/key.pem -out certs/cert.pem -days 365 -config certs/san.conf -extensions v3_req
+
+# Clean up config file
+rm certs/san.conf
+```
+
+3. **Quick One-Command Generation**:
+
+```bash
+# Generate self-signed certificate in one command
+openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes -subj "/C=US/ST=State/L=City/O=LightRAG/CN=localhost" -addext "subjectAltName=DNS:localhost,DNS:*.localhost,IP:127.0.0.1"
+```
+
+4. **Trust Self-Signed Certificate** (Optional):
+
+```bash
+# Ubuntu/Debian
+sudo cp certs/cert.pem /usr/local/share/ca-certificates/lightrag-local.crt
+sudo update-ca-certificates
+
+# CentOS/RHEL
+sudo cp certs/cert.pem /etc/pki/ca-trust/source/anchors/lightrag-local.crt
+sudo update-ca-trust
+
+# macOS (if accessing from Mac)
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/cert.pem
+```
+
+5. **Verify Certificate**:
+
+```bash
+# Check certificate details
+openssl x509 -in certs/cert.pem -text -noout
+
+# Test SSL connection
+openssl s_client -connect localhost:443 -servername localhost < /dev/null
+
+# Verify certificate chain
+openssl verify certs/cert.pem
+```
+
+#### SSL Configuration
 
 2. **Update Nginx Configuration**:
 
