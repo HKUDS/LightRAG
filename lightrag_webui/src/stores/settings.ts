@@ -185,10 +185,14 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
 
-      updateQuerySettings: (settings: Partial<QueryRequest>) =>
+      updateQuerySettings: (settings: Partial<QueryRequest>) => {
+        // Filter out history_turns to prevent changes, always keep it as 0
+        const filteredSettings = { ...settings }
+        delete filteredSettings.history_turns
         set((state) => ({
-          querySettings: { ...state.querySettings, ...settings }
-        })),
+          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 }
+        }))
+      },
 
       setShowFileName: (show: boolean) => set({ showFileName: show }),
       setShowLegend: (show: boolean) => set({ showLegend: show }),
@@ -197,7 +201,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 16,
+      version: 17,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -283,6 +287,12 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 16) {
           // Add documentsPageSize field for older versions
           state.documentsPageSize = 10
+        }
+        if (version < 17) {
+          // Force history_turns to 0 for all users
+          if (state.querySettings) {
+            state.querySettings.history_turns = 0
+          }
         }
         return state
       }

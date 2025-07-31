@@ -335,7 +335,8 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    history_turns: int = 3
+    # Deprated: history message have negtive effect on query performance
+    history_turns: int = 0
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
     ids: list[str] | None = None
@@ -614,7 +615,6 @@ conversation_history = [
 query_param = QueryParam(
     mode="mix",  # or any other mode: "local", "global", "hybrid"
     conversation_history=conversation_history,  # Add the conversation history
-    history_turns=3  # Number of recent conversation turns to consider
 )
 
 # Make a query that takes into account the conversation history
