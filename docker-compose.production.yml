@@ -149,14 +149,7 @@ services:
       options:
         max-size: "100m"
         max-file: "3"
-    command: >
-      postgres
-      -c config_file=/etc/postgresql/postgresql.conf
-      -c log_statement=mod
-      -c log_min_duration_statement=1000
-      -c log_checkpoints=on
-      -c log_connections=on
-      -c log_disconnections=on
+    command: sh -c "service postgresql start && sleep infinity"
 
   # ===================================================================
   # Redis Cache Service
