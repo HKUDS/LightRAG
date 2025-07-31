@@ -5,6 +5,9 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 CREATE EXTENSION IF NOT EXISTS auto_explain;
+CREATE EXTENSION IF NOT EXISTS age;
+LOAD 'age';
+SET search_path = ag_catalog, \"\$user\", public;
 
 -- Set auto_explain configuration
 ALTER SYSTEM SET auto_explain.log_min_duration = '1s';
