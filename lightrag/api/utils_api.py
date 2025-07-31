@@ -15,7 +15,24 @@ from lightrag.constants import (
 from fastapi import HTTPException, Security, Request, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
-from .auth import auth_handler
+import importlib.util
+
+# Load config module first for auth.py dependencies
+config_spec = importlib.util.spec_from_file_location(
+    "config", "/app/lightrag/api/config.py"
+)
+config_module = importlib.util.module_from_spec(config_spec)
+sys.modules["config"] = config_module  # Register in sys.modules
+config_spec.loader.exec_module(config_module)
+
+# Import auth_handler directly from the auth.py file
+auth_spec = importlib.util.spec_from_file_location("auth", "/app/lightrag/api/auth.py")
+auth_module = importlib.util.module_from_spec(auth_spec)
+sys.modules["auth"] = auth_module  # Register in sys.modules
+# Manually set up the module's environment for relative imports
+auth_module.__package__ = "lightrag.api"
+auth_spec.loader.exec_module(auth_module)
+auth_handler = auth_module.auth_handler
 from .config import ollama_server_infos, global_args, get_env_value
 
 

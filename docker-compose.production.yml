@@ -85,6 +85,10 @@ services:
       - ./certs:/app/certs:ro
     networks:
       - lightrag-network
+    ports:
+      - "127.0.0.1:9621:9621"  # Expose API for MCP server access
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow access to host services like Ollama
     healthcheck:
       test: ["CMD", "/app/health-check.sh"]
       interval: 30s

@@ -55,7 +55,24 @@ from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from lightrag.api.auth import auth_handler
+import importlib.util
+
+# Load config module first for auth.py dependencies
+config_spec = importlib.util.spec_from_file_location(
+    "config", "/app/lightrag/api/config.py"
+)
+config_module = importlib.util.module_from_spec(config_spec)
+sys.modules["config"] = config_module  # Register in sys.modules
+config_spec.loader.exec_module(config_module)
+
+# Import auth_handler directly from the auth.py file
+auth_spec = importlib.util.spec_from_file_location("auth", "/app/lightrag/api/auth.py")
+auth_module = importlib.util.module_from_spec(auth_spec)
+sys.modules["auth"] = auth_module  # Register in sys.modules
+# Manually set up the module's environment for relative imports
+auth_module.__package__ = "lightrag.api"
+auth_spec.loader.exec_module(auth_module)
+auth_handler = auth_module.auth_handler
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -86,6 +103,7 @@ def create_app(args):
         "openai",
         "openai-ollama",
         "azure_openai",
+        "xai",
     ]:
         raise Exception("llm binding not supported")
 
@@ -95,6 +113,7 @@ def create_app(args):
         "openai",
         "azure_openai",
         "jina",
+        "xai",
     ]:
         raise Exception("embedding binding not supported")
 
@@ -795,6 +814,9 @@ def main():
     )
     uvicorn.run(**uvicorn_config)
 
+
+# Create global app instance for gunicorn
+app = get_application()
 
 if __name__ == "__main__":
     main()
