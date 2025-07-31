@@ -91,7 +91,7 @@ export default function QuerySettings() {
                 >
                   <SelectTrigger
                     id="query_mode_select"
-                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1"
+                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
                   >
                     <SelectValue />
                   </SelectTrigger>
@@ -134,7 +134,7 @@ export default function QuerySettings() {
                 >
                   <SelectTrigger
                     id="response_format_select"
-                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1"
+                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
                   >
                     <SelectValue />
                   </SelectTrigger>
