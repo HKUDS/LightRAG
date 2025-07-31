@@ -199,7 +199,7 @@ Storage backends cannot be changed after documents are added to the system.
 
 ### Query Modes
 - **local**: Context-dependent information retrieval
-- **global**: Global knowledge graph queries  
+- **global**: Global knowledge graph queries
 - **hybrid**: Combines local and global methods
 - **mix**: Integrates knowledge graph and vector retrieval
 - **naive**: Basic vector search without graph enhancement

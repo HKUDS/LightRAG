@@ -13,5 +13,5 @@ __all__ = [
     "RateLimitConfig",
     "RateLimitType",
     "SecurityHeadersMiddleware",
-    "SecurityHeadersConfig"
+    "SecurityHeadersConfig",
 ]

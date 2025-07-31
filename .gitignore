@@ -1,83 +1,131 @@
-# Python-related files
+# ====================================================================
+# LightRAG Production .gitignore
+# ====================================================================
+
+# Python
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
 .eggs/
-*.tgz
-*.tar.gz
-*.ini
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Virtual Environment
+# Virtual Environments
 .venv/
 env/
 venv/
-*.env*
-.env_example
+ENV/
+env.bak/
+venv.bak/
 
-# Build / Distribution
-dist/
-build/
-site/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
 
-# Logs / Reports
+# Runtime Data & Logs
+rag_storage/
+data/
+logs/
+lightrag.log
 *.log
 *.log.*
 *.logfire
 *.coverage/
 log/
 
-# Caches
+# Configuration (keep templates)
+.env
+!env.example
+!production.env
+
+# Test and Development
+test_*.py
+*_test.py
+book.txt
+*.tmp
+temp/
+tmp/
+check_docling_api.py
+docling_test_*.txt
+*_temp.py
+*_backup.*
+
+# Build Artifacts
 .cache/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 .gradio/
 .history/
-temp/
 
-# IDE / Editor Files
-.idea/
-.vscode/
-.vscode/settings.json
+# Docker
+.dockerignore
 
-# Framework-specific files
+# System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# SSL Certificates (keep directory structure)
+certs/*.pem
+certs/*.key
+certs/*.crt
+!certs/.gitkeep
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# Production secrets (never commit)
+.env.production
+.env.local
+secrets/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Monitoring and metrics
+prometheus_data/
+grafana_data/
+
+# Node.js (for web UI)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Framework-specific
 local_neo4jWorkDir/
 neo4jWorkDir/
-
-# Data & Storage
-inputs/
-rag_storage/
-examples/input/
-examples/output/
-output*/
-
-# Miscellaneous
-.DS_Store
-TODO.md
-ignore_this.txt
-*.ignore.*
-
-# Project-specific files
 dickens*/
-book.txt
 LightRAG.pdf
-download_models_hf.py
 lightrag-dev/
 gui/
-
-# Test files and outputs (keep organized in testing/ directory)
-test_document_*.pdf
-*_test_output_*.txt
-check_docling_api.py
-docling_test_*.txt
-
-# Temporary development files
-*_temp.py
-*_backup.*
-*.tmp
-
-# Enhanced Docling cache
-rag_storage/docling_cache/
-
-# Cline files
-memory-bank/

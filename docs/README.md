@@ -17,7 +17,7 @@ Complete guides for integrating LightRAG with external services and protocols:
 #### Model Context Protocol (MCP) - NEW! 🚀
 - **[MCP Implementation Summary](integration_guides/MCP_IMPLEMENTATION_SUMMARY.md)** - **START HERE** - Complete overview of the MCP implementation
 - **[MCP Integration Plan](integration_guides/MCP_INTEGRATION_PLAN.md)** - Strategic implementation roadmap
-- **[MCP Implementation Guide](integration_guides/MCP_IMPLEMENTATION_GUIDE.md)** - Step-by-step development guide  
+- **[MCP Implementation Guide](integration_guides/MCP_IMPLEMENTATION_GUIDE.md)** - Step-by-step development guide
 - **[MCP Tools Specification](integration_guides/MCP_TOOLS_SPECIFICATION.md)** - Technical tool specifications
 
 #### Other Integrations
@@ -84,7 +84,7 @@ claude mcp lightrag_query "What are the main themes in my documents?"
 - **Citation Tracking**: Source attribution with file paths
 
 ### Knowledge Graph
-- **Entity Extraction**: Automatic entity and relationship identification  
+- **Entity Extraction**: Automatic entity and relationship identification
 - **Graph Storage**: Multiple backends (Neo4j, NetworkX, PostgreSQL, etc.)
 - **Graph Visualization**: HTML and Neo4j visualization support
 - **Schema Evolution**: Dynamic graph schema management
@@ -111,11 +111,11 @@ MCP Integration → Claude CLI → Natural Language Queries
 
 ### Storage System (4-Layer)
 1. **KV Storage**: Document chunks, LLM cache (4 implementations)
-2. **Vector Storage**: Embedding vectors (6 implementations) 
+2. **Vector Storage**: Embedding vectors (6 implementations)
 3. **Graph Storage**: Entity relationships (5 implementations)
 4. **Document Status Storage**: Processing status (4 implementations)
 
-### API Architecture  
+### API Architecture
 - **REST API**: Complete FastAPI-based server
 - **Web UI**: React/TypeScript frontend with graph visualization
 - **MCP Server**: Model Context Protocol integration
@@ -165,7 +165,7 @@ LightRAG supports extensive configuration through environment variables:
 
 - **LLM Configuration**: Model bindings, API keys, endpoints
 - **Storage Configuration**: Database connections, storage backends
-- **Processing Configuration**: Chunk sizes, concurrency limits  
+- **Processing Configuration**: Chunk sizes, concurrency limits
 - **API Configuration**: Ports, authentication, CORS settings
 - **MCP Configuration**: 25+ MCP-specific settings
 
@@ -202,7 +202,7 @@ claude mcp lightrag_query "Analyze the key themes in my research papers" --mode 
 # Upload documents
 claude mcp lightrag_insert_file "/path/to/research_paper.pdf"
 
-# Explore knowledge graph  
+# Explore knowledge graph
 claude mcp lightrag_get_graph --max-nodes 100 --format json
 ```
 
@@ -256,7 +256,7 @@ When adding documentation:
 
 ### Common Issues
 1. **LLM Connection Issues**: Check API keys and endpoints
-2. **Storage Errors**: Verify database connections and permissions  
+2. **Storage Errors**: Verify database connections and permissions
 3. **Memory Issues**: Adjust chunk sizes and concurrency limits
 4. **MCP Integration Issues**: Verify MCP dependencies and configuration
 
@@ -282,9 +282,9 @@ When adding documentation:
 
 ---
 
-**Documentation Version**: 2.0  
-**Last Updated**: 2025-01-29  
-**LightRAG Version**: Latest  
-**MCP Integration Version**: 1.0.0  
+**Documentation Version**: 2.0
+**Last Updated**: 2025-01-29
+**LightRAG Version**: Latest
+**MCP Integration Version**: 1.0.0
 
 For the most up-to-date information, check the individual documentation files and the project's GitHub repository.

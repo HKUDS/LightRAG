@@ -1,8 +1,8 @@
 # LightRAG MCP Integration Plan
 
-**Version**: 1.0  
-**Date**: 2025-01-28  
-**Status**: Planning Phase  
+**Version**: 1.0
+**Date**: 2025-01-28
+**Status**: Planning Phase
 
 ## Table of Contents
 
@@ -134,30 +134,30 @@ class LightRAGMCPConfig:
     lightrag_api_url: str = "http://localhost:9621"
     lightrag_api_key: Optional[str] = None
     lightrag_working_dir: Optional[str] = None
-    
+
     # MCP server settings
     mcp_server_name: str = "lightrag-mcp"
     mcp_server_version: str = "1.0.0"
     mcp_description: str = "LightRAG Model Context Protocol Server"
-    
+
     # Feature flags
     enable_direct_mode: bool = True  # Use library directly vs API
     enable_streaming: bool = True
     enable_graph_modification: bool = True
     enable_document_upload: bool = True
-    
+
     # Security settings
     require_auth: bool = False
     allowed_file_types: list[str] = [".txt", ".md", ".pdf", ".docx", ".pptx"]
     max_file_size_mb: int = 100
     max_documents_per_batch: int = 10
-    
+
     # Performance settings
     default_query_timeout: int = 60
     max_concurrent_queries: int = 5
     cache_enabled: bool = True
     cache_ttl_seconds: int = 3600
-    
+
     # Query defaults
     default_query_mode: str = "hybrid"
     default_top_k: int = 40
@@ -169,7 +169,7 @@ class LightRAGMCPConfig:
 ### 1. Query Tools (Primary Value)
 
 #### `lightrag_query`
-**Purpose**: Execute RAG queries with multiple retrieval modes  
+**Purpose**: Execute RAG queries with multiple retrieval modes
 **Parameters**:
 - `query: str` - The question or search query
 - `mode: str` - Query mode (naive, local, global, hybrid, mix, bypass)
@@ -187,7 +187,7 @@ class LightRAGMCPConfig:
 }
 ```
 
-**Returns**: 
+**Returns**:
 ```python
 {
     "response": str,             # Generated answer
@@ -204,14 +204,14 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_stream_query`
-**Purpose**: Execute streaming RAG queries for real-time responses  
-**Parameters**: Same as `lightrag_query`  
+**Purpose**: Execute streaming RAG queries for real-time responses
+**Parameters**: Same as `lightrag_query`
 **Returns**: Streaming text response with metadata at end
 
 ### 2. Document Management Tools
 
 #### `lightrag_insert_text`
-**Purpose**: Add text documents directly to the knowledge base  
+**Purpose**: Add text documents directly to the knowledge base
 **Parameters**:
 - `text: str` - Document content
 - `metadata: dict` - Document metadata (title, source, etc.)
@@ -231,16 +231,16 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_insert_file`
-**Purpose**: Process and index files from filesystem  
+**Purpose**: Process and index files from filesystem
 **Parameters**:
 - `file_path: str` - Path to file
 - `options: dict` - Processing options
 
-**Supported File Types**: PDF, DOCX, TXT, MD, PPTX  
+**Supported File Types**: PDF, DOCX, TXT, MD, PPTX
 **Returns**: Same as `lightrag_insert_text`
 
 #### `lightrag_list_documents`
-**Purpose**: List all documents with processing status  
+**Purpose**: List all documents with processing status
 **Parameters**:
 - `status_filter: str` - Filter by status (optional)
 - `limit: int = 100` - Maximum results
@@ -266,7 +266,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_delete_documents`
-**Purpose**: Remove documents from knowledge base  
+**Purpose**: Remove documents from knowledge base
 **Parameters**:
 - `document_ids: list[str]` - List of document IDs to delete
 
@@ -280,7 +280,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_batch_process`
-**Purpose**: Process multiple documents in batch  
+**Purpose**: Process multiple documents in batch
 **Parameters**:
 - `file_paths: list[str]` - List of file paths
 - `options: dict` - Batch processing options
@@ -298,7 +298,7 @@ class LightRAGMCPConfig:
 ### 3. Knowledge Graph Tools
 
 #### `lightrag_get_graph`
-**Purpose**: Extract knowledge graph data with filtering  
+**Purpose**: Extract knowledge graph data with filtering
 **Parameters**:
 - `label: str = None` - Filter by entity/relation label
 - `max_nodes: int = 100` - Maximum nodes to return
@@ -333,7 +333,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_search_entities`
-**Purpose**: Search entities by name or properties  
+**Purpose**: Search entities by name or properties
 **Parameters**:
 - `query: str` - Search query
 - `limit: int = 20` - Maximum results
@@ -356,7 +356,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_update_entity`
-**Purpose**: Modify entity properties  
+**Purpose**: Modify entity properties
 **Parameters**:
 - `entity_id: str` - Entity identifier
 - `properties: dict` - Properties to update
@@ -373,7 +373,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_get_entity_relationships`
-**Purpose**: Get all relationships for a specific entity  
+**Purpose**: Get all relationships for a specific entity
 **Parameters**:
 - `entity_id: str` - Entity identifier
 - `relationship_type: str = None` - Filter by relationship type
@@ -399,7 +399,7 @@ class LightRAGMCPConfig:
 ### 4. System Management Tools
 
 #### `lightrag_health_check`
-**Purpose**: System status and configuration information  
+**Purpose**: System status and configuration information
 **Parameters**: None
 
 **Returns**:
@@ -429,7 +429,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_clear_cache`
-**Purpose**: Clear various system caches  
+**Purpose**: Clear various system caches
 **Parameters**:
 - `cache_types: list[str]` - Types of cache to clear (llm, embedding, query)
 
@@ -444,7 +444,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag_get_system_stats`
-**Purpose**: Detailed system usage statistics  
+**Purpose**: Detailed system usage statistics
 **Parameters**:
 - `time_range: str = "24h"` - Statistics time range
 
@@ -476,7 +476,7 @@ class LightRAGMCPConfig:
 ### 1. Document Resources
 
 #### `lightrag://documents/{doc_id}`
-**Purpose**: Access specific document content and metadata  
+**Purpose**: Access specific document content and metadata
 **Content Type**: `application/json`
 
 **Structure**:
@@ -506,7 +506,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag://documents/status`
-**Purpose**: Overall document processing status and pipeline state  
+**Purpose**: Overall document processing status and pipeline state
 **Content Type**: `application/json`
 
 **Structure**:
@@ -538,7 +538,7 @@ class LightRAGMCPConfig:
 ### 2. Knowledge Graph Resources
 
 #### `lightrag://graph/entities`
-**Purpose**: Access all entities in the knowledge graph  
+**Purpose**: Access all entities in the knowledge graph
 **Content Type**: `application/json`
 
 **Structure**:
@@ -561,7 +561,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag://graph/relationships`
-**Purpose**: Access all relationships in the knowledge graph  
+**Purpose**: Access all relationships in the knowledge graph
 **Content Type**: `application/json`
 
 **Structure**:
@@ -585,7 +585,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag://graph/schema`
-**Purpose**: Knowledge graph schema and structure information  
+**Purpose**: Knowledge graph schema and structure information
 **Content Type**: `application/json`
 
 **Structure**:
@@ -617,7 +617,7 @@ class LightRAGMCPConfig:
 ### 3. System Resources
 
 #### `lightrag://system/config`
-**Purpose**: System configuration and settings  
+**Purpose**: System configuration and settings
 **Content Type**: `application/json`
 
 **Structure**:
@@ -652,7 +652,7 @@ class LightRAGMCPConfig:
 ```
 
 #### `lightrag://system/stats`
-**Purpose**: System statistics and performance metrics  
+**Purpose**: System statistics and performance metrics
 **Content Type**: `application/json`
 
 **Structure**:
@@ -1081,7 +1081,7 @@ claude mcp resource "lightrag://graph/schema"
 - [ ] **Error Handling**: Comprehensive error responses with recovery guidance
 
 ### Performance Metrics
-- [ ] **Response Time**: 
+- [ ] **Response Time**:
   - Simple queries: <2 seconds (95th percentile)
   - Complex queries: <10 seconds (95th percentile)
   - Health checks: <500ms (99th percentile)
@@ -1116,19 +1116,19 @@ claude mcp resource "lightrag://graph/schema"
 ### High Risk Items
 
 #### 1. LightRAG API Compatibility
-**Risk**: Changes to LightRAG API break MCP integration  
-**Impact**: High - Core functionality affected  
-**Probability**: Medium  
-**Mitigation**: 
+**Risk**: Changes to LightRAG API break MCP integration
+**Impact**: High - Core functionality affected
+**Probability**: Medium
+**Mitigation**:
 - Version pinning for LightRAG dependencies
 - Comprehensive integration tests
 - API compatibility monitoring
 - Fallback to direct library mode
 
 #### 2. Performance Under Load
-**Risk**: Poor performance with many concurrent users  
-**Impact**: High - User experience degraded  
-**Probability**: Medium  
+**Risk**: Poor performance with many concurrent users
+**Impact**: High - User experience degraded
+**Probability**: Medium
 **Mitigation**:
 - Load testing during development
 - Connection pooling and resource management
@@ -1136,9 +1136,9 @@ claude mcp resource "lightrag://graph/schema"
 - Horizontal scaling support
 
 #### 3. Complex Error Scenarios
-**Risk**: Difficult-to-debug errors in distributed system  
-**Impact**: Medium - Development and maintenance overhead  
-**Probability**: High  
+**Risk**: Difficult-to-debug errors in distributed system
+**Impact**: Medium - Development and maintenance overhead
+**Probability**: High
 **Mitigation**:
 - Comprehensive logging and tracing
 - Error code standardization
@@ -1148,18 +1148,18 @@ claude mcp resource "lightrag://graph/schema"
 ### Medium Risk Items
 
 #### 4. MCP Protocol Evolution
-**Risk**: MCP specification changes requiring updates  
-**Impact**: Medium - Compatibility issues  
-**Probability**: Medium  
+**Risk**: MCP specification changes requiring updates
+**Impact**: Medium - Compatibility issues
+**Probability**: Medium
 **Mitigation**:
 - Stay current with MCP specification updates
 - Backward compatibility support
 - Modular architecture for easy updates
 
 #### 5. Authentication Complexity
-**Risk**: Complex authentication flows confuse users  
-**Impact**: Medium - Adoption challenges  
-**Probability**: Low  
+**Risk**: Complex authentication flows confuse users
+**Impact**: Medium - Adoption challenges
+**Probability**: Low
 **Mitigation**:
 - Simple default configuration
 - Clear documentation and examples
@@ -1168,9 +1168,9 @@ claude mcp resource "lightrag://graph/schema"
 ### Low Risk Items
 
 #### 6. Resource Consumption
-**Risk**: High memory or CPU usage  
-**Impact**: Low - Deployment constraints  
-**Probability**: Low  
+**Risk**: High memory or CPU usage
+**Impact**: Low - Deployment constraints
+**Probability**: Low
 **Mitigation**:
 - Resource monitoring and optimization
 - Configurable resource limits
@@ -1223,10 +1223,10 @@ claude mcp resource "lightrag://graph/schema"
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-01-28  
-**Next Review**: 2025-02-04  
-**Author**: Claude Code Assistant  
-**Reviewers**: Development Team  
+**Document Version**: 1.0
+**Last Updated**: 2025-01-28
+**Next Review**: 2025-02-04
+**Author**: Claude Code Assistant
+**Reviewers**: Development Team
 
 For questions or updates to this plan, please refer to the project repository and documentation.

@@ -1,6 +1,6 @@
 # LightRAG Repository Structure
 
-**Last Updated**: 2025-01-29  
+**Last Updated**: 2025-01-29
 **Status**: Organized and Clean ✅
 
 ## 📁 Directory Overview

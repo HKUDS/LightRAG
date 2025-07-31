@@ -1,0 +1,12 @@
+# ====================================================================
+# Crontab for LightRAG Backup Service
+# ====================================================================
+
+# Database backups - daily at 1:00 AM
+0 1 * * * /app/scripts/backup-database.sh >> /app/logs/backup-database.log 2>&1
+
+# Data backups - daily at 2:00 AM
+0 2 * * * /app/scripts/backup-data.sh >> /app/logs/backup-data.log 2>&1
+
+# Health check - every hour
+0 * * * * /app/scripts/backup-health-check.sh >> /app/logs/backup-health.log 2>&1

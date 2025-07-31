@@ -337,30 +337,40 @@ def parse_args() -> argparse.Namespace:
 
     # Document loading engine configuration
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
-    
+
     # Enhanced Docling configuration options
     args.docling_export_format = get_env_value("DOCLING_EXPORT_FORMAT", "markdown")
     args.docling_max_workers = get_env_value("DOCLING_MAX_WORKERS", 2, int)
     args.docling_enable_ocr = get_env_value("DOCLING_ENABLE_OCR", True, bool)
-    args.docling_enable_table_structure = get_env_value("DOCLING_ENABLE_TABLE_STRUCTURE", True, bool)
+    args.docling_enable_table_structure = get_env_value(
+        "DOCLING_ENABLE_TABLE_STRUCTURE", True, bool
+    )
     args.docling_enable_figures = get_env_value("DOCLING_ENABLE_FIGURES", True, bool)
-    
+
     # Docling model selection
     args.docling_layout_model = get_env_value("DOCLING_LAYOUT_MODEL", "auto")
     args.docling_ocr_model = get_env_value("DOCLING_OCR_MODEL", "auto")
     args.docling_table_model = get_env_value("DOCLING_TABLE_MODEL", "auto")
-    
+
     # Docling content processing options
-    args.docling_include_page_numbers = get_env_value("DOCLING_INCLUDE_PAGE_NUMBERS", True, bool)
-    args.docling_include_headings = get_env_value("DOCLING_INCLUDE_HEADINGS", True, bool)
-    args.docling_extract_metadata = get_env_value("DOCLING_EXTRACT_METADATA", True, bool)
+    args.docling_include_page_numbers = get_env_value(
+        "DOCLING_INCLUDE_PAGE_NUMBERS", True, bool
+    )
+    args.docling_include_headings = get_env_value(
+        "DOCLING_INCLUDE_HEADINGS", True, bool
+    )
+    args.docling_extract_metadata = get_env_value(
+        "DOCLING_EXTRACT_METADATA", True, bool
+    )
     args.docling_process_images = get_env_value("DOCLING_PROCESS_IMAGES", True, bool)
-    
+
     # Docling quality settings
     args.docling_image_dpi = get_env_value("DOCLING_IMAGE_DPI", 300, int)
     args.docling_ocr_confidence = get_env_value("DOCLING_OCR_CONFIDENCE", 0.7, float)
-    args.docling_table_confidence = get_env_value("DOCLING_TABLE_CONFIDENCE", 0.8, float)
-    
+    args.docling_table_confidence = get_env_value(
+        "DOCLING_TABLE_CONFIDENCE", 0.8, float
+    )
+
     # Docling cache settings
     args.docling_enable_cache = get_env_value("DOCLING_ENABLE_CACHE", True, bool)
     args.docling_cache_dir = get_env_value("DOCLING_CACHE_DIR", "./docling_cache")

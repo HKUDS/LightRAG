@@ -59,7 +59,7 @@ class QueryResponse(BaseModel):
     mode: str                       # Query mode used
     metadata: QueryMetadata
     sources: List[SourceAttribution]
-    
+
 class QueryMetadata(BaseModel):
     entities_used: int
     relations_used: int
@@ -67,12 +67,12 @@ class QueryMetadata(BaseModel):
     processing_time: float
     token_usage: TokenUsage
     cache_hit: bool
-    
+
 class TokenUsage(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-    
+
 class SourceAttribution(BaseModel):
     document_id: str
     chunk_id: str
@@ -124,7 +124,7 @@ class StreamChunk(BaseModel):
     content: Optional[str]          # Text content (for content chunks)
     metadata: Optional[Dict[str, Any]]  # Metadata (for metadata chunks)
     error: Optional[str]            # Error message (for error chunks)
-    
+
 # Final metadata chunk includes:
 class StreamMetadata(BaseModel):
     total_chunks_sent: int
@@ -184,13 +184,13 @@ class DocumentResponse(BaseModel):
     message: str
     processing_info: ProcessingInfo
     estimated_completion: Optional[str]  # ISO timestamp
-    
+
 class DocumentStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     PROCESSED = "processed"
     FAILED = "failed"
-    
+
 class ProcessingInfo(BaseModel):
     chunks_created: int
     entities_extracted: int
@@ -299,7 +299,7 @@ class DocumentListResponse(BaseModel):
     documents: List[DocumentSummary]
     pagination: PaginationInfo
     statistics: DocumentStatistics
-    
+
 class DocumentSummary(BaseModel):
     id: str
     title: str
@@ -313,14 +313,14 @@ class DocumentSummary(BaseModel):
     relationship_count: int
     error_message: Optional[str]
     metadata: Dict[str, Any]
-    
+
 class PaginationInfo(BaseModel):
     total_documents: int
     current_page: int
     total_pages: int
     has_next: bool
     has_previous: bool
-    
+
 class DocumentStatistics(BaseModel):
     total_documents: int
     by_status: Dict[str, int]
@@ -366,17 +366,17 @@ class DeleteResponse(BaseModel):
     cascade_deletions: CascadeDeletions
     backup_info: Optional[BackupInfo]
     processing_time: float
-    
+
 class DeleteFailure(BaseModel):
     document_id: str
     error_code: str
     error_message: str
-    
+
 class CascadeDeletions(BaseModel):
     entities_deleted: int
     relationships_deleted: int
     chunks_deleted: int
-    
+
 class BackupInfo(BaseModel):
     backup_id: str
     backup_location: str
@@ -427,7 +427,7 @@ class BatchItem(BaseModel):
     content: str  # File path, text content, or URL
     title: Optional[str]
     metadata: Optional[Dict[str, Any]]
-    
+
 class BatchOptions(BaseModel):
     max_concurrent: int = 5
     stop_on_error: bool = False
@@ -444,20 +444,20 @@ class BatchResponse(BaseModel):
     progress: BatchProgress
     estimated_completion: Optional[str]
     results: List[BatchItemResult]
-    
+
 class BatchStatus(str, Enum):
     QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-    
+
 class BatchProgress(BaseModel):
     completed: int
     failed: int
     remaining: int
     percentage: float
-    
+
 class BatchItemResult(BaseModel):
     item_index: int
     status: str
@@ -513,7 +513,7 @@ class GraphResponse(BaseModel):
     edges: List[GraphEdge]
     statistics: GraphStatistics
     metadata: GraphMetadata
-    
+
 class GraphNode(BaseModel):
     id: str
     labels: List[str]
@@ -521,7 +521,7 @@ class GraphNode(BaseModel):
     degree: int
     centrality: Optional[float]
     community: Optional[str]
-    
+
 class GraphEdge(BaseModel):
     id: str
     type: str
@@ -530,7 +530,7 @@ class GraphEdge(BaseModel):
     properties: Dict[str, Any]
     weight: Optional[float]
     confidence: Optional[float]
-    
+
 class GraphStatistics(BaseModel):
     total_nodes: int
     total_edges: int
@@ -539,7 +539,7 @@ class GraphStatistics(BaseModel):
     density: float
     clustering_coefficient: float
     average_path_length: Optional[float]
-    
+
 class GraphMetadata(BaseModel):
     extraction_time: str
     filters_applied: Dict[str, Any]
@@ -587,13 +587,13 @@ class EntitySearchResponse(BaseModel):
     entities: List[EntityMatch]
     total_matches: int
     search_metadata: SearchMetadata
-    
+
 class EntityMatch(BaseModel):
     entity: GraphNode
     relevance_score: float
     match_reasons: List[str]
     highlighted: Dict[str, str]  # Highlighted matching text
-    
+
 class SearchMetadata(BaseModel):
     query: str
     search_type: str
@@ -644,12 +644,12 @@ class EntityUpdates(BaseModel):
     remove_labels: Optional[List[str]]
     add_relationships: Optional[List[RelationshipSpec]]
     remove_relationships: Optional[List[str]]
-    
+
 class RelationshipSpec(BaseModel):
     target_entity: str
     relationship_type: str
     properties: Optional[Dict[str, Any]]
-    
+
 class UpdateOptions(BaseModel):
     merge_mode: Literal["replace", "merge", "append"] = "merge"
     create_if_missing: bool = False
@@ -665,7 +665,7 @@ class UpdateResponse(BaseModel):
     changes_applied: ChangesSummary
     warnings: List[str]
     backup_id: Optional[str]
-    
+
 class ChangesSummary(BaseModel):
     properties_updated: int
     labels_added: int
@@ -722,13 +722,13 @@ class EntityRelationshipsResponse(BaseModel):
     relationships: List[RelationshipDetail]
     relationship_counts: RelationshipCounts
     pagination: PaginationInfo
-    
+
 class RelationshipDetail(BaseModel):
     relationship: GraphEdge
     connected_entity: GraphNode
     direction: Literal["incoming", "outgoing"]
     path_length: int = 1
-    
+
 class RelationshipCounts(BaseModel):
     total: int
     by_type: Dict[str, int]
@@ -774,38 +774,38 @@ class HealthResponse(BaseModel):
     components: Dict[str, ComponentHealth]
     dependencies: Optional[Dict[str, DependencyHealth]]
     system_info: SystemInfo
-    
+
 class ComponentHealth(BaseModel):
     status: Literal["healthy", "degraded", "unhealthy"]
     message: Optional[str]
     last_check: str
     metrics: Optional[Dict[str, float]]
-    
+
 class DependencyHealth(BaseModel):
     status: Literal["connected", "degraded", "unavailable"]
     response_time: Optional[float]
     version: Optional[str]
     last_check: str
-    
+
 class SystemInfo(BaseModel):
     configuration: ConfigurationSummary
     statistics: SystemStatistics
     performance: PerformanceMetrics
-    
+
 class ConfigurationSummary(BaseModel):
     llm_binding: str
     llm_model: str
     embedding_model: str
     storage_backends: Dict[str, str]
     workspace: Optional[str]
-    
+
 class SystemStatistics(BaseModel):
     total_documents: int
     total_entities: int
     total_relationships: int
     total_chunks: int
     processing_queue_size: int
-    
+
 class PerformanceMetrics(BaseModel):
     average_query_time: float
     average_processing_time: float
@@ -868,7 +868,7 @@ class ClearCacheResponse(BaseModel):
     cache_sizes_after: Dict[str, CacheSize]
     processing_time: float
     warnings: List[str]
-    
+
 class CacheSize(BaseModel):
     entries: int
     size_bytes: int
@@ -919,7 +919,7 @@ class SystemStatsResponse(BaseModel):
     resource_usage: Optional[ResourceUsage]
     performance_metrics: Optional[PerformanceStatistics]
     error_statistics: Optional[ErrorStatistics]
-    
+
 class QueryStatistics(BaseModel):
     total_queries: int
     queries_by_mode: Dict[str, int]
@@ -927,20 +927,20 @@ class QueryStatistics(BaseModel):
     cache_hit_rate: float
     popular_queries: List[PopularQuery]
     response_time_percentiles: Dict[str, float]
-    
+
 class DocumentStatistics(BaseModel):
     documents_processed: int
     processing_failures: int
     average_processing_time: float
     documents_by_type: Dict[str, int]
     processing_queue_stats: QueueStatistics
-    
+
 class ResourceUsage(BaseModel):
     memory_usage: MemoryStats
     storage_usage: StorageStats
     api_usage: APIUsageStats
     cache_usage: CacheStats
-    
+
 class PerformanceStatistics(BaseModel):
     throughput: Dict[str, float]
     latency_distribution: Dict[str, Dict[str, float]]
@@ -983,7 +983,7 @@ ERROR_CODES = {
     "RATE_LIMITED": "Rate limit exceeded",
     "SERVICE_UNAVAILABLE": "Service temporarily unavailable",
     "INTERNAL_ERROR": "Internal server error",
-    
+
     # LightRAG specific errors
     "LIGHTRAG_UNAVAILABLE": "LightRAG service is not available",
     "PROCESSING_TIMEOUT": "Operation exceeded timeout limit",
@@ -993,7 +993,7 @@ ERROR_CODES = {
     "GRAPH_ACCESS_ERROR": "Knowledge graph access error",
     "STORAGE_ERROR": "Storage backend error",
     "CONFIGURATION_ERROR": "Configuration error",
-    
+
     # Resource errors
     "RESOURCE_LIMIT_EXCEEDED": "Resource limit exceeded",
     "QUOTA_EXCEEDED": "Usage quota exceeded",
@@ -1016,7 +1016,7 @@ FILENAME_MAX_LENGTH = 255
 # File validation
 SUPPORTED_FILE_TYPES = {
     ".txt": "text/plain",
-    ".md": "text/markdown", 
+    ".md": "text/markdown",
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".html": "text/html",
@@ -1054,14 +1054,14 @@ async def require_user_consent(operation: str, data_summary: str) -> bool:
 async def handle_tool_error(error: Exception, tool_name: str) -> MCPError:
     """Standardized error handling for all tools."""
     correlation_id = generate_correlation_id()
-    
+
     # Log error with correlation ID
-    logger.error(f"Tool error in {tool_name}: {error}", 
+    logger.error(f"Tool error in {tool_name}: {error}",
                 extra={"correlation_id": correlation_id})
-    
+
     # Map to standard error codes
     error_code = map_exception_to_code(error)
-    
+
     return MCPError(
         error_code=error_code,
         error_message=str(error),

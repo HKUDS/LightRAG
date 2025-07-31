@@ -1,9 +1,9 @@
 # LightRAG Authentication Improvement Plan
 
-**Version**: 1.0  
-**Date**: 2025-01-30  
-**Status**: Planning Phase  
-**Target**: Production-Ready Authentication System  
+**Version**: 1.0
+**Date**: 2025-01-30
+**Status**: Planning Phase
+**Target**: Production-Ready Authentication System
 
 ## 📋 Table of Contents
 
@@ -11,7 +11,7 @@
 2. [Current State Assessment](#current-state-assessment)
 3. [Implementation Roadmap](#implementation-roadmap)
 4. [Phase 1: Security Foundations](#phase-1-security-foundations)
-5. [Phase 2: Advanced Authentication](#phase-2-advanced-authentication)  
+5. [Phase 2: Advanced Authentication](#phase-2-advanced-authentication)
 6. [Phase 3: Access Control & Monitoring](#phase-3-access-control--monitoring)
 7. [Configuration Management](#configuration-management)
 8. [Testing Strategy](#testing-strategy)
@@ -59,7 +59,7 @@ Transform LightRAG's authentication system from a functional baseline to an ente
 - **Session Management**: No server-side session tracking or invalidation
 - **Limited Token Security**: Basic JWT implementation without refresh tokens
 
-#### Access Control Limitations  
+#### Access Control Limitations
 - **Binary Permissions**: Only admin/user roles without granular control
 - **No API Key Management**: Static keys without rotation or expiration
 - **Missing Audit Trail**: Limited security event logging
@@ -92,7 +92,7 @@ Transform LightRAG's authentication system from a functional baseline to an ente
 
 ### Resource Allocation
 - **Development**: 80% of effort
-- **Testing**: 15% of effort  
+- **Testing**: 15% of effort
 - **Documentation**: 5% of effort
 
 ### Milestone Dependencies
@@ -119,9 +119,9 @@ gantt
 
 ### 1.1 Enhanced Password Security
 
-**Priority**: CRITICAL  
-**Timeline**: 4 days  
-**Effort**: 32 hours  
+**Priority**: CRITICAL
+**Timeline**: 4 days
+**Effort**: 32 hours
 
 #### Objectives
 - Implement secure password hashing with bcrypt
@@ -146,27 +146,27 @@ class PasswordPolicy:
     REQUIRE_NUMBERS = True
     REQUIRE_SPECIAL_CHARS = True
     HISTORY_COUNT = 5
-    
+
     @classmethod
     def validate(cls, password: str) -> tuple[bool, List[str]]:
         """Validate password against policy."""
         errors = []
-        
+
         if len(password) < cls.MIN_LENGTH:
             errors.append(f"Password must be at least {cls.MIN_LENGTH} characters")
-            
+
         if cls.REQUIRE_UPPERCASE and not re.search(r'[A-Z]', password):
             errors.append("Password must contain uppercase letters")
-            
+
         if cls.REQUIRE_LOWERCASE and not re.search(r'[a-z]', password):
             errors.append("Password must contain lowercase letters")
-            
+
         if cls.REQUIRE_NUMBERS and not re.search(r'\d', password):
             errors.append("Password must contain numbers")
-            
+
         if cls.REQUIRE_SPECIAL_CHARS and not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
             errors.append("Password must contain special characters")
-            
+
         return len(errors) == 0, errors
 
 class PasswordManager:
@@ -176,19 +176,19 @@ class PasswordManager:
             deprecated="auto",
             bcrypt__rounds=12
         )
-    
+
     def hash_password(self, password: str) -> str:
         """Hash password with bcrypt."""
         return self.pwd_context.hash(password)
-    
+
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
         """Verify password against hash."""
         return self.pwd_context.verify(plain_password, hashed_password)
-    
+
     def generate_secure_token(self, length: int = 32) -> str:
         """Generate cryptographically secure token."""
         return secrets.token_urlsafe(length)
-    
+
     def check_password_history(self, user_id: str, new_password: str) -> bool:
         """Check if password was used recently."""
         # Implementation would check against stored password history
@@ -229,9 +229,9 @@ PASSWORD_LOCKOUT_DURATION_MINUTES=30
 
 ### 1.2 Advanced Rate Limiting
 
-**Priority**: HIGH  
-**Timeline**: 3 days  
-**Effort**: 24 hours  
+**Priority**: HIGH
+**Timeline**: 3 days
+**Effort**: 24 hours
 
 #### Objectives
 - Implement multi-tier rate limiting
@@ -255,21 +255,21 @@ class AdvancedRateLimiter:
     def __init__(self, redis_url: str = "redis://localhost:6379"):
         self.redis_client = redis.from_url(redis_url) if redis_url else None
         self.in_memory_store = {}
-        
+
         # Rate limit configurations
         self.limits = {
             "authentication": "5/minute",
-            "general_api": "100/minute", 
+            "general_api": "100/minute",
             "document_upload": "10/minute",
             "query_operations": "50/minute",
             "graph_operations": "30/minute"
         }
-        
+
         # IP blocking settings
         self.block_threshold = 50  # Failed requests in window
         self.block_window = 3600   # 1 hour window
         self.block_duration = 7200 # 2 hour block
-    
+
     def setup_limiter(self, app):
         """Setup rate limiter with FastAPI app."""
         limiter = Limiter(
@@ -277,35 +277,35 @@ class AdvancedRateLimiter:
             storage_uri=self.redis_client or "memory://",
             default_limits=["1000/hour"]
         )
-        
+
         app.state.limiter = limiter
         app.add_exception_handler(RateLimitExceeded, self._rate_limit_handler)
-        
+
         return limiter
-    
+
     def _get_client_key(self, request: Request) -> str:
         """Get unique client identifier for rate limiting."""
         # Priority: API key > User ID > IP address
         api_key = request.headers.get("X-API-Key")
         if api_key:
             return f"api_key:{api_key}"
-            
+
         user_id = getattr(request.state, "user_id", None)
         if user_id:
             return f"user:{user_id}"
-            
+
         return f"ip:{get_remote_address(request)}"
-    
+
     async def _rate_limit_handler(self, request: Request, exc: RateLimitExceeded):
         """Custom rate limit exceeded handler."""
         client_key = self._get_client_key(request)
-        
+
         # Log rate limit violation
         await self._log_rate_limit_violation(client_key, request)
-        
+
         # Check if IP should be blocked
         await self._check_ip_blocking(request)
-        
+
         return JSONResponse(
             status_code=429,
             content={
@@ -316,7 +316,7 @@ class AdvancedRateLimiter:
             },
             headers={"Retry-After": str(exc.retry_after)}
         )
-    
+
     async def _log_rate_limit_violation(self, client_key: str, request: Request):
         """Log rate limiting violations."""
         violation_data = {
@@ -326,28 +326,28 @@ class AdvancedRateLimiter:
             "timestamp": time.time(),
             "user_agent": request.headers.get("user-agent", "")
         }
-        
+
         if self.redis_client:
             await self.redis_client.lpush(
                 "rate_limit_violations",
                 json.dumps(violation_data)
             )
-    
+
     async def _check_ip_blocking(self, request: Request):
         """Check if IP should be blocked due to excessive violations."""
         ip_address = get_remote_address(request)
         current_time = time.time()
-        
+
         # Count violations in the last hour
         violations_key = f"violations:{ip_address}"
-        
+
         if self.redis_client:
             violations = await self.redis_client.zcount(
                 violations_key,
                 current_time - self.block_window,
                 current_time
             )
-            
+
             if violations >= self.block_threshold:
                 # Block IP
                 await self.redis_client.setex(
@@ -355,14 +355,14 @@ class AdvancedRateLimiter:
                     self.block_duration,
                     "automated_block"
                 )
-                
+
                 # Log blocking event
                 await self._log_ip_block(ip_address, violations)
-    
+
     def get_rate_limit_decorator(self, limit_type: str):
         """Get rate limit decorator for specific endpoint type."""
         limit = self.limits.get(limit_type, "100/minute")
-        
+
         def decorator(func):
             func.__rate_limit__ = limit
             return func
@@ -377,7 +377,7 @@ class AdvancedRateLimiter:
 async def login(request: Request, credentials: LoginRequest):
     pass
 
-@router.post("/query")  
+@router.post("/query")
 @limiter.limit("50/minute")  # Moderate limit for queries
 async def query(request: Request, query_request: QueryRequest):
     pass
@@ -390,9 +390,9 @@ async def upload_document(request: Request, file: UploadFile):
 
 ### 1.3 Security Headers & Input Validation
 
-**Priority**: HIGH  
-**Timeline**: 3 days  
-**Effort**: 24 hours  
+**Priority**: HIGH
+**Timeline**: 3 days
+**Effort**: 24 hours
 
 #### Security Headers Implementation
 ```python
@@ -407,7 +407,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.headers = {
             "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY", 
+            "X-Frame-Options": "DENY",
             "X-XSS-Protection": "1; mode=block",
             "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
             "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
@@ -415,18 +415,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
             **config or {}
         }
-    
+
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        
+
         # Add security headers
         for header, value in self.headers.items():
             response.headers[header] = value
-        
+
         # Remove server information
         if "server" in response.headers:
             del response.headers["server"]
-            
+
         return response
 ```
 
@@ -442,34 +442,34 @@ class SecureQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10000)
     mode: str = Field(..., regex="^(naive|local|global|hybrid|mix|bypass)$")
     top_k: Optional[int] = Field(default=40, ge=1, le=1000)
-    
+
     @validator('query')
     def sanitize_query(cls, v):
         """Sanitize and validate query input."""
         # Remove potential XSS vectors
         sanitized = html.escape(v.strip())
-        
-        # Check for SQL injection patterns  
+
+        # Check for SQL injection patterns
         sql_patterns = [
             r"(\bunion\b|\bselect\b|\binsert\b|\bupdate\b|\bdelete\b|\bdrop\b)",
             r"(--|\/\*|\*\/)",
             r"(\bor\b.*=.*\bor\b|\band\b.*=.*\band\b)"
         ]
-        
+
         for pattern in sql_patterns:
             if re.search(pattern, sanitized, re.IGNORECASE):
                 raise ValueError("Query contains potentially malicious content")
-        
+
         # Check for script injection
         if re.search(r"<script|javascript:|on\w+\s*=", sanitized, re.IGNORECASE):
             raise ValueError("Query contains script injection attempt")
-            
+
         return sanitized
-    
-class SecureDocumentRequest(BaseModel):  
+
+class SecureDocumentRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=500)
     content: str = Field(..., min_length=1, max_length=1000000)
-    
+
     @validator('title', 'content')
     def sanitize_text(cls, v):
         """Sanitize text input."""
@@ -478,9 +478,9 @@ class SecureDocumentRequest(BaseModel):
 
 ### 1.4 Comprehensive Audit Logging
 
-**Priority**: HIGH  
-**Timeline**: 4 days  
-**Effort**: 32 hours  
+**Priority**: HIGH
+**Timeline**: 4 days
+**Effort**: 32 hours
 
 #### Audit Logging System
 ```python
@@ -503,26 +503,26 @@ class AuditEventType(Enum):
     MFA_SETUP = "auth.mfa.setup"
     MFA_SUCCESS = "auth.mfa.success"
     MFA_FAILURE = "auth.mfa.failure"
-    
+
     # API access events
     API_ACCESS = "api.access"
     API_ERROR = "api.error"
     RATE_LIMIT_EXCEEDED = "api.rate_limit"
-    
+
     # Document events
     DOCUMENT_UPLOAD = "document.upload"
     DOCUMENT_DELETE = "document.delete"
     DOCUMENT_ACCESS = "document.access"
-    
+
     # Query events
     QUERY_EXECUTE = "query.execute"
     QUERY_ERROR = "query.error"
-    
+
     # Security events
     SUSPICIOUS_ACTIVITY = "security.suspicious"
     IP_BLOCKED = "security.ip_blocked"
     PRIVILEGE_ESCALATION = "security.privilege_escalation"
-    
+
     # System events
     SYSTEM_CONFIG_CHANGE = "system.config.change"
     SYSTEM_ERROR = "system.error"
@@ -531,14 +531,14 @@ class AuditLogger:
     def __init__(self, log_file: str = "audit.log", structured: bool = True):
         self.structured = structured
         self.logger = logging.getLogger("lightrag.audit")
-        
+
         # Create logs directory if it doesn't exist
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Setup file handler
         handler = logging.FileHandler(log_file)
-        
+
         if structured:
             # JSON formatter for structured logging
             formatter = logging.Formatter(
@@ -549,19 +549,19 @@ class AuditLogger:
             formatter = logging.Formatter(
                 '%(asctime)s - %(levelname)s - %(message)s'
             )
-        
+
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.setLevel(logging.INFO)
-        
+
         # Setup async queue for high-performance logging
         self.log_queue = asyncio.Queue()
         self.log_task = None
-    
+
     async def start_logger(self):
         """Start async logging task."""
         self.log_task = asyncio.create_task(self._process_log_queue())
-    
+
     async def stop_logger(self):
         """Stop async logging task."""
         if self.log_task:
@@ -570,7 +570,7 @@ class AuditLogger:
                 await self.log_task
             except asyncio.CancelledError:
                 pass
-    
+
     async def _process_log_queue(self):
         """Process log entries from queue."""
         while True:
@@ -585,7 +585,7 @@ class AuditLogger:
                 break
             except Exception as e:
                 print(f"Logging error: {e}")
-    
+
     async def log_event(self, event_type: AuditEventType, user_id: str = None,
                        ip_address: str = None, details: Dict[str, Any] = None,
                        success: bool = True, error_message: str = None):
@@ -599,15 +599,15 @@ class AuditLogger:
             "details": details or {},
             "session_id": details.get("session_id") if details else None
         }
-        
+
         if error_message:
             log_entry["error_message"] = error_message
-        
+
         # Add to queue for async processing
         await self.log_queue.put(log_entry)
-    
+
     async def log_auth_event(self, event_type: AuditEventType, user_id: str,
-                           ip_address: str, success: bool, 
+                           ip_address: str, success: bool,
                            additional_data: Dict[str, Any] = None):
         """Log authentication-specific events."""
         details = additional_data or {}
@@ -616,7 +616,7 @@ class AuditLogger:
             "user_agent": details.get("user_agent", ""),
             "auth_method": details.get("auth_method", "password")
         })
-        
+
         await self.log_event(
             event_type=event_type,
             user_id=user_id,
@@ -624,7 +624,7 @@ class AuditLogger:
             success=success,
             details=details
         )
-    
+
     async def log_api_access(self, user_id: str, endpoint: str, method: str,
                            status_code: int, ip_address: str = None,
                            response_time: float = None):
@@ -636,7 +636,7 @@ class AuditLogger:
             "status_code": status_code,
             "response_time": response_time
         }
-        
+
         await self.log_event(
             event_type=AuditEventType.API_ACCESS,
             user_id=user_id,
@@ -644,8 +644,8 @@ class AuditLogger:
             success=status_code < 400,
             details=details
         )
-    
-    async def log_security_event(self, event_type: AuditEventType, 
+
+    async def log_security_event(self, event_type: AuditEventType,
                                details: Dict[str, Any],
                                severity: str = "medium"):
         """Log security-related events."""
@@ -654,7 +654,7 @@ class AuditLogger:
             "severity": severity,
             "requires_investigation": severity in ["high", "critical"]
         })
-        
+
         await self.log_event(
             event_type=event_type,
             details=details,
@@ -676,21 +676,21 @@ class AuditMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, audit_logger):
         super().__init__(app)
         self.audit_logger = audit_logger
-    
+
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
-        
+
         # Extract request information
         user_id = getattr(request.state, "user_id", None)
         ip_address = request.client.host
         endpoint = request.url.path
         method = request.method
-        
+
         response = await call_next(request)
-        
+
         # Calculate response time
         response_time = time.time() - start_time
-        
+
         # Log API access
         await self.audit_logger.log_api_access(
             user_id=user_id,
@@ -700,7 +700,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
             ip_address=ip_address,
             response_time=response_time
         )
-        
+
         return response
 ```
 
@@ -713,7 +713,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
 - **Audit Coverage**: 100% of security events logged
 - **Vulnerability Reduction**: 95% reduction in authentication vulnerabilities
 
-### Performance Metrics  
+### Performance Metrics
 - **Authentication Latency**: <100ms average response time
 - **Rate Limiting Overhead**: <10ms per request
 - **Audit Logging Impact**: <5ms per request

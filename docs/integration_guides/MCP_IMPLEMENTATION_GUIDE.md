@@ -51,7 +51,7 @@ class Config:
     LIGHTRAG_API_URL = os.getenv("LIGHTRAG_API_URL", "http://localhost:9621")
     LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY")
     MCP_SERVER_NAME = "lightrag-mcp"
-    
+
 config = Config()
 
 # Create MCP server
@@ -62,7 +62,7 @@ async def get_http_client() -> httpx.AsyncClient:
     headers = {}
     if config.LIGHTRAG_API_KEY:
         headers["Authorization"] = f"Bearer {config.LIGHTRAG_API_KEY}"
-    
+
     return httpx.AsyncClient(
         base_url=config.LIGHTRAG_API_URL,
         headers=headers,
@@ -85,20 +85,20 @@ class DocumentResponse(BaseModel):
 # Core MCP Tools
 @mcp.tool()
 async def lightrag_query(
-    query: str, 
+    query: str,
     mode: str = "hybrid",
     top_k: int = 40,
     chunk_top_k: int = 10
 ) -> QueryResponse:
     """
     Execute a RAG query using LightRAG.
-    
+
     Args:
         query: The question or search query
         mode: Query mode (naive, local, global, hybrid, mix, bypass)
         top_k: Number of entities/relations to retrieve
         chunk_top_k: Number of chunks to include
-    
+
     Returns:
         Query response with answer and metadata
     """
@@ -113,7 +113,7 @@ async def lightrag_query(
                 }
             })
             response.raise_for_status()
-            
+
             data = response.json()
             return QueryResponse(
                 response=data.get("response", ""),
@@ -132,12 +132,12 @@ async def lightrag_insert_text(
 ) -> DocumentResponse:
     """
     Insert text document into LightRAG knowledge base.
-    
+
     Args:
         text: Document content
         title: Document title (optional)
         metadata: Additional metadata (optional)
-    
+
     Returns:
         Document processing status
     """
@@ -148,10 +148,10 @@ async def lightrag_insert_text(
                 payload["title"] = title
             if metadata:
                 payload["metadata"] = metadata
-            
+
             response = await client.post("/documents/text", json=payload)
             response.raise_for_status()
-            
+
             data = response.json()
             return DocumentResponse(
                 document_id=data.get("document_id", ""),
@@ -169,11 +169,11 @@ async def lightrag_list_documents(
 ) -> Dict[str, Any]:
     """
     List documents in the knowledge base.
-    
+
     Args:
         status_filter: Filter by status (pending, processing, processed, failed)
         limit: Maximum number of documents to return
-    
+
     Returns:
         List of documents with status information
     """
@@ -182,10 +182,10 @@ async def lightrag_list_documents(
             params = {"limit": limit}
             if status_filter:
                 params["status"] = status_filter
-            
+
             response = await client.get("/documents", params=params)
             response.raise_for_status()
-            
+
             return response.json()
         except Exception as e:
             raise Exception(f"Failed to list documents: {str(e)}")
@@ -194,7 +194,7 @@ async def lightrag_list_documents(
 async def lightrag_health_check() -> Dict[str, Any]:
     """
     Check LightRAG system health and status.
-    
+
     Returns:
         System health information and configuration
     """
@@ -202,7 +202,7 @@ async def lightrag_health_check() -> Dict[str, Any]:
         try:
             response = await client.get("/health")
             response.raise_for_status()
-            
+
             return response.json()
         except Exception as e:
             return {
@@ -245,7 +245,7 @@ from server import mcp
 async def test_tools():
     """Test MCP tools functionality."""
     print("Testing LightRAG MCP Tools...")
-    
+
     # Test health check
     print("\n1. Testing health check...")
     try:
@@ -253,7 +253,7 @@ async def test_tools():
         print(f"Health status: {health.get('status', 'unknown')}")
     except Exception as e:
         print(f"Health check failed: {e}")
-    
+
     # Test document listing
     print("\n2. Testing document listing...")
     try:
@@ -261,7 +261,7 @@ async def test_tools():
         print(f"Found {len(docs.get('documents', []))} documents")
     except Exception as e:
         print(f"Document listing failed: {e}")
-    
+
     # Test text insertion
     print("\n3. Testing text insertion...")
     try:
@@ -272,7 +272,7 @@ async def test_tools():
         print(f"Document inserted: {result.document_id}")
     except Exception as e:
         print(f"Text insertion failed: {e}")
-    
+
     # Test querying
     print("\n4. Testing query...")
     try:
@@ -342,11 +342,11 @@ async def lightrag_stream_query(
 ) -> AsyncIterator[str]:
     """
     Execute a streaming RAG query.
-    
+
     Args:
         query: The question or search query
         mode: Query mode
-    
+
     Yields:
         Streaming response chunks
     """
@@ -398,7 +398,7 @@ async def lightrag_query_safe(query: str, mode: str = "hybrid") -> QueryResponse
             })
             response.raise_for_status()
             data = response.json()
-            
+
             logger.info(f"Query executed successfully: {mode} mode")
             return QueryResponse(
                 response=data.get("response", ""),
@@ -474,7 +474,7 @@ services:
       - lightrag
     ports:
       - "8000:8000"
-  
+
   lightrag:
     image: lightrag:latest
     ports:
@@ -570,13 +570,13 @@ from contextlib import asynccontextmanager
 class LightRAGClient:
     def __init__(self):
         self._client = None
-    
+
     async def __aenter__(self):
         if self._client is None:
             headers = {}
             if config.LIGHTRAG_API_KEY:
                 headers["Authorization"] = f"Bearer {config.LIGHTRAG_API_KEY}"
-            
+
             self._client = httpx.AsyncClient(
                 base_url=config.LIGHTRAG_API_URL,
                 headers=headers,
@@ -584,7 +584,7 @@ class LightRAGClient:
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
             )
         return self._client
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._client:
             await self._client.aclose()
@@ -619,12 +619,12 @@ def cached_response(key: str, ttl: int = CACHE_TTL):
     def decorator(func):
         async def wrapper(*args, **kwargs):
             cache_key = f"{key}:{hash(str(args) + str(kwargs))}"
-            
+
             if cache_key in cache:
                 result, timestamp = cache[cache_key]
                 if time.time() - timestamp < ttl:
                     return result
-            
+
             result = await func(*args, **kwargs)
             cache[cache_key] = (result, time.time())
             return result

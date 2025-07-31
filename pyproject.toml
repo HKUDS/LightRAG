@@ -67,11 +67,22 @@ api = [
     "httpx",
     "jiter",
     "passlib[bcrypt]",
+    "psutil",
+    "psycopg2-binary",
     "PyJWT",
     "python-jose[cryptography]",
     "python-multipart",
     "pytz",
+    "redis",
+    "slowapi",
     "uvicorn",
+]
+
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-mock",
 ]
 
 [project.scripts]

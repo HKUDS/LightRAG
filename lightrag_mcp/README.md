@@ -241,7 +241,7 @@ The server provides comprehensive error handling with:
    ```bash
    # List available tools
    claude mcp list-tools
-   
+
    # Refresh MCP configuration
    claude config mcp refresh
    ```

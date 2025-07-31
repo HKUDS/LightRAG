@@ -7,7 +7,7 @@ __pycache__
 
 # Env
 env/
-*.env*
+
 .env_example
 
 # Distribution / build files
