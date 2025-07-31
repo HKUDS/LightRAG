@@ -320,7 +320,7 @@ class QueryParam:
     max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "10000"))
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
-    max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "32000"))
+    max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "30000"))
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
