@@ -42,6 +42,8 @@ volumes:
     driver: local
   lightrag_data:
     driver: local
+  loki_data:
+    driver: local
 
 services:
   # ===================================================================
@@ -58,6 +60,15 @@ services:
         VERSION: ${VERSION:-latest}
     image: lightrag:production
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,6 +112,9 @@ services:
     container_name: lightrag_postgres
     image: shangor/postgres-for-rag:v1.0
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # PostgreSQL container runs as postgres user internally
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lightrag_prod}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -151,6 +165,14 @@ services:
     container_name: lightrag_redis
     image: redis:7-alpine
     restart: unless-stopped
+    user: "999:999"  # Run as redis user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD:-}
@@ -196,6 +218,17 @@ services:
     container_name: lightrag_nginx
     image: nginx:alpine
     restart: unless-stopped
+    user: "101:101"  # Run as nginx user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
     depends_on:
       - lightrag
     ports:
@@ -234,6 +267,14 @@ services:
     container_name: lightrag_prometheus
     image: prom/prometheus:latest
     restart: unless-stopped
+    user: "65534:65534"  # Run as nobody user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -270,6 +311,11 @@ services:
     container_name: lightrag_grafana
     image: grafana/grafana:latest
     restart: unless-stopped
+    user: "472:472"  # Run as grafana user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       - prometheus
     environment:
@@ -309,6 +355,11 @@ services:
     container_name: lightrag_jaeger
     image: jaegertracing/all-in-one:latest
     restart: unless-stopped
+    user: "10001:10001"  # Run as non-root user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       - COLLECTOR_OTLP_ENABLED=true
       - SPAN_STORAGE_TYPE=memory
@@ -338,9 +389,15 @@ services:
     container_name: lightrag_loki
     image: grafana/loki:latest
     restart: unless-stopped
+    user: "10001:10001"  # Run as non-root user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
       - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
     networks:
       - lightrag-network
     ports:
@@ -363,6 +420,13 @@ services:
       context: ./backup
       dockerfile: Dockerfile
     restart: unless-stopped
+    user: "1000:1000"  # Run as non-root user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
     depends_on:
       - postgres
     environment:
