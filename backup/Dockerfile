@@ -1,37 +1,25 @@
-# ====================================================================
-# Backup Service Dockerfile for LightRAG
-# ====================================================================
+FROM alpine:latest
 
-FROM postgres:15-alpine
+# Create non-root user
+RUN addgroup -g 1000 backup && \
+    adduser -D -u 1000 -G backup backup
 
-# Install additional tools
-RUN apk add --no-cache \
-    curl \
-    aws-cli \
-    rclone \
-    gzip \
-    tar \
-    cronie \
-    bash
+# Install packages
+RUN apk add --no-cache postgresql-client bash dcron
 
-# Create backup user
-RUN addgroup -S backup && adduser -S backup -G backup
-
-# Create backup directories
-RUN mkdir -p /app/backups /app/scripts /app/logs && \
+# Create directories and set permissions
+RUN mkdir -p /app/backups && \
     chown -R backup:backup /app
 
-# Copy backup scripts
-COPY scripts/ /app/scripts/
-COPY crontab /etc/crontabs/backup
+COPY backup-script.sh /app/backup-script.sh
+RUN chmod +x /app/backup-script.sh && \
+    chown backup:backup /app/backup-script.sh
 
-# Make scripts executable
-RUN chmod +x /app/scripts/*.sh
+# Setup cron for backup user
+RUN echo '${BACKUP_SCHEDULE:-0 2 * * *} /app/backup-script.sh' > /etc/crontabs/backup
 
-# Switch to backup user
+# Switch to non-root user
 USER backup
-
 WORKDIR /app
 
-# Start cron daemon
 CMD ["crond", "-f", "-l", "2"]
