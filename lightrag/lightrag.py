@@ -44,11 +44,6 @@ from lightrag.kg import (
     verify_storage_implementation,
 )
 
-# Import for type annotation
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from lightrag.api.config import OllamaServerInfos
 
 from lightrag.kg.shared_storage import (
     get_namespace_data,
@@ -67,6 +62,7 @@ from .base import (
     StorageNameSpace,
     StoragesStatus,
     DeletionResult,
+    OllamaServerInfos,
 )
 from .namespace import NameSpace
 from .operate import (
@@ -358,7 +354,7 @@ class LightRAG:
         default=float(os.getenv("COSINE_THRESHOLD", 0.2))
     )
 
-    ollama_server_infos: Optional["OllamaServerInfos"] = field(default=None)
+    ollama_server_infos: Optional[OllamaServerInfos] = field(default=None)
     """Configuration for Ollama server information."""
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
@@ -424,8 +420,6 @@ class LightRAG:
 
         # Initialize ollama_server_infos if not provided
         if self.ollama_server_infos is None:
-            from lightrag.api.config import OllamaServerInfos
-
             self.ollama_server_infos = OllamaServerInfos()
 
         # Fix global_config now
