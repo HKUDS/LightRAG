@@ -22,7 +22,7 @@ pip install "lightrag-hku[api]"
 
 ```bash
 # Clone the repository
-git clone https://github.com/HKUDS/lightrag.git
+git clone https://github.com/HKUDS/LightRAG.git
 
 # Change to the repository directory
 cd lightrag
