@@ -74,6 +74,19 @@ async def main():
     try:
         from lightrag.api.migrations.auth_phase1_migration import AuthPhase1Migration
 
+        # --- Start Debugging ---
+        print('--- DATABASE CONNECTION DEBUG INFO ---')
+        print(f"DB Host: {os.environ.get('POSTGRES_HOST')}")
+        print(f"DB Port: {os.environ.get('POSTGRES_PORT', 5432)}")
+        print(f"DB Name: {os.environ.get('POSTGRES_DATABASE')}")
+        print(f"DB User: {os.environ.get('POSTGRES_USER')}")
+        password = os.environ.get('POSTGRES_PASSWORD', '')
+        print(f"DB Password Length: {len(password)}")
+        if not password:
+            print('WARNING: POSTGRES_PASSWORD environment variable is not set!')
+        print('------------------------------------')
+        # --- End Debugging ---
+
         # Create a database connection
         conn = psycopg2.connect(
             dbname=os.environ['POSTGRES_DATABASE'],
@@ -115,19 +128,15 @@ main() {
     echo "Starting Gunicorn server..."
 
     # Start the application server
-    exec gunicorn \
-        --config /app/gunicorn_config.py \
-        --bind 0.0.0.0:${PORT:-9621} \
-        --workers ${WORKERS:-4} \
-        --worker-class uvicorn.workers.UvicornWorker \
-        --worker-timeout ${WORKER_TIMEOUT:-300} \
-        --max-requests ${MAX_REQUESTS:-1000} \
-        --max-requests-jitter ${MAX_REQUESTS_JITTER:-50} \
-        --preload \
-        --access-logfile - \
-        --error-logfile - \
-        --log-level ${LOG_LEVEL:-info} \
-        "lightrag.api.app:app"
+    gunicorn_command="gunicorn --config /app/gunicorn_config.py --bind 0.0.0.0:${PORT:-9621} --workers ${WORKERS:-4} --worker-class uvicorn.workers.UvicornWorker --max-requests ${MAX_REQUESTS:-1000} --max-requests-jitter ${MAX_REQUESTS_JITTER:-50} --preload --access-logfile - --error-logfile - --log-level ${LOG_LEVEL:-info}"
+
+    if [ -n "${WORKER_TIMEOUT:-}" ]; then
+        gunicorn_command="$gunicorn_command --worker-timeout ${WORKER_TIMEOUT}"
+    fi
+
+    gunicorn_command="$gunicorn_command lightrag.api.app:app"
+
+    exec $gunicorn_command
 }
 
 # Handle signals gracefully
