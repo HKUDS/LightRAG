@@ -60,6 +60,7 @@ async def _ollama_model_if_cache(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    # If no host provided, let ollama.AsyncClient use OLLAMA_HOST environment variable
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
 
     try:
@@ -148,6 +149,7 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
 
+    # If no host provided, let ollama.AsyncClient use OLLAMA_HOST environment variable
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     try:
         options = kwargs.pop("options", {})
