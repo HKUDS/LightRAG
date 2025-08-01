@@ -16,5 +16,60 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # ===================================================================
+  # PostgreSQL Database Service (using shangor/postgres-for-rag)
+  # ===================================================================
+  postgres:
+    container_name: lightrag_postgres_dev
+    image: shangor/postgres-for-rag:v1.0
+    restart: unless-stopped
+    environment:
+      # Pass custom credentials to initialization scripts
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-rag}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: >
+      sh -c "
+        service postgresql start &&
+        until pg_isready -h localhost -p 5432; do
+          echo 'Waiting for PostgreSQL to be ready...'
+          sleep 2
+        done &&
+        # Run custom initialization scripts
+        if [ -d /docker-entrypoint-initdb.d ]; then
+          for f in /docker-entrypoint-initdb.d/*; do
+            case \"$$f\" in
+              *.sh)
+                echo \"Running $$f\"
+                bash \"$$f\"
+                ;;
+              *.sql)
+                echo \"Running $$f\"
+                psql -v ON_ERROR_STOP=1 --username postgres --dbname postgres -f \"$$f\"
+                ;;
+            esac
+          done
+        fi &&
+        sleep infinity
+      "
+
+volumes:
+  postgres_dev_data:
+    driver: local

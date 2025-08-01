@@ -128,8 +128,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DATABASE:-lightrag_production}
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
-      # Performance tuning
-      POSTGRES_SHARED_PRELOAD_LIBRARIES: pg_stat_statements,auto_explain
+      # Performance tuning - AGE must be in shared_preload_libraries for graph functionality
+      POSTGRES_SHARED_PRELOAD_LIBRARIES: age,pg_stat_statements,auto_explain
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
