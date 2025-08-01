@@ -7,6 +7,8 @@ import asyncio
 import os
 import logging
 import logging.config
+import signal
+import sys
 import uvicorn
 import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +30,6 @@ from .config import (
     get_default_host,
 )
 from lightrag.utils import get_env_value
-import sys
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
@@ -53,6 +54,7 @@ from lightrag.kg.shared_storage import (
     get_pipeline_status_lock,
     initialize_pipeline_status,
     cleanup_keyed_lock,
+    finalize_share_data,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -72,6 +74,24 @@ config.read("config.ini")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
+
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown"""
+
+    def signal_handler(sig, frame):
+        print(f"\n\nReceived signal {sig}, shutting down gracefully...")
+        print(f"Process ID: {os.getpid()}")
+
+        # Release shared resources
+        finalize_share_data()
+
+        # Exit with success status
+        sys.exit(0)
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # kill command
 
 
 def create_app(args):
@@ -158,6 +178,9 @@ def create_app(args):
         finally:
             # Clean up database connections
             await rag.finalize_storages()
+
+            # Clean up shared data
+            finalize_share_data()
 
     # Initialize FastAPI
     app_kwargs = {
@@ -736,6 +759,9 @@ def main():
     configure_logging()
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
+
+    # Setup signal handlers for graceful shutdown
+    setup_signal_handlers()
 
     # Create application instance directly instead of using factory function
     app = create_app(global_args)
