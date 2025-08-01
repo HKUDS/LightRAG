@@ -615,6 +615,11 @@ except (SystemExit, argparse.ArgumentError, Exception):
         "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
     )
 
+    # Document loading engine configuration
+    global_args.document_loading_engine = get_env_value(
+        "DOCUMENT_LOADING_ENGINE", "DEFAULT"
+    )
+
     # Set ollama server infos
     ollama_server_infos.LIGHTRAG_NAME = global_args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = global_args.simulated_model_tag

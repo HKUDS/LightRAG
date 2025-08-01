@@ -1,5 +1,6 @@
 -- LightRAG Production Database Initialization
 -- This script will be executed when the PostgreSQL container starts
+-- The database and user are automatically created by the PostgreSQL container using environment variables
 
 -- Create extensions required by LightRAG
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -7,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 CREATE EXTENSION IF NOT EXISTS auto_explain;
 CREATE EXTENSION IF NOT EXISTS age;
 LOAD 'age';
-SET search_path = ag_catalog, \"\$user\", public;
+SET search_path = ag_catalog, "$user", public;
 
 -- Set auto_explain configuration
 ALTER SYSTEM SET auto_explain.log_min_duration = '1s';

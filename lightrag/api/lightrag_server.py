@@ -286,7 +286,6 @@ def create_app(args):
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
-            base_url=args.llm_binding_host,
             api_key=args.llm_binding_api_key,
             **kwargs,
         )
