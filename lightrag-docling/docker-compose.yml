@@ -1,0 +1,67 @@
+# Docker Compose for standalone Docling service testing
+version: '3.8'
+
+services:
+  docling-service:
+    container_name: lightrag-docling-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-}
+        VCS_REF: ${VCS_REF:-}
+        VERSION: ${VERSION:-1.0.0}
+    ports:
+      - "8080:8080"
+    environment:
+      # Service configuration
+      - DOCLING_HOST=0.0.0.0
+      - DOCLING_PORT=8080
+      - DOCLING_LOG_LEVEL=INFO
+      - DOCLING_DEBUG=false
+      
+      # Processing configuration
+      - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
+      - DOCLING_DEFAULT_MAX_WORKERS=2
+      - DOCLING_DEFAULT_ENABLE_OCR=true
+      - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
+      - DOCLING_DEFAULT_ENABLE_FIGURES=true
+      
+      # Cache configuration
+      - DOCLING_CACHE_ENABLED=true
+      - DOCLING_CACHE_DIR=/app/cache
+      - DOCLING_CACHE_MAX_SIZE_GB=2
+      - DOCLING_CACHE_TTL_HOURS=168
+      
+      # Limits
+      - DOCLING_MAX_FILE_SIZE_MB=50
+      - DOCLING_MAX_BATCH_SIZE=5
+      - DOCLING_REQUEST_TIMEOUT_SECONDS=300
+      
+      # Security (disable for testing)
+      - DOCLING_API_KEY=
+      - DOCLING_CORS_ORIGINS=*
+    volumes:
+      - docling_cache:/app/cache
+      - docling_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+volumes:
+  docling_cache:
+    driver: local
+  docling_logs:
+    driver: local
