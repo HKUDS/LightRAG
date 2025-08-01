@@ -67,6 +67,7 @@ api = [
     "httpx",
     "jiter",
     "passlib[bcrypt]",
+    "psutil",
     "PyJWT",
     "python-jose[cryptography]",
     "python-multipart",
