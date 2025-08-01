@@ -154,6 +154,7 @@ async def xai_complete_if_cache(
     messages.append({"role": "user", "content": prompt})
 
     # Extract OpenAI-compatible parameters
+    # For LightRAG compatibility, default to non-streaming unless explicitly requested
     stream = kwargs.pop("stream", False)  # Remove stream from kwargs and get its value
     openai_kwargs = {
         "model": model,
@@ -172,8 +173,22 @@ async def xai_complete_if_cache(
     verbose_debug(f"xAI API request: {openai_kwargs}")
 
     try:
-        response = await xai_async_client.chat.completions.create(**openai_kwargs)
-        content = response.choices[0].message.content
+        # Handle streaming vs non-streaming responses properly
+        if stream:
+            # For streaming responses, collect all chunks
+            content_chunks = []
+            stream_response = await xai_async_client.chat.completions.create(
+                **openai_kwargs
+            )
+            async for chunk in stream_response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content_chunks.append(chunk.choices[0].delta.content)
+            content = "".join(content_chunks)
+        else:
+            # For non-streaming responses, access choices directly
+            response = await xai_async_client.chat.completions.create(**openai_kwargs)
+            content = response.choices[0].message.content
+
         if content is None:
             raise InvalidResponseError("xAI API returned empty response")
 
