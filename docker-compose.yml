@@ -15,12 +15,23 @@ services:
       - ./.env:/app/.env
     env_file:
       - .env
+    environment:
+      # Docling service integration
+      - DOCLING_SERVICE_URL=http://docling-service:8080
+      - DOCLING_SERVICE_TIMEOUT=300
+      - DOCLING_SERVICE_RETRIES=3
+      - DOCLING_FALLBACK_ENABLED=true
+      - LIGHTRAG_ENHANCED_PROCESSING=true
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      docling-service:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - lightrag-network
 
   # ===================================================================
   # PostgreSQL Database Service (using shangor/postgres-for-rag)
@@ -45,6 +56,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - lightrag-network
     command: >
       sh -c "
         service postgresql start &&
@@ -69,7 +82,65 @@ services:
         fi &&
         sleep infinity
       "
+    networks:
+      - lightrag-network
+
+  # ===================================================================
+  # Docling Service (Optional - for enhanced document processing)
+  # ===================================================================
+  docling-service:
+    container_name: lightrag_docling_dev
+    profiles: ["enhanced-processing"]
+    build:
+      context: ./lightrag-docling
+      dockerfile: Dockerfile
+    environment:
+      - DOCLING_HOST=0.0.0.0
+      - DOCLING_PORT=8080
+      - DOCLING_LOG_LEVEL=INFO
+      
+      # Processing configuration
+      - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
+      - DOCLING_DEFAULT_MAX_WORKERS=2
+      - DOCLING_DEFAULT_ENABLE_OCR=true
+      - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
+      - DOCLING_DEFAULT_ENABLE_FIGURES=true
+      
+      # Cache configuration
+      - DOCLING_CACHE_ENABLED=true
+      - DOCLING_CACHE_DIR=/app/cache
+      - DOCLING_CACHE_MAX_SIZE_GB=2
+      
+      # Limits for development
+      - DOCLING_MAX_FILE_SIZE_MB=50
+      - DOCLING_MAX_BATCH_SIZE=5
+    volumes:
+      - docling_cache:/app/cache
+    networks:
+      - lightrag-network
+    ports:
+      - "8080:8080"  # Expose for direct access during development
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: '1.5'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+networks:
+  lightrag-network:
+    driver: bridge
 
 volumes:
   postgres_dev_data:
+    driver: local
+  docling_cache:
     driver: local
