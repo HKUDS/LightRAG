@@ -66,6 +66,7 @@ api = [
     "httpcore",
     "httpx",
     "jiter",
+    "json-repair",
     "passlib[bcrypt]",
     "psutil",
     "PyJWT",
