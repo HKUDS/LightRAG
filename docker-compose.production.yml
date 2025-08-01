@@ -38,6 +38,10 @@ volumes:
     driver: local
   nginx_logs:
     driver: local
+  nginx_cache:
+    driver: local
+  nginx_run:
+    driver: local
   lightrag_logs:
     driver: local
   lightrag_data:
@@ -210,6 +214,21 @@ services:
   # ===================================================================
   # Nginx Reverse Proxy
   # ===================================================================
+  # Nginx init container to set up permissions
+  nginx-init:
+    container_name: lightrag_nginx_init
+    image: alpine:latest
+    user: "0:0"  # Run as root only for initialization
+    volumes:
+      - nginx_cache:/var/cache/nginx
+      - nginx_logs:/var/log/nginx
+      - nginx_run:/var/run
+    command: >
+      sh -c "
+        mkdir -p /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp /var/cache/nginx/fastcgi_temp /var/cache/nginx/uwsgi_temp /var/cache/nginx/scgi_temp &&
+        chown -R 101:101 /var/cache/nginx /var/log/nginx /var/run
+      "
+
   nginx:
     container_name: lightrag_nginx
     image: nginx:alpine
@@ -220,13 +239,14 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
       - SETGID
       - SETUID
       - NET_BIND_SERVICE
     depends_on:
-      - lightrag
+      nginx-init:
+        condition: service_completed_successfully
+      lightrag:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -235,6 +255,8 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./certs:/etc/nginx/certs:ro
       - nginx_logs:/var/log/nginx
+      - nginx_cache:/var/cache/nginx
+      - nginx_run:/var/run
     networks:
       - lightrag-network
     healthcheck:
@@ -423,6 +445,7 @@ services:
       - ALL
     cap_add:
       - DAC_OVERRIDE
+      - SYS_ADMIN  # Needed for cron setpgid operations
     depends_on:
       - postgres
     environment:

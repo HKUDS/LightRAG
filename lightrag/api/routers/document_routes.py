@@ -582,7 +582,9 @@ class DocStatusResponse(BaseModel):
     metadata: Optional[dict[str, Any]] = Field(
         default=None, description="Additional metadata about the document"
     )
-    file_path: str = Field(description="Path to the document file")
+    file_path: Optional[str] = Field(
+        description="Path to the document file", default=None
+    )
 
     class Config:
         json_schema_extra = {
