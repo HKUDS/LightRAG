@@ -76,6 +76,8 @@ api = [
     "redis",
     "slowapi",
     "uvicorn",
+    # Document processing
+    "docling>=2.40.0",
 ]
 
 test = [
