@@ -81,7 +81,6 @@ from .utils import (
     EmbeddingFunc,
     always_get_an_event_loop,
     compute_mdhash_id,
-    convert_response_to_json,
     lazy_external_import,
     priority_limit_async_func_call,
     get_content_summary,
@@ -377,15 +376,6 @@ class LightRAG:
 
     # Storages Management
     # ---
-
-    convert_response_to_json_func: Callable[[str], dict[str, Any]] = field(
-        default_factory=lambda: convert_response_to_json
-    )
-    """
-    Custom function for converting LLM responses to JSON format.
-
-    The default function is :func:`.utils.convert_response_to_json`.
-    """
 
     cosine_better_than_threshold: float = field(
         default=float(os.getenv("COSINE_THRESHOLD", 0.2))

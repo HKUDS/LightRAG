@@ -25,6 +25,7 @@ dependencies = [
     "configparser",
     "dotenv",
     "future",
+    "json-repair",
     "nano-vectordb",
     "networkx",
     "numpy",
@@ -37,6 +38,12 @@ dependencies = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+
+    # Entity deduplication dependencies
+    "fuzzywuzzy>=0.18.0",
+    "scipy>=1.9.0",
+    "scikit-learn>=1.1.0",
+    "python-levenshtein>=0.20.0",  # For better fuzzywuzzy performance
 ]
 
 [project.optional-dependencies]
@@ -73,16 +80,6 @@ api = [
     "python-multipart",
     "pytz",
     "uvicorn",
-]
-
-deduplication = [
-    # Entity deduplication dependencies
-    "sentence-transformers>=2.2.0",
-    "fuzzywuzzy>=0.18.0",
-    "scipy>=1.9.0",
-    "scikit-learn>=1.1.0",
-    "json-repair>=0.7.0",
-    "python-levenshtein>=0.20.0",  # For better fuzzywuzzy performance
 ]
 
 # Full installation with all optional dependencies

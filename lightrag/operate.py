@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import os
+import json_repair
 from typing import Any, AsyncIterator, Optional
 from collections import Counter, defaultdict
 
@@ -1853,10 +1854,10 @@ async def extract_keywords_only(
     )
     if cached_response is not None:
         try:
-            keywords_data = json.loads(cached_response)
-            return keywords_data["high_level_keywords"], keywords_data[
-                "low_level_keywords"
-            ]
+            keywords_data = json_repair.loads(cached_response)
+            return keywords_data.get("high_level_keywords", []), keywords_data.get(
+                "low_level_keywords", []
+            )
         except (json.JSONDecodeError, KeyError):
             logger.warning(
                 "Invalid cache format for keywords, proceeding with extraction"
@@ -1904,12 +1905,11 @@ async def extract_keywords_only(
 
     # 6. Parse out JSON from the LLM response
     result = remove_think_tags(result)
-    match = re.search(r"\{.*?\}", result, re.DOTALL)
-    if not match:
-        logger.error("No JSON-like structure found in the LLM respond.")
-        return [], []
     try:
-        keywords_data = json.loads(match.group(0))
+        keywords_data = json_repair.loads(result)
+        if not keywords_data:
+            logger.error("No JSON-like structure found in the LLM respond.")
+            return [], []
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error: {e}")
         logger.error(f"LLM respond: {result}")

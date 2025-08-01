@@ -27,7 +27,6 @@ from tenacity import (
 )
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
     safe_unicode_decode,
     logger,
 )
@@ -418,7 +417,7 @@ async def nvidia_openai_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    kwargs.pop("keyword_extraction", None)
     result = await openai_complete_if_cache(
         "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k
         prompt,
@@ -427,8 +426,6 @@ async def nvidia_openai_complete(
         base_url="https://integrate.api.nvidia.com/v1",
         **kwargs,
     )
-    if keyword_extraction:  # TODO: use JSON API
-        return locate_json_string_body_from_string(result)
     return result
 
 

@@ -248,43 +248,6 @@ class EmbeddingFunc:
         return await self.func(*args, **kwargs)
 
 
-def locate_json_string_body_from_string(content: str) -> str | None:
-    """Locate the JSON string body from a string"""
-    try:
-        maybe_json_str = re.search(r"{.*}", content, re.DOTALL)
-        if maybe_json_str is not None:
-            maybe_json_str = maybe_json_str.group(0)
-            maybe_json_str = maybe_json_str.replace("\\n", "")
-            maybe_json_str = maybe_json_str.replace("\n", "")
-            maybe_json_str = maybe_json_str.replace("'", '"')
-            # json.loads(maybe_json_str) # don't check here, cannot validate schema after all
-            return maybe_json_str
-    except Exception:
-        pass
-        # try:
-        #     content = (
-        #         content.replace(kw_prompt[:-1], "")
-        #         .replace("user", "")
-        #         .replace("model", "")
-        #         .strip()
-        #     )
-        #     maybe_json_str = "{" + content.split("{")[1].split("}")[0] + "}"
-        #     json.loads(maybe_json_str)
-
-        return None
-
-
-def convert_response_to_json(response: str) -> dict[str, Any]:
-    json_str = locate_json_string_body_from_string(response)
-    assert json_str is not None, f"Unable to parse JSON from response: {response}"
-    try:
-        data = json.loads(json_str)
-        return data
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON: {json_str}")
-        raise e from None
-
-
 def compute_args_hash(*args: Any) -> str:
     """Compute a hash for the given arguments.
     Args:

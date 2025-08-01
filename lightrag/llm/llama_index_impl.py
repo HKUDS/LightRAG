@@ -21,7 +21,6 @@ from tenacity import (
 )
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
 )
 from lightrag.exceptions import (
     APIConnectionError,
@@ -157,7 +156,7 @@ async def llama_index_complete(
     if history_messages is None:
         history_messages = []
 
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    kwargs.pop("keyword_extraction", None)
     result = await llama_index_complete_if_cache(
         kwargs.get("llm_instance"),
         prompt,
@@ -165,8 +164,6 @@ async def llama_index_complete(
         history_messages=history_messages,
         **kwargs,
     )
-    if keyword_extraction:
-        return locate_json_string_body_from_string(result)
     return result
 
 
