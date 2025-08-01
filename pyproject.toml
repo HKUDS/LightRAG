@@ -25,6 +25,7 @@ dependencies = [
     "configparser",
     "dotenv",
     "future",
+    "json-repair",
     "nano-vectordb",
     "networkx",
     "numpy",
