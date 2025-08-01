@@ -6,7 +6,7 @@ LightRAG employs a multi-layered concurrent control strategy when processing mul
 
 **Control Parameter**: `max_parallel_insert`
 
-This parameter controls the number of documents processed simultaneously. The purpose is to prevent excessive parallelism from overwhelming system resources, which could lead to extended processing times for individual files. Document-level concurrency is governed by the `max_parallel_insert` attribute within LightRAG, which defaults to 2 and is configurable via the `MAX_PARALLEL_INSERT` environment variable.
+This parameter controls the number of documents processed simultaneously. The purpose is to prevent excessive parallelism from overwhelming system resources, which could lead to extended processing times for individual files. Document-level concurrency is governed by the `max_parallel_insert` attribute within LightRAG, which defaults to 2 and is configurable via the `MAX_PARALLEL_INSERT` environment variable.  `max_parallel_insert` is recommended to be set between 2 and 10, typically `llm_model_max_async/3`. Setting this value too high can increase the likelihood of naming conflicts among entities and relationships across different documents during the merge phase, thereby reducing its overall efficiency.
 
 ### 2. Chunk-Level Concurrent Control
 

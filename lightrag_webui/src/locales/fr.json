@@ -117,6 +117,7 @@
       "title": "Gestion des documents",
       "scanButton": "Scanner",
       "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "refreshTooltip": "Réinitialiser la liste des documents",
       "pipelineStatusButton": "État du Pipeline",
       "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
@@ -125,6 +126,7 @@
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
       "columns": {
         "id": "ID",
+        "fileName": "Nom du fichier",
         "summary": "Résumé",
         "status": "Statut",
         "length": "Longueur",
@@ -247,14 +249,15 @@
     },
     "statusCard": {
       "unavailable": "Informations sur l'état indisponibles",
-      "storageInfo": "Informations de stockage",
+      "serverInfo": "Informations du serveur",
       "workingDirectory": "Répertoire de travail",
       "inputDirectory": "Répertoire d'entrée",
+      "maxParallelInsert": "Traitement simultané des documents",
+      "summarySettings": "Paramètres de résumé",
       "llmConfig": "Configuration du modèle de langage",
       "llmBinding": "Liaison du modèle de langage",
       "llmBindingHost": "Point de terminaison LLM",
       "llmModel": "Modèle de langage",
-      "maxTokens": "Nombre maximum de jetons",
       "embeddingConfig": "Configuration d'incorporation",
       "embeddingBinding": "Liaison d'incorporation",
       "embeddingBindingHost": "Point de terminaison d'incorporation",
@@ -269,7 +272,8 @@
       "rerankerConfig": "Configuration du reclassement",
       "rerankerBindingHost": "Point de terminaison de reclassement",
       "rerankerModel": "Modèle de reclassement",
-      "lockStatus": "État des verrous"
+      "lockStatus": "État des verrous",
+      "threshold": "Seuil"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",
@@ -399,5 +403,14 @@
     "description": "Veuillez entrer votre clé API pour accéder au service",
     "placeholder": "Entrez votre clé API",
     "save": "Sauvegarder"
+  },
+  "pagination": {
+    "showing": "Affichage de {{start}} à {{end}} sur {{total}} entrées",
+    "page": "Page",
+    "pageSize": "Taille de la page",
+    "firstPage": "Première page",
+    "prevPage": "Page précédente",
+    "nextPage": "Page suivante",
+    "lastPage": "Dernière page"
   }
 }

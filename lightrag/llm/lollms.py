@@ -59,7 +59,7 @@ async def lollms_model_if_cache(
         "personality": kwargs.get("personality", -1),
         "n_predict": kwargs.get("n_predict", None),
         "stream": stream,
-        "temperature": kwargs.get("temperature", 0.1),
+        "temperature": kwargs.get("temperature", 0.8),
         "top_k": kwargs.get("top_k", 50),
         "top_p": kwargs.get("top_p", 0.95),
         "repeat_penalty": kwargs.get("repeat_penalty", 0.8),

@@ -117,6 +117,7 @@
       "title": "文件管理",
       "scanButton": "掃描",
       "scanTooltip": "掃描輸入目錄中的文件",
+      "refreshTooltip": "重設文件清單",
       "pipelineStatusButton": "pipeline 狀態",
       "pipelineStatusTooltip": "查看pipeline 狀態",
       "uploadedTitle": "已上傳文件",
@@ -125,6 +126,7 @@
       "emptyDescription": "尚未上傳任何文件",
       "columns": {
         "id": "ID",
+        "fileName": "檔案名稱",
         "summary": "摘要",
         "status": "狀態",
         "length": "長度",
@@ -247,14 +249,15 @@
     },
     "statusCard": {
       "unavailable": "狀態資訊不可用",
-      "storageInfo": "儲存資訊",
+      "serverInfo": "伺服器資訊",
       "workingDirectory": "工作目錄",
       "inputDirectory": "輸入目錄",
+      "maxParallelInsert": "並行處理文档",
+      "summarySettings": "摘要設定",
       "llmConfig": "LLM 設定",
       "llmBinding": "LLM 綁定",
       "llmBindingHost": "LLM 端點",
       "llmModel": "LLM 模型",
-      "maxTokens": "最大權杖數",
       "embeddingConfig": "嵌入設定",
       "embeddingBinding": "嵌入綁定",
       "embeddingBindingHost": "嵌入端點",
@@ -269,7 +272,8 @@
       "rerankerConfig": "重排序設定",
       "rerankerBindingHost": "重排序端點",
       "rerankerModel": "重排序模型",
-      "lockStatus": "鎖定狀態"
+      "lockStatus": "鎖定狀態",
+      "threshold": "閾值"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",
@@ -399,5 +403,14 @@
     "description": "請輸入您的 API key 以存取服務",
     "placeholder": "請輸入 API key",
     "save": "儲存"
+  },
+  "pagination": {
+    "showing": "顯示第 {{start}} 到 {{end}} 筆，共 {{total}} 筆記錄",
+    "page": "頁",
+    "pageSize": "每頁顯示",
+    "firstPage": "第一頁",
+    "prevPage": "上一頁",
+    "nextPage": "下一頁",
+    "lastPage": "最後一頁"
   }
 }

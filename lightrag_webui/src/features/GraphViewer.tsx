@@ -5,7 +5,7 @@ import { Settings as SigmaSettings } from 'sigma/settings'
 import { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
 import { EdgeArrowProgram, NodePointProgram, NodeCircleProgram } from 'sigma/rendering'
 import { NodeBorderProgram } from '@sigma/node-border'
-import EdgeCurveProgram, { EdgeCurvedArrowProgram } from '@sigma/edge-curve'
+import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
 
 import FocusOnNode from '@/components/graph/FocusOnNode'
 import LayoutsControl from '@/components/graph/LayoutsControl'
@@ -36,7 +36,7 @@ const defaultSigmaSettings: Partial<SigmaSettings> = {
   edgeProgramClasses: {
     arrow: EdgeArrowProgram,
     curvedArrow: EdgeCurvedArrowProgram,
-    curvedNoArrow: EdgeCurveProgram
+    curvedNoArrow: createEdgeCurveProgram()
   },
   nodeProgramClasses: {
     default: NodeBorderProgram,

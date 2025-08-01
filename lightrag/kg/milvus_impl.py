@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
+from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -47,7 +48,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=1024,
+                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
                     nullable=True,
                 ),
             ]
@@ -64,7 +65,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=1024,
+                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
                     nullable=True,
                 ),
             ]
@@ -536,7 +537,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Load the collection if it's not already loaded
             # In Milvus, collections need to be loaded before they can be searched
             self._client.load_collection(self.namespace)
-            logger.debug(f"Collection {self.namespace} loaded successfully")
+            # logger.debug(f"Collection {self.namespace} loaded successfully")
 
         except Exception as e:
             logger.error(f"Failed to load collection {self.namespace}: {e}")

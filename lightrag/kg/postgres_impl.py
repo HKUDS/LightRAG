@@ -567,6 +567,119 @@ class PostgreSQLDB:
                 f"Failed to add llm_cache_list column to LIGHTRAG_DOC_CHUNKS: {e}"
             )
 
+    async def _migrate_doc_status_add_track_id(self):
+        """Add track_id column to LIGHTRAG_DOC_STATUS table if it doesn't exist and create index"""
+        try:
+            # Check if track_id column exists
+            check_column_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_status'
+            AND column_name = 'track_id'
+            """
+
+            column_info = await self.query(check_column_sql)
+            if not column_info:
+                logger.info("Adding track_id column to LIGHTRAG_DOC_STATUS table")
+                add_column_sql = """
+                ALTER TABLE LIGHTRAG_DOC_STATUS
+                ADD COLUMN track_id VARCHAR(255) NULL
+                """
+                await self.execute(add_column_sql)
+                logger.info(
+                    "Successfully added track_id column to LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "track_id column already exists in LIGHTRAG_DOC_STATUS table"
+                )
+
+            # Check if track_id index exists
+            check_index_sql = """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+            AND indexname = 'idx_lightrag_doc_status_track_id'
+            """
+
+            index_info = await self.query(check_index_sql)
+            if not index_info:
+                logger.info(
+                    "Creating index on track_id column for LIGHTRAG_DOC_STATUS table"
+                )
+                create_index_sql = """
+                CREATE INDEX idx_lightrag_doc_status_track_id ON LIGHTRAG_DOC_STATUS (track_id)
+                """
+                await self.execute(create_index_sql)
+                logger.info(
+                    "Successfully created index on track_id column for LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "Index on track_id column already exists for LIGHTRAG_DOC_STATUS table"
+                )
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to add track_id column or index to LIGHTRAG_DOC_STATUS: {e}"
+            )
+
+    async def _migrate_doc_status_add_metadata_error_msg(self):
+        """Add metadata and error_msg columns to LIGHTRAG_DOC_STATUS table if they don't exist"""
+        try:
+            # Check if metadata column exists
+            check_metadata_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_status'
+            AND column_name = 'metadata'
+            """
+
+            metadata_info = await self.query(check_metadata_sql)
+            if not metadata_info:
+                logger.info("Adding metadata column to LIGHTRAG_DOC_STATUS table")
+                add_metadata_sql = """
+                ALTER TABLE LIGHTRAG_DOC_STATUS
+                ADD COLUMN metadata JSONB NULL DEFAULT '{}'::jsonb
+                """
+                await self.execute(add_metadata_sql)
+                logger.info(
+                    "Successfully added metadata column to LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "metadata column already exists in LIGHTRAG_DOC_STATUS table"
+                )
+
+            # Check if error_msg column exists
+            check_error_msg_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_status'
+            AND column_name = 'error_msg'
+            """
+
+            error_msg_info = await self.query(check_error_msg_sql)
+            if not error_msg_info:
+                logger.info("Adding error_msg column to LIGHTRAG_DOC_STATUS table")
+                add_error_msg_sql = """
+                ALTER TABLE LIGHTRAG_DOC_STATUS
+                ADD COLUMN error_msg TEXT NULL
+                """
+                await self.execute(add_error_msg_sql)
+                logger.info(
+                    "Successfully added error_msg column to LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.info(
+                    "error_msg column already exists in LIGHTRAG_DOC_STATUS table"
+                )
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to add metadata/error_msg columns to LIGHTRAG_DOC_STATUS: {e}"
+            )
+
     async def _migrate_field_lengths(self):
         """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
         # Define the field changes needed
@@ -784,6 +897,85 @@ class PostgreSQLDB:
             await self._migrate_field_lengths()
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to migrate field lengths: {e}")
+
+        # Migrate doc status to add track_id field if needed
+        try:
+            await self._migrate_doc_status_add_track_id()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate doc status track_id field: {e}"
+            )
+
+        # Migrate doc status to add metadata and error_msg fields if needed
+        try:
+            await self._migrate_doc_status_add_metadata_error_msg()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate doc status metadata/error_msg fields: {e}"
+            )
+
+        # Create pagination optimization indexes for LIGHTRAG_DOC_STATUS
+        try:
+            await self._create_pagination_indexes()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to create pagination indexes: {e}")
+
+    async def _create_pagination_indexes(self):
+        """Create indexes to optimize pagination queries for LIGHTRAG_DOC_STATUS"""
+        indexes = [
+            {
+                "name": "idx_lightrag_doc_status_workspace_status_updated_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_status_updated_at ON LIGHTRAG_DOC_STATUS (workspace, status, updated_at DESC)",
+                "description": "Composite index for workspace + status + updated_at pagination",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_status_created_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_status_created_at ON LIGHTRAG_DOC_STATUS (workspace, status, created_at DESC)",
+                "description": "Composite index for workspace + status + created_at pagination",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_updated_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_updated_at ON LIGHTRAG_DOC_STATUS (workspace, updated_at DESC)",
+                "description": "Index for workspace + updated_at pagination (all statuses)",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_created_at",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_created_at ON LIGHTRAG_DOC_STATUS (workspace, created_at DESC)",
+                "description": "Index for workspace + created_at pagination (all statuses)",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_id",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_id ON LIGHTRAG_DOC_STATUS (workspace, id)",
+                "description": "Index for workspace + id sorting",
+            },
+            {
+                "name": "idx_lightrag_doc_status_workspace_file_path",
+                "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lightrag_doc_status_workspace_file_path ON LIGHTRAG_DOC_STATUS (workspace, file_path)",
+                "description": "Index for workspace + file_path sorting",
+            },
+        ]
+
+        for index in indexes:
+            try:
+                # Check if index already exists
+                check_sql = """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE tablename = 'lightrag_doc_status'
+                AND indexname = $1
+                """
+
+                existing = await self.query(check_sql, {"indexname": index["name"]})
+
+                if not existing:
+                    logger.info(f"Creating pagination index: {index['description']}")
+                    await self.execute(index["sql"])
+                    logger.info(f"Successfully created index: {index['name']}")
+                else:
+                    logger.debug(f"Index already exists: {index['name']}")
+
+            except Exception as e:
+                logger.warning(f"Failed to create index {index['name']}: {e}")
 
     async def query(
         self,
@@ -1668,12 +1860,19 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     chunks_list = []
 
+            # Parse metadata JSON string back to dict
+            metadata = result[0].get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(result[0]["created_at"])
             updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
 
             return dict(
-                content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
@@ -1682,6 +1881,9 @@ class PGDocStatusStorage(DocStatusStorage):
                 updated_at=updated_at,
                 file_path=result[0]["file_path"],
                 chunks_list=chunks_list,
+                metadata=metadata,
+                error_msg=result[0].get("error_msg"),
+                track_id=result[0].get("track_id"),
             )
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -1707,13 +1909,20 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     chunks_list = []
 
+            # Parse metadata JSON string back to dict
+            metadata = row.get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(row["created_at"])
             updated_at = self._format_datetime_with_timezone(row["updated_at"])
 
             processed_results.append(
                 {
-                    "content": row["content"],
                     "content_length": row["content_length"],
                     "content_summary": row["content_summary"],
                     "status": row["status"],
@@ -1722,6 +1931,9 @@ class PGDocStatusStorage(DocStatusStorage):
                     "updated_at": updated_at,
                     "file_path": row["file_path"],
                     "chunks_list": chunks_list,
+                    "metadata": metadata,
+                    "error_msg": row.get("error_msg"),
+                    "track_id": row.get("track_id"),
                 }
             )
 
@@ -1757,12 +1969,189 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     chunks_list = []
 
+            # Parse metadata JSON string back to dict
+            metadata = element.get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            # Ensure metadata is a dict
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            # Safe handling for file_path
+            file_path = element.get("file_path")
+            if file_path is None:
+                file_path = "no-file-path"
+
             # Convert datetime objects to ISO format strings with timezone info
             created_at = self._format_datetime_with_timezone(element["created_at"])
             updated_at = self._format_datetime_with_timezone(element["updated_at"])
 
             docs_by_status[element["id"]] = DocProcessingStatus(
-                content=element["content"],
+                content_summary=element["content_summary"],
+                content_length=element["content_length"],
+                status=element["status"],
+                created_at=created_at,
+                updated_at=updated_at,
+                chunks_count=element["chunks_count"],
+                file_path=file_path,
+                chunks_list=chunks_list,
+                metadata=metadata,
+                error_msg=element.get("error_msg"),
+                track_id=element.get("track_id"),
+            )
+
+        return docs_by_status
+
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and track_id=$2"
+        params = {"workspace": self.db.workspace, "track_id": track_id}
+        result = await self.db.query(sql, params, True)
+
+        docs_by_track_id = {}
+        for element in result:
+            # Parse chunks_list JSON string back to list
+            chunks_list = element.get("chunks_list", [])
+            if isinstance(chunks_list, str):
+                try:
+                    chunks_list = json.loads(chunks_list)
+                except json.JSONDecodeError:
+                    chunks_list = []
+
+            # Parse metadata JSON string back to dict
+            metadata = element.get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            # Ensure metadata is a dict
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            # Safe handling for file_path
+            file_path = element.get("file_path")
+            if file_path is None:
+                file_path = "no-file-path"
+
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(element["created_at"])
+            updated_at = self._format_datetime_with_timezone(element["updated_at"])
+
+            docs_by_track_id[element["id"]] = DocProcessingStatus(
+                content_summary=element["content_summary"],
+                content_length=element["content_length"],
+                status=element["status"],
+                created_at=created_at,
+                updated_at=updated_at,
+                chunks_count=element["chunks_count"],
+                file_path=file_path,
+                chunks_list=chunks_list,
+                track_id=element.get("track_id"),
+                metadata=metadata,
+                error_msg=element.get("error_msg"),
+            )
+
+        return docs_by_track_id
+
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+        # Validate parameters
+        if page < 1:
+            page = 1
+        if page_size < 10:
+            page_size = 10
+        elif page_size > 200:
+            page_size = 200
+
+        if sort_field not in ["created_at", "updated_at", "id", "file_path"]:
+            sort_field = "updated_at"
+
+        if sort_direction.lower() not in ["asc", "desc"]:
+            sort_direction = "desc"
+
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Build WHERE clause
+        where_clause = "WHERE workspace=$1"
+        params = {"workspace": self.db.workspace}
+        param_count = 1
+
+        if status_filter is not None:
+            param_count += 1
+            where_clause += f" AND status=${param_count}"
+            params["status"] = status_filter.value
+
+        # Build ORDER BY clause
+        order_clause = f"ORDER BY {sort_field} {sort_direction.upper()}"
+
+        # Query for total count
+        count_sql = f"SELECT COUNT(*) as total FROM LIGHTRAG_DOC_STATUS {where_clause}"
+        count_result = await self.db.query(count_sql, params)
+        total_count = count_result["total"] if count_result else 0
+
+        # Query for paginated data
+        data_sql = f"""
+            SELECT * FROM LIGHTRAG_DOC_STATUS
+            {where_clause}
+            {order_clause}
+            LIMIT ${param_count + 1} OFFSET ${param_count + 2}
+        """
+        params["limit"] = page_size
+        params["offset"] = offset
+
+        result = await self.db.query(data_sql, params, True)
+
+        # Convert to (doc_id, DocProcessingStatus) tuples
+        documents = []
+        for element in result:
+            doc_id = element["id"]
+
+            # Parse chunks_list JSON string back to list
+            chunks_list = element.get("chunks_list", [])
+            if isinstance(chunks_list, str):
+                try:
+                    chunks_list = json.loads(chunks_list)
+                except json.JSONDecodeError:
+                    chunks_list = []
+
+            # Parse metadata JSON string back to dict
+            metadata = element.get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(element["created_at"])
+            updated_at = self._format_datetime_with_timezone(element["updated_at"])
+
+            doc_status = DocProcessingStatus(
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -1771,9 +2160,39 @@ class PGDocStatusStorage(DocStatusStorage):
                 chunks_count=element["chunks_count"],
                 file_path=element["file_path"],
                 chunks_list=chunks_list,
+                track_id=element.get("track_id"),
+                metadata=metadata,
+                error_msg=element.get("error_msg"),
             )
+            documents.append((doc_id, doc_status))
 
-        return docs_by_status
+        return documents, total_count
+
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts, including 'all' field
+        """
+        sql = """
+            SELECT status, COUNT(*) as count
+            FROM LIGHTRAG_DOC_STATUS
+            WHERE workspace=$1
+            GROUP BY status
+        """
+        params = {"workspace": self.db.workspace}
+        result = await self.db.query(sql, params, True)
+
+        counts = {}
+        total_count = 0
+        for row in result:
+            counts[row["status"]] = row["count"]
+            total_count += row["count"]
+
+        # Add 'all' field with total count
+        counts["all"] = total_count
+
+        return counts
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -1843,18 +2262,20 @@ class PGDocStatusStorage(DocStatusStorage):
                 logger.warning(f"Unable to parse datetime string: {dt_str}")
                 return None
 
-        # Modified SQL to include created_at, updated_at, and chunks_list in both INSERT and UPDATE operations
+        # Modified SQL to include created_at, updated_at, chunks_list, track_id, metadata, and error_msg in both INSERT and UPDATE operations
         # All fields are updated from the input data in both INSERT and UPDATE cases
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status,file_path,chunks_list,created_at,updated_at)
-                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                   on conflict(id,workspace) do update set
-                  content = EXCLUDED.content,
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
                   chunks_count = EXCLUDED.chunks_count,
                   status = EXCLUDED.status,
                   file_path = EXCLUDED.file_path,
                   chunks_list = EXCLUDED.chunks_list,
+                  track_id = EXCLUDED.track_id,
+                  metadata = EXCLUDED.metadata,
+                  error_msg = EXCLUDED.error_msg,
                   created_at = EXCLUDED.created_at,
                   updated_at = EXCLUDED.updated_at"""
         for k, v in data.items():
@@ -1862,19 +2283,23 @@ class PGDocStatusStorage(DocStatusStorage):
             created_at = parse_datetime(v.get("created_at"))
             updated_at = parse_datetime(v.get("updated_at"))
 
-            # chunks_count and chunks_list are optional
+            # chunks_count, chunks_list, track_id, metadata, and error_msg are optional
             await self.db.execute(
                 sql,
                 {
                     "workspace": self.db.workspace,
                     "id": k,
-                    "content": v["content"],
                     "content_summary": v["content_summary"],
                     "content_length": v["content_length"],
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,
                     "status": v["status"],
                     "file_path": v["file_path"],
                     "chunks_list": json.dumps(v.get("chunks_list", [])),
+                    "track_id": v.get("track_id"),  # Add track_id support
+                    "metadata": json.dumps(
+                        v.get("metadata", {})
+                    ),  # Add metadata support
+                    "error_msg": v.get("error_msg"),  # Add error_msg support
                     "created_at": created_at,  # Use the converted datetime object
                     "updated_at": updated_at,  # Use the converted datetime object
                 },
@@ -3368,13 +3793,15 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_DOC_STATUS (
 	               workspace varchar(255) NOT NULL,
 	               id varchar(255) NOT NULL,
-	               content TEXT NULL,
 	               content_summary varchar(255) NULL,
 	               content_length int4 NULL,
 	               chunks_count int4 NULL,
 	               status varchar(64) NULL,
 	               file_path TEXT NULL,
 	               chunks_list JSONB NULL DEFAULT '[]'::jsonb,
+	               track_id varchar(255) NULL,
+	               metadata JSONB NULL DEFAULT '{}'::jsonb,
+	               error_msg TEXT NULL,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)

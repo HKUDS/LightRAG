@@ -87,7 +87,7 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         llm_model_func=ollama_model_complete,
         llm_model_name=os.getenv("LLM_MODEL", "qwen2.5-coder:7b"),
-        llm_model_max_token_size=8192,
+        summary_max_tokens=8192,
         llm_model_kwargs={
             "host": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
             "options": {"num_ctx": 8192},

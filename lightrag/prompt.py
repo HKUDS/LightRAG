@@ -19,9 +19,9 @@ Use {language} as output language.
 
 ---Steps---
 1. Identify all entities. For each identified entity, extract the following information:
-- entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
+- entity_name: Name of the entity, use same language as input text. If English, capitalized the name
 - entity_type: One of the following types: [{entity_types}]
-- entity_description: Comprehensive description of the entity's attributes and activities
+- entity_description: Provide a comprehensive description of the entity's attributes and activities *based solely on the information present in the input text*. **Do not infer or hallucinate information not explicitly stated.** If the text provides insufficient information to create a comprehensive description, state "Description not available in text."
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
@@ -151,14 +151,14 @@ Output:
 """
 
 PROMPTS["entity_continue_extraction"] = """
-MANY entities and relationships were missed in the last extraction.
+MANY entities and relationships were missed in the last extraction. Please find only the missing entities and relationships from previous text.
 
 ---Remember Steps---
 
 1. Identify all entities. For each identified entity, extract the following information:
-- entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
+- entity_name: Name of the entity, use same language as input text. If English, capitalized the name
 - entity_type: One of the following types: [{entity_types}]
-- entity_description: Comprehensive description of the entity's attributes and activities
+- entity_description: Provide a comprehensive description of the entity's attributes and activities *based solely on the information present in the input text*. **Do not infer or hallucinate information not explicitly stated.** If the text provides insufficient information to create a comprehensive description, state "Description not available in text."
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
@@ -179,7 +179,7 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 
 ---Output---
 
-Add them below using the same format:\n
+Add new entities and relations below using the same format, and do not include entities and relations that have been previously extracted. :\n
 """.strip()
 
 PROMPTS["entity_if_loop_extraction"] = """
@@ -251,7 +251,7 @@ Given the query and conversation history, list both high-level and low-level key
 ######################
 {examples}
 
-#############################
+######################
 ---Real Data---
 ######################
 Conversation History:
@@ -259,42 +259,45 @@ Conversation History:
 
 Current Query: {query}
 ######################
-The `Output` should be human text, not unicode characters. Keep the same language as `Query`.
-Output:
+The `Output` should be in JSON format, with no other text before and after the JSON. Use the same language as `Current Query`.
 
+Output:
 """
 
 PROMPTS["keywords_extraction_examples"] = [
     """Example 1:
 
 Query: "How does international trade influence global economic stability?"
-################
+
 Output:
 {
   "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
   "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
 }
-#############################""",
+
+""",
     """Example 2:
 
 Query: "What are the environmental consequences of deforestation on biodiversity?"
-################
+
 Output:
 {
   "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
   "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
 }
-#############################""",
+
+""",
     """Example 3:
 
 Query: "What is the role of education in reducing poverty?"
-################
+
 Output:
 {
   "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
   "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
 }
-#############################""",
+
+""",
 ]
 
 PROMPTS["naive_rag_response"] = """---Role---

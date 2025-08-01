@@ -18,13 +18,22 @@ import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import DeselectDocumentsDialog from '@/components/documents/DeselectDocumentsDialog'
+import PaginationControls from '@/components/ui/PaginationControls'
 
-import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
+import {
+  scanNewDocuments,
+  getDocumentsPaginated,
+  DocsStatusesResponse,
+  DocStatus,
+  DocStatusResponse,
+  DocumentsRequest,
+  PaginationInfo
+} from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -136,7 +145,7 @@ const pulseStyle = `
 `;
 
 // Type definitions for sort field and direction
-type SortField = 'created_at' | 'updated_at' | 'id';
+type SortField = 'created_at' | 'updated_at' | 'id' | 'file_path';
 type SortDirection = 'asc' | 'desc';
 
 export default function DocumentManager() {
@@ -164,10 +173,28 @@ export default function DocumentManager() {
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
+
+  // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
+
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
+  const documentsPageSize = useSettingsStore.use.documentsPageSize()
+  const setDocumentsPageSize = useSettingsStore.use.setDocumentsPageSize()
+
+  // New pagination state
+  const [, setCurrentPageDocs] = useState<DocStatusResponse[]>([])
+  const [pagination, setPagination] = useState<PaginationInfo>({
+    page: 1,
+    page_size: documentsPageSize,
+    total_count: 0,
+    total_pages: 0,
+    has_next: false,
+    has_prev: false
+  })
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
@@ -175,6 +202,15 @@ export default function DocumentManager() {
 
   // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
+  // State to store page number for each status filter
+  const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
+    all: 1,
+    processed: 1,
+    processing: 1,
+    pending: 1,
+    failed: 1,
+  });
 
   // State for document selection
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
@@ -198,15 +234,30 @@ export default function DocumentManager() {
 
   // Handle sort column click
   const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      // Toggle sort direction if clicking the same field
-      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
-    } else {
-      // Set new sort field with default desc direction
-      setSortField(field)
-      setSortDirection('desc')
+    let actualField = field;
+
+    // When clicking the first column, determine the actual sort field based on showFileName
+    if (field === 'id') {
+      actualField = showFileName ? 'file_path' : 'id';
     }
-  }
+
+    const newDirection = (sortField === actualField && sortDirection === 'desc') ? 'asc' : 'desc';
+
+    setSortField(actualField);
+    setSortDirection(newDirection);
+
+    // Reset page to 1 when sorting changes
+    setPagination(prev => ({ ...prev, page: 1 }));
+
+    // Reset all status filters' page memory since sorting affects all
+    setPageByStatus({
+      all: 1,
+      processed: 1,
+      processing: 1,
+      pending: 1,
+      failed: 1,
+    });
+  };
 
   // Sort documents based on current sort field and direction
   const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
@@ -373,74 +424,84 @@ export default function DocumentManager() {
     };
   }, [docs]);
 
-  const fetchDocuments = useCallback(async () => {
+  // New paginated data fetching function
+  const fetchPaginatedDocuments = useCallback(async (
+    page: number,
+    pageSize: number,
+    statusFilter: StatusFilter
+  ) => {
     try {
-      // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
 
-      const docs = await getDocuments();
+      setIsRefreshing(true);
 
-      // Check again if component is still mounted after the request completes
+      // Prepare request parameters
+      const request: DocumentsRequest = {
+        status_filter: statusFilter === 'all' ? null : statusFilter,
+        page,
+        page_size: pageSize,
+        sort_field: sortField,
+        sort_direction: sortDirection
+      };
+
+      const response = await getDocumentsPaginated(request);
+
       if (!isMountedRef.current) return;
 
-      // Only update state if component is still mounted
-      if (isMountedRef.current) {
-        // Update docs state
-        if (docs && docs.statuses) {
-          const numDocuments = Object.values(docs.statuses).reduce(
-            (acc, status) => acc + status.length,
-            0
-          )
-          if (numDocuments > 0) {
-            setDocs(docs)
-          } else {
-            setDocs(null)
-          }
-        } else {
-          setDocs(null)
+      // Update pagination state
+      setPagination(response.pagination);
+      setCurrentPageDocs(response.documents);
+      setStatusCounts(response.status_counts);
+
+      // Update legacy docs state for backward compatibility
+      const legacyDocs: DocsStatusesResponse = {
+        statuses: {
+          processed: response.documents.filter(doc => doc.status === 'processed'),
+          processing: response.documents.filter(doc => doc.status === 'processing'),
+          pending: response.documents.filter(doc => doc.status === 'pending'),
+          failed: response.documents.filter(doc => doc.status === 'failed')
         }
+      };
+
+      if (response.pagination.total_count > 0) {
+        setDocs(legacyDocs);
+      } else {
+        setDocs(null);
       }
+
     } catch (err) {
-      // Only show error if component is still mounted
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
+        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsRefreshing(false);
       }
     }
-  }, [setDocs, t])
+  }, [sortField, sortDirection, t]);
 
-  // Fetch documents when the tab becomes visible
-  useEffect(() => {
-    if (currentTab === 'documents') {
-      fetchDocuments()
+  // Legacy fetchDocuments function for backward compatibility
+  const fetchDocuments = useCallback(async () => {
+    await fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
+  }, [fetchPaginatedDocuments, pagination.page, pagination.page_size, statusFilter]);
+
+  // Add refs to track previous pipelineBusy state and current interval
+  const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Function to clear current polling interval
+  const clearPollingInterval = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
     }
-  }, [currentTab, fetchDocuments])
+  }, []);
 
-  const scanDocuments = useCallback(async () => {
-    try {
-      // Check if component is still mounted before starting the request
-      if (!isMountedRef.current) return;
+  // Function to start polling with given interval
+  const startPollingInterval = useCallback((intervalMs: number) => {
+    clearPollingInterval();
 
-      const { status } = await scanNewDocuments();
-
-      // Check again if component is still mounted after the request completes
-      if (!isMountedRef.current) return;
-
-      toast.message(status);
-    } catch (err) {
-      // Only show error if component is still mounted
-      if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
-      }
-    }
-  }, [t])
-
-  // Set up polling when the documents tab is active and health is good
-  useEffect(() => {
-    if (currentTab !== 'documents' || !health) {
-      return
-    }
-
-    const interval = setInterval(async () => {
+    pollingIntervalRef.current = setInterval(async () => {
       try {
         // Only perform fetch if component is still mounted
         if (isMountedRef.current) {
@@ -452,12 +513,145 @@ export default function DocumentManager() {
           toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
         }
       }
-    }, 5000)
+    }, intervalMs);
+  }, [fetchDocuments, t, clearPollingInterval]);
+
+  const scanDocuments = useCallback(async () => {
+    try {
+      // Check if component is still mounted before starting the request
+      if (!isMountedRef.current) return;
+
+      const { status, message, track_id: _track_id } = await scanNewDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
+
+      // Check again if component is still mounted after the request completes
+      if (!isMountedRef.current) return;
+
+      // Note: _track_id is available for future use (e.g., progress tracking)
+      toast.message(message || status);
+
+      // Reset health check timer with 1 second delay to avoid race condition
+      useBackendState.getState().resetHealthCheckTimerDelayed(1000);
+
+      // Schedule a health check 2 seconds after successful scan
+      startPollingInterval(2000);
+    } catch (err) {
+      // Only show error if component is still mounted
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
+      }
+    }
+  }, [t, startPollingInterval])
+
+  // Handle page size change - update state and save to store
+  const handlePageSizeChange = useCallback((newPageSize: number) => {
+    if (newPageSize === pagination.page_size) return;
+
+    // Save the new page size to the store
+    setDocumentsPageSize(newPageSize);
+
+    // Reset all status filters to page 1 when page size changes
+    setPageByStatus({
+      all: 1,
+      processed: 1,
+      processing: 1,
+      pending: 1,
+      failed: 1,
+    });
+
+    setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
+  }, [pagination.page_size, setDocumentsPageSize]);
+
+  // Handle manual refresh with pagination reset logic
+  const handleManualRefresh = useCallback(async () => {
+    try {
+      setIsRefreshing(true);
+
+      // Fetch documents from the first page
+      const request: DocumentsRequest = {
+        status_filter: statusFilter === 'all' ? null : statusFilter,
+        page: 1,
+        page_size: pagination.page_size,
+        sort_field: sortField,
+        sort_direction: sortDirection
+      };
+
+      const response = await getDocumentsPaginated(request);
+
+      if (!isMountedRef.current) return;
+
+      // Check if total count is less than current page size and page size is not already 10
+      if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
+        // Reset page size to 10 which will trigger a new fetch
+        handlePageSizeChange(10);
+      } else {
+        // Update pagination state
+        setPagination(response.pagination);
+        setCurrentPageDocs(response.documents);
+        setStatusCounts(response.status_counts);
+
+        // Update legacy docs state for backward compatibility
+        const legacyDocs: DocsStatusesResponse = {
+          statuses: {
+            processed: response.documents.filter(doc => doc.status === 'processed'),
+            processing: response.documents.filter(doc => doc.status === 'processing'),
+            pending: response.documents.filter(doc => doc.status === 'pending'),
+            failed: response.documents.filter(doc => doc.status === 'failed')
+          }
+        };
+
+        if (response.pagination.total_count > 0) {
+          setDocs(legacyDocs);
+        } else {
+          setDocs(null);
+        }
+      }
+
+    } catch (err) {
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsRefreshing(false);
+      }
+    }
+  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
+
+  // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
+  useEffect(() => {
+    // Skip the first render when prevPipelineBusyRef is undefined
+    if (prevPipelineBusyRef.current !== undefined && prevPipelineBusyRef.current !== pipelineBusy) {
+      // pipelineBusy state has changed, trigger immediate refresh
+      if (currentTab === 'documents' && health && isMountedRef.current) {
+        handleManualRefresh();
+
+        // Reset polling timer after manual refresh
+        const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
+        const pollingInterval = hasActiveDocuments ? 5000 : 30000;
+        startPollingInterval(pollingInterval);
+      }
+    }
+    // Update the previous state
+    prevPipelineBusyRef.current = pipelineBusy;
+  }, [pipelineBusy, currentTab, health, handleManualRefresh, statusCounts.processing, statusCounts.pending, startPollingInterval]);
+
+  // Set up intelligent polling with dynamic interval based on document status
+  useEffect(() => {
+    if (currentTab !== 'documents' || !health) {
+      clearPollingInterval();
+      return
+    }
+
+    // Determine polling interval based on document status
+    const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
+    const pollingInterval = hasActiveDocuments ? 5000 : 30000; // 5s if active, 30s if idle
+
+    startPollingInterval(pollingInterval);
 
     return () => {
-      clearInterval(interval)
+      clearPollingInterval();
     }
-  }, [health, fetchDocuments, t, currentTab])
+  }, [health, t, currentTab, statusCounts, startPollingInterval, clearPollingInterval])
 
   // Monitor docs changes to check status counts and trigger health check if needed
   useEffect(() => {
@@ -485,16 +679,97 @@ export default function DocumentManager() {
     prevStatusCounts.current = newStatusCounts
   }, [docs]);
 
+  // Handle page change - only update state
+  const handlePageChange = useCallback((newPage: number) => {
+    if (newPage === pagination.page) return;
+
+    // Save the new page for current status filter
+    setPageByStatus(prev => ({ ...prev, [statusFilter]: newPage }));
+    setPagination(prev => ({ ...prev, page: newPage }));
+  }, [pagination.page, statusFilter]);
+
+  // Handle status filter change - only update state
+  const handleStatusFilterChange = useCallback((newStatusFilter: StatusFilter) => {
+    if (newStatusFilter === statusFilter) return;
+
+    // Save current page for the current status filter
+    setPageByStatus(prev => ({ ...prev, [statusFilter]: pagination.page }));
+
+    // Get the saved page for the new status filter
+    const newPage = pageByStatus[newStatusFilter];
+
+    // Update status filter and restore the saved page
+    setStatusFilter(newStatusFilter);
+    setPagination(prev => ({ ...prev, page: newPage }));
+  }, [statusFilter, pagination.page, pageByStatus]);
+
   // Handle documents deleted callback
   const handleDocumentsDeleted = useCallback(async () => {
     setSelectedDocIds([])
-    await fetchDocuments()
-  }, [fetchDocuments])
 
-  // Add dependency on sort state to re-render when sort changes
+    // Reset health check timer with 1 second delay to avoid race condition
+    useBackendState.getState().resetHealthCheckTimerDelayed(1000)
+
+    // Schedule a health check 2 seconds after successful clear
+    startPollingInterval(2000)
+  }, [startPollingInterval])
+
+  // Handle documents cleared callback with proper interval reset
+  const handleDocumentsCleared = useCallback(async () => {
+    // Clear current polling interval
+    clearPollingInterval();
+
+    // Reset status counts to ensure proper state
+    setStatusCounts({
+      all: 0,
+      processed: 0,
+      processing: 0,
+      pending: 0,
+      failed: 0
+    });
+
+    // Perform one immediate refresh to confirm clear operation
+    if (isMountedRef.current) {
+      try {
+        await fetchDocuments();
+      } catch (err) {
+        console.error('Error fetching documents after clear:', err);
+      }
+    }
+
+    // Set appropriate polling interval based on current state
+    // Since documents are cleared, use idle interval (30 seconds)
+    if (currentTab === 'documents' && health && isMountedRef.current) {
+      startPollingInterval(30000); // 30 seconds for idle state
+    }
+  }, [clearPollingInterval, setStatusCounts, fetchDocuments, currentTab, health, startPollingInterval])
+
+
+  // Handle showFileName change - switch sort field if currently sorting by first column
   useEffect(() => {
-    // This effect ensures the component re-renders when sort state changes
-  }, [sortField, sortDirection]);
+    // Only switch if currently sorting by the first column (id or file_path)
+    if (sortField === 'id' || sortField === 'file_path') {
+      const newSortField = showFileName ? 'file_path' : 'id';
+      if (sortField !== newSortField) {
+        setSortField(newSortField);
+      }
+    }
+  }, [showFileName, sortField]);
+
+  // Central effect to handle all data fetching
+  useEffect(() => {
+    if (currentTab === 'documents') {
+      fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
+    }
+  }, [
+    currentTab,
+    pagination.page,
+    pagination.page_size,
+    statusFilter,
+    sortField,
+    sortDirection,
+    fetchPaginatedDocuments
+  ]);
 
   return (
     <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
@@ -502,7 +777,7 @@ export default function DocumentManager() {
         <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
       <CardContent className="flex-1 flex flex-col min-h-0 overflow-auto">
-        <div className="flex gap-2 mb-2">
+        <div className="flex justify-between items-center gap-2 mb-2">
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -526,27 +801,43 @@ export default function DocumentManager() {
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>
           </div>
-          <div className="flex-1" />
-          {isSelectionMode && (
-            <DeleteDocumentsDialog
-              selectedDocIds={selectedDocIds}
-              totalCompletedCount={documentCounts.processed || 0}
-              onDocumentsDeleted={handleDocumentsDeleted}
+
+          {/* Pagination Controls in the middle */}
+          {pagination.total_pages > 1 && (
+            <PaginationControls
+              currentPage={pagination.page}
+              totalPages={pagination.total_pages}
+              pageSize={pagination.page_size}
+              totalCount={pagination.total_count}
+              onPageChange={handlePageChange}
+              onPageSizeChange={handlePageSizeChange}
+              isLoading={isRefreshing}
+              compact={true}
             />
           )}
-          {isSelectionMode ? (
-            <DeselectDocumentsDialog
-              selectedCount={selectedDocIds.length}
-              onDeselect={handleDeselectAll}
+
+          <div className="flex gap-2">
+            {isSelectionMode && (
+              <DeleteDocumentsDialog
+                selectedDocIds={selectedDocIds}
+                totalCompletedCount={documentCounts.processed || 0}
+                onDocumentsDeleted={handleDocumentsDeleted}
+              />
+            )}
+            {isSelectionMode ? (
+              <DeselectDocumentsDialog
+                selectedCount={selectedDocIds.length}
+                onDeselect={handleDeselectAll}
+              />
+            ) : (
+              <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
+            )}
+            <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
+            <PipelineStatusDialog
+              open={showPipelineStatus}
+              onOpenChange={setShowPipelineStatus}
             />
-          ) : (
-            <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
-          )}
-          <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
-          <PipelineStatusDialog
-            open={showPipelineStatus}
-            onOpenChange={setShowPipelineStatus}
-          />
+          </div>
         </div>
 
         <Card className="flex-1 flex flex-col border rounded-md min-h-0 mb-2">
@@ -554,63 +845,77 @@ export default function DocumentManager() {
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
-                <FilterIcon className="h-4 w-4" />
                 <div className="flex gap-1" dir={i18n.dir()}>
                   <Button
                     size="sm"
                     variant={statusFilter === 'all' ? 'secondary' : 'outline'}
-                    onClick={() => setStatusFilter('all')}
+                    onClick={() => handleStatusFilterChange('all')}
+                    disabled={isRefreshing}
                     className={cn(
                       statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
+                    {t('documentPanel.documentManager.status.all')} ({statusCounts.all || documentCounts.all})
                   </Button>
                   <Button
                     size="sm"
                     variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
-                    onClick={() => setStatusFilter('processed')}
+                    onClick={() => handleStatusFilterChange('processed')}
+                    disabled={isRefreshing}
                     className={cn(
-                      documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500',
+                      (statusCounts.PROCESSED || statusCounts.processed || documentCounts.processed) > 0 ? 'text-green-600' : 'text-gray-500',
                       statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
+                    {t('documentPanel.documentManager.status.completed')} ({statusCounts.PROCESSED || statusCounts.processed || 0})
                   </Button>
                   <Button
                     size="sm"
                     variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
-                    onClick={() => setStatusFilter('processing')}
+                    onClick={() => handleStatusFilterChange('processing')}
+                    disabled={isRefreshing}
                     className={cn(
-                      documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500',
+                      (statusCounts.PROCESSING || statusCounts.processing || documentCounts.processing) > 0 ? 'text-blue-600' : 'text-gray-500',
                       statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
+                    {t('documentPanel.documentManager.status.processing')} ({statusCounts.PROCESSING || statusCounts.processing || 0})
                   </Button>
                   <Button
                     size="sm"
                     variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
-                    onClick={() => setStatusFilter('pending')}
+                    onClick={() => handleStatusFilterChange('pending')}
+                    disabled={isRefreshing}
                     className={cn(
-                      documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500',
+                      (statusCounts.PENDING || statusCounts.pending || documentCounts.pending) > 0 ? 'text-yellow-600' : 'text-gray-500',
                       statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
+                    {t('documentPanel.documentManager.status.pending')} ({statusCounts.PENDING || statusCounts.pending || 0})
                   </Button>
                   <Button
                     size="sm"
                     variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
-                    onClick={() => setStatusFilter('failed')}
+                    onClick={() => handleStatusFilterChange('failed')}
+                    disabled={isRefreshing}
                     className={cn(
-                      documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500',
+                      (statusCounts.FAILED || statusCounts.failed || documentCounts.failed) > 0 ? 'text-red-600' : 'text-gray-500',
                       statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
+                    {t('documentPanel.documentManager.status.failed')} ({statusCounts.FAILED || statusCounts.failed || 0})
                   </Button>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleManualRefresh}
+                  disabled={isRefreshing}
+                  side="bottom"
+                  tooltip={t('documentPanel.documentManager.refreshTooltip')}
+                >
+                  <RotateCcwIcon className="h-4 w-4" />
+                </Button>
               </div>
               <div className="flex items-center gap-2">
                 <label
@@ -656,8 +961,11 @@ export default function DocumentManager() {
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
-                            {t('documentPanel.documentManager.columns.id')}
-                            {sortField === 'id' && (
+                            {showFileName
+                              ? t('documentPanel.documentManager.columns.fileName')
+                              : t('documentPanel.documentManager.columns.id')
+                            }
+                            {((sortField === 'id' && !showFileName) || (sortField === 'file_path' && showFileName)) && (
                               <span className="ml-1">
                                 {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                               </span>
@@ -749,8 +1057,8 @@ export default function DocumentManager() {
                             {doc.status === 'failed' && (
                               <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
                             )}
-                            {doc.error && (
-                              <span className="ml-2 text-red-500" title={doc.error}>
+                            {doc.error_msg && (
+                              <span className="ml-2 text-red-500" title={doc.error_msg}>
                                 ⚠️
                               </span>
                             )}

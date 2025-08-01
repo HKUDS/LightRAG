@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
@@ -15,6 +15,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
+import { RotateCcw } from 'lucide-react'
 
 export default function QuerySettings() {
   const { t } = useTranslation()
@@ -24,6 +25,42 @@ export default function QuerySettings() {
     useSettingsStore.getState().updateQuerySettings({ [key]: value })
   }, [])
 
+  // Default values for reset functionality
+  const defaultValues = useMemo(() => ({
+    mode: 'mix' as QueryMode,
+    response_type: 'Multiple Paragraphs',
+    top_k: 40,
+    chunk_top_k: 10,
+    max_entity_tokens: 10000,
+    max_relation_tokens: 10000,
+    max_total_tokens: 30000
+  }), [])
+
+  const handleReset = useCallback((key: keyof typeof defaultValues) => {
+    handleChange(key, defaultValues[key])
+  }, [handleChange, defaultValues])
+
+  // Reset button component
+  const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onClick}
+            className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            title={title}
+          >
+            <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="left">
+          <p>{title}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+
   return (
     <Card className="flex shrink-0 flex-col min-w-[220px]">
       <CardHeader className="px-4 pt-4 pb-2">
@@ -32,7 +69,7 @@ export default function QuerySettings() {
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
-          <div className="absolute inset-0 flex flex-col gap-2 overflow-auto px-2">
+          <div className="absolute inset-0 flex flex-col gap-2 overflow-auto px-2 pr-3">
             {/* Query Mode */}
             <>
               <TooltipProvider>
@@ -47,27 +84,33 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <Select
-                value={querySettings.mode}
-                onValueChange={(v) => handleChange('mode', v as QueryMode)}
-              >
-                <SelectTrigger
-                  id="query_mode_select"
-                  className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0"
+              <div className="flex items-center gap-1">
+                <Select
+                  value={querySettings.mode}
+                  onValueChange={(v) => handleChange('mode', v as QueryMode)}
                 >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
-                    <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
-                    <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
-                    <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
-                    <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
-                    <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+                  <SelectTrigger
+                    id="query_mode_select"
+                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
+                      <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
+                      <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
+                      <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
+                      <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
+                      <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <ResetButton
+                  onClick={() => handleReset('mode')}
+                  title="Reset to default (Mix)"
+                />
+              </div>
             </>
 
             {/* Response Format */}
@@ -84,24 +127,30 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <Select
-                value={querySettings.response_type}
-                onValueChange={(v) => handleChange('response_type', v)}
-              >
-                <SelectTrigger
-                  id="response_format_select"
-                  className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0"
+              <div className="flex items-center gap-1">
+                <Select
+                  value={querySettings.response_type}
+                  onValueChange={(v) => handleChange('response_type', v)}
                 >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="Multiple Paragraphs">{t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}</SelectItem>
-                    <SelectItem value="Single Paragraph">{t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}</SelectItem>
-                    <SelectItem value="Bullet Points">{t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+                  <SelectTrigger
+                    id="response_format_select"
+                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="Multiple Paragraphs">{t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}</SelectItem>
+                      <SelectItem value="Single Paragraph">{t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}</SelectItem>
+                      <SelectItem value="Bullet Points">{t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <ResetButton
+                  onClick={() => handleReset('response_type')}
+                  title="Reset to default (Multiple Paragraphs)"
+                />
+              </div>
             </>
 
             {/* Top K */}
@@ -118,7 +167,7 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <div>
+              <div className="flex items-center gap-1">
                 <Input
                   id="top_k"
                   type="number"
@@ -135,6 +184,11 @@ export default function QuerySettings() {
                   }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.topKPlaceholder')}
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+                <ResetButton
+                  onClick={() => handleReset('top_k')}
+                  title="Reset to default"
                 />
               </div>
             </>
@@ -153,7 +207,7 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <div>
+              <div className="flex items-center gap-1">
                 <Input
                   id="chunk_top_k"
                   type="number"
@@ -170,6 +224,11 @@ export default function QuerySettings() {
                   }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.chunkTopKPlaceholder')}
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+                <ResetButton
+                  onClick={() => handleReset('chunk_top_k')}
+                  title="Reset to default"
                 />
               </div>
             </>
@@ -188,7 +247,7 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <div>
+              <div className="flex items-center gap-1">
                 <Input
                   id="max_entity_tokens"
                   type="number"
@@ -205,6 +264,11 @@ export default function QuerySettings() {
                   }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.maxEntityTokensPlaceholder')}
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+                <ResetButton
+                  onClick={() => handleReset('max_entity_tokens')}
+                  title="Reset to default"
                 />
               </div>
             </>
@@ -223,7 +287,7 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <div>
+              <div className="flex items-center gap-1">
                 <Input
                   id="max_relation_tokens"
                   type="number"
@@ -240,6 +304,11 @@ export default function QuerySettings() {
                   }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.maxRelationTokensPlaceholder')}
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+                <ResetButton
+                  onClick={() => handleReset('max_relation_tokens')}
+                  title="Reset to default"
                 />
               </div>
             </>
@@ -258,7 +327,7 @@ export default function QuerySettings() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <div>
+              <div className="flex items-center gap-1">
                 <Input
                   id="max_total_tokens"
                   type="number"
@@ -270,50 +339,20 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('max_total_tokens', 1000)
+                      handleChange('max_total_tokens', 32000)
                     }
                   }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.maxTotalTokensPlaceholder')}
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+                <ResetButton
+                  onClick={() => handleReset('max_total_tokens')}
+                  title="Reset to default"
                 />
               </div>
             </>
 
-            {/* History Turns */}
-            <>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label htmlFor="history_turns" className="ml-1 cursor-help">
-                      {t('retrievePanel.querySettings.historyTurns')}
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">
-                    <p>{t('retrievePanel.querySettings.historyTurnsTooltip')}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-              <div>
-                <Input
-                  id="history_turns"
-                  type="number"
-                  value={querySettings.history_turns ?? ''}
-                  onChange={(e) => {
-                    const value = e.target.value
-                    handleChange('history_turns', value === '' ? '' : parseInt(value) || 0)
-                  }}
-                  onBlur={(e) => {
-                    const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('history_turns', 0)
-                    }
-                  }}
-                  min={0}
-                  placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
-                  className="h-9"
-                />
-              </div>
-            </>
 
             {/* User Prompt */}
             <>

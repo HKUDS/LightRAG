@@ -117,6 +117,7 @@
       "title": "Document Management",
       "scanButton": "Scan",
       "scanTooltip": "Scan documents in input folder",
+      "refreshTooltip": "Reset document list",
       "pipelineStatusButton": "Pipeline Status",
       "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
@@ -125,6 +126,7 @@
       "emptyDescription": "There are no uploaded documents yet.",
       "columns": {
         "id": "ID",
+        "fileName": "File Name",
         "summary": "Summary",
         "status": "Status",
         "length": "Length",
@@ -247,14 +249,15 @@
     },
     "statusCard": {
       "unavailable": "Status information unavailable",
-      "storageInfo": "Storage Info",
+      "serverInfo": "Server Info",
       "workingDirectory": "Working Directory",
       "inputDirectory": "Input Directory",
+      "maxParallelInsert": "Concurrent Doc Processing",
+      "summarySettings": "Summary Settings",
       "llmConfig": "LLM Configuration",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "LLM Endpoint",
       "llmModel": "LLM Model",
-      "maxTokens": "Max Tokens",
       "embeddingConfig": "Embedding Configuration",
       "embeddingBinding": "Embedding Binding",
       "embeddingBindingHost": "Embedding Endpoint",
@@ -269,7 +272,8 @@
       "rerankerConfig": "Reranker Configuration",
       "rerankerBindingHost": "Reranker Endpoint",
       "rerankerModel": "Reranker Model",
-      "lockStatus": "Lock Status"
+      "lockStatus": "Lock Status",
+      "threshold": "Threshold"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",
@@ -399,5 +403,14 @@
     "description": "Please enter your API key to access the service",
     "placeholder": "Enter your API key",
     "save": "Save"
+  },
+  "pagination": {
+    "showing": "Showing {{start}} to {{end}} of {{total}} entries",
+    "page": "Page",
+    "pageSize": "Page Size",
+    "firstPage": "First Page",
+    "prevPage": "Previous Page",
+    "nextPage": "Next Page",
+    "lastPage": "Last Page"
   }
 }

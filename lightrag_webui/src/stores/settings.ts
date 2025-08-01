@@ -13,6 +13,9 @@ interface SettingsState {
   showFileName: boolean
   setShowFileName: (show: boolean) => void
 
+  documentsPageSize: number
+  setDocumentsPageSize: (size: number) => void
+
   // Graph viewer settings
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
@@ -104,6 +107,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       currentTab: 'documents',
       showFileName: false,
+      documentsPageSize: 10,
 
       retrievalHistory: [],
 
@@ -118,7 +122,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
-        history_turns: 3,
+        history_turns: 0,
         user_prompt: '',
         enable_rerank: true
       },
@@ -181,18 +185,23 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
 
-      updateQuerySettings: (settings: Partial<QueryRequest>) =>
+      updateQuerySettings: (settings: Partial<QueryRequest>) => {
+        // Filter out history_turns to prevent changes, always keep it as 0
+        const filteredSettings = { ...settings }
+        delete filteredSettings.history_turns
         set((state) => ({
-          querySettings: { ...state.querySettings, ...settings }
-        })),
+          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 }
+        }))
+      },
 
       setShowFileName: (show: boolean) => set({ showFileName: show }),
-      setShowLegend: (show: boolean) => set({ showLegend: show })
+      setShowLegend: (show: boolean) => set({ showLegend: show }),
+      setDocumentsPageSize: (size: number) => set({ documentsPageSize: size })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 15,
+      version: 17,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -221,7 +230,7 @@ const useSettingsStoreBase = create<SettingsState>()(
             only_need_context: false,
             only_need_prompt: false,
             stream: true,
-            history_turns: 3,
+            history_turns: 0,
             hl_keywords: [],
             ll_keywords: []
           }
@@ -273,6 +282,16 @@ const useSettingsStoreBase = create<SettingsState>()(
             max_total_tokens: 32000,
             enable_rerank: true,
             history_turns: 0,
+          }
+        }
+        if (version < 16) {
+          // Add documentsPageSize field for older versions
+          state.documentsPageSize = 10
+        }
+        if (version < 17) {
+          // Force history_turns to 0 for all users
+          if (state.querySettings) {
+            state.querySettings.history_turns = 0
           }
         }
         return state

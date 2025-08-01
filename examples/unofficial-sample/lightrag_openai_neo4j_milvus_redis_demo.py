@@ -56,7 +56,7 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        llm_model_max_token_size=32768,
+        summary_max_tokens=10000,
         embedding_func=embedding_func,
         chunk_token_size=512,
         chunk_overlap_token_size=256,

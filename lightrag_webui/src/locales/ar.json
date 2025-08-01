@@ -117,6 +117,7 @@
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
       "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
+      "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "حالة خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
@@ -125,6 +126,7 @@
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
       "columns": {
         "id": "المعرف",
+        "fileName": "اسم الملف",
         "summary": "الملخص",
         "status": "الحالة",
         "length": "الطول",
@@ -247,14 +249,15 @@
     },
     "statusCard": {
       "unavailable": "معلومات الحالة غير متوفرة",
-      "storageInfo": "معلومات التخزين",
+      "serverInfo": "معلومات الخادم",
       "workingDirectory": "دليل العمل",
       "inputDirectory": "دليل الإدخال",
+      "maxParallelInsert": "معالجة المستندات المتزامنة",
+      "summarySettings": "إعدادات الملخص",
       "llmConfig": "تكوين نموذج اللغة الكبير",
       "llmBinding": "ربط نموذج اللغة الكبير",
       "llmBindingHost": "نقطة نهاية نموذج اللغة الكبير",
       "llmModel": "نموذج اللغة الكبير",
-      "maxTokens": "أقصى عدد من الرموز",
       "embeddingConfig": "تكوين التضمين",
       "embeddingBinding": "ربط التضمين",
       "embeddingBindingHost": "نقطة نهاية التضمين",
@@ -269,7 +272,8 @@
       "rerankerConfig": "تكوين إعادة الترتيب",
       "rerankerBindingHost": "نقطة نهاية إعادة الترتيب",
       "rerankerModel": "نموذج إعادة الترتيب",
-      "lockStatus": "حالة القفل"
+      "lockStatus": "حالة القفل",
+      "threshold": "العتبة"
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",
@@ -399,5 +403,14 @@
     "description": "الرجاء إدخال مفتاح واجهة برمجة التطبيقات للوصول إلى الخدمة",
     "placeholder": "أدخل مفتاح واجهة برمجة التطبيقات",
     "save": "حفظ"
+  },
+  "pagination": {
+    "showing": "عرض {{start}} إلى {{end}} من أصل {{total}} إدخالات",
+    "page": "الصفحة",
+    "pageSize": "حجم الصفحة",
+    "firstPage": "الصفحة الأولى",
+    "prevPage": "الصفحة السابقة",
+    "nextPage": "الصفحة التالية",
+    "lastPage": "الصفحة الأخيرة"
   }
 }

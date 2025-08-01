@@ -117,6 +117,7 @@
       "title": "文档管理",
       "scanButton": "扫描",
       "scanTooltip": "扫描输入目录中的文档",
+      "refreshTooltip": "复位文档清单",
       "pipelineStatusButton": "流水线状态",
       "pipelineStatusTooltip": "查看流水线状态",
       "uploadedTitle": "已上传文档",
@@ -125,6 +126,7 @@
       "emptyDescription": "还没有上传任何文档",
       "columns": {
         "id": "ID",
+        "fileName": "文件名",
         "summary": "摘要",
         "status": "状态",
         "length": "长度",
@@ -247,14 +249,15 @@
     },
     "statusCard": {
       "unavailable": "状态信息不可用",
-      "storageInfo": "存储信息",
+      "serverInfo": "服务器信息",
       "workingDirectory": "工作目录",
       "inputDirectory": "输入目录",
+      "maxParallelInsert": "并行处理文档",
+      "summarySettings": "摘要设置",
       "llmConfig": "LLM配置",
       "llmBinding": "LLM绑定",
       "llmBindingHost": "LLM端点",
       "llmModel": "LLM模型",
-      "maxTokens": "最大令牌数",
       "embeddingConfig": "嵌入配置",
       "embeddingBinding": "嵌入绑定",
       "embeddingBindingHost": "嵌入端点",
@@ -269,7 +272,8 @@
       "rerankerConfig": "重排序配置",
       "rerankerBindingHost": "重排序端点",
       "rerankerModel": "重排序模型",
-      "lockStatus": "锁状态"
+      "lockStatus": "锁状态",
+      "threshold": "阈值"
     },
     "propertiesView": {
       "editProperty": "编辑{{property}}",
@@ -399,5 +403,14 @@
     "description": "请输入您的 API Key 以访问服务",
     "placeholder": "请输入 API Key",
     "save": "保存"
+  },
+  "pagination": {
+    "showing": "显示第 {{start}} 到 {{end}} 条，共 {{total}} 条记录",
+    "page": "页",
+    "pageSize": "每页显示",
+    "firstPage": "首页",
+    "prevPage": "上一页",
+    "nextPage": "下一页",
+    "lastPage": "末页"
   }
 }
