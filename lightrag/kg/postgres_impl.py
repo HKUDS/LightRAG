@@ -3289,7 +3289,7 @@ class PGGraphStorage(BaseGraphStorage):
         query = f"""
             SELECT * FROM cypher('{self.graph_name}', $$
                 UNWIND {chunk_ids_str} AS chunk_id
-                MATCH (a:base)-[r]-(b:base)
+                MATCH ()-[r]-()
                 WHERE r.source_id IS NOT NULL AND chunk_id IN split(r.source_id, '{GRAPH_FIELD_SEP}')
                 RETURN DISTINCT r, startNode(r) AS source, endNode(r) AS target
             $$) AS (edge agtype, source agtype, target agtype);
