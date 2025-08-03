@@ -453,14 +453,26 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
+        self.text_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
+            namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
+            workspace=self.workspace,
+            embedding_func=self.embedding_func,
+        )
+
         self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
             namespace=NameSpace.KV_STORE_FULL_DOCS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
 
-        self.text_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
-            namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
+        self.full_entities: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
+            namespace=NameSpace.KV_STORE_FULL_ENTITIES,
+            workspace=self.workspace,
+            embedding_func=self.embedding_func,
+        )
+
+        self.full_relations: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
+            namespace=NameSpace.KV_STORE_FULL_RELATIONS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
@@ -553,6 +565,8 @@ class LightRAG:
             for storage in (
                 self.full_docs,
                 self.text_chunks,
+                self.full_entities,
+                self.full_relations,
                 self.entities_vdb,
                 self.relationships_vdb,
                 self.chunks_vdb,
@@ -576,6 +590,8 @@ class LightRAG:
             for storage in (
                 self.full_docs,
                 self.text_chunks,
+                self.full_entities,
+                self.full_relations,
                 self.entities_vdb,
                 self.relationships_vdb,
                 self.chunks_vdb,
@@ -590,6 +606,159 @@ class LightRAG:
 
             self._storages_status = StoragesStatus.FINALIZED
             logger.debug("Finalized Storages")
+
+    async def _check_and_migrate_data(self):
+        """Check if data migration is needed and perform migration if necessary"""
+        try:
+            # Check if migration is needed:
+            # 1. chunk_entity_relation_graph has entities and relations (count > 0)
+            # 2. full_entities and full_relations are empty
+
+            # Get all entity labels from graph
+            all_entity_labels = await self.chunk_entity_relation_graph.get_all_labels()
+
+            if not all_entity_labels:
+                logger.debug("No entities found in graph, skipping migration check")
+                return
+
+            # Check if full_entities and full_relations are empty
+            # Get all processed documents to check their entity/relation data
+            try:
+                processed_docs = await self.doc_status.get_docs_by_status(
+                    DocStatus.PROCESSED
+                )
+
+                if not processed_docs:
+                    logger.debug("No processed documents found, skipping migration")
+                    return
+
+                # Check first few documents to see if they have full_entities/full_relations data
+                migration_needed = True
+                checked_count = 0
+                max_check = min(5, len(processed_docs))  # Check up to 5 documents
+
+                for doc_id in list(processed_docs.keys())[:max_check]:
+                    checked_count += 1
+                    entity_data = await self.full_entities.get_by_id(doc_id)
+                    relation_data = await self.full_relations.get_by_id(doc_id)
+
+                    if entity_data or relation_data:
+                        migration_needed = False
+                        break
+
+                if not migration_needed:
+                    logger.debug(
+                        "Full entities/relations data already exists, no migration needed"
+                    )
+                    return
+
+                logger.info(
+                    f"Data migration needed: found {len(all_entity_labels)} entities in graph but no full_entities/full_relations data"
+                )
+
+                # Perform migration
+                await self._migrate_entity_relation_data(processed_docs)
+
+            except Exception as e:
+                logger.error(f"Error during migration check: {e}")
+                # Don't raise the error, just log it to avoid breaking initialization
+
+        except Exception as e:
+            logger.error(f"Error in data migration check: {e}")
+            # Don't raise the error to avoid breaking initialization
+
+    async def _migrate_entity_relation_data(self, processed_docs: dict):
+        """Migrate existing entity and relation data to full_entities and full_relations storage"""
+        logger.info(f"Starting data migration for {len(processed_docs)} documents")
+
+        # Create mapping from chunk_id to doc_id
+        chunk_to_doc = {}
+        for doc_id, doc_status in processed_docs.items():
+            chunk_ids = (
+                doc_status.chunks_list
+                if hasattr(doc_status, "chunks_list") and doc_status.chunks_list
+                else []
+            )
+            for chunk_id in chunk_ids:
+                chunk_to_doc[chunk_id] = doc_id
+
+        # Initialize document entity and relation mappings
+        doc_entities = {}  # doc_id -> set of entity_names
+        doc_relations = {}  # doc_id -> set of relation_pairs (as tuples)
+
+        # Get all nodes and edges from graph
+        all_nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+        all_edges = await self.chunk_entity_relation_graph.get_all_edges()
+
+        # Process all nodes once
+        for node in all_nodes:
+            if "source_id" in node:
+                entity_id = node.get("entity_id") or node.get("id")
+                if not entity_id:
+                    continue
+
+                # Get chunk IDs from source_id
+                source_ids = node["source_id"].split(GRAPH_FIELD_SEP)
+
+                # Find which documents this entity belongs to
+                for chunk_id in source_ids:
+                    doc_id = chunk_to_doc.get(chunk_id)
+                    if doc_id:
+                        if doc_id not in doc_entities:
+                            doc_entities[doc_id] = set()
+                        doc_entities[doc_id].add(entity_id)
+
+        # Process all edges once
+        for edge in all_edges:
+            if "source_id" in edge:
+                src = edge.get("source")
+                tgt = edge.get("target")
+                if not src or not tgt:
+                    continue
+
+                # Get chunk IDs from source_id
+                source_ids = edge["source_id"].split(GRAPH_FIELD_SEP)
+
+                # Find which documents this relation belongs to
+                for chunk_id in source_ids:
+                    doc_id = chunk_to_doc.get(chunk_id)
+                    if doc_id:
+                        if doc_id not in doc_relations:
+                            doc_relations[doc_id] = set()
+                        # Use tuple for set operations, convert to list later
+                        doc_relations[doc_id].add((src, tgt))
+
+        # Store the results in full_entities and full_relations
+        migration_count = 0
+
+        # Store entities
+        if doc_entities:
+            entities_data = {}
+            for doc_id, entity_set in doc_entities.items():
+                entities_data[doc_id] = {"entity_names": list(entity_set)}
+            await self.full_entities.upsert(entities_data)
+
+        # Store relations
+        if doc_relations:
+            relations_data = {}
+            for doc_id, relation_set in doc_relations.items():
+                # Convert tuples back to lists
+                relations_data[doc_id] = {
+                    "relation_pairs": [list(pair) for pair in relation_set]
+                }
+            await self.full_relations.upsert(relations_data)
+
+        migration_count = len(
+            set(list(doc_entities.keys()) + list(doc_relations.keys()))
+        )
+
+        # Persist the migrated data
+        await self.full_entities.index_done_callback()
+        await self.full_relations.index_done_callback()
+
+        logger.info(
+            f"Data migration completed: migrated {migration_count} documents with entities/relations"
+        )
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()
@@ -1229,6 +1398,9 @@ class LightRAG:
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
                                     global_config=asdict(self),
+                                    full_entities_storage=self.full_entities,
+                                    full_relations_storage=self.full_relations,
+                                    doc_id=doc_id,
                                     pipeline_status=pipeline_status,
                                     pipeline_status_lock=pipeline_status_lock,
                                     llm_response_cache=self.llm_response_cache,
@@ -1401,6 +1573,8 @@ class LightRAG:
                 self.full_docs,
                 self.doc_status,
                 self.text_chunks,
+                self.full_entities,
+                self.full_relations,
                 self.llm_response_cache,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -1959,21 +2133,54 @@ class LightRAG:
             graph_db_lock = get_graph_db_lock(enable_logging=False)
             async with graph_db_lock:
                 try:
-                    # Get all affected nodes and edges in batch
-                    # logger.info(
-                    #     f"Analyzing affected entities and relationships for {len(chunk_ids)} chunks"
-                    # )
-                    affected_nodes = (
-                        await self.chunk_entity_relation_graph.get_nodes_by_chunk_ids(
-                            list(chunk_ids)
-                        )
-                    )
+                    # Get affected entities and relations from full_entities and full_relations storage
+                    doc_entities_data = await self.full_entities.get_by_id(doc_id)
+                    doc_relations_data = await self.full_relations.get_by_id(doc_id)
 
-                    affected_edges = (
-                        await self.chunk_entity_relation_graph.get_edges_by_chunk_ids(
-                            list(chunk_ids)
+                    affected_nodes = []
+                    affected_edges = []
+
+                    # Get entity data from graph storage using entity names from full_entities
+                    if doc_entities_data and "entity_names" in doc_entities_data:
+                        entity_names = doc_entities_data["entity_names"]
+                        # get_nodes_batch returns dict[str, dict], need to convert to list[dict]
+                        nodes_dict = (
+                            await self.chunk_entity_relation_graph.get_nodes_batch(
+                                entity_names
+                            )
                         )
-                    )
+                        for entity_name in entity_names:
+                            node_data = nodes_dict.get(entity_name)
+                            if node_data:
+                                # Ensure compatibility with existing logic that expects "id" field
+                                if "id" not in node_data:
+                                    node_data["id"] = entity_name
+                                affected_nodes.append(node_data)
+
+                    # Get relation data from graph storage using relation pairs from full_relations
+                    if doc_relations_data and "relation_pairs" in doc_relations_data:
+                        relation_pairs = doc_relations_data["relation_pairs"]
+                        edge_pairs_dicts = [
+                            {"src": pair[0], "tgt": pair[1]} for pair in relation_pairs
+                        ]
+                        # get_edges_batch returns dict[tuple[str, str], dict], need to convert to list[dict]
+                        edges_dict = (
+                            await self.chunk_entity_relation_graph.get_edges_batch(
+                                edge_pairs_dicts
+                            )
+                        )
+
+                        for pair in relation_pairs:
+                            src, tgt = pair[0], pair[1]
+                            edge_key = (src, tgt)
+                            edge_data = edges_dict.get(edge_key)
+                            if edge_data:
+                                # Ensure compatibility with existing logic that expects "source" and "target" fields
+                                if "source" not in edge_data:
+                                    edge_data["source"] = src
+                                if "target" not in edge_data:
+                                    edge_data["target"] = tgt
+                                affected_edges.append(edge_data)
 
                 except Exception as e:
                     logger.error(f"Failed to analyze affected graph elements: {e}")
@@ -2125,7 +2332,17 @@ class LightRAG:
                             f"Failed to rebuild knowledge graph: {e}"
                         ) from e
 
-            # 9. Delete original document and status
+            # 9. Delete from full_entities and full_relations storage
+            try:
+                await self.full_entities.delete([doc_id])
+                await self.full_relations.delete([doc_id])
+            except Exception as e:
+                logger.error(f"Failed to delete from full_entities/full_relations: {e}")
+                raise Exception(
+                    f"Failed to delete from full_entities/full_relations: {e}"
+                ) from e
+
+            # 10. Delete original document and status
             try:
                 await self.full_docs.delete([doc_id])
                 await self.doc_status.delete([doc_id])

@@ -654,6 +654,22 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             indicating whether the graph was truncated due to max_nodes limit
         """
 
+    @abstractmethod
+    async def get_all_nodes(self) -> list[dict]:
+        """Get all nodes in the graph.
+
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties
+        """
+
+    @abstractmethod
+    async def get_all_edges(self) -> list[dict]:
+        """Get all edges in the graph.
+
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties
+        """
+
 
 class DocStatus(str, Enum):
     """Document processing status"""
