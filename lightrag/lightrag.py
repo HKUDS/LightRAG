@@ -719,7 +719,7 @@ class LightRAG:
                         if doc_id not in doc_relations:
                             doc_relations[doc_id] = set()
                         # Use tuple for set operations, convert to list later
-                        doc_relations[doc_id].add((src, tgt))
+                        doc_relations[doc_id].add(tuple(sorted((src, tgt))))
 
         # Store the results in full_entities and full_relations
         migration_count = 0
@@ -728,7 +728,10 @@ class LightRAG:
         if doc_entities:
             entities_data = {}
             for doc_id, entity_set in doc_entities.items():
-                entities_data[doc_id] = {"entity_names": list(entity_set)}
+                entities_data[doc_id] = {
+                    "entity_names": list(entity_set),
+                    "count": len(entity_set),
+                }
             await self.full_entities.upsert(entities_data)
 
         # Store relations
@@ -737,7 +740,8 @@ class LightRAG:
             for doc_id, relation_set in doc_relations.items():
                 # Convert tuples back to lists
                 relations_data[doc_id] = {
-                    "relation_pairs": [list(pair) for pair in relation_set]
+                    "relation_pairs": [list(pair) for pair in relation_set],
+                    "count": len(relation_set),
                 }
             await self.full_relations.upsert(relations_data)
 
