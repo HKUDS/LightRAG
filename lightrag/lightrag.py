@@ -334,6 +334,7 @@ class LightRAG:
     # Storages Management
     # ---
 
+    # TODO: Deprecated (LightRAG will always manage storages states)
     auto_manage_storages_states: bool = field(default=True)
     """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
@@ -531,12 +532,14 @@ class LightRAG:
 
         self._storages_status = StoragesStatus.CREATED
 
-        if self.auto_manage_storages_states:
-            self._run_async_safely(self.initialize_storages, "Storage Initialization")
+        # Initialize storages
+        self._run_async_safely(self.initialize_storages, "Storage Initialization")
+
+        # Check and perform data migration if needed
+        self._run_async_safely(self._check_and_migrate_data, "Data Migration Check")
 
     def __del__(self):
-        if self.auto_manage_storages_states:
-            self._run_async_safely(self.finalize_storages, "Storage Finalization")
+        self._run_async_safely(self.finalize_storages, "Storage Finalization")
 
     def _run_async_safely(self, async_func, action_name=""):
         """Safely execute an async function, avoiding event loop conflicts."""
