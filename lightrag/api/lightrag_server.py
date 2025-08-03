@@ -151,9 +151,11 @@ def create_app(args):
         try:
             # Initialize database connections
             await rag.initialize_storages()
+            await initialize_pipeline_status()
+
+            # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
-            await initialize_pipeline_status()
             pipeline_status = await get_namespace_data("pipeline_status")
 
             should_start_autoscan = False
