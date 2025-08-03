@@ -174,6 +174,7 @@ async def main():
         rerank_model_func=my_rerank_func,
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     # Insert documents

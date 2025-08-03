@@ -204,6 +204,7 @@ async def initialize_rag():
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
     )
+    await rag.initialize_storages()
     await initialize_pipeline_status()
     return rag
 
@@ -399,6 +400,7 @@ async def initialize_rag():
         )
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag
@@ -545,6 +547,7 @@ async def initialize_rag():
         ),
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag
@@ -762,6 +765,8 @@ async def initialize_rag():
         graph_storage="Neo4JStorage", #<-----------覆盖KG默认值
     )
 
+    # 初始化数据库连接
+    await rag.initialize_storages()
     # 初始化文档处理的管道状态
     await initialize_pipeline_status()
 
@@ -1187,6 +1192,9 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
                     ),
                 )
             )
+
+            # 初始化存储（如果有现有数据，这将加载现有数据）
+            await lightrag_instance.initialize_storages()
 
             # 现在使用现有的 LightRAG 实例初始化 RAGAnything
             rag = RAGAnything(

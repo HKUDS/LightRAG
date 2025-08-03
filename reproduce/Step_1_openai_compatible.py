@@ -70,6 +70,7 @@ async def initialize_rag():
         embedding_func=EmbeddingFunc(embedding_dim=4096, func=embedding_func),
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag

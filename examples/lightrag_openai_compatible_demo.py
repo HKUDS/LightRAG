@@ -4,7 +4,7 @@ import inspect
 import logging
 import logging.config
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.ollama import ollama_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 from lightrag.kg.shared_storage import initialize_pipeline_status
@@ -99,26 +99,6 @@ async def llm_model_func(
     )
 
 
-ollama_embedding_func = EmbeddingFunc(
-    embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
-    func=lambda texts: ollama_embed(
-        texts,
-        embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
-        host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
-    ),
-)
-
-openai_embedding_func = EmbeddingFunc(
-    embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
-    func=lambda texts: openai_embed(
-        texts,
-        model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
-        base_url=os.getenv("EMBEDDING_BINDING_HOST", "https://api.deepseek.com"),
-        api_key=os.getenv("EMBEDDING_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY"),
-    ),
-)
-
-
 async def print_stream(stream):
     async for chunk in stream:
         if chunk:
@@ -129,9 +109,18 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=openai_embedding_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
+            max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
+            func=lambda texts: ollama_embed(
+                texts,
+                embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
+                host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
+            ),
+        ),
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag

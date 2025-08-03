@@ -35,6 +35,7 @@ if not os.path.exists(WORKING_DIR):
 async def initialize_rag():
     rag = LightRAG(working_dir=WORKING_DIR)
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag

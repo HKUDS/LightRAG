@@ -149,6 +149,9 @@ def create_app(args):
         app.state.background_tasks = set()
 
         try:
+            # Initialize database connections
+            await rag.initialize_storages()
+
             await initialize_pipeline_status()
             pipeline_status = await get_namespace_data("pipeline_status")
 
@@ -398,6 +401,7 @@ def create_app(args):
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
+            auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
@@ -427,6 +431,7 @@ def create_app(args):
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
+            auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},

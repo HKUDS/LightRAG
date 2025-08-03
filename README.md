@@ -181,7 +181,8 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ### ⚠️ Important: Initialization Requirements
 
-**LightRAG requires explicit initialization before use.** You must call `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+**LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+- `AttributeError: __aenter__` - if storages are not initialized
 - `KeyError: 'history_messages'` - if pipeline status is not initialized
 
 ### A Simple Program
@@ -208,8 +209,9 @@ async def initialize_rag():
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
     )
-    # IMPORTANT: Initialize document processing pipeline status is required!
-    await initialize_pipeline_status()  #
+    # IMPORTANT: Both initialization calls are required!
+    await rag.initialize_storages()  # Initialize storage backends
+    await initialize_pipeline_status()  # Initialize processing pipeline
     return rag
 
 async def main():
@@ -399,6 +401,7 @@ async def initialize_rag():
         )
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag
@@ -547,6 +550,7 @@ async def initialize_rag():
         ),
     )
 
+    await rag.initialize_storages()
     await initialize_pipeline_status()
 
     return rag
@@ -772,6 +776,8 @@ async def initialize_rag():
         graph_storage="Neo4JStorage", #<-----------override KG default
     )
 
+    # Initialize database connections
+    await rag.initialize_storages()
     # Initialize pipeline status for document processing
     await initialize_pipeline_status()
 
@@ -856,6 +862,8 @@ async def initialize_rag():
         graph_storage="MemgraphStorage", #<-----------override KG default
     )
 
+    # Initialize database connections
+    await rag.initialize_storages()
     # Initialize pipeline status for document processing
     await initialize_pipeline_status()
 
@@ -1231,6 +1239,8 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                     ),
                 )
             )
+            # Initialize storage (this will load existing data if available)
+            await lightrag_instance.initialize_storages()
             # Now initialize RAGAnything with the existing LightRAG instance
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # Pass the existing LightRAG instance
@@ -1423,16 +1433,24 @@ Valid modes are:
 
 ### Common Initialization Errors
 
-If you encounter the following error when using LightRAG:
+If you encounter these errors when using LightRAG:
 
-- **`KeyError: 'history_messages'`**
-- **Cause**: Pipeline status not initialized
-- **Solution**: Call `await initialize_pipeline_status()` after initializing storages
+1. **`AttributeError: __aenter__`**
+   - **Cause**: Storage backends not initialized
+   - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
 
-```python
-rag = LightRAG(...)
-await initialize_pipeline_status()
-```
+2. **`KeyError: 'history_messages'`**
+   - **Cause**: Pipeline status not initialized
+   - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
+
+3. **Both errors in sequence**
+   - **Cause**: Neither initialization method was called
+   - **Solution**: Always follow this pattern:
+   ```python
+   rag = LightRAG(...)
+   await rag.initialize_storages()
+   await initialize_pipeline_status()
+   ```
 
 ### Model Switching Issues
 
