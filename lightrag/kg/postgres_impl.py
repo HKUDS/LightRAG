@@ -3669,6 +3669,66 @@ class PGGraphStorage(BaseGraphStorage):
 
         return kg
 
+    async def get_all_nodes(self) -> list[dict]:
+        """Get all nodes in the graph.
+
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties
+        """
+        query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                     MATCH (n:base)
+                     RETURN n
+                   $$) AS (n agtype)"""
+
+        results = await self._query(query)
+        nodes = []
+        for result in results:
+            if result["n"]:
+                node_dict = result["n"]["properties"]
+
+                # Process string result, parse it to JSON dictionary
+                if isinstance(node_dict, str):
+                    try:
+                        node_dict = json.loads(node_dict)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse node string: {node_dict}")
+
+                # Add node id (entity_id) to the dictionary for easier access
+                node_dict["id"] = node_dict.get("entity_id")
+                nodes.append(node_dict)
+        return nodes
+
+    async def get_all_edges(self) -> list[dict]:
+        """Get all edges in the graph.
+
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties
+        """
+        query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                     MATCH (a:base)-[r]-(b:base)
+                     RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
+                   $$) AS (source text, target text, properties agtype)"""
+
+        results = await self._query(query)
+        edges = []
+        for result in results:
+            edge_properties = result["properties"]
+
+            # Process string result, parse it to JSON dictionary
+            if isinstance(edge_properties, str):
+                try:
+                    edge_properties = json.loads(edge_properties)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Failed to parse edge properties string: {edge_properties}"
+                    )
+                    edge_properties = {}
+
+            edge_properties["source"] = result["source"]
+            edge_properties["target"] = result["target"]
+            edges.append(edge_properties)
+        return edges
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:

@@ -1508,6 +1508,36 @@ class MongoGraphStorage(BaseGraphStorage):
 
         logger.debug(f"Successfully deleted edges: {edges}")
 
+    async def get_all_nodes(self) -> list[dict]:
+        """Get all nodes in the graph.
+
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties
+        """
+        cursor = self.collection.find({})
+        nodes = []
+        async for node in cursor:
+            node_dict = dict(node)
+            # Add node id (entity_id) to the dictionary for easier access
+            node_dict["id"] = node_dict.get("_id")
+            nodes.append(node_dict)
+        return nodes
+
+    async def get_all_edges(self) -> list[dict]:
+        """Get all edges in the graph.
+
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties
+        """
+        cursor = self.edge_collection.find({})
+        edges = []
+        async for edge in cursor:
+            edge_dict = dict(edge)
+            edge_dict["source"] = edge_dict.get("source_node_id")
+            edge_dict["target"] = edge_dict.get("target_node_id")
+            edges.append(edge_dict)
+        return edges
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
 
