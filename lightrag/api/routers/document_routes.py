@@ -1473,6 +1473,8 @@ def create_document_routes(
             storages = [
                 rag.text_chunks,
                 rag.full_docs,
+                rag.full_entities,
+                rag.full_relations,
                 rag.entities_vdb,
                 rag.relationships_vdb,
                 rag.chunks_vdb,
