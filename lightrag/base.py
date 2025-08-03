@@ -660,6 +660,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             A list of all nodes, where each node is a dictionary of its properties
+            (Edge is bidirectional for some storage implementation; deduplication must be handled by the caller)
         """
 
     @abstractmethod
