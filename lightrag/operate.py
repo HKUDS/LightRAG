@@ -504,9 +504,6 @@ async def _rebuild_knowledge_from_chunks(
             # Re-raise the exception to notify the caller
             raise task.exception()
 
-    # If all tasks completed successfully, collect results
-    # (No need to collect results since these tasks don't return values)
-
     # Final status report
     status_message = f"KG rebuild completed: {rebuilt_entities_count} entities and {rebuilt_relationships_count} relationships rebuilt successfully."
     if failed_entities_count > 0 or failed_relationships_count > 0:
@@ -1024,6 +1021,7 @@ async def _merge_edges_then_upsert(
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
+    added_entities: list = None,  # New parameter to track entities added during edge processing
 ):
     if src_id == tgt_id:
         return None
@@ -1105,17 +1103,27 @@ async def _merge_edges_then_upsert(
 
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
-            await knowledge_graph_inst.upsert_node(
-                need_insert_id,
-                node_data={
-                    "entity_id": need_insert_id,
-                    "source_id": source_id,
-                    "description": description,
+            node_data = {
+                "entity_id": need_insert_id,
+                "source_id": source_id,
+                "description": description,
+                "entity_type": "UNKNOWN",
+                "file_path": file_path,
+                "created_at": int(time.time()),
+            }
+            await knowledge_graph_inst.upsert_node(need_insert_id, node_data=node_data)
+
+            # Track entities added during edge processing
+            if added_entities is not None:
+                entity_data = {
+                    "entity_name": need_insert_id,
                     "entity_type": "UNKNOWN",
+                    "description": description,
+                    "source_id": source_id,
                     "file_path": file_path,
                     "created_at": int(time.time()),
-                },
-            )
+                }
+                added_entities.append(entity_data)
 
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
@@ -1178,6 +1186,9 @@ async def merge_nodes_and_edges(
     entity_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
+    full_entities_storage: BaseKVStorage = None,
+    full_relations_storage: BaseKVStorage = None,
+    doc_id: str = None,
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
@@ -1185,7 +1196,12 @@ async def merge_nodes_and_edges(
     total_files: int = 0,
     file_path: str = "unknown_source",
 ) -> None:
-    """Merge nodes and edges from extraction results
+    """Two-phase merge: process all entities first, then all relationships
+
+    This approach ensures data consistency by:
+    1. Phase 1: Process all entities concurrently
+    2. Phase 2: Process all relationships concurrently (may add missing entities)
+    3. Phase 3: Update full_entities and full_relations storage with final results
 
     Args:
         chunk_results: List of tuples (maybe_nodes, maybe_edges) containing extracted entities and relationships
@@ -1193,9 +1209,15 @@ async def merge_nodes_and_edges(
         entity_vdb: Entity vector database
         relationships_vdb: Relationship vector database
         global_config: Global configuration
+        full_entities_storage: Storage for document entity lists
+        full_relations_storage: Storage for document relation lists
+        doc_id: Document ID for storage indexing
         pipeline_status: Pipeline status dictionary
         pipeline_status_lock: Lock for pipeline status
         llm_response_cache: LLM response cache
+        current_file_number: Current file number for logging
+        total_files: Total files for logging
+        file_path: File path for logging
     """
 
     # Collect all nodes and edges from all chunks
@@ -1212,11 +1234,9 @@ async def merge_nodes_and_edges(
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
 
-    # Centralized processing of all nodes and edges
     total_entities_count = len(all_nodes)
     total_relations_count = len(all_edges)
 
-    # Merge nodes and edges
     log_message = f"Merging stage {current_file_number}/{total_files}: {file_path}"
     logger.info(log_message)
     async with pipeline_status_lock:
@@ -1227,8 +1247,8 @@ async def merge_nodes_and_edges(
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
     semaphore = asyncio.Semaphore(graph_max_async)
 
-    # Process and update all entities and relationships in parallel
-    log_message = f"Processing: {total_entities_count} entities and {total_relations_count} relations (async: {graph_max_async})"
+    # ===== Phase 1: Process all entities concurrently =====
+    log_message = f"Phase 1: Processing {total_entities_count} entities (async: {graph_max_async})"
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
@@ -1263,18 +1283,53 @@ async def merge_nodes_and_edges(
                     await entity_vdb.upsert(data_for_vdb)
                 return entity_data
 
+    # Create entity processing tasks
+    entity_tasks = []
+    for entity_name, entities in all_nodes.items():
+        task = asyncio.create_task(_locked_process_entity_name(entity_name, entities))
+        entity_tasks.append(task)
+
+    # Execute entity tasks with error handling
+    processed_entities = []
+    if entity_tasks:
+        done, pending = await asyncio.wait(
+            entity_tasks, return_when=asyncio.FIRST_EXCEPTION
+        )
+
+        # Check if any task raised an exception
+        for task in done:
+            if task.exception():
+                # If a task failed, cancel all pending tasks
+                for pending_task in pending:
+                    pending_task.cancel()
+                # Wait for cancellation to complete
+                if pending:
+                    await asyncio.wait(pending)
+                # Re-raise the exception to notify the caller
+                raise task.exception()
+
+        # If all tasks completed successfully, collect results
+        processed_entities = [task.result() for task in entity_tasks]
+
+    # ===== Phase 2: Process all relationships concurrently =====
+    log_message = f"Phase 2: Processing {total_relations_count} relations (async: {graph_max_async})"
+    logger.info(log_message)
+    async with pipeline_status_lock:
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
+
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-            # Sort the edge_key components to ensure consistent lock key generation
             sorted_edge_key = sorted([edge_key[0], edge_key[1]])
-            # logger.info(f"Processing edge: {sorted_edge_key[0]} - {sorted_edge_key[1]}")
+
             async with get_storage_keyed_lock(
                 sorted_edge_key,
                 namespace=namespace,
                 enable_logging=False,
             ):
+                added_entities = []  # Track entities added during edge processing
                 edge_data = await _merge_edges_then_upsert(
                     edge_key[0],
                     edge_key[1],
@@ -1284,9 +1339,11 @@ async def merge_nodes_and_edges(
                     pipeline_status,
                     pipeline_status_lock,
                     llm_response_cache,
+                    added_entities,  # Pass list to collect added entities
                 )
+
                 if edge_data is None:
-                    return None
+                    return None, []
 
                 if relationships_vdb is not None:
                     data_for_vdb = {
@@ -1303,50 +1360,106 @@ async def merge_nodes_and_edges(
                         }
                     }
                     await relationships_vdb.upsert(data_for_vdb)
-                return edge_data
+                return edge_data, added_entities
 
-    # Create a single task queue for both entities and edges
-    tasks = []
+    # Create relationship processing tasks
+    edge_tasks = []
+    for edge_key, edges in all_edges.items():
+        task = asyncio.create_task(_locked_process_edges(edge_key, edges))
+        edge_tasks.append(task)
 
-    # Add entity processing tasks
-    for entity_name, entities in all_nodes.items():
-        tasks.append(
-            asyncio.create_task(_locked_process_entity_name(entity_name, entities))
+    # Execute relationship tasks with error handling
+    processed_edges = []
+    all_added_entities = []
+
+    if edge_tasks:
+        done, pending = await asyncio.wait(
+            edge_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-    # Add edge processing tasks
-    for edge_key, edges in all_edges.items():
-        tasks.append(asyncio.create_task(_locked_process_edges(edge_key, edges)))
+        # Check if any task raised an exception
+        for task in done:
+            if task.exception():
+                # If a task failed, cancel all pending tasks
+                for pending_task in pending:
+                    pending_task.cancel()
+                # Wait for cancellation to complete
+                if pending:
+                    await asyncio.wait(pending)
+                # Re-raise the exception to notify the caller
+                raise task.exception()
 
-    # Check if there are any tasks to process
-    if not tasks:
-        log_message = f"No entities or relationships to process for {file_path}"
-        logger.info(log_message)
-        if pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-        return
+        # If all tasks completed successfully, collect results
+        for task in edge_tasks:
+            edge_data, added_entities = task.result()
+            if edge_data is not None:
+                processed_edges.append(edge_data)
+            all_added_entities.extend(added_entities)
 
-    # Execute all tasks in parallel with semaphore control and early failure detection
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    # ===== Phase 3: Update full_entities and full_relations storage =====
+    if full_entities_storage and full_relations_storage and doc_id:
+        try:
+            # Merge all entities: original entities + entities added during edge processing
+            final_entity_names = set()
 
-    # Check if any task raised an exception
-    for task in done:
-        if task.exception():
-            # If a task failed, cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
+            # Add original processed entities
+            for entity_data in processed_entities:
+                if entity_data and entity_data.get("entity_name"):
+                    final_entity_names.add(entity_data["entity_name"])
 
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
+            # Add entities that were added during relationship processing
+            for added_entity in all_added_entities:
+                if added_entity and added_entity.get("entity_name"):
+                    final_entity_names.add(added_entity["entity_name"])
 
-            # Re-raise the exception to notify the caller
-            raise task.exception()
+            # Collect all relation pairs
+            final_relation_pairs = set()
+            for edge_data in processed_edges:
+                if edge_data:
+                    src_id = edge_data.get("src_id")
+                    tgt_id = edge_data.get("tgt_id")
+                    if src_id and tgt_id:
+                        relation_pair = tuple(sorted([src_id, tgt_id]))
+                        final_relation_pairs.add(relation_pair)
 
-    # If all tasks completed successfully, collect results
-    # (No need to collect results since these tasks don't return values)
+            # Update storage
+            if final_entity_names:
+                await full_entities_storage.upsert(
+                    {
+                        doc_id: {
+                            "entity_names": list(final_entity_names),
+                            "count": len(final_entity_names),
+                        }
+                    }
+                )
+
+            if final_relation_pairs:
+                await full_relations_storage.upsert(
+                    {
+                        doc_id: {
+                            "relation_pairs": [
+                                list(pair) for pair in final_relation_pairs
+                            ],
+                            "count": len(final_relation_pairs),
+                        }
+                    }
+                )
+
+            logger.debug(
+                f"Updated entity-relation index for document {doc_id}: {len(final_entity_names)} entities (original: {len(processed_entities)}, added: {len(all_added_entities)}), {len(final_relation_pairs)} relations"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update entity-relation index for document {doc_id}: {e}"
+            )
+            # Don't raise exception to avoid affecting main flow
+
+    log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} added entities, {len(processed_edges)} relations"
+    logger.info(log_message)
+    async with pipeline_status_lock:
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
 
 
 async def extract_entities(
