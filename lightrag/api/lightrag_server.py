@@ -61,7 +61,7 @@ from lightrag.api.auth import auth_handler
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
+ 
 
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
@@ -79,7 +79,8 @@ def create_app(args):
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
 
-    # Verify that bindings are correctly setup
+    # Verify that bindings are correctly setup (Validation of Model Bindings)
+    # Ensures only supported bindings for LLM and embedding (e.g., OpenAI, Ollama, Azure, Lollms, Jina) are allowed. 
     if args.llm_binding not in [
         "lollms",
         "ollama",
@@ -88,7 +89,6 @@ def create_app(args):
         "azure_openai",
     ]:
         raise Exception("llm binding not supported")
-
     if args.embedding_binding not in [
         "lollms",
         "ollama",
@@ -101,7 +101,6 @@ def create_app(args):
     # Set default hosts if not provided
     if args.llm_binding_host is None:
         args.llm_binding_host = get_default_host(args.llm_binding)
-
     if args.embedding_binding_host is None:
         args.embedding_binding_host = get_default_host(args.embedding_binding)
 
@@ -122,6 +121,24 @@ def create_app(args):
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
+
+
+    # Lifespan Management
+        # - Handles startup/shutdown tasks:
+            # -- Initializes storages (vector DB, graph DB, cache, etc.).
+            # -- Optionally runs an autoscan to index documents at startup.
+
+        # START UP TASKS: 
+            # When the FastAPI application starts, the lifespan function is called to perform any necessary initialization tasks. 
+            # This can include setting up database connections, initializing background tasks, or any other setup required before the application is ready to handle requests. \
+
+        # SHUTDOWN TASKS: 
+            # When the application is shutting down, the lifespan function is called again to perform cleanup tasks.
+            # - This can include closing database connections, stopping background tasks, and releasing any resources that were acquired during startup.
+
+        # BACKGROUND TASKS:
+            # The function can also manage background tasks that need to run while the application is active. 
+            # `app.state.background_tasks`
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
@@ -161,6 +178,7 @@ def create_app(args):
 
     # Initialize FastAPI
     app_kwargs = {
+        # To be appeared in the Swagger UI and OpenAPI documentation        
         "title": "LightRAG Server API",
         "description": "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
         + "(With authentication)"
@@ -180,6 +198,7 @@ def create_app(args):
         "tryItOutEnabled": True,
     }
 
+    # Final steps
     app = FastAPI(**app_kwargs)
 
     def get_cors_origins():
@@ -189,7 +208,7 @@ def create_app(args):
         origins_str = global_args.cors_origins
         if origins_str == "*":
             return ["*"]
-        return [origin.strip() for origin in origins_str.split(",")]
+        return [origin.strip() for origin in origins_str.split(",")]   # .strip() removes any accidental whitespace around each domain string.
 
     # Add CORS middleware
     app.add_middleware(
@@ -198,9 +217,12 @@ def create_app(args):
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # `allow_origins` is passed a list returned by `get_cors_origins()`, which controls which frontend domains are allowed to access your backend.
     )
 
     # Create combined auth dependency for all endpoints
+        # this is need for (E.g. @app.get("/health", dependencies=[Depends(combined_auth)])) 
+        # ensures that this route requires authentication to be accessed.
     combined_auth = get_combined_auth_dependency(api_key)
 
     # Create working directory if it doesn't exist
@@ -269,6 +291,8 @@ def create_app(args):
             **kwargs,
         )
 
+    # Sets how embedding is computed from text chunks.
+    # Routes the request to either OpenAI, Azure, Ollama, Jina, or Lollms embedding.
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
         max_token_size=args.max_embed_tokens,
@@ -299,7 +323,7 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "jina"
-        else openai_embed(
+        else openai_embed(         # default is openai embedding
             texts,
             model=args.embedding_model,
             base_url=args.embedding_binding_host,
@@ -335,7 +359,15 @@ def create_app(args):
             "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
         )
 
+
     # Initialize RAG
+        # Core object that:
+            # Manages chunking
+            # Embedding
+            # Retrieval
+            # Reranking
+            # LLM generation
+            # Storage setup (vector, graph, key-value)
     if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
             working_dir=args.working_dir,
@@ -344,7 +376,7 @@ def create_app(args):
             if args.llm_binding == "lollms"
             else ollama_model_complete
             if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
+            else openai_alike_model_complete,  # else openai (Routes: openai_alike_model_complete → openai_complete_if_cache → OpenAI API)
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
@@ -403,6 +435,10 @@ def create_app(args):
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
         )
+
+    # Two types of Routes
+    #   1. Custom API (more flexible) — E.g. via create_query_routes()
+    #   2. Ollama-compatible API (standardized) — via OllamaAPI(...).router
 
     # Add routes
     app.include_router(
