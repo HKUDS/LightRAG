@@ -1,32 +1,32 @@
+aiofiles>=23.2.0
+
+# Caching and utilities
+diskcache>=5.6.3
 # Docling Service Dependencies
 # Core docling
 docling>=2.43.0
 
 # FastAPI and web server
 fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-aiofiles>=23.2.0
-python-multipart>=0.0.6
-
-# Core dependencies
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
 
 # HTTP client
 httpx>=0.25.0
 
-# Caching and utilities
-diskcache>=5.6.3
+# Performance
+orjson>=3.9.0
+
+# Core dependencies
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
+
+# Security
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.6
 
 # Logging and monitoring
 structlog>=23.2.0
 
 # Type hints
 typing-extensions>=4.8.0
-
-# Security
-python-jose[cryptography]>=3.3.0
-
-# Performance
-orjson>=3.9.0
+uvicorn[standard]>=0.24.0

@@ -507,29 +507,29 @@ services:
       - DOCLING_PORT=8080
       - DOCLING_LOG_LEVEL=INFO
       - DOCLING_DEBUG=false
-      
+
       # Processing configuration
       - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
       - DOCLING_DEFAULT_MAX_WORKERS=${DOCLING_WORKERS:-3}
       - DOCLING_DEFAULT_ENABLE_OCR=true
       - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
       - DOCLING_DEFAULT_ENABLE_FIGURES=true
-      
+
       # Cache configuration
       - DOCLING_CACHE_ENABLED=true
       - DOCLING_CACHE_DIR=/app/cache
       - DOCLING_CACHE_MAX_SIZE_GB=${DOCLING_CACHE_SIZE:-5}
       - DOCLING_CACHE_TTL_HOURS=168
-      
+
       # Production limits
       - DOCLING_MAX_FILE_SIZE_MB=${DOCLING_MAX_FILE_SIZE:-100}
       - DOCLING_MAX_BATCH_SIZE=${DOCLING_MAX_BATCH_SIZE:-10}
       - DOCLING_REQUEST_TIMEOUT_SECONDS=300
-      
+
       # Security
       - DOCLING_API_KEY=${DOCLING_API_KEY:-}
       - DOCLING_CORS_ORIGINS=http://lightrag:9621
-      
+
       # Monitoring
       - DOCLING_METRICS_ENABLED=true
     volumes:

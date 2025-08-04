@@ -428,16 +428,16 @@ class SecurityAnalyzer:
 LightRAG Security Headers Analysis
 ==================================
 
-Security Score: {analysis['score']}/{analysis['max_score']} ({analysis['security_level']})
+Security Score: {analysis["score"]}/{analysis["max_score"]} ({analysis["security_level"]})
 
 Good Practices:
-{chr(10).join('✓ ' + practice for practice in analysis['good_practices'])}
+{chr(10).join("✓ " + practice for practice in analysis["good_practices"])}
 
 Warnings:
-{chr(10).join('⚠ ' + warning for warning in analysis['warnings'])}
+{chr(10).join("⚠ " + warning for warning in analysis["warnings"])}
 
 Recommendations:
-{chr(10).join('• ' + rec for rec in analysis['recommendations'])}
+{chr(10).join("• " + rec for rec in analysis["recommendations"])}
 """
         return report
 

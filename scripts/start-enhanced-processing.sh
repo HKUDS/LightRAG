@@ -25,20 +25,20 @@ wait_for_health() {
     local container_name=$1
     local max_attempts=30
     local attempt=1
-    
+
     echo "⏳ Waiting for $container_name to be healthy..."
-    
+
     while [ $attempt -le $max_attempts ]; do
         if docker inspect --format="{{json .State.Health.Status}}" "$container_name" 2>/dev/null | grep -q "healthy"; then
             echo "✅ $container_name is healthy"
             return 0
         fi
-        
+
         echo "   Attempt $attempt/$max_attempts..."
         sleep 5
         attempt=$((attempt + 1))
     done
-    
+
     echo "❌ $container_name failed to become healthy within timeout"
     return 1
 }
@@ -76,7 +76,7 @@ echo "📊 Final Status Check..."
 echo "======================"
 
 check_container "lightrag_postgres_dev"
-check_container "lightrag_docling_dev" 
+check_container "lightrag_docling_dev"
 check_container "lightrag"
 
 echo ""

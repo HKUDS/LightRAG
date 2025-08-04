@@ -95,19 +95,19 @@ services:
       - DOCLING_HOST=0.0.0.0
       - DOCLING_PORT=8080
       - DOCLING_LOG_LEVEL=INFO
-      
+
       # Processing configuration
       - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
       - DOCLING_DEFAULT_MAX_WORKERS=2
       - DOCLING_DEFAULT_ENABLE_OCR=true
       - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
       - DOCLING_DEFAULT_ENABLE_FIGURES=true
-      
+
       # Cache configuration
       - DOCLING_CACHE_ENABLED=true
       - DOCLING_CACHE_DIR=/app/cache
       - DOCLING_CACHE_MAX_SIZE_GB=2
-      
+
       # Limits for development
       - DOCLING_MAX_FILE_SIZE_MB=50
       - DOCLING_MAX_BATCH_SIZE=5

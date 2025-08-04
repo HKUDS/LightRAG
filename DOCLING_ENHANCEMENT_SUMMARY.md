@@ -79,7 +79,7 @@ Service logs confirmed:
 - Processing Time: ~12 seconds (full ML processing)
 - Features: Full OCR, Table Recognition, Figure Extraction, Image Processing
 - OCR: ✅ Available and active
-- Table Recognition: ✅ Available and active  
+- Table Recognition: ✅ Available and active
 - Figure Extraction: ✅ Available and active
 - Image Processing: ✅ Available
 - Structured Metadata: ✅ Available
