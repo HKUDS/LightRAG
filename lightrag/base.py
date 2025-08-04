@@ -133,17 +133,19 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
+    # TODO: Deprecated - history message have negtive effect on query performance
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    # Deprecated: history message have negtive effect on query performance
+    # TODO: Deprecated - history message have negtive effect on query performance
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
+    # TODO: TODO: Deprecated - ID-based filtering only applies to chunks, not entities or relations, and implemented only in PostgreSQL storage
     ids: list[str] | None = None
-    """List of ids to filter the results."""
+    """List of doc ids to filter the results."""
 
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
