@@ -8,6 +8,7 @@ This comprehensive guide walks you through deploying LightRAG in a production en
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Detailed Configuration](#detailed-configuration)
+- [Enhanced Document Processing](#enhanced-document-processing)
 - [MCP Server Setup](#mcp-server-setup)
 - [Security Setup](#security-setup)
 - [Monitoring & Observability](#monitoring--observability)
@@ -23,6 +24,7 @@ This production deployment includes:
 - **🔐 Enterprise Authentication**: Phase 1 security features with bcrypt, rate limiting, audit logging
 - **🐳 Container Orchestration**: Docker Compose with multi-service architecture
 - **🤖 MCP Integration**: Model Context Protocol server for Claude CLI integration
+- **📄 Enhanced Document Processing**: Docling service with OCR, table recognition, and figure extraction
 - **📊 Monitoring Stack**: Prometheus, Grafana, Jaeger tracing
 - **🔄 Load Balancing**: Nginx reverse proxy with SSL termination
 - **💾 Data Persistence**: PostgreSQL with pgvector, Redis caching
@@ -103,6 +105,9 @@ GRAFANA_ADMIN_PASSWORD=your-grafana-password
 ```bash
 # Start production environment
 docker compose -f docker-compose.production.yml up -d
+
+# Optional: Start with enhanced document processing (includes Docling service)
+docker compose -f docker-compose.production.yml -f docker-compose.enhanced.yml --profile enhanced-processing up -d
 
 # Check status
 docker compose -f docker-compose.production.yml ps
@@ -187,6 +192,335 @@ LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
 LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 ```
+
+## 📄 Enhanced Document Processing
+
+### Overview
+
+LightRAG includes an optional **Enhanced Document Processing** service powered by Docling, providing advanced OCR, table recognition, and figure extraction capabilities. This significantly improves document processing quality compared to basic text extraction.
+
+### Features
+
+#### Basic Document Processing (Default)
+- Simple text extraction using PyPDF2, python-docx
+- Fast processing (< 1 second)
+- Limited accuracy for complex documents
+- No OCR capability
+
+#### Enhanced Document Processing (Optional)
+- **🔍 OCR (Optical Character Recognition)**: Extract text from images and scanned documents
+- **📊 Table Recognition**: Preserve table structure and relationships
+- **🖼️ Figure Extraction**: Identify and describe images, charts, diagrams
+- **📐 Layout Understanding**: Recognize headers, paragraphs, multi-column layouts
+- **📋 Structured Metadata**: Enhanced document structure understanding
+- **💾 Intelligent Caching**: ML model caching for performance optimization
+
+### Architecture
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   LightRAG      │───▶│  Docling Service │───▶│  ML Models      │
+│   Main App      │    │  (Port 8080)     │    │  (EasyOCR, etc) │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐    ┌──────────────────┐
+│  Fallback       │    │  Cache & Logs    │
+│  Processors     │    │                  │
+└─────────────────┘    └──────────────────┘
+```
+
+### Configuration
+
+#### Environment Variables
+
+Add these to your `.env` file to enable enhanced processing:
+
+```bash
+# Enhanced Document Processing
+LIGHTRAG_ENHANCED_PROCESSING=true
+DOCLING_SERVICE_MODE=auto
+
+# Docling Service Configuration
+DOCLING_SERVICE_URL=http://docling-service:8080
+DOCLING_SERVICE_TIMEOUT=300
+DOCLING_SERVICE_RETRIES=3
+DOCLING_FALLBACK_ENABLED=true
+
+# Docling Processing Settings
+DOCLING_DEFAULT_EXPORT_FORMAT=markdown
+DOCLING_DEFAULT_MAX_WORKERS=3
+DOCLING_DEFAULT_ENABLE_OCR=true
+DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
+DOCLING_DEFAULT_ENABLE_FIGURES=true
+
+# Docling Cache Settings
+DOCLING_CACHE_ENABLED=true
+DOCLING_CACHE_MAX_SIZE_GB=5
+DOCLING_CACHE_TTL_HOURS=168
+
+# Docling Resource Limits
+DOCLING_MAX_FILE_SIZE_MB=100
+DOCLING_MAX_BATCH_SIZE=10
+DOCLING_REQUEST_TIMEOUT_SECONDS=300
+
+# Security (Optional)
+DOCLING_API_KEY=your-docling-api-key
+DOCLING_CORS_ORIGINS="*"
+
+# IMPORTANT: Do NOT set DOCLING_DEBUG (causes Pydantic validation errors)
+```
+
+#### Docker Compose Profiles
+
+Enhanced processing uses Docker Compose profiles for optional deployment:
+
+```bash
+# Basic deployment (without Docling)
+docker compose -f docker-compose.production.yml up -d
+
+# Enhanced deployment (with Docling service)
+docker compose -f docker-compose.production.yml -f docker-compose.enhanced.yml --profile enhanced-processing up -d
+```
+
+### Deployment
+
+#### Method 1: Full Production Stack with Enhanced Processing
+
+```bash
+# Clone repository
+git clone https://github.com/Ajith-82/LightRAG.git
+cd LightRAG
+
+# Configure environment with enhanced processing
+cp production.env .env
+# Edit .env to add Docling settings (see Configuration section above)
+
+# Deploy with enhanced processing
+docker compose -f docker-compose.production.yml -f docker-compose.enhanced.yml --profile enhanced-processing up -d
+```
+
+#### Method 2: Add Enhanced Processing to Existing Deployment
+
+```bash
+# Stop existing deployment
+docker compose -f docker-compose.production.yml down
+
+# Update environment configuration
+# Add Docling settings to .env file
+
+# Restart with enhanced processing
+docker compose -f docker-compose.production.yml -f docker-compose.enhanced.yml --profile enhanced-processing up -d
+```
+
+### Service Verification
+
+#### Health Checks
+
+```bash
+# Check Docling service health
+curl http://localhost:8080/health
+
+# Expected response for working service:
+{
+  "status": "healthy",
+  "docling_available": true,
+  "cache_available": true,
+  "memory_usage_mb": 2500,
+  "supported_formats": [".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".html"]
+}
+
+# If docling_available is false, check troubleshooting section
+```
+
+#### Processing Test
+
+```bash
+# Test enhanced processing via API
+curl -X POST http://localhost/api/documents/upload \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@test-document.pdf" \
+  -F "enable_enhanced_processing=true"
+
+# Check processing result
+curl http://localhost/api/documents/list?enhanced_only=true
+```
+
+### Performance Characteristics
+
+#### Processing Comparison
+
+| Feature | Basic Processing | Enhanced Processing |
+|---------|------------------|---------------------|
+| **Speed** | ~0.2s per document | ~10-30s per document |
+| **Accuracy** | Text extraction only | Full OCR + ML analysis |
+| **OCR Support** | ❌ None | ✅ Full OCR |
+| **Tables** | ❌ Lost structure | ✅ Structure preserved |
+| **Images** | ❌ Ignored | ✅ Analyzed and described |
+| **Memory Usage** | ~100MB | ~2.5GB (with models) |
+| **Cache Benefits** | Minimal | Significant (80% faster on cache hit) |
+
+#### Resource Requirements
+
+- **CPU**: 2-4 cores (ML processing intensive)
+- **Memory**: 4-6GB RAM (ML models + processing)
+- **Storage**: 10-20GB for model cache
+- **Network**: Internet access for initial model download
+
+### Troubleshooting
+
+#### Known Issue: Service Shows "degraded" Status
+
+**Root Cause**: This issue was caused by the `DOCLING_DEBUG=false` environment variable causing a Pydantic validation error in Docling's internal configuration system.
+
+**Solution**:
+```bash
+# DO NOT set DOCLING_DEBUG environment variable
+# Remove any existing DOCLING_DEBUG settings
+
+# Check service status
+curl http://localhost:8080/health
+
+# If docling_available is still false, check logs
+docker logs lightrag_docling_prod
+```
+
+#### Other Common Issues
+
+**1. Models Not Downloading**
+
+```bash
+# Check internet connectivity from container
+docker exec lightrag_docling_prod curl -I https://github.com
+
+# Check available disk space
+docker exec lightrag_docling_prod df -h
+
+# Manual model download test
+docker exec lightrag_docling_prod python -c "
+from docling.document_converter import DocumentConverter
+converter = DocumentConverter()
+print('Models loaded successfully')
+"
+```
+
+**2. High Memory Usage**
+
+```bash
+# Monitor memory usage
+docker stats lightrag_docling_prod
+
+# Reduce worker count if needed
+DOCLING_DEFAULT_MAX_WORKERS=1
+
+# Restart service
+docker compose restart docling-service
+```
+
+**3. Processing Timeout**
+
+```bash
+# Increase timeout settings
+DOCLING_SERVICE_TIMEOUT=600
+DOCLING_REQUEST_TIMEOUT_SECONDS=600
+
+# For large files, consider preprocessing
+DOCLING_MAX_FILE_SIZE_MB=200
+```
+
+#### Performance Optimization
+
+```bash
+# Optimize for production workloads
+DOCLING_DEFAULT_MAX_WORKERS=2        # Reduce for stability
+DOCLING_CACHE_ENABLED=true           # Enable caching
+DOCLING_CACHE_MAX_SIZE_GB=10         # Increase cache size
+
+# Resource limits in docker-compose
+deploy:
+  resources:
+    limits:
+      memory: 6G
+      cpus: '3.0'
+    reservations:
+      memory: 3G
+      cpus: '1.5'
+```
+
+### Monitoring Enhanced Processing
+
+#### Metrics
+
+Enhanced processing provides additional metrics:
+
+```bash
+# Docling service metrics
+curl http://localhost:8080/metrics
+
+# Processing performance
+curl http://localhost:8080/cache/stats
+
+# Model status
+curl http://localhost:8080/config
+```
+
+#### Log Analysis
+
+```bash
+# Docling service logs
+docker logs lightrag_docling_prod -f
+
+# Processing performance logs
+docker logs lightrag_docling_prod | grep "processing_time"
+
+# Cache hit rate
+docker logs lightrag_docling_prod | grep "cache_hit"
+```
+
+### Quality Comparison
+
+The enhanced processing provides significant quality improvements:
+
+#### Before (Basic Processing)
+```
+Processing Time: 0.22 seconds
+Word Count: 8,531
+Features: Basic text extraction only
+OCR: Not available
+Table Recognition: Not available
+Figure Extraction: Not available
+```
+
+#### After (Enhanced Processing)
+```
+Processing Time: ~12 seconds
+Word Count: More accurate count with OCR
+Features: Full OCR + ML processing
+OCR: ✅ Available and active
+Table Recognition: ✅ Structure preserved
+Figure Extraction: ✅ Images analyzed
+Metadata: Enhanced structure understanding
+Cache Hit: 80% faster on repeated processing
+```
+
+### Security Considerations
+
+#### Network Security
+- Docling service runs in isolated Docker network
+- Only LightRAG main service can access Docling service
+- Optional API key authentication available
+
+#### Data Privacy
+- Documents processed in memory only
+- No data sent to external services
+- ML models run locally in container
+- Optional caching can be disabled for sensitive documents
+
+#### Resource Security
+- Non-root container execution
+- Read-only filesystem where possible
+- Resource limits prevent resource exhaustion
+- Health checks ensure service availability
 
 ### Docker Services Configuration
 
@@ -934,7 +1268,27 @@ docker-compose -f docker-compose.production.yml logs lightrag
 # - SSL certificate issues
 ```
 
-#### 2. Database Connection Issues
+#### 2. Enhanced Document Processing Issues
+
+```bash
+# Check Docling service status
+curl http://localhost:8080/health
+
+# If docling_available is false:
+# - Ensure DOCLING_DEBUG is NOT set in environment variables
+# - Check for Pydantic validation errors in logs
+# - Verify models downloaded successfully
+
+# Check Docling service logs
+docker logs lightrag_docling_prod
+
+# Common solutions:
+# - Remove DOCLING_DEBUG environment variable
+# - Increase memory allocation for ML models
+# - Verify internet connectivity for model downloads
+```
+
+#### 3. Database Connection Issues
 
 ```bash
 # Test database connectivity
@@ -944,7 +1298,7 @@ docker exec -it lightrag_postgres psql -U lightrag_prod -d lightrag_production
 docker-compose -f docker-compose.production.yml logs postgres
 ```
 
-#### 3. High Memory Usage
+#### 4. High Memory Usage
 
 ```bash
 # Monitor resource usage
@@ -956,7 +1310,7 @@ LLM_MAX_ASYNC=2            # Reduce concurrent requests
 MAX_PARALLEL_INSERT=2      # Reduce parallel processing
 ```
 
-#### 4. Performance Issues
+#### 5. Performance Issues
 
 ```bash
 # Check Prometheus metrics

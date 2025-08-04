@@ -48,6 +48,10 @@ volumes:
     driver: local
   loki_data:
     driver: local
+  docling_cache:
+    driver: local
+  docling_logs:
+    driver: local
 
 services:
   # ===================================================================
@@ -78,9 +82,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      docling-service:
+        condition: service_healthy
     environment:
       - NODE_ENV=production
       - PYTHON_ENV=production
+      # Docling service integration
+      - DOCLING_SERVICE_URL=http://docling-service:8080
+      - DOCLING_SERVICE_TIMEOUT=300
+      - DOCLING_SERVICE_RETRIES=3
+      - DOCLING_FALLBACK_ENABLED=true
+      - LIGHTRAG_ENHANCED_PROCESSING=true
     env_file:
       - .env
     volumes:
@@ -467,3 +479,80 @@ services:
         reservations:
           memory: 64M
           cpus: '0.1'
+
+  # ===================================================================
+  # Docling Service (Production)
+  # ===================================================================
+  docling-service:
+    container_name: lightrag_docling_prod
+    profiles: ["enhanced-processing", "full"]
+    build:
+      context: ./lightrag-docling
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-}
+        VCS_REF: ${VCS_REF:-}
+        VERSION: ${VERSION:-1.0.0}
+    image: lightrag-docling:production
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    environment:
+      - DOCLING_HOST=0.0.0.0
+      - DOCLING_PORT=8080
+      - DOCLING_LOG_LEVEL=INFO
+      - DOCLING_DEBUG=false
+
+      # Processing configuration
+      - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
+      - DOCLING_DEFAULT_MAX_WORKERS=${DOCLING_WORKERS:-3}
+      - DOCLING_DEFAULT_ENABLE_OCR=true
+      - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
+      - DOCLING_DEFAULT_ENABLE_FIGURES=true
+
+      # Cache configuration
+      - DOCLING_CACHE_ENABLED=true
+      - DOCLING_CACHE_DIR=/app/cache
+      - DOCLING_CACHE_MAX_SIZE_GB=${DOCLING_CACHE_SIZE:-5}
+      - DOCLING_CACHE_TTL_HOURS=168
+
+      # Production limits
+      - DOCLING_MAX_FILE_SIZE_MB=${DOCLING_MAX_FILE_SIZE:-100}
+      - DOCLING_MAX_BATCH_SIZE=${DOCLING_MAX_BATCH_SIZE:-10}
+      - DOCLING_REQUEST_TIMEOUT_SECONDS=300
+
+      # Security
+      - DOCLING_API_KEY=${DOCLING_API_KEY:-}
+      - DOCLING_CORS_ORIGINS=http://lightrag:9621
+
+      # Monitoring
+      - DOCLING_METRICS_ENABLED=true
+    volumes:
+      - docling_cache:/app/cache
+      - docling_logs:/app/logs
+    networks:
+      - lightrag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '3.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"

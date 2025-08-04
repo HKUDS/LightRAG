@@ -1,0 +1,13 @@
+# Docker Compose override for enhanced processing with Docling service
+
+services:
+  lightrag:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docling-service:
+        condition: service_healthy
+    environment:
+      # Ensure enhanced processing is enabled
+      - LIGHTRAG_ENHANCED_PROCESSING=true
+      - DOCLING_SERVICE_MODE=auto
