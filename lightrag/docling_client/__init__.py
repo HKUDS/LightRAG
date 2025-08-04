@@ -7,13 +7,13 @@ from .exceptions import (
     DoclingServiceError,
     DoclingServiceUnavailable,
     DoclingServiceTimeout,
-    DoclingProcessingError
+    DoclingProcessingError,
 )
 
 __all__ = [
-    'DoclingClient',
-    'DoclingServiceError', 
-    'DoclingServiceUnavailable',
-    'DoclingServiceTimeout',
-    'DoclingProcessingError'
+    "DoclingClient",
+    "DoclingServiceError",
+    "DoclingServiceUnavailable",
+    "DoclingServiceTimeout",
+    "DoclingProcessingError",
 ]
