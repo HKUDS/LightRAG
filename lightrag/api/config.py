@@ -7,7 +7,11 @@ import argparse
 import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
-from lightrag.llm.binding_options import OllamaEmbeddingOptions, OllamaLLMOptions
+from lightrag.llm.binding_options import (
+    OllamaEmbeddingOptions,
+    OllamaLLMOptions,
+    OpenAILLMOptions,
+)
 from lightrag.base import OllamaServerInfos
 import sys
 
@@ -239,6 +243,20 @@ def parse_args() -> argparse.Namespace:
     elif os.environ.get("EMBEDDING_BINDING") == "ollama":
         OllamaEmbeddingOptions.add_args(parser)
 
+    # Add OpenAI LLM options when llm-binding is openai or azure_openai
+    if "--llm-binding" in sys.argv:
+        try:
+            idx = sys.argv.index("--llm-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in [
+                "openai",
+                "azure_openai",
+            ]:
+                OpenAILLMOptions.add_args(parser)
+        except IndexError:
+            pass
+    elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
+        OpenAILLMOptions.add_args(parser)
+
     args = parser.parse_args()
 
     # convert relative path to absolute path
@@ -310,6 +328,17 @@ def parse_args() -> argparse.Namespace:
         else:
             # Use the explicitly set OLLAMA_LLM_TEMPERATURE
             args.ollama_llm_temperature = float(ollama_llm_temp)
+
+    # Handle OpenAI LLM temperature fallback when llm-binding is openai or azure_openai
+    if args.llm_binding in ["openai", "azure_openai"]:
+        # Check if OPENAI_LLM_TEMPERATURE is set, if not fallback to global TEMPERATURE
+        openai_llm_temp = get_env_value("OPENAI_LLM_TEMPERATURE", None)
+        if openai_llm_temp is None:
+            # Fallback to global TEMPERATURE value
+            args.openai_llm_temperature = args.temperature
+        else:
+            # Use the explicitly set OPENAI_LLM_TEMPERATURE
+            args.openai_llm_temperature = float(openai_llm_temp)
 
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")

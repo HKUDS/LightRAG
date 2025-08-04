@@ -354,11 +354,19 @@ API 服务器可以通过三种方式配置（优先级从高到低）：
 LightRAG 支持绑定到各种 LLM/嵌入后端：
 
 * ollama
-* lollms
 * openai 和 openai 兼容
 * azure_openai
+* lollms
 
 使用环境变量 `LLM_BINDING` 或 CLI 参数 `--llm-binding` 选择 LLM 后端类型。使用环境变量 `EMBEDDING_BINDING` 或 CLI 参数 `--embedding-binding` 选择嵌入后端类型。
+
+LLM和Embedding配置例子请查看项目根目录的 env.example 文件。OpenAI和Ollama兼容LLM接口的支持的完整配置选型可以通过一下命令查看：
+
+```
+lightrag-server --llm-binding openai --help
+lightrag-server --llm-binding ollama --help
+lightrag-server --embedding-binding ollama --help
+```
 
 ### 实体提取配置
 * ENABLE_LLM_CACHE_FOR_EXTRACT：为实体提取启用 LLM 缓存（默认：true）

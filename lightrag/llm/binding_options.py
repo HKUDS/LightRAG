@@ -288,25 +288,6 @@ class BindingOptions:
 
 
 # =============================================================================
-# Binding Options for Different LLM Providers
-# =============================================================================
-#
-# This section contains dataclass definitions for various LLM provider options.
-# Each binding option class inherits from BindingOptions and defines:
-#   - _binding_name: Unique identifier for the binding
-#   - Configuration parameters with default values
-#   - _help: Dictionary mapping parameter names to help descriptions
-#
-# To add a new binding:
-#   1. Create a new dataclass inheriting from BindingOptions
-#   2. Set the _binding_name class variable
-#   3. Define configuration parameters as class attributes
-#   4. Add corresponding help strings in the _help dictionary
-#
-# =============================================================================
-
-
-# =============================================================================
 # Binding Options for Ollama
 # =============================================================================
 #
@@ -407,23 +388,6 @@ class _OllamaOptionsMixin:
     }
 
 
-# =============================================================================
-# Ollama Binding Options - Specialized Configurations
-# =============================================================================
-#
-# This section defines specialized binding option classes for different Ollama
-# use cases. Both classes inherit from OllamaOptionsMixin to share the complete
-# set of Ollama configuration parameters, while providing distinct binding names
-# for command-line argument generation and environment variable handling.
-#
-# OllamaEmbeddingOptions: Specialized for embedding tasks
-# OllamaLLMOptions: Specialized for language model/chat tasks
-#
-# Each class maintains its own binding name prefix, allowing users to configure
-# embedding and LLM options independently when both are used in the same application.
-# =============================================================================
-
-
 @dataclass
 class OllamaEmbeddingOptions(_OllamaOptionsMixin, BindingOptions):
     """Options for Ollama embeddings with specialized configuration for embedding tasks."""
@@ -441,41 +405,46 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
 
 
 # =============================================================================
-# Additional LLM Provider Bindings
+# Binding Options for OpenAI
 # =============================================================================
 #
-# This section is where you can add binding options for other LLM providers.
-# Each new binding should follow the same pattern as the Ollama bindings above:
-#
-# 1. Create a dataclass that inherits from BindingOptions
-# 2. Set a unique _binding_name class variable (e.g., "openai", "anthropic")
-# 3. Define configuration parameters as class attributes with default values
-# 4. Add a _help class variable with descriptions for each parameter
-#
-# Example template for a new provider:
-#
-# @dataclass
-# class NewProviderOptions(BindingOptions):
-#     """Options for NewProvider LLM binding."""
-#
-#     _binding_name: ClassVar[str] = "newprovider"
-#
-#     # Configuration parameters
-#     api_key: str = ""
-#     max_tokens: int = 1000
-#     model: str = "default-model"
-#
-#     # Help descriptions
-#     _help: ClassVar[dict[str, str]] = {
-#         "api_key": "API key for authentication",
-#         "max_tokens": "Maximum tokens to generate",
-#         "model": "Model name to use",
-#     }
+# OpenAI binding options provide configuration for OpenAI's API and Azure OpenAI.
+# These options control model behavior, sampling parameters, and generation settings.
+# The parameters are based on OpenAI's API specification and provide fine-grained
+# control over model inference and generation.
 #
 # =============================================================================
+@dataclass
+class OpenAILLMOptions(BindingOptions):
+    """Options for OpenAI LLM with configuration for OpenAI and Azure OpenAI API calls."""
 
-# TODO: Add binding options for additional LLM providers here
-# Common providers to consider: OpenAI, Anthropic, Cohere, Hugging Face, etc.
+    # mandatory name of binding
+    _binding_name: ClassVar[str] = "openai_llm"
+
+    # Sampling and generation parameters
+    frequency_penalty: float = 0.0  # Penalty for token frequency (-2.0 to 2.0)
+    max_completion_tokens: int = None  # Maximum number of tokens to generate
+    presence_penalty: float = 0.0  # Penalty for token presence (-2.0 to 2.0)
+    reasoning_effort: str = "medium"  # Reasoning effort level (low, medium, high)
+    safety_identifier: str = ""  # Safety identifier for content filtering
+    service_tier: str = ""  # Service tier for API usage
+    stop: List[str] = field(default_factory=list)  # Stop sequences
+    temperature: float = DEFAULT_TEMPERATURE  # Controls randomness (0.0 to 2.0)
+    top_p: float = 1.0  # Nucleus sampling parameter (0.0 to 1.0)
+
+    # Help descriptions
+    _help: ClassVar[dict[str, str]] = {
+        "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0, positive values discourage repetition)",
+        "max_completion_tokens": "Maximum number of tokens to generate (optional, leave empty for model default)",
+        "presence_penalty": "Penalty for token presence (-2.0 to 2.0, positive values encourage new topics)",
+        "reasoning_effort": "Reasoning effort level for o1 models (low, medium, high)",
+        "safety_identifier": "Safety identifier for content filtering (optional)",
+        "service_tier": "Service tier for API usage (optional)",
+        "stop": 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
+        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
+        "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
+    }
+
 
 # =============================================================================
 # Main Section - For Testing and Sample Generation
@@ -505,10 +474,11 @@ if __name__ == "__main__":
     # dotenv.load_dotenv(stream=env_strstream)
 
     if len(sys.argv) > 1 and sys.argv[1] == "test":
-        # Add arguments for OllamaEmbeddingOptions and OllamaLLMOptions
-        parser = ArgumentParser(description="Test Ollama binding")
+        # Add arguments for OllamaEmbeddingOptions, OllamaLLMOptions, and OpenAILLMOptions
+        parser = ArgumentParser(description="Test binding options")
         OllamaEmbeddingOptions.add_args(parser)
         OllamaLLMOptions.add_args(parser)
+        OpenAILLMOptions.add_args(parser)
 
         # Parse arguments test
         args = parser.parse_args(
@@ -517,20 +487,36 @@ if __name__ == "__main__":
                 "1024",
                 "--ollama-llm-num_ctx",
                 "2048",
-                # "--ollama-llm-stop",
-                # '["</s>", "\\n\\n"]',
+                "--openai-llm-temperature",
+                "0.7",
+                "--openai-llm-max_completion_tokens",
+                "1000",
+                "--openai-llm-stop",
+                '["</s>", "\\n\\n"]',
             ]
         )
         print("Final args for LLM and Embedding:")
         print(f"{args}\n")
 
-        print("LLM options:")
+        print("Ollama LLM options:")
         print(OllamaLLMOptions.options_dict(args))
-        # print(OllamaLLMOptions(num_ctx=30000).asdict())
 
-        print("\nEmbedding options:")
+        print("\nOllama Embedding options:")
         print(OllamaEmbeddingOptions.options_dict(args))
-        # print(OllamaEmbeddingOptions(**embedding_options).asdict())
+
+        print("\nOpenAI LLM options:")
+        print(OpenAILLMOptions.options_dict(args))
+
+        # Test creating OpenAI options instance
+        openai_options = OpenAILLMOptions(
+            temperature=0.8,
+            max_completion_tokens=1500,
+            frequency_penalty=0.1,
+            presence_penalty=0.2,
+            stop=["<|end|>", "\n\n"],
+        )
+        print("\nOpenAI LLM options instance:")
+        print(openai_options.asdict())
 
     else:
         print(BindingOptions.generate_dot_env_sample())

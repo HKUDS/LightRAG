@@ -238,6 +238,7 @@ def create_app(args):
         from lightrag.llm.binding_options import OllamaLLMOptions
     if args.llm_binding == "openai" or args.embedding_binding == "openai":
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+        from lightrag.llm.binding_options import OpenAILLMOptions
     if args.llm_binding == "azure_openai" or args.embedding_binding == "azure_openai":
         from lightrag.llm.azure_openai import (
             azure_openai_complete_if_cache,
@@ -262,7 +263,14 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
-        kwargs["temperature"] = args.temperature
+
+        # Use OpenAI LLM options if available, otherwise fallback to global temperature
+        if args.llm_binding == "openai":
+            openai_options = OpenAILLMOptions.options_dict(args)
+            kwargs.update(openai_options)
+        else:
+            kwargs["temperature"] = args.temperature
+
         return await openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -285,7 +293,14 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
-        kwargs["temperature"] = args.temperature
+
+        # Use OpenAI LLM options if available, otherwise fallback to global temperature
+        if args.llm_binding == "azure_openai":
+            openai_options = OpenAILLMOptions.options_dict(args)
+            kwargs.update(openai_options)
+        else:
+            kwargs["temperature"] = args.temperature
+
         return await azure_openai_complete_if_cache(
             args.llm_model,
             prompt,

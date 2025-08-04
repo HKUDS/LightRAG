@@ -357,11 +357,18 @@ Most of the configurations come with default settings; check out the details in 
 LightRAG supports binding to various LLM/Embedding backends:
 
 * ollama
-* lollms
 * openai & openai compatible
 * azure_openai
+* lollms
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
+
+For LLM and embedding configuration examples, please refer to the `env.example` file in the project's root directory. To view the complete list of configurable options for OpenAI and Ollama-compatible LLM interfaces, use the following commands:
+```
+lightrag-server --llm-binding openai --help
+lightrag-server --llm-binding ollama --help
+lightrag-server --embedding-binding ollama --help
+```
 
 ### Entity Extraction Configuration
 * ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
