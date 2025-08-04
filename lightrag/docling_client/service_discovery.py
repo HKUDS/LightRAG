@@ -27,9 +27,9 @@ class ServiceDiscovery:
         if self.service_url is None:
             # Try multiple environment variable names for flexibility
             self.service_url = (
-                get_env_value("DOCLING_SERVICE_URL") or
-                get_env_value("LIGHTRAG_DOCLING_SERVICE_URL") or 
-                get_env_value("DOCLING_HOST")
+                get_env_value("DOCLING_SERVICE_URL", None) or
+                get_env_value("LIGHTRAG_DOCLING_SERVICE_URL", None) or 
+                get_env_value("DOCLING_HOST", None)
             )
             
             # If we got a host without protocol, add it
@@ -65,31 +65,26 @@ class ServiceDiscovery:
                     service_healthy = health_data.get("status") in ["healthy", "degraded"]
                     
                     if service_healthy:
-                        logger.debug("Docling service is available", 
-                                   url=service_url, 
-                                   status=health_data.get("status"))
+                        logger.debug(f"Docling service is available at {service_url} "
+                                   f"(status: {health_data.get('status')})")
                     else:
-                        logger.warning("Docling service reports unhealthy status",
-                                     url=service_url,
-                                     status=health_data.get("status"))
+                        logger.warning(f"Docling service reports unhealthy status at {service_url} "
+                                     f"(status: {health_data.get('status')})")
                     
                     self.service_available = service_healthy
                 else:
-                    logger.warning("Docling service health check failed",
-                                 url=health_url,
-                                 status_code=response.status_code)
+                    logger.warning(f"Docling service health check failed at {health_url} "
+                                 f"(status code: {response.status_code})")
                     self.service_available = False
                     
         except httpx.TimeoutException:
-            logger.warning("Docling service health check timed out", url=service_url)
+            logger.warning(f"Docling service health check timed out: {service_url}")
             self.service_available = False
         except httpx.ConnectError:
-            logger.debug("Docling service connection failed", url=service_url)
+            logger.debug(f"Docling service connection failed: {service_url}")
             self.service_available = False
         except Exception as e:
-            logger.warning("Docling service health check error", 
-                         url=service_url, 
-                         error=str(e))
+            logger.warning(f"Docling service health check error for {service_url}: {e}")
             self.service_available = False
         
         self.last_health_check = time.time()
@@ -109,12 +104,12 @@ class ServiceDiscovery:
                 if response.status_code == 200:
                     return response.json()
                 else:
-                    logger.warning("Failed to get service config",
-                                 status_code=response.status_code)
+                    logger.warning(f"Failed to get service config "
+                                 f"(status code: {response.status_code})")
                     return None
                     
         except Exception as e:
-            logger.warning("Error getting service config", error=str(e))
+            logger.warning(f"Error getting service config: {e}")
             return None
     
     async def get_service_info(self) -> Dict[str, Any]:

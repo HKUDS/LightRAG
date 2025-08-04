@@ -64,7 +64,7 @@ class DoclingClient:
         self.timeout = int(get_env_value("DOCLING_SERVICE_TIMEOUT", 300))
         self.retries = int(get_env_value("DOCLING_SERVICE_RETRIES", 3))
         self.retry_delay = float(get_env_value("DOCLING_SERVICE_RETRY_DELAY", 1.0))
-        self.api_key = get_env_value("DOCLING_SERVICE_API_KEY")
+        self.api_key = get_env_value("DOCLING_SERVICE_API_KEY", None)
         
         # Client session
         self._client: Optional[httpx.AsyncClient] = None
@@ -145,7 +145,7 @@ class DoclingClient:
                 return [".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"]
                 
         except Exception as e:
-            logger.warning("Error getting supported formats", error=str(e))
+            logger.warning(f"Error getting supported formats: {e}")
             return [".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"]
     
     def _build_docling_config(self, **config_kwargs) -> Dict[str, Any]:
@@ -281,9 +281,7 @@ class DoclingClient:
         process_url = urljoin(service_url, "/process")
         
         try:
-            logger.info("Processing document via Docling service",
-                       filename=file_path.name,
-                       service_url=service_url)
+            logger.info(f"Processing document {file_path.name} via Docling service at {service_url}")
             
             response = await self._make_request_with_retry(
                 "POST", 
@@ -295,11 +293,9 @@ class DoclingClient:
                 result_data = response.json()
                 result = DoclingProcessingResult(result_data)
                 
-                logger.info("Document processed successfully",
-                           filename=file_path.name,
-                           processing_time=result.processing_time_seconds,
-                           cache_hit=result.cache_hit,
-                           success=result.success)
+                logger.info(f"Document {file_path.name} processed successfully "
+                           f"(time: {result.processing_time_seconds:.2f}s, "
+                           f"cache_hit: {result.cache_hit}, success: {result.success})")
                 
                 return result
                 
@@ -395,11 +391,8 @@ class DoclingClient:
                 successful = sum(1 for r in results if r.success)
                 failed = len(results) - successful
                 
-                logger.info("Batch processing completed",
-                           total=len(results),
-                           successful=successful,
-                           failed=failed,
-                           total_time=batch_data.get("total_processing_time_seconds", 0))
+                logger.info(f"Batch processing completed: {successful}/{len(results)} successful "
+                           f"(total_time: {batch_data.get('total_processing_time_seconds', 0):.2f}s)")
                 
                 return results
             else:
@@ -447,11 +440,11 @@ class DoclingClient:
                 result = response.json()
                 return result.get("cache_cleared", False)
             else:
-                logger.warning("Cache clear failed", status_code=response.status_code)
+                logger.warning(f"Cache clear failed with status code: {response.status_code}")
                 return False
                 
         except Exception as e:
-            logger.warning("Cache clear error", error=str(e))
+            logger.warning(f"Cache clear error: {e}")
             return False
 
 

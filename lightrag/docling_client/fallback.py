@@ -174,9 +174,9 @@ class BasicDocumentProcessor:
             else:
                 full_content = content
             
-            logger.info(f"Basic processing completed for {file_path.name}",
-                       processing_time=processing_time,
-                       content_length=len(full_content))
+            logger.info(f"Basic processing completed for {file_path.name} "
+                       f"(processing_time: {processing_time:.2f}s, "
+                       f"content_length: {len(full_content)})")
             
             return {
                 "content": full_content,

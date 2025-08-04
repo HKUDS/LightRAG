@@ -196,10 +196,24 @@ async def main():
     await demo_enhanced_processing()
     
     print("\n✨ Demo completed!")
-    print("\nTo use with Docling service:")
-    print("1. Start the service: docker-compose --profile enhanced-processing up -d")
-    print("2. Set DOCLING_SERVICE_URL=http://localhost:8080")
-    print("3. Enable enhanced processing: LIGHTRAG_ENHANCED_PROCESSING=true")
+    print("\n🚀 Quick Setup Guide:")
+    print("=" * 50)
+    print("\n📋 Option 1: Automated startup (Recommended)")
+    print("   ./scripts/start-enhanced-processing.sh")
+    print("\n📋 Option 2: Manual startup")
+    print("   1. Start services: docker compose -f docker-compose.yml -f docker-compose.enhanced.yml --profile enhanced-processing up -d")
+    print("   2. Wait for services to be ready (may take several minutes for first-time build)")
+    print("\n📋 Option 3: Basic LightRAG (without Docling)")
+    print("   docker compose up lightrag postgres -d")
+    print("\n🔧 Environment Configuration:")
+    print("   DOCLING_SERVICE_URL=http://localhost:8080")
+    print("   LIGHTRAG_ENHANCED_PROCESSING=true")
+    print("   DOCLING_SERVICE_MODE=auto")
+    print("\n🧪 Test the integration:")
+    print("   python examples/docling_service_demo.py")
+    print("\n📊 Monitor services:")
+    print("   docker compose logs -f lightrag")
+    print("   docker compose logs -f docling-service")
 
 
 if __name__ == "__main__":

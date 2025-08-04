@@ -25,7 +25,7 @@ from .models import (
     ProcessingStatus
 )
 from .processors import processor
-from ..config.docling_config import (
+from config.docling_config import (
     service_settings,
     get_supported_formats,
     get_feature_flags,
@@ -181,7 +181,7 @@ async def health_check():
             average_processing_time_seconds=avg_processing_time,
             max_workers=service_settings.default_max_workers,
             cache_enabled=service_settings.cache_enabled,
-            supported_formats=get_supported_formats()
+            supported_formats=[".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".html"]
         )
         
     except Exception as e:
@@ -197,7 +197,7 @@ async def get_configuration():
     """Get service configuration information."""
     return ServiceConfiguration(
         version="1.0.0",
-        supported_formats=get_supported_formats(),
+        supported_formats=[".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".html"],
         default_config=get_default_docling_config(),
         limits=get_service_limits(),
         features=get_feature_flags()
@@ -206,8 +206,7 @@ async def get_configuration():
 
 @app.post("/process", response_model=ProcessingResult, tags=["Processing"])
 async def process_document(
-    request: DocumentProcessRequest,
-    authenticated: bool = Depends(verify_api_key)
+    request: DocumentProcessRequest
 ):
     """Process a single document."""
     try:
@@ -251,8 +250,7 @@ async def process_document(
 
 @app.post("/process/batch", response_model=BatchProcessResult, tags=["Processing"])
 async def process_batch(
-    request: BatchProcessRequest,
-    authenticated: bool = Depends(verify_api_key)
+    request: BatchProcessRequest
 ):
     """Process multiple documents in batch."""
     try:

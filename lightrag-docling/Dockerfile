@@ -77,14 +77,22 @@ COPY __init__.py .
 
 # Create necessary directories and set permissions
 RUN mkdir -p /app/cache /app/logs /app/tmp \
-    && chown -R docling:docling /app \
-    && chmod -R 755 /app
+    && mkdir -p /home/docling/.EasyOCR \
+    && mkdir -p /home/docling/.cache \
+    && chown -R docling:docling /app /home/docling \
+    && chmod -R 755 /app /home/docling
 
 # Set environment variables
 ENV PYTHONPATH="/app:/home/docling/.local/lib/python3.11/site-packages"
 ENV PATH="/home/docling/.local/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+
+# Configure ML library cache directories
+ENV EASYOCR_MODULE_PATH=/home/docling/.EasyOCR
+ENV TORCH_HOME=/home/docling/.cache/torch
+ENV HF_HOME=/home/docling/.cache/huggingface
+ENV TRANSFORMERS_CACHE=/home/docling/.cache/huggingface/transformers
 
 # Docling service specific environment variables
 ENV DOCLING_HOST=0.0.0.0

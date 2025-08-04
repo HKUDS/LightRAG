@@ -26,8 +26,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      docling-service:
-        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -82,8 +80,7 @@ services:
         fi &&
         sleep infinity
       "
-    networks:
-      - lightrag-network
+
 
   # ===================================================================
   # Docling Service (Optional - for enhanced document processing)

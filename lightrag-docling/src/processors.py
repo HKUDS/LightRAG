@@ -24,7 +24,7 @@ from .models import (
     ProcessingMetadata,
     ExportFormat
 )
-from ..config.docling_config import service_settings
+from config.docling_config import service_settings
 
 logger = structlog.get_logger(__name__)
 
