@@ -8,11 +8,10 @@ bindings and integrations.
 from argparse import ArgumentParser, Namespace
 import argparse
 import json
-import os
-from dataclasses import asdict, dataclass, field, MISSING
+from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, List
 
-from lightrag.utils import get_env_value, logger
+from lightrag.utils import get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
 
 
@@ -437,43 +436,8 @@ class OllamaEmbeddingOptions(_OllamaOptionsMixin, BindingOptions):
 class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     """Options for Ollama LLM with specialized configuration for LLM tasks."""
 
-    # Override temperature field to track if it was explicitly set
-    temperature: float = field(default_factory=lambda: MISSING)
-
     # mandatory name of binding
     _binding_name: ClassVar[str] = "ollama_llm"
-
-    def __post_init__(self):
-        """Handle temperature parameter with correct priority logic"""
-        # If temperature was not explicitly set, apply priority logic
-        if self.temperature is MISSING:
-            # Check OLLAMA_LLM_TEMPERATURE first (highest priority for env vars)
-            ollama_temp = os.getenv("OLLAMA_LLM_TEMPERATURE")
-            if ollama_temp is not None:
-                try:
-                    self.temperature = float(ollama_temp)
-                    logger.debug(f"Using OLLAMA_LLM_TEMPERATURE: {self.temperature}")
-                    return
-                except (ValueError, TypeError):
-                    logger.warning(
-                        f"Invalid OLLAMA_LLM_TEMPERATURE value: {ollama_temp}"
-                    )
-
-            # Check TEMPERATURE as fallback
-            general_temp = os.getenv("TEMPERATURE")
-            if general_temp is not None:
-                try:
-                    self.temperature = float(general_temp)
-                    logger.debug(
-                        f"Using TEMPERATURE environment variable: {self.temperature}"
-                    )
-                    return
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid TEMPERATURE value: {general_temp}")
-
-            # Use default value
-            self.temperature = DEFAULT_TEMPERATURE
-            logger.debug(f"Using default temperature: {self.temperature}")
 
 
 # =============================================================================

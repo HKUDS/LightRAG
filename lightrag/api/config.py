@@ -300,6 +300,17 @@ def parse_args() -> argparse.Namespace:
     # Inject LLM temperature configuration
     args.temperature = get_env_value("TEMPERATURE", DEFAULT_TEMPERATURE, float)
 
+    # Handle Ollama LLM temperature fallback when llm-binding is ollama
+    if args.llm_binding == "ollama":
+        # Check if OLLAMA_LLM_TEMPERATURE is set, if not fallback to global TEMPERATURE
+        ollama_llm_temp = get_env_value("OLLAMA_LLM_TEMPERATURE", None)
+        if ollama_llm_temp is None:
+            # Fallback to global TEMPERATURE value
+            args.ollama_llm_temperature = args.temperature
+        else:
+            # Use the explicitly set OLLAMA_LLM_TEMPERATURE
+            args.ollama_llm_temperature = float(ollama_llm_temp)
+
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
 
