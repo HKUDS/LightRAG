@@ -127,6 +127,16 @@ class BindingOptions:
 
     @classmethod
     def generate_dot_env_sample(cls):
+        """
+        Generate a sample .env file for all LightRAG binding options.
+
+        This method creates a .env file that includes all the binding options
+        defined by the subclasses of BindingOptions. It uses the args_env_name_type_value()
+        method to get the list of all options and their default values.
+
+        Returns:
+            str: A string containing the contents of the sample .env file.
+        """
         from io import StringIO
 
         sample_top = (
@@ -410,37 +420,44 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
 if __name__ == "__main__":
     import sys
     import dotenv
-    from io import StringIO
+    # from io import StringIO
 
-    print(BindingOptions.generate_dot_env_sample())
-
-    env_strstream = StringIO(
-        ("OLLAMA_LLM_TEMPERATURE=0.1\nOLLAMA_EMBEDDING_TEMPERATURE=0.2\n")
-    )
-
-    # Load environment variables from .env file
-    dotenv.load_dotenv(stream=env_strstream)
-
+    dotenv.load_dotenv(dotenv_path=".env", override=False)
+    
+    # env_strstream = StringIO(
+    #     ("OLLAMA_LLM_TEMPERATURE=0.1\nOLLAMA_EMBEDDING_TEMPERATURE=0.2\n")
+    # )
+    # # Load environment variables from .env file
+    # dotenv.load_dotenv(stream=env_strstream)
+    
     if len(sys.argv) > 1 and sys.argv[1] == "test":
+        
+        # Add arguments for OllamaEmbeddingOptions and OllamaLLMOptions
         parser = ArgumentParser(description="Test Ollama binding")
         OllamaEmbeddingOptions.add_args(parser)
         OllamaLLMOptions.add_args(parser)
+
+        # Parse arguments test
         args = parser.parse_args(
             [
                 "--ollama-embedding-num_ctx",
                 "1024",
                 "--ollama-llm-num_ctx",
                 "2048",
+                "--ollama-llm-stop",
+                "<end>",
             ]
         )
-        print(args)
+        print("Final args for LLM and Embedding:")
+        print(f"{args}\n")
 
-        # test LLM options
-        ollama_options = OllamaLLMOptions.options_dict(args)
-        print(ollama_options)
-        print(OllamaLLMOptions(num_ctx=30000).asdict())
+        print("LLM options:")
+        print(OllamaLLMOptions.options_dict(args))
+        # print(OllamaLLMOptions(num_ctx=30000).asdict())
 
-        # test embedding options
-        embedding_options = OllamaEmbeddingOptions.options_dict(args)
-        print(embedding_options)
-        print(OllamaEmbeddingOptions(**embedding_options).asdict())
+        print("\nEmbedding options:")
+        print(OllamaEmbeddingOptions.options_dict(args))
+        # print(OllamaEmbeddingOptions(**embedding_options).asdict())
+
+    else:
+        print(BindingOptions.generate_dot_env_sample())
