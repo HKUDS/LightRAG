@@ -50,6 +50,7 @@ rag_storage/
 examples/input/
 examples/output/
 output*/
+data/
 
 # Miscellaneous
 .DS_Store
