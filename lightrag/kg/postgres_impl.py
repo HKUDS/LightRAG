@@ -307,8 +307,10 @@ class PostgreSQLDB:
 
             # Remove deprecated mode field if it exists
             if "mode" in existing_column_names:
-                logger.info("Removing deprecated mode column from LIGHTRAG_LLM_CACHE table")
-                
+                logger.info(
+                    "Removing deprecated mode column from LIGHTRAG_LLM_CACHE table"
+                )
+
                 # First, drop the primary key constraint that includes mode
                 drop_pk_sql = """
                 ALTER TABLE LIGHTRAG_LLM_CACHE
@@ -316,15 +318,17 @@ class PostgreSQLDB:
                 """
                 await self.execute(drop_pk_sql)
                 logger.info("Dropped old primary key constraint")
-                
+
                 # Drop the mode column
                 drop_mode_sql = """
                 ALTER TABLE LIGHTRAG_LLM_CACHE
                 DROP COLUMN mode
                 """
                 await self.execute(drop_mode_sql)
-                logger.info("Successfully removed mode column from LIGHTRAG_LLM_CACHE table")
-                
+                logger.info(
+                    "Successfully removed mode column from LIGHTRAG_LLM_CACHE table"
+                )
+
                 # Create new primary key constraint without mode
                 add_pk_sql = """
                 ALTER TABLE LIGHTRAG_LLM_CACHE
@@ -1696,18 +1700,6 @@ class PGKVStorage(BaseKVStorage):
             )
         except Exception as e:
             logger.error(f"Error while deleting records from {self.namespace}: {e}")
-
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Delete specific records from storage by cache mode (deprecated - mode field removed)
-
-        Args:
-            modes (list[str]): List of cache modes (deprecated, no longer used)
-
-        Returns:
-            bool: False (method deprecated due to mode field removal)
-        """
-        logger.warning("drop_cache_by_modes is deprecated: mode field has been removed from LLM cache")
-        return False
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""

@@ -397,66 +397,6 @@ class RedisKVStorage(BaseKVStorage):
                 f"Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
             )
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Delete specific records from storage by cache mode
-
-        Importance notes for Redis storage:
-        1. This will immediately delete the specified cache modes from Redis
-
-        Args:
-            modes (list[str]): List of cache modes to be dropped from storage
-
-        Returns:
-             True: if the cache drop successfully
-             False: if the cache drop failed
-        """
-        if not modes:
-            return False
-
-        try:
-            async with self._get_redis_connection() as redis:
-                keys_to_delete = []
-
-                # Find matching keys for each mode using SCAN
-                for mode in modes:
-                    # Use correct pattern to match flattened cache key format {namespace}:{mode}:{cache_type}:{hash}
-                    pattern = f"{self.namespace}:{mode}:*"
-                    cursor = 0
-                    mode_keys = []
-
-                    while True:
-                        cursor, keys = await redis.scan(
-                            cursor, match=pattern, count=1000
-                        )
-                        if keys:
-                            mode_keys.extend(keys)
-
-                        if cursor == 0:
-                            break
-
-                    keys_to_delete.extend(mode_keys)
-                    logger.info(
-                        f"Found {len(mode_keys)} keys for mode '{mode}' with pattern '{pattern}'"
-                    )
-
-                if keys_to_delete:
-                    # Batch delete
-                    pipe = redis.pipeline()
-                    for key in keys_to_delete:
-                        pipe.delete(key)
-                    results = await pipe.execute()
-                    deleted_count = sum(results)
-                    logger.info(
-                        f"Dropped {deleted_count} cache entries for modes: {modes}"
-                    )
-                else:
-                    logger.warning(f"No cache entries found for modes: {modes}")
-
-            return True
-        except Exception as e:
-            logger.error(f"Error dropping cache by modes in Redis: {e}")
-            return False
-
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all keys under the current namespace.
 

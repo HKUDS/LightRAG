@@ -331,21 +331,6 @@ class BaseKVStorage(StorageNameSpace, ABC):
             None
         """
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Delete specific records from storage by cache mode
-
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
-
-        Args:
-            modes (list[str]): List of cache modes to be dropped from storage
-
-        Returns:
-             True: if the cache drop successfully
-             False: if the cache drop failed, or the cache mode is not supported
-        """
-
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
@@ -760,10 +745,6 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             Dictionary mapping status names to counts
         """
-
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Drop cache is not supported for Doc Status storage"""
-        return False
 
 
 class StoragesStatus(str, Enum):
