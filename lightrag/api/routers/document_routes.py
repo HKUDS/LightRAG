@@ -258,19 +258,12 @@ class ClearDocumentsResponse(BaseModel):
 class ClearCacheRequest(BaseModel):
     """Request model for clearing cache
 
-    Attributes:
-        modes: Optional list of cache modes to clear
+    This model is kept for API compatibility but no longer accepts any parameters.
+    All cache will be cleared regardless of the request content.
     """
 
-    modes: Optional[
-        List[Literal["default", "naive", "local", "global", "hybrid", "mix"]]
-    ] = Field(
-        default=None,
-        description="Modes of cache to clear. If None, clears all cache.",
-    )
-
     class Config:
-        json_schema_extra = {"example": {"modes": ["default", "naive"]}}
+        json_schema_extra = {"example": {}}
 
 
 class ClearCacheResponse(BaseModel):
@@ -1820,47 +1813,28 @@ def create_document_routes(
     )
     async def clear_cache(request: ClearCacheRequest):
         """
-        Clear cache data from the LLM response cache storage.
+        Clear all cache data from the LLM response cache storage.
 
-        This endpoint allows clearing specific modes of cache or all cache if no modes are specified.
-        Valid modes include: "default", "naive", "local", "global", "hybrid", "mix".
-        - "default" represents extraction cache.
-        - Other modes correspond to different query modes.
+        This endpoint clears all cached LLM responses regardless of mode.
+        The request body is accepted for API compatibility but is ignored.
 
         Args:
-            request (ClearCacheRequest): The request body containing optional modes to clear.
+            request (ClearCacheRequest): The request body (ignored for compatibility).
 
         Returns:
             ClearCacheResponse: A response object containing the status and message.
 
         Raises:
-            HTTPException: If an error occurs during cache clearing (400 for invalid modes, 500 for other errors).
+            HTTPException: If an error occurs during cache clearing (500).
         """
         try:
-            # Validate modes if provided
-            valid_modes = ["default", "naive", "local", "global", "hybrid", "mix"]
-            if request.modes and not all(mode in valid_modes for mode in request.modes):
-                invalid_modes = [
-                    mode for mode in request.modes if mode not in valid_modes
-                ]
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid mode(s): {invalid_modes}. Valid modes are: {valid_modes}",
-                )
-
-            # Call the aclear_cache method
-            await rag.aclear_cache(request.modes)
+            # Call the aclear_cache method (no modes parameter)
+            await rag.aclear_cache()
 
             # Prepare success message
-            if request.modes:
-                message = f"Successfully cleared cache for modes: {request.modes}"
-            else:
-                message = "Successfully cleared all cache"
+            message = "Successfully cleared all cache"
 
             return ClearCacheResponse(status="success", message=message)
-        except HTTPException:
-            # Re-raise HTTP exceptions
-            raise
         except Exception as e:
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())

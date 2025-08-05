@@ -586,11 +586,11 @@ export const clearDocuments = async (): Promise<DocActionResponse> => {
   return response.data
 }
 
-export const clearCache = async (modes?: string[]): Promise<{
+export const clearCache = async (): Promise<{
   status: 'success' | 'fail'
   message: string
 }> => {
-  const response = await axiosInstance.post('/documents/clear_cache', { modes })
+  const response = await axiosInstance.post('/documents/clear_cache', {})
   return response.data
 }
 
