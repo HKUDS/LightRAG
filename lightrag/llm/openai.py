@@ -34,6 +34,7 @@ from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 
 import numpy as np
+import base64
 from typing import Any, Union
 
 from dotenv import load_dotenv
@@ -472,6 +473,11 @@ async def openai_embed(
 
     async with openai_async_client:
         response = await openai_async_client.embeddings.create(
-            model=model, input=texts, encoding_format="float"
+            model=model, input=texts, encoding_format="base64"
         )
-        return np.array([dp.embedding for dp in response.data])
+        return np.array(
+            [
+                np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
+                for dp in response.data
+            ]
+        )

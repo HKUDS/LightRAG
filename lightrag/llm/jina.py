@@ -8,6 +8,7 @@ if not pm.is_installed("tenacity"):
     pm.install("tenacity")
 
 import numpy as np
+import base64
 import aiohttp
 from tenacity import (
     retry,
@@ -23,12 +24,34 @@ async def fetch_data(url, headers, data):
         async with session.post(url, headers=headers, json=data) as response:
             if response.status != 200:
                 error_text = await response.text()
-                logger.error(f"Jina API error {response.status}: {error_text}")
+
+                # Check if the error response is HTML (common for 502, 503, etc.)
+                content_type = response.headers.get("content-type", "").lower()
+                is_html_error = (
+                    error_text.strip().startswith("<!DOCTYPE html>")
+                    or "text/html" in content_type
+                )
+
+                if is_html_error:
+                    # Provide clean, user-friendly error messages for HTML error pages
+                    if response.status == 502:
+                        clean_error = "Bad Gateway (502) - Jina AI service temporarily unavailable. Please try again in a few minutes."
+                    elif response.status == 503:
+                        clean_error = "Service Unavailable (503) - Jina AI service is temporarily overloaded. Please try again later."
+                    elif response.status == 504:
+                        clean_error = "Gateway Timeout (504) - Jina AI service request timed out. Please try again."
+                    else:
+                        clean_error = f"HTTP {response.status} - Jina AI service error. Please try again later."
+                else:
+                    # Use original error text if it's not HTML
+                    clean_error = error_text
+
+                logger.error(f"Jina API error {response.status}: {clean_error}")
                 raise aiohttp.ClientResponseError(
                     request_info=response.request_info,
                     history=response.history,
                     status=response.status,
-                    message=f"Jina API error: {error_text}",
+                    message=f"Jina API error: {clean_error}",
                 )
             response_json = await response.json()
             data_list = response_json.get("data", [])
@@ -82,6 +105,7 @@ async def jina_embed(
         "model": "jina-embeddings-v4",
         "task": "text-matching",
         "dimensions": dimensions,
+        "embedding_type": "base64",
         "input": texts,
     }
 
@@ -108,7 +132,12 @@ async def jina_embed(
                 f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts"
             )
 
-        embeddings = np.array([dp["embedding"] for dp in data_list])
+        embeddings = np.array(
+            [
+                np.frombuffer(base64.b64decode(dp["embedding"]), dtype=np.float32)
+                for dp in data_list
+            ]
+        )
         logger.debug(f"Jina embeddings generated: shape {embeddings.shape}")
 
         return embeddings
