@@ -2087,6 +2087,26 @@ class LightRAG:
                     file_path="",
                 )
 
+            # Check document status and log warning for non-completed documents
+            doc_status = doc_status_data.get("status")
+            if doc_status != DocStatus.PROCESSED:
+                if doc_status == DocStatus.PENDING:
+                    warning_msg = f"WARNING: Deleting PENDING document {doc_id} ('{file_path}') - document was never processed"
+                elif doc_status == DocStatus.PROCESSING:
+                    warning_msg = f"WARNING: Deleting PROCESSING document {doc_id} ('{file_path}') - legacy processing state detected"
+                elif doc_status == DocStatus.FAILED:
+                    error_msg = doc_status_data.get("error_msg", "Unknown error")
+                    warning_msg = f"WARNING: Deleting FAILED document {doc_id} ('{file_path}') - processing failed: {error_msg}"
+                else:
+                    warning_msg = f"WARNING: Deleting document {doc_id} ('{file_path}') with unexpected status: {doc_status}"
+
+                logger.warning(warning_msg)
+
+                # Update pipeline status for monitoring
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = warning_msg
+                    pipeline_status["history_messages"].append(warning_msg)
+
             # 2. Get chunk IDs from document status
             chunk_ids = set(doc_status_data.get("chunks_list", []))
 
