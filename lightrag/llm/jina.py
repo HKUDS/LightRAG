@@ -8,6 +8,7 @@ if not pm.is_installed("tenacity"):
     pm.install("tenacity")
 
 import numpy as np
+import base64
 import aiohttp
 from tenacity import (
     retry,
@@ -82,6 +83,7 @@ async def jina_embed(
         "model": "jina-embeddings-v4",
         "task": "text-matching",
         "dimensions": dimensions,
+        "embedding_type": "base64",
         "input": texts,
     }
 
@@ -108,7 +110,12 @@ async def jina_embed(
                 f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts"
             )
 
-        embeddings = np.array([dp["embedding"] for dp in data_list])
+        embeddings = np.array(
+            [
+                np.frombuffer(base64.b64decode(dp["embedding"]), dtype=np.float32)
+                for dp in data_list
+            ]
+        )
         logger.debug(f"Jina embeddings generated: shape {embeddings.shape}")
 
         return embeddings
