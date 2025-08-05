@@ -1727,7 +1727,20 @@ async def kg_query(
         use_model_func = partial(use_model_func, _priority=5)
 
     # Handle cache
-    args_hash = compute_args_hash(query_param.mode, query)
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+    )
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
@@ -1826,7 +1839,20 @@ async def kg_query(
         )
 
     if hashing_kv.global_config.get("enable_llm_cache"):
-        # Save to cache
+        # Save to cache with query parameters
+        queryparam_dict = {
+            "mode": query_param.mode,
+            "response_type": query_param.response_type,
+            "top_k": query_param.top_k,
+            "chunk_top_k": query_param.chunk_top_k,
+            "max_entity_tokens": query_param.max_entity_tokens,
+            "max_relation_tokens": query_param.max_relation_tokens,
+            "max_total_tokens": query_param.max_total_tokens,
+            "hl_keywords": query_param.hl_keywords or [],
+            "ll_keywords": query_param.ll_keywords or [],
+            "user_prompt": query_param.user_prompt or "",
+            "enable_rerank": query_param.enable_rerank,
+        }
         await save_to_cache(
             hashing_kv,
             CacheData(
@@ -1835,6 +1861,7 @@ async def kg_query(
                 prompt=query,
                 mode=query_param.mode,
                 cache_type="query",
+                queryparam=queryparam_dict,
             ),
         )
 
@@ -1886,7 +1913,20 @@ async def extract_keywords_only(
     """
 
     # 1. Handle cache if needed - add cache type for keywords
-    args_hash = compute_args_hash(param.mode, text)
+    args_hash = compute_args_hash(
+        param.mode,
+        text,
+        param.response_type,
+        param.top_k,
+        param.chunk_top_k,
+        param.max_entity_tokens,
+        param.max_relation_tokens,
+        param.max_total_tokens,
+        param.hl_keywords or [],
+        param.ll_keywords or [],
+        param.user_prompt or "",
+        param.enable_rerank,
+    )
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
     )
@@ -1963,6 +2003,20 @@ async def extract_keywords_only(
             "low_level_keywords": ll_keywords,
         }
         if hashing_kv.global_config.get("enable_llm_cache"):
+            # Save to cache with query parameters
+            queryparam_dict = {
+                "mode": param.mode,
+                "response_type": param.response_type,
+                "top_k": param.top_k,
+                "chunk_top_k": param.chunk_top_k,
+                "max_entity_tokens": param.max_entity_tokens,
+                "max_relation_tokens": param.max_relation_tokens,
+                "max_total_tokens": param.max_total_tokens,
+                "hl_keywords": param.hl_keywords or [],
+                "ll_keywords": param.ll_keywords or [],
+                "user_prompt": param.user_prompt or "",
+                "enable_rerank": param.enable_rerank,
+            }
             await save_to_cache(
                 hashing_kv,
                 CacheData(
@@ -1971,6 +2025,7 @@ async def extract_keywords_only(
                     prompt=text,
                     mode=param.mode,
                     cache_type="keywords",
+                    queryparam=queryparam_dict,
                 ),
             )
 
@@ -2945,7 +3000,20 @@ async def naive_query(
         use_model_func = partial(use_model_func, _priority=5)
 
     # Handle cache
-    args_hash = compute_args_hash(query_param.mode, query)
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+    )
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
@@ -3092,7 +3160,20 @@ async def naive_query(
         )
 
     if hashing_kv.global_config.get("enable_llm_cache"):
-        # Save to cache
+        # Save to cache with query parameters
+        queryparam_dict = {
+            "mode": query_param.mode,
+            "response_type": query_param.response_type,
+            "top_k": query_param.top_k,
+            "chunk_top_k": query_param.chunk_top_k,
+            "max_entity_tokens": query_param.max_entity_tokens,
+            "max_relation_tokens": query_param.max_relation_tokens,
+            "max_total_tokens": query_param.max_total_tokens,
+            "hl_keywords": query_param.hl_keywords or [],
+            "ll_keywords": query_param.ll_keywords or [],
+            "user_prompt": query_param.user_prompt or "",
+            "enable_rerank": query_param.enable_rerank,
+        }
         await save_to_cache(
             hashing_kv,
             CacheData(
@@ -3101,6 +3182,7 @@ async def naive_query(
                 prompt=query,
                 mode=query_param.mode,
                 cache_type="query",
+                queryparam=queryparam_dict,
             ),
         )
 

@@ -225,14 +225,14 @@ class PostgreSQLDB:
             pass
 
     async def _migrate_llm_cache_add_columns(self):
-        """Add chunk_id and cache_type columns to LIGHTRAG_LLM_CACHE table if they don't exist"""
+        """Add chunk_id, cache_type, and queryparam columns to LIGHTRAG_LLM_CACHE table if they don't exist"""
         try:
-            # Check if both columns exist
+            # Check if all columns exist
             check_columns_sql = """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_name = 'lightrag_llm_cache'
-            AND column_name IN ('chunk_id', 'cache_type')
+            AND column_name IN ('chunk_id', 'cache_type', 'queryparam')
             """
 
             existing_columns = await self.query(check_columns_sql, multirows=True)
@@ -287,6 +287,22 @@ class PostgreSQLDB:
             else:
                 logger.info(
                     "cache_type column already exists in LIGHTRAG_LLM_CACHE table"
+                )
+
+            # Add missing queryparam column
+            if "queryparam" not in existing_column_names:
+                logger.info("Adding queryparam column to LIGHTRAG_LLM_CACHE table")
+                add_queryparam_sql = """
+                ALTER TABLE LIGHTRAG_LLM_CACHE
+                ADD COLUMN queryparam JSONB NULL
+                """
+                await self.execute(add_queryparam_sql)
+                logger.info(
+                    "Successfully added queryparam column to LIGHTRAG_LLM_CACHE table"
+                )
+            else:
+                logger.info(
+                    "queryparam column already exists in LIGHTRAG_LLM_CACHE table"
                 )
 
         except Exception as e:
@@ -1379,6 +1395,13 @@ class PGKVStorage(BaseKVStorage):
         ):
             create_time = response.get("create_time", 0)
             update_time = response.get("update_time", 0)
+            # Parse queryparam JSON string back to dict
+            queryparam = response.get("queryparam")
+            if isinstance(queryparam, str):
+                try:
+                    queryparam = json.loads(queryparam)
+                except json.JSONDecodeError:
+                    queryparam = None
             # Map field names and add cache_type for compatibility
             response = {
                 **response,
@@ -1387,6 +1410,7 @@ class PGKVStorage(BaseKVStorage):
                 "original_prompt": response.get("original_prompt", ""),
                 "chunk_id": response.get("chunk_id"),
                 "mode": response.get("mode", "default"),
+                "queryparam": queryparam,
                 "create_time": create_time,
                 "update_time": create_time if update_time == 0 else update_time,
             }
@@ -1455,6 +1479,13 @@ class PGKVStorage(BaseKVStorage):
             for row in results:
                 create_time = row.get("create_time", 0)
                 update_time = row.get("update_time", 0)
+                # Parse queryparam JSON string back to dict
+                queryparam = row.get("queryparam")
+                if isinstance(queryparam, str):
+                    try:
+                        queryparam = json.loads(queryparam)
+                    except json.JSONDecodeError:
+                        queryparam = None
                 # Map field names and add cache_type for compatibility
                 processed_row = {
                     **row,
@@ -1463,6 +1494,7 @@ class PGKVStorage(BaseKVStorage):
                     "original_prompt": row.get("original_prompt", ""),
                     "chunk_id": row.get("chunk_id"),
                     "mode": row.get("mode", "default"),
+                    "queryparam": queryparam,
                     "create_time": create_time,
                     "update_time": create_time if update_time == 0 else update_time,
                 }
@@ -1570,6 +1602,9 @@ class PGKVStorage(BaseKVStorage):
                     "cache_type": v.get(
                         "cache_type", "extract"
                     ),  # Get cache_type from data
+                    "queryparam": json.dumps(v.get("queryparam"))
+                    if v.get("queryparam")
+                    else None,
                 }
 
                 await self.db.execute(upsert_sql, _data)
@@ -4054,6 +4089,7 @@ TABLES = {
                     return_value TEXT,
                     chunk_id VARCHAR(255) NULL,
                     cache_type VARCHAR(32),
+                    queryparam JSONB NULL,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
@@ -4114,7 +4150,7 @@ SQL_TEMPLATES = {
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
-    "get_by_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type,
+    "get_by_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type, queryparam,
                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
@@ -4132,7 +4168,7 @@ SQL_TEMPLATES = {
                                   EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
-    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type,
+    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type, queryparam,
                                  EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id IN ({ids})
@@ -4163,14 +4199,15 @@ SQL_TEMPLATES = {
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = $2, update_time = CURRENT_TIMESTAMP
                        """,
-    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode,chunk_id,cache_type)
-                                      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode,chunk_id,cache_type,queryparam)
+                                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                                       ON CONFLICT (workspace,mode,id) DO UPDATE
                                       SET original_prompt = EXCLUDED.original_prompt,
                                       return_value=EXCLUDED.return_value,
                                       mode=EXCLUDED.mode,
                                       chunk_id=EXCLUDED.chunk_id,
                                       cache_type=EXCLUDED.cache_type,
+                                      queryparam=EXCLUDED.queryparam,
                                       update_time = CURRENT_TIMESTAMP
                                      """,
     "upsert_text_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,

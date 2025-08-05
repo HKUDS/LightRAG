@@ -793,6 +793,7 @@ class CacheData:
     mode: str = "default"
     cache_type: str = "query"
     chunk_id: str | None = None
+    queryparam: dict | None = None
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
@@ -830,6 +831,9 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         "cache_type": cache_data.cache_type,
         "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
         "original_prompt": cache_data.prompt,
+        "queryparam": cache_data.queryparam
+        if cache_data.queryparam is not None
+        else None,
     }
 
     logger.info(f" == LLM cache == saving: {flattened_key}")
