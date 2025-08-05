@@ -5,6 +5,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "PGKVStorage",
             "MongoKVStorage",
+            "ESKVStorage",
             # "TiDBKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
@@ -30,6 +31,7 @@ STORAGE_IMPLEMENTATIONS = {
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
+            "ESVectorDBStorage",
             # "ChromaVectorDBStorage",
             # "TiDBVectorDBStorage",
         ],
@@ -41,6 +43,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            "ESDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -52,6 +55,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "JsonKVStorage": [],
     "MongoKVStorage": [],
     "RedisKVStorage": ["REDIS_URI"],
+    "ESKVStorage": ["ES_HOST"],
     # "TiDBKVStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     # Graph Storage Implementations
@@ -85,6 +89,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "RedisDocStatusStorage": ["REDIS_URI"],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "MongoDocStatusStorage": [],
+    "ESDocStatusStorage": ["ES_HOST"],
 }
 
 # Storage implementation module mapping
@@ -114,6 +119,9 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "ESKVStorage": ".kg.es_impl",
+    "ESDocStatusStorage": ".kg.es_impl",
+    "ESVectorDBStorage": ".kg.es_impl",
 }
 
 
