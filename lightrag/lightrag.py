@@ -1915,58 +1915,35 @@ class LightRAG:
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
 
-    async def aclear_cache(self, modes: list[str] | None = None) -> None:
-        """Clear cache data from the LLM response cache storage.
+    async def aclear_cache(self) -> None:
+        """Clear all cache data from the LLM response cache storage.
 
-        Args:
-            modes (list[str] | None): Modes of cache to clear. Options: ["default", "naive", "local", "global", "hybrid", "mix"].
-                             "default" represents extraction cache.
-                             If None, clears all cache.
+        This method clears all cached LLM responses regardless of mode.
 
         Example:
             # Clear all cache
             await rag.aclear_cache()
-
-            # Clear local mode cache
-            await rag.aclear_cache(modes=["local"])
-
-            # Clear extraction cache
-            await rag.aclear_cache(modes=["default"])
         """
         if not self.llm_response_cache:
             logger.warning("No cache storage configured")
             return
 
-        valid_modes = ["default", "naive", "local", "global", "hybrid", "mix"]
-
-        # Validate input
-        if modes and not all(mode in valid_modes for mode in modes):
-            raise ValueError(f"Invalid mode. Valid modes are: {valid_modes}")
-
         try:
-            # Reset the cache storage for specified mode
-            if modes:
-                success = await self.llm_response_cache.drop_cache_by_modes(modes)
-                if success:
-                    logger.info(f"Cleared cache for modes: {modes}")
-                else:
-                    logger.warning(f"Failed to clear cache for modes: {modes}")
+            # Clear all cache using drop method
+            success = await self.llm_response_cache.drop()
+            if success:
+                logger.info("Cleared all cache")
             else:
-                # Clear all modes
-                success = await self.llm_response_cache.drop_cache_by_modes(valid_modes)
-                if success:
-                    logger.info("Cleared all cache")
-                else:
-                    logger.warning("Failed to clear all cache")
+                logger.warning("Failed to clear all cache")
 
             await self.llm_response_cache.index_done_callback()
 
         except Exception as e:
             logger.error(f"Error while clearing cache: {e}")
 
-    def clear_cache(self, modes: list[str] | None = None) -> None:
+    def clear_cache(self) -> None:
         """Synchronous version of aclear_cache."""
-        return always_get_an_event_loop().run_until_complete(self.aclear_cache(modes))
+        return always_get_an_event_loop().run_until_complete(self.aclear_cache())
 
     async def get_docs_by_status(
         self, status: DocStatus

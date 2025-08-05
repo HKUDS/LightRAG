@@ -409,7 +409,6 @@ PGGraphStorage       PostgreSQL with AGE plugin
 NanoVectorDBStorage         NanoVector(默认)
 PGVectorStorage             Postgres
 MilvusVectorDBStorge        Milvus
-ChromaVectorDBStorage       Chroma
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB

@@ -756,40 +756,6 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
-def quantize_embedding(embedding: np.ndarray | list[float], bits: int = 8) -> tuple:
-    """Quantize embedding to specified bits"""
-    # Convert list to numpy array if needed
-    if isinstance(embedding, list):
-        embedding = np.array(embedding)
-
-    # Calculate min/max values for reconstruction
-    min_val = embedding.min()
-    max_val = embedding.max()
-
-    if min_val == max_val:
-        # handle constant vector
-        quantized = np.zeros_like(embedding, dtype=np.uint8)
-        return quantized, min_val, max_val
-
-    # Quantize to 0-255 range
-    scale = (2**bits - 1) / (max_val - min_val)
-    quantized = np.round((embedding - min_val) * scale).astype(np.uint8)
-
-    return quantized, min_val, max_val
-
-
-def dequantize_embedding(
-    quantized: np.ndarray, min_val: float, max_val: float, bits=8
-) -> np.ndarray:
-    """Restore quantized embedding"""
-    if min_val == max_val:
-        # handle constant vector
-        return np.full_like(quantized, min_val, dtype=np.float32)
-
-    scale = (max_val - min_val) / (2**bits - 1)
-    return (quantized * scale + min_val).astype(np.float32)
-
-
 async def handle_cache(
     hashing_kv,
     args_hash,
@@ -824,12 +790,10 @@ class CacheData:
     args_hash: str
     content: str
     prompt: str
-    quantized: np.ndarray | None = None
-    min_val: float | None = None
-    max_val: float | None = None
     mode: str = "default"
     cache_type: str = "query"
     chunk_id: str | None = None
+    queryparam: dict | None = None
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
@@ -866,15 +830,10 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
         "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
-        "embedding": cache_data.quantized.tobytes().hex()
-        if cache_data.quantized is not None
-        else None,
-        "embedding_shape": cache_data.quantized.shape
-        if cache_data.quantized is not None
-        else None,
-        "embedding_min": cache_data.min_val,
-        "embedding_max": cache_data.max_val,
         "original_prompt": cache_data.prompt,
+        "queryparam": cache_data.queryparam
+        if cache_data.queryparam is not None
+        else None,
     }
 
     logger.info(f" == LLM cache == saving: {flattened_key}")

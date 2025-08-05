@@ -747,7 +747,55 @@ rag.insert(documents, file_paths=file_paths)
 
 ### Storage
 
-LightRAG uses four types of storage, each of which has multiple implementation options. When initializing LightRAG, the implementation schemes for these four types of storage can be set through parameters. For details, please refer to the previous LightRAG initialization parameters.
+LightRAG uses 4 types of storage for different purposes:
+
+* KV_STORAGE: llm response cache, text chunks, document information
+* VECTOR_STORAGE: entities vectors, relation vectors, chunks vectors
+* GRAPH_STORAGE: entity relation graph
+* DOC_STATUS_STORAGE: document indexing status
+
+Each storage type has several implementations:
+
+* KV_STORAGE supported implementations:
+
+```
+JsonKVStorage    JsonFile (default)
+PGKVStorage      Postgres
+RedisKVStorage   Redis
+MongoKVStorage   MongoDB
+```
+
+* GRAPH_STORAGE supported implementations:
+
+```
+NetworkXStorage      NetworkX (default)
+Neo4JStorage         Neo4J
+PGGraphStorage       PostgreSQL with AGE plugin
+MemgraphStorage.     Memgraph
+```
+
+> Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
+
+* VECTOR_STORAGE supported implementations:
+
+```
+NanoVectorDBStorage         NanoVector (default)
+PGVectorStorage             Postgres
+MilvusVectorDBStorage       Milvus
+FaissVectorDBStorage        Faiss
+QdrantVectorDBStorage       Qdrant
+MongoVectorDBStorage        MongoDB
+```
+
+* DOC_STATUS_STORAGE: supported implementations:
+
+```
+JsonDocStatusStorage        JsonFile (default)
+PGDocStatusStorage          Postgres
+MongoDocStatusStorage       MongoDB
+```
+
+Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
 
 <details>
 <summary> <b>Using Neo4J for Storage</b> </summary>
