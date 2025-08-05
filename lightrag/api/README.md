@@ -412,7 +412,6 @@ MemgraphStorage.     Memgraph
 NanoVectorDBStorage         NanoVector (default)
 PGVectorStorage             Postgres
 MilvusVectorDBStorage       Milvus
-ChromaVectorDBStorage       Chroma
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB

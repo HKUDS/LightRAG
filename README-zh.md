@@ -737,7 +737,54 @@ rag.insert(documents, file_paths=file_paths)
 
 ### 存储
 
-LightRAG使用到4种类型的存储，每一种存储都有多种实现方案。在初始化LightRAG的时候可以通过参数设定这四类存储的实现方案。详情请参看前面的LightRAG初始化参数。
+LightRAG 使用 4 种类型的存储用于不同目的：
+
+* KV_STORAGE：llm 响应缓存、文本块、文档信息
+* VECTOR_STORAGE：实体向量、关系向量、块向量
+* GRAPH_STORAGE：实体关系图
+* DOC_STATUS_STORAGE：文档索引状态
+
+每种存储类型都有几种实现：
+
+* KV_STORAGE 支持的实现名称
+
+```
+JsonKVStorage    JsonFile(默认)
+PGKVStorage      Postgres
+RedisKVStorage   Redis
+MongoKVStorage   MogonDB
+```
+
+* GRAPH_STORAGE 支持的实现名称
+
+```
+NetworkXStorage      NetworkX(默认)
+Neo4JStorage         Neo4J
+PGGraphStorage       PostgreSQL with AGE plugin
+```
+
+> 在测试中Neo4j图形数据库相比PostgreSQL AGE有更好的性能表现。
+
+* VECTOR_STORAGE 支持的实现名称
+
+```
+NanoVectorDBStorage         NanoVector(默认)
+PGVectorStorage             Postgres
+MilvusVectorDBStorge        Milvus
+FaissVectorDBStorage        Faiss
+QdrantVectorDBStorage       Qdrant
+MongoVectorDBStorage        MongoDB
+```
+
+* DOC_STATUS_STORAGE 支持的实现名称
+
+```
+JsonDocStatusStorage        JsonFile(默认)
+PGDocStatusStorage          Postgres
+MongoDocStatusStorage       MongoDB
+```
+
+每一种存储类型的链接配置范例可以在 `env.example` 文件中找到。链接字符串中的数据库实例是需要你预先在数据库服务器上创建好的，LightRAG 仅负责在数据库实例中创建数据表，不负责创建数据库实例。如果使用 Redis 作为存储，记得给 Redis 配置自动持久化数据规则，否则 Redis 服务重启后数据会丢失。如果使用PostgreSQL数据库，推荐使用16.6版本或以上。
 
 <details>
 <summary> <b>使用Neo4J进行存储</b> </summary>
