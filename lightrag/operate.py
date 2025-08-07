@@ -3105,7 +3105,7 @@ async def naive_query(
     text_units_str = json.dumps(text_units_context, ensure_ascii=False)
     if query_param.only_need_context:
         return f"""
----Document Chunks---
+---Document Chunks(DC)---
 
 ```json
 {text_units_str}
