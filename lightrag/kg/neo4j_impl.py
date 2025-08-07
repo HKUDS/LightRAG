@@ -98,6 +98,22 @@ class Neo4JStorage(BaseGraphStorage):
                 config.get("neo4j", "max_transaction_retry_time", fallback=30.0),
             ),
         )
+        MAX_CONNECTION_LIFETIME = float(
+            os.environ.get(
+                "NEO4J_MAX_CONNECTION_LIFETIME",
+                config.get("neo4j", "max_connection_lifetime", fallback=300.0),
+            ),
+        )
+        LIVENESS_CHECK_TIMEOUT = float(
+            os.environ.get(
+                "NEO4J_LIVENESS_CHECK_TIMEOUT",
+                config.get("neo4j", "liveness_check_timeout", fallback=30.0),
+            ),
+        )
+        KEEP_ALIVE = os.environ.get(
+            "NEO4J_KEEP_ALIVE",
+            config.get("neo4j", "keep_alive", fallback="true"),
+        ).lower() in ("true", "1", "yes", "on")
         DATABASE = os.environ.get(
             "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
         )
@@ -109,6 +125,9 @@ class Neo4JStorage(BaseGraphStorage):
             connection_timeout=CONNECTION_TIMEOUT,
             connection_acquisition_timeout=CONNECTION_ACQUISITION_TIMEOUT,
             max_transaction_retry_time=MAX_TRANSACTION_RETRY_TIME,
+            max_connection_lifetime=MAX_CONNECTION_LIFETIME,
+            liveness_check_timeout=LIVENESS_CHECK_TIMEOUT,
+            keep_alive=KEEP_ALIVE,
         )
 
         # Try to connect to the database and create it if it doesn't exist
@@ -801,6 +820,9 @@ class Neo4JStorage(BaseGraphStorage):
                 neo4jExceptions.TransientError,
                 neo4jExceptions.WriteServiceUnavailable,
                 neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
             )
         ),
     )
@@ -846,6 +868,9 @@ class Neo4JStorage(BaseGraphStorage):
                 neo4jExceptions.TransientError,
                 neo4jExceptions.WriteServiceUnavailable,
                 neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
             )
         ),
     )
@@ -1313,6 +1338,9 @@ class Neo4JStorage(BaseGraphStorage):
                 neo4jExceptions.TransientError,
                 neo4jExceptions.WriteServiceUnavailable,
                 neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
             )
         ),
     )
@@ -1349,6 +1377,9 @@ class Neo4JStorage(BaseGraphStorage):
                 neo4jExceptions.TransientError,
                 neo4jExceptions.WriteServiceUnavailable,
                 neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
             )
         ),
     )
@@ -1370,6 +1401,9 @@ class Neo4JStorage(BaseGraphStorage):
                 neo4jExceptions.TransientError,
                 neo4jExceptions.WriteServiceUnavailable,
                 neo4jExceptions.ClientError,
+                neo4jExceptions.SessionExpired,
+                ConnectionResetError,
+                OSError,
             )
         ),
     )
