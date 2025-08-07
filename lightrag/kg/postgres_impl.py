@@ -68,6 +68,9 @@ class PostgreSQLDB:
 
         # Vector configuration
         self.vector_index_type = config.get("vector_index_type")
+        self.hnsw_m = config.get("hnsw_m")
+        self.hnsw_ef = config.get("hnsw_ef")
+        self.ivfflat_lists = config.get("ivfflat_lists")
 
         if self.user is None or self.password is None or self.database is None:
             raise ValueError("Missing database user, password, or database")
@@ -1155,7 +1158,7 @@ class PostgreSQLDB:
                     create_vector_index_sql = f"""
                             CREATE INDEX {vector_index_name}
                             ON {k} USING hnsw (content_vector vector_cosine_ops)
-                            WITH (m = {os.getenv("POSTGRES_HNSW_M", 16)}, ef_construction = {os.getenv("POSTGRES_HNSW_EF", 200)})
+                            WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
                         """
                     logger.info(f"Creating hnsw index {vector_index_name} on table {k}")
                     await self.execute(create_vector_index_sql)
@@ -1195,7 +1198,7 @@ class PostgreSQLDB:
                     create_sql = f"""
                             CREATE INDEX {index_name}
                             ON {k} USING ivfflat (content_vector vector_cosine_ops)
-                            WITH (lists = {os.getenv("POSTGRES_IVFFLAT_LISTS", 100)})
+                            WITH (lists = {self.ivfflat_lists})
                         """
                     logger.info(f"Creating ivfflat index {index_name} on table {k}")
                     await self.execute(create_sql)
@@ -1208,7 +1211,6 @@ class PostgreSQLDB:
                     )
             except Exception as e:
                 logger.error(f"Failed to create ivfflat index on {k}: {e}")
-
 
     async def query(
         self,
@@ -1350,7 +1352,28 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
-            "vector_index_type": os.environ.get("POSTGRES_VECTOR_INDEX_TYPE", "HNSW"),
+            "vector_index_type": os.environ.get(
+                "POSTGRES_VECTOR_INDEX_TYPE",
+                config.get("postgres", "vector_index_type", fallback="HNSW"),
+            ),
+            "hnsw_m": int(
+                os.environ.get(
+                    "POSTGRES_HNSW_M",
+                    config.get("postgres", "hnsw_m", fallback="16"),
+                )
+            ),
+            "hnsw_ef": int(
+                os.environ.get(
+                    "POSTGRES_HNSW_EF",
+                    config.get("postgres", "hnsw_ef", fallback="64"),
+                )
+            ),
+            "ivfflat_lists": int(
+                os.environ.get(
+                    "POSTGRES_IVFFLAT_LISTS",
+                    config.get("postgres", "ivfflat_lists", fallback="100"),
+                )
+            ),
         }
 
     @classmethod

@@ -26,8 +26,12 @@ port = 5432
 user = your_username
 password = your_password
 database = your_database
-workspace = default  # 可选,默认为default
+# workspace = default
 max_connections = 12
+vector_index_type = HNSW        # HNSW or IVFFLAT
+hnsw_m = 16
+hnsw_ef = 64
+ivfflat_lists = 100
 
 [memgraph]
 uri = bolt://localhost:7687
