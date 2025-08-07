@@ -66,7 +66,7 @@ class PostgreSQLDB:
         self.ssl_root_cert = config.get("ssl_root_cert")
         self.ssl_crl = config.get("ssl_crl")
 
-        #Vector configuration
+        # Vector configuration
         self.vector_index_type = config.get("vector_index_type")
 
         if self.user is None or self.password is None or self.database is None:
@@ -904,18 +904,27 @@ class PostgreSQLDB:
 
         # Create vector indexs
         if self.vector_index_type:
+            logger.info(
+                f"PostgreSQL, Create vector indexs, type: {self.vector_index_type}"
+            )
             try:
-                if self.vector_index_type == 'HNSW':
-                    await self._create_hnsw_vector_indexs()
-                elif self.vector_index_type == 'IVFFLAT':
-                    await self._create_ivfflat_vector_indexs()
-                elif self.vector_index_type == 'FLAT':
-                    await self._create_flat_vector_indexes()
+                if self.vector_index_type == "HNSW":
+                    await self._create_hnsw_vector_indexes()
+                elif self.vector_index_type == "IVFFLAT":
+                    await self._create_ivfflat_vector_indexes()
+                elif self.vector_index_type == "FLAT":
+                    logger.warning(
+                        "FLAT index type is not supported by pgvector. Skipping vector index creation. "
+                        "Please use 'HNSW' or 'IVFFLAT' instead."
+                    )
                 else:
-                    logger.warning(f"Doesn't support this vector index type: {self.vector_index_type}. Create indexs failed!")
+                    logger.warning(
+                        "Doesn't support this vector index type: {self.vector_index_type}. "
+                        "Supported types: HNSW, IVFFLAT"
+                    )
             except Exception as e:
                 logger.error(
-                    f"PostgreSQL, Failed to create vector index on table {k}, type: {self.vector_index_type}, Got: {e}"
+                    f"PostgreSQL, Failed to create vector index, type: {self.vector_index_type}, Got: {e}"
                 )
         # After all tables are created, attempt to migrate timestamp fields
         try:
@@ -1119,8 +1128,14 @@ class PostgreSQLDB:
             except Exception as e:
                 logger.warning(f"Failed to create index {index['name']}: {e}")
 
-    async def _create_hnsw_vector_indexs(self):
-        vdb_tables = ["LIGHTRAG_VDB_CHUNKS", "LIGHTRAG_VDB_ENTITY", "LIGHTRAG_VDB_RELATION"]
+    async def _create_hnsw_vector_indexes(self):
+        vdb_tables = [
+            "LIGHTRAG_VDB_CHUNKS",
+            "LIGHTRAG_VDB_ENTITY",
+            "LIGHTRAG_VDB_RELATION",
+        ]
+
+        embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
 
         for k in vdb_tables:
             vector_index_name = f"idx_{k.lower()}_hnsw_cosine"
@@ -1132,6 +1147,11 @@ class PostgreSQLDB:
             try:
                 vector_index_exists = await self.query(check_vector_index_sql)
                 if not vector_index_exists:
+                    # Only set vector dimension when index doesn't exist
+                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                    await self.execute(alter_sql)
+                    logger.debug(f"Ensured vector dimension for {k}")
+
                     create_vector_index_sql = f"""
                             CREATE INDEX {vector_index_name}
                             ON {k} USING hnsw (content_vector vector_cosine_ops)
@@ -1139,14 +1159,24 @@ class PostgreSQLDB:
                         """
                     logger.info(f"Creating hnsw index {vector_index_name} on table {k}")
                     await self.execute(create_vector_index_sql)
-                    logger.info(f"Successfully created vector index {vector_index_name} on table {k}")
+                    logger.info(
+                        f"Successfully created vector index {vector_index_name} on table {k}"
+                    )
                 else:
-                    logger.info(f"HNSW vector index {vector_index_name} already exists on table {k}")
+                    logger.info(
+                        f"HNSW vector index {vector_index_name} already exists on table {k}"
+                    )
             except Exception as e:
                 logger.error(f"Failed to create vector index on table {k}, Got: {e}")
 
-    async def _create_ivfflat_vector_indexs(self):
-        vdb_tables = ["LIGHTRAG_VDB_CHUNKS", "LIGHTRAG_VDB_ENTITY", "LIGHTRAG_VDB_RELATION"]
+    async def _create_ivfflat_vector_indexes(self):
+        vdb_tables = [
+            "LIGHTRAG_VDB_CHUNKS",
+            "LIGHTRAG_VDB_ENTITY",
+            "LIGHTRAG_VDB_RELATION",
+        ]
+
+        embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
 
         for k in vdb_tables:
             index_name = f"idx_{k.lower()}_ivfflat_cosine"
@@ -1157,6 +1187,11 @@ class PostgreSQLDB:
             try:
                 exists = await self.query(check_index_sql)
                 if not exists:
+                    # Only set vector dimension when index doesn't exist
+                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                    await self.execute(alter_sql)
+                    logger.debug(f"Ensured vector dimension for {k}")
+
                     create_sql = f"""
                             CREATE INDEX {index_name}
                             ON {k} USING ivfflat (content_vector vector_cosine_ops)
@@ -1164,35 +1199,16 @@ class PostgreSQLDB:
                         """
                     logger.info(f"Creating ivfflat index {index_name} on table {k}")
                     await self.execute(create_sql)
-                    logger.info(f"Successfully created ivfflat index {index_name} on table {k}")
+                    logger.info(
+                        f"Successfully created ivfflat index {index_name} on table {k}"
+                    )
                 else:
-                    logger.info(f"Ivfflat vector index {index_name} already exists on table {k}")
+                    logger.info(
+                        f"Ivfflat vector index {index_name} already exists on table {k}"
+                    )
             except Exception as e:
                 logger.error(f"Failed to create ivfflat index on {k}: {e}")
 
-    async def _create_flat_vector_indexes(self):
-        vdb_tables = ["LIGHTRAG_VDB_CHUNKS", "LIGHTRAG_VDB_ENTITY", "LIGHTRAG_VDB_RELATION"]
-
-        for k in vdb_tables:
-            index_name = f"idx_{k.lower()}_flat_cosine"
-            check_index_sql = f"""
-                SELECT 1 FROM pg_indexes
-                WHERE indexname = '{index_name}' AND tablename = '{k.lower()}'
-            """
-            try:
-                exists = await self.query(check_index_sql)
-                if not exists:
-                    create_sql = f"""
-                        CREATE INDEX {index_name}
-                        ON {k} USING flat (content_vector vector_cosine_ops)
-                    """
-                    logger.info(f"Creating flat index {index_name} on table {k}")
-                    await self.execute(create_sql)
-                    logger.info(f"Successfully created flat index {index_name} on table {k}")
-                else:
-                    logger.info(f"flat index {index_name} already exists on table {k}")
-            except Exception as e:
-                logger.error(f"Failed to create flat index on {k}: {e}")
 
     async def query(
         self,
@@ -1334,10 +1350,7 @@ class ClientManager:
                 "POSTGRES_SSL_CRL",
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
-            "vector_index_type" : os.environ.get(
-                "POSTGRES_VECTOR_INDEX",
-                "FLAT"
-            )
+            "vector_index_type": os.environ.get("POSTGRES_VECTOR_INDEX_TYPE", "HNSW"),
         }
 
     @classmethod
