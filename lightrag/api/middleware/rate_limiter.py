@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -126,9 +126,15 @@ class RedisRateLimitStore:
     async def close(self):
         """Close Redis connection."""
         if self._redis:
-            await self._redis.close()
+            if hasattr(self._redis, "aclose"):
+                await self._redis.aclose()
+            else:
+                await self._redis.close()
         if self._connection_pool:
-            await self._connection_pool.disconnect()
+            if hasattr(self._connection_pool, "adisconnect"):
+                await self._connection_pool.adisconnect()
+            else:
+                await self._connection_pool.disconnect()
 
     async def check_rate_limit(
         self, key: str, limit: int, window_seconds: int
@@ -230,7 +236,7 @@ class RedisRateLimitStore:
 
             if blocked_until:
                 unblock_time = datetime.fromtimestamp(float(blocked_until))
-                if unblock_time > datetime.utcnow():
+                if unblock_time > datetime.now(timezone.utc):
                     return True, unblock_time
                 else:
                     # Block expired, remove it
@@ -246,7 +252,9 @@ class RedisRateLimitStore:
 
             if violation_count >= threshold:
                 # Block IP
-                block_until = datetime.utcnow() + timedelta(minutes=120)  # 2 hours
+                block_until = datetime.now(timezone.utc) + timedelta(
+                    minutes=120
+                )  # 2 hours
                 await self._redis.setex(
                     block_key,
                     7200,  # 2 hours in seconds
@@ -468,7 +476,7 @@ class AdvancedRateLimiter:
                     "message": "IP address is temporarily blocked due to excessive violations",
                     "unblock_time": unblock_time.isoformat() if unblock_time else None,
                     "retry_after": int(
-                        (unblock_time - datetime.utcnow()).total_seconds()
+                        (unblock_time - datetime.now(timezone.utc)).total_seconds()
                     )
                     if unblock_time
                     else 3600,

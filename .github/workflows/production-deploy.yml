@@ -122,7 +122,7 @@ jobs:
           POSTGRES_DATABASE: test_db
           REDIS_URI: redis://localhost:6379/0
         run: |
-          python test_phase1_basic.py
+          python tests/test_phase1_basic.py
 
       - name: Run Unit Tests
         env:

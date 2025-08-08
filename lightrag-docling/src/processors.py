@@ -86,7 +86,7 @@ class DoclingProcessor:
         # Include file content hash, filename, and config in cache key
         content_hash = hashlib.md5(request.file_content.encode()).hexdigest()
         config_hash = hashlib.md5(
-            json.dumps(request.config.dict(), sort_keys=True).encode()
+            json.dumps(request.config.model_dump(), sort_keys=True).encode()
         ).hexdigest()
 
         cache_key = f"{content_hash}_{request.filename}_{config_hash}"
@@ -135,7 +135,7 @@ class DoclingProcessor:
         try:
             cache_data = {
                 "timestamp": time.time(),
-                "result": result.dict(),
+                "result": result.model_dump(),
             }
             self.cache.set(cache_key, cache_data)
             logger.debug("Result cached", cache_key=cache_key)
@@ -159,7 +159,7 @@ class DoclingProcessor:
             logger.info(
                 "Processing document with docling",
                 filename=file_path.name,
-                config=config.dict(),
+                config=config.model_dump(),
             )
 
             # Convert document
@@ -209,7 +209,7 @@ class DoclingProcessor:
                 figures_extracted=0,  # TODO: Count figures if available in result
                 cache_hit=False,
                 config_hash=hashlib.md5(
-                    json.dumps(config.dict(), sort_keys=True).encode()
+                    json.dumps(config.model_dump(), sort_keys=True).encode()
                 ).hexdigest()[:8],
             )
 

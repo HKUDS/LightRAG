@@ -55,24 +55,7 @@ from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-import importlib.util
-
-# Load config module first for auth.py dependencies
-config_spec = importlib.util.spec_from_file_location(
-    "config", "/app/lightrag/api/config.py"
-)
-config_module = importlib.util.module_from_spec(config_spec)
-sys.modules["config"] = config_module  # Register in sys.modules
-config_spec.loader.exec_module(config_module)
-
-# Import auth_handler directly from the auth.py file
-auth_spec = importlib.util.spec_from_file_location("auth", "/app/lightrag/api/auth.py")
-auth_module = importlib.util.module_from_spec(auth_spec)
-sys.modules["auth"] = auth_module  # Register in sys.modules
-# Manually set up the module's environment for relative imports
-auth_module.__package__ = "lightrag.api"
-auth_spec.loader.exec_module(auth_module)
-auth_handler = auth_module.auth_handler
+from lightrag.api.auth import auth_handler  # Corrected import
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -695,10 +678,10 @@ def configure_logging():
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {
-                    "format": "%(levelname)s: %(message)s",
+                    "format": "% (levelname)s: %(message)s",
                 },
                 "detailed": {
-                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                    "format": "% (asctime)s - %(name)s - %(levelname)s - %(message)s",
                 },
             },
             "handlers": {
@@ -815,7 +798,6 @@ def main():
 
 
 # Create global app instance for gunicorn
-app = get_application()
-
 if __name__ == "__main__":
+    app = get_application()
     main()

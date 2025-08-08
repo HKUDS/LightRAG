@@ -9,13 +9,12 @@ This script tests the LightRAG's Ollama compatibility interface, including:
 All responses use the JSON Lines format, complying with the Ollama API specification.
 """
 
+import pytest
 import requests
 import json
 import argparse
 import time
-from typing import Dict, Any, Optional, List, Callable
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from typing import Dict, Any, List, Callable
 from pathlib import Path
 from enum import Enum, auto
 
@@ -74,70 +73,7 @@ class OutputControl:
         return cls._verbose
 
 
-@dataclass
-class TestResult:
-    """Test result data class"""
-
-    name: str
-    success: bool
-    duration: float
-    error: Optional[str] = None
-    timestamp: str = ""
-
-    def __post_init__(self):
-        if not self.timestamp:
-            self.timestamp = datetime.now().isoformat()
-
-
-class TestStats:
-    """Test statistics"""
-
-    def __init__(self):
-        self.results: List[TestResult] = []
-        self.start_time = datetime.now()
-
-    def add_result(self, result: TestResult):
-        self.results.append(result)
-
-    def export_results(self, path: str = "test_results.json"):
-        """Export test results to a JSON file
-        Args:
-            path: Output file path
-        """
-        results_data = {
-            "start_time": self.start_time.isoformat(),
-            "end_time": datetime.now().isoformat(),
-            "results": [asdict(r) for r in self.results],
-            "summary": {
-                "total": len(self.results),
-                "passed": sum(1 for r in self.results if r.success),
-                "failed": sum(1 for r in self.results if not r.success),
-                "total_duration": sum(r.duration for r in self.results),
-            },
-        }
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(results_data, f, ensure_ascii=False, indent=2)
-        print(f"\nTest results saved to: {path}")
-
-    def print_summary(self):
-        total = len(self.results)
-        passed = sum(1 for r in self.results if r.success)
-        failed = total - passed
-        duration = sum(r.duration for r in self.results)
-
-        print("\n=== Test Summary ===")
-        print(f"Start time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Total duration: {duration:.2f} seconds")
-        print(f"Total tests: {total}")
-        print(f"Passed: {passed}")
-        print(f"Failed: {failed}")
-
-        if failed > 0:
-            print("\nFailed tests:")
-            for result in self.results:
-                if not result.success:
-                    print(f"- {result.name}: {result.error}")
+from tests.ollama_test_helpers import OllamaTestResult, OllamaTestStats
 
 
 def make_request(
@@ -273,7 +209,7 @@ def create_generate_request_data(
 
 
 # Global test statistics
-STATS = TestStats()
+STATS = OllamaTestStats()
 
 
 def run_test(func: Callable, name: str) -> None:
@@ -286,13 +222,14 @@ def run_test(func: Callable, name: str) -> None:
     try:
         func()
         duration = time.time() - start_time
-        STATS.add_result(TestResult(name, True, duration))
+        STATS.add_result(OllamaTestResult(name, True, duration))
     except Exception as e:
         duration = time.time() - start_time
-        STATS.add_result(TestResult(name, False, duration, str(e)))
+        STATS.add_result(OllamaTestResult(name, False, duration, str(e)))
         raise
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
@@ -317,6 +254,7 @@ def test_non_stream_chat() -> None:
     )
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_stream_chat() -> None:
     """Test streaming call to /api/chat endpoint
 
@@ -377,6 +315,7 @@ def test_stream_chat() -> None:
     print()
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_query_modes() -> None:
     """Test different query mode prefixes
 
@@ -436,6 +375,7 @@ def create_error_test_data(error_type: str) -> Dict[str, Any]:
     return error_data.get(error_type, error_data["empty_messages"])
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_stream_error_handling() -> None:
     """Test error handling for streaming responses
 
@@ -482,6 +422,7 @@ def test_stream_error_handling() -> None:
     response.close()
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_error_handling() -> None:
     """Test error handling for non-streaming responses
 
@@ -529,6 +470,7 @@ def test_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_non_stream_generate() -> None:
     """Test non-streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -548,6 +490,7 @@ def test_non_stream_generate() -> None:
     print(json.dumps(response_json, ensure_ascii=False, indent=2))
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_stream_generate() -> None:
     """Test streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -588,6 +531,7 @@ def test_stream_generate() -> None:
     print()
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_generate_with_system() -> None:
     """Test generate with system prompt"""
     url = get_base_url("generate")
@@ -616,6 +560,7 @@ def test_generate_with_system() -> None:
     )
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_generate_error_handling() -> None:
     """Test error handling for generate endpoint"""
     url = get_base_url("generate")
@@ -641,6 +586,7 @@ def test_generate_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
+@pytest.mark.skip(reason="Integration test requiring a running server")
 def test_generate_concurrent() -> None:
     """Test concurrent generate requests"""
     import asyncio

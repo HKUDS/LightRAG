@@ -4,7 +4,7 @@ Basic functionality test for LightRAG Authentication Phase 1.
 Tests core components without requiring full test suite setup.
 """
 
-import asyncio
+import pytest
 import os
 import sys
 import tempfile
@@ -76,6 +76,7 @@ def test_password_manager():
     print("  ✅ Password Manager tests completed\n")
 
 
+@pytest.mark.asyncio
 async def test_rate_limiter():
     """Test advanced rate limiting."""
     print("🚦 Testing Rate Limiter...")
@@ -161,6 +162,7 @@ def test_security_headers():
     print("  ✅ Security Headers tests completed\n")
 
 
+@pytest.mark.asyncio
 async def test_audit_logger():
     """Test comprehensive audit logging."""
     print("📝 Testing Audit Logger...")
@@ -250,6 +252,7 @@ async def test_audit_logger():
     print("  ✅ Audit Logger tests completed\n")
 
 
+@pytest.mark.asyncio
 async def test_integration():
     """Test integration between components."""
     print("🔗 Testing Component Integration...")
@@ -310,25 +313,25 @@ async def test_integration():
 
 
 async def main():
-    """Run all Phase 1 tests."""
-    print("🚀 LightRAG Authentication Phase 1 - Basic Functionality Test")
+    """Run all Phase 1 basic functionality tests."""
     print("=" * 60)
+    print("🧪 LightRAG Authentication Phase 1 - Basic Tests")
+    print("=" * 60)
+    print()
 
     try:
-        # Test individual components
+        # Run non-async tests
         test_password_manager()
-        await test_rate_limiter()
         test_security_headers()
+
+        # Run async tests
+        await test_rate_limiter()
         await test_audit_logger()
         await test_integration()
 
-        print("🎉 All Phase 1 tests completed successfully!")
-        print("✅ Enhanced password security: Working")
-        print("✅ Advanced rate limiting: Working")
-        print("✅ Security headers: Working")
-        print("✅ Comprehensive audit logging: Working")
-        print("✅ Component integration: Working")
-
+        print("=" * 60)
+        print("✅ All Phase 1 basic tests completed successfully!")
+        print("=" * 60)
         return 0
 
     except Exception as e:
@@ -336,9 +339,16 @@ async def main():
         import traceback
 
         traceback.print_exc()
+        print("=" * 60)
+        print("❌ Phase 1 basic tests failed!")
+        print("=" * 60)
         return 1
 
 
 if __name__ == "__main__":
+    import asyncio
+    import sys
+
+    # Run the main async function
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

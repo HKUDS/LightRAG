@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from pydantic import BaseModel
 
-from .config import global_args
+from ..config import global_args
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -61,14 +61,14 @@ class AuthHandler:
         else:
             expire_hours = custom_expire_hours
 
-        expire = datetime.utcnow() + timedelta(hours=expire_hours)
+        expire = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
 
         # Create payload
         payload = TokenPayload(
             sub=username, exp=expire, role=role, metadata=metadata or {}
         )
 
-        return jwt.encode(payload.dict(), self.secret, algorithm=self.algorithm)
+        return jwt.encode(payload.model_dump(), self.secret, algorithm=self.algorithm)
 
     def validate_token(self, token: str) -> dict:
         """
@@ -86,9 +86,9 @@ class AuthHandler:
         try:
             payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
             expire_timestamp = payload["exp"]
-            expire_time = datetime.utcfromtimestamp(expire_timestamp)
+            expire_time = datetime.fromtimestamp(expire_timestamp, tz=timezone.utc)
 
-            if datetime.utcnow() > expire_time:
+            if datetime.now(timezone.utc) > expire_time:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
                 )
