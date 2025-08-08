@@ -48,7 +48,20 @@ class TestPasswordManager:
 
     def setup_method(self):
         """Setup test environment."""
-        self.password_manager = PasswordManager()
+        # Use explicit policy to ensure consistent test behavior across environments
+        test_policy = PasswordPolicy(
+            min_length=12,  # Ensures "NoNumbers!" (10 chars) gets STRONG rating
+            max_length=128,
+            require_uppercase=True,
+            require_lowercase=True,
+            require_numbers=True,
+            require_special_chars=True,
+            history_count=5,
+            max_failed_attempts=5,
+            lockout_duration_minutes=30,
+            complexity_score_threshold=3,
+        )
+        self.password_manager = PasswordManager(test_policy)
         self.test_passwords = [
             "SimplePass123!",
             "VerySecurePassword2024#",
