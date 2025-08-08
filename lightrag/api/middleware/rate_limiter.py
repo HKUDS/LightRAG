@@ -126,9 +126,15 @@ class RedisRateLimitStore:
     async def close(self):
         """Close Redis connection."""
         if self._redis:
-            await self._redis.close()
+            if hasattr(self._redis, "aclose"):
+                await self._redis.aclose()
+            else:
+                await self._redis.close()
         if self._connection_pool:
-            await self._connection_pool.disconnect()
+            if hasattr(self._connection_pool, "adisconnect"):
+                await self._connection_pool.adisconnect()
+            else:
+                await self._connection_pool.disconnect()
 
     async def check_rate_limit(
         self, key: str, limit: int, window_seconds: int
