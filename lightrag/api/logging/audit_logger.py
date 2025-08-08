@@ -189,12 +189,16 @@ class AuditLogFormatter(logging.Formatter):
             return super().format(record)
 
 
+import tempfile
+
+
+
 @dataclass
 class AuditLogConfig:
     """Audit logging configuration."""
 
     # File settings
-    log_file: str = "logs/audit.log"
+    log_file: str = str(Path(tempfile.gettempdir()) / "audit.log")
     max_file_size: int = 100 * 1024 * 1024  # 100MB
     backup_count: int = 10
     compress_backups: bool = True
@@ -224,6 +228,7 @@ class AuditLogConfig:
     enable_syslog: bool = False
     syslog_server: Optional[str] = None
     syslog_port: int = 514
+    testing: bool = False
 
     @classmethod
     def from_env(cls) -> "AuditLogConfig":
@@ -270,6 +275,9 @@ class AuditLogger:
         self._last_flush = datetime.now()
         self._lock = threading.Lock()
 
+    def setup(self):
+        self._setup_logger()
+
         self._setup_logger()
 
     def _setup_logger(self):
@@ -281,8 +289,9 @@ class AuditLogger:
         self._logger.handlers.clear()
 
         # Create log directory
-        log_path = Path(self.config.log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.config.testing:
+            log_path = Path(self.config.log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Setup file handler with rotation
         from logging.handlers import RotatingFileHandler
@@ -627,7 +636,3 @@ class AnomalyDetector:
     def get_anomalies(self) -> List[Dict[str, Any]]:
         """Get detected anomalies."""
         return self._anomalies[-100:]  # Return last 100 anomalies
-
-
-# Global audit logger instance
-audit_logger = AuditLogger()

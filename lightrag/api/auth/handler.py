@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from pydantic import BaseModel
 
-from .config import global_args
+from ..config import global_args
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance

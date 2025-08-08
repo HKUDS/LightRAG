@@ -13,25 +13,16 @@
 - MemgraphStorage
 """
 
-import asyncio
 import os
 import sys
-import importlib
 import numpy as np
-from dotenv import load_dotenv
 from ascii_colors import ASCIIColors
+import pytest
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lightrag.types import KnowledgeGraph
-from lightrag.kg import (
-    STORAGE_IMPLEMENTATIONS,
-    STORAGE_ENV_REQUIREMENTS,
-    STORAGES,
-    verify_storage_implementation,
-)
-from lightrag.kg.shared_storage import initialize_share_data
 from lightrag.constants import GRAPH_FIELD_SEP
 
 
@@ -40,93 +31,7 @@ async def mock_embedding_func(texts):
     return np.random.rand(len(texts), 10)  # 返回10维随机向量
 
 
-def check_env_file():
-    """
-    检查.env文件是否存在，如果不存在则发出警告
-    返回True表示应该继续执行，False表示应该退出
-    """
-    if not os.path.exists(".env"):
-        warning_msg = "警告: 当前目录中没有找到.env文件，这可能会影响存储配置的加载。"
-        ASCIIColors.yellow(warning_msg)
-
-        # 检查是否在交互式终端中运行
-        if sys.stdin.isatty():
-            response = input("是否继续执行? (yes/no): ")
-            if response.lower() != "yes":
-                ASCIIColors.red("测试程序已取消")
-                return False
-    return True
-
-
-async def initialize_graph_storage():
-    """
-    根据环境变量初始化相应的图存储实例
-    返回初始化的存储实例
-    """
-    # 从环境变量中获取图存储类型
-    graph_storage_type = os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
-
-    # 验证存储类型是否有效
-    try:
-        verify_storage_implementation("GRAPH_STORAGE", graph_storage_type)
-    except ValueError as e:
-        ASCIIColors.red(f"错误: {str(e)}")
-        ASCIIColors.yellow(
-            f"支持的图存储类型: {', '.join(STORAGE_IMPLEMENTATIONS['GRAPH_STORAGE']['implementations'])}"
-        )
-        return None
-
-    # 检查所需的环境变量
-    required_env_vars = STORAGE_ENV_REQUIREMENTS.get(graph_storage_type, [])
-    missing_env_vars = [var for var in required_env_vars if not os.getenv(var)]
-
-    if missing_env_vars:
-        ASCIIColors.red(
-            f"错误: {graph_storage_type} 需要以下环境变量，但未设置: {', '.join(missing_env_vars)}"
-        )
-        return None
-
-    # 动态导入相应的模块
-    module_path = STORAGES.get(graph_storage_type)
-    if not module_path:
-        ASCIIColors.red(f"错误: 未找到 {graph_storage_type} 的模块路径")
-        return None
-
-    try:
-        module = importlib.import_module(module_path, package="lightrag")
-        storage_class = getattr(module, graph_storage_type)
-    except (ImportError, AttributeError) as e:
-        ASCIIColors.red(f"错误: 导入 {graph_storage_type} 失败: {str(e)}")
-        return None
-
-    # 初始化存储实例
-    global_config = {
-        "embedding_batch_num": 10,  # 批处理大小
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.5  # 余弦相似度阈值
-        },
-        "working_dir": os.environ.get("WORKING_DIR", "./rag_storage"),  # 工作目录
-    }
-
-    # 如果使用 NetworkXStorage，需要先初始化 shared_storage
-    if graph_storage_type == "NetworkXStorage":
-        initialize_share_data()  # 使用单进程模式
-
-    try:
-        storage = storage_class(
-            namespace="test_graph",
-            global_config=global_config,
-            embedding_func=mock_embedding_func,
-        )
-
-        # 初始化连接
-        await storage.initialize()
-        return storage
-    except Exception as e:
-        ASCIIColors.red(f"错误: 初始化 {graph_storage_type} 失败: {str(e)}")
-        return None
-
-
+@pytest.mark.asyncio
 async def test_graph_basic(storage):
     """
     测试图数据库的基本操作:
@@ -236,6 +141,7 @@ async def test_graph_basic(storage):
         return False
 
 
+@pytest.mark.asyncio
 async def test_graph_advanced(storage):
     """
     测试图数据库的高级操作:
@@ -430,6 +336,7 @@ async def test_graph_advanced(storage):
         return False
 
 
+@pytest.mark.asyncio
 async def test_graph_batch_operations(storage):
     """
     测试图数据库的批量操作:
@@ -838,6 +745,7 @@ async def test_graph_batch_operations(storage):
         return False
 
 
+@pytest.mark.asyncio
 async def test_graph_special_characters(storage):
     """
     测试图数据库对特殊字符的处理:
@@ -976,6 +884,7 @@ async def test_graph_special_characters(storage):
         return False
 
 
+@pytest.mark.asyncio
 async def test_graph_undirected_property(storage):
     """
     专门测试图存储的无向图特性:
@@ -1162,95 +1071,3 @@ async def test_graph_undirected_property(storage):
     except Exception as e:
         ASCIIColors.red(f"测试过程中发生错误: {str(e)}")
         return False
-
-
-async def main():
-    """主函数"""
-    # 显示程序标题
-    ASCIIColors.cyan("""
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                  通用图存储测试程序                          ║
-    ╚══════════════════════════════════════════════════════════════╝
-    """)
-
-    # 检查.env文件
-    if not check_env_file():
-        return
-
-    # 加载环境变量
-    load_dotenv(dotenv_path=".env", override=False)
-
-    # 获取图存储类型
-    graph_storage_type = os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
-    ASCIIColors.magenta(f"\n当前配置的图存储类型: {graph_storage_type}")
-    ASCIIColors.white(
-        f"支持的图存储类型: {', '.join(STORAGE_IMPLEMENTATIONS['GRAPH_STORAGE']['implementations'])}"
-    )
-
-    # 初始化存储实例
-    storage = await initialize_graph_storage()
-    if not storage:
-        ASCIIColors.red("初始化存储实例失败，测试程序退出")
-        return
-
-    try:
-        # 显示测试选项
-        ASCIIColors.yellow("\n请选择测试类型:")
-        ASCIIColors.white("1. 基本测试 (节点和边的插入、读取)")
-        ASCIIColors.white("2. 高级测试 (度数、标签、知识图谱、删除操作等)")
-        ASCIIColors.white("3. 批量操作测试 (批量获取节点、边属性和度数等)")
-        ASCIIColors.white("4. 无向图特性测试 (验证存储的无向图特性)")
-        ASCIIColors.white("5. 特殊字符测试 (验证单引号、双引号和反斜杠等特殊字符)")
-        ASCIIColors.white("6. 全部测试")
-
-        choice = input("\n请输入选项 (1/2/3/4/5/6): ")
-
-        # 在执行测试前清理数据
-        if choice in ["1", "2", "3", "4", "5", "6"]:
-            ASCIIColors.yellow("\n执行测试前清理数据...")
-            await storage.drop()
-            ASCIIColors.green("数据清理完成\n")
-
-        if choice == "1":
-            await test_graph_basic(storage)
-        elif choice == "2":
-            await test_graph_advanced(storage)
-        elif choice == "3":
-            await test_graph_batch_operations(storage)
-        elif choice == "4":
-            await test_graph_undirected_property(storage)
-        elif choice == "5":
-            await test_graph_special_characters(storage)
-        elif choice == "6":
-            ASCIIColors.cyan("\n=== 开始基本测试 ===")
-            basic_result = await test_graph_basic(storage)
-
-            if basic_result:
-                ASCIIColors.cyan("\n=== 开始高级测试 ===")
-                advanced_result = await test_graph_advanced(storage)
-
-                if advanced_result:
-                    ASCIIColors.cyan("\n=== 开始批量操作测试 ===")
-                    batch_result = await test_graph_batch_operations(storage)
-
-                    if batch_result:
-                        ASCIIColors.cyan("\n=== 开始无向图特性测试 ===")
-                        undirected_result = await test_graph_undirected_property(
-                            storage
-                        )
-
-                        if undirected_result:
-                            ASCIIColors.cyan("\n=== 开始特殊字符测试 ===")
-                            await test_graph_special_characters(storage)
-        else:
-            ASCIIColors.red("无效的选项")
-
-    finally:
-        # 关闭连接
-        if storage:
-            await storage.finalize()
-            ASCIIColors.green("\n存储连接已关闭")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

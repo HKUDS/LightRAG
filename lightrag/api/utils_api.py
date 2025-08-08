@@ -15,25 +15,9 @@ from lightrag.constants import (
 from fastapi import HTTPException, Security, Request, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
-import importlib.util
-from .config import ollama_server_infos, global_args, get_env_value
 
-# Load config module first for auth.py dependencies
-config_spec = importlib.util.spec_from_file_location(
-    "config", "/app/lightrag/api/config.py"
-)
-config_module = importlib.util.module_from_spec(config_spec)
-sys.modules["config"] = config_module  # Register in sys.modules
-config_spec.loader.exec_module(config_module)
-
-# Import auth_handler directly from the auth.py file
-auth_spec = importlib.util.spec_from_file_location("auth", "/app/lightrag/api/auth.py")
-auth_module = importlib.util.module_from_spec(auth_spec)
-sys.modules["auth"] = auth_module  # Register in sys.modules
-# Manually set up the module's environment for relative imports
-auth_module.__package__ = "lightrag.api"
-auth_spec.loader.exec_module(auth_module)
-auth_handler = auth_module.auth_handler
+from lightrag.api.config import global_args, ollama_server_infos, get_env_value
+from lightrag.api.auth import auth_handler  # Corrected import
 
 
 def check_env_file():
@@ -328,7 +312,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
 
         ASCIIColors.magenta("\n📝 Note:")
-        ASCIIColors.cyan("""    Since the server is running on 0.0.0.0:
+        ASCIIColors.cyan("""
+    Since the server is running on 0.0.0.0:
     - Use 'localhost' or '127.0.0.1' for local access
     - Use your machine's IP address for remote access
     - To find your IP address:
@@ -348,12 +333,14 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # Security Notice
     if args.key:
         ASCIIColors.yellow("\n⚠️  Security Notice:")
-        ASCIIColors.white("""    API Key authentication is enabled.
+        ASCIIColors.white("""
+    API Key authentication is enabled.
     Make sure to include the X-API-Key header in all your requests.
     """)
     if args.auth_accounts:
         ASCIIColors.yellow("\n⚠️  Security Notice:")
-        ASCIIColors.white("""    JWT authentication is enabled.
+        ASCIIColors.white("""
+    JWT authentication is enabled.
     Make sure to login before making the request, and include the 'Authorization' in the header.
     """)
 
