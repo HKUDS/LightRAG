@@ -310,3 +310,45 @@ async def test_integration():
     shutil.rmtree(temp_dir, ignore_errors=True)
 
     print("  ✅ Integration tests completed\n")
+
+
+async def main():
+    """Run all Phase 1 basic functionality tests."""
+    print("=" * 60)
+    print("🧪 LightRAG Authentication Phase 1 - Basic Tests")
+    print("=" * 60)
+    print()
+
+    try:
+        # Run non-async tests
+        test_password_manager()
+        test_security_headers()
+
+        # Run async tests
+        await test_rate_limiter()
+        await test_audit_logger()
+        await test_integration()
+
+        print("=" * 60)
+        print("✅ All Phase 1 basic tests completed successfully!")
+        print("=" * 60)
+        return 0
+
+    except Exception as e:
+        print(f"❌ Test failed with error: {e}")
+        import traceback
+
+        traceback.print_exc()
+        print("=" * 60)
+        print("❌ Phase 1 basic tests failed!")
+        print("=" * 60)
+        return 1
+
+
+if __name__ == "__main__":
+    import asyncio
+    import sys
+
+    # Run the main async function
+    exit_code = asyncio.run(main())
+    sys.exit(exit_code)
