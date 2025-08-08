@@ -192,7 +192,6 @@ class AuditLogFormatter(logging.Formatter):
 import tempfile
 
 
-
 @dataclass
 class AuditLogConfig:
     """Audit logging configuration."""
