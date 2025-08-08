@@ -10,7 +10,7 @@ This script implements the database changes required for:
 
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add current directory to path for imports
@@ -373,7 +373,7 @@ class AuthPhase1Migration:
                         WHERE id = ?
                     """,
                         new_hash,
-                        datetime.utcnow(),
+                        datetime.now(timezone.utc),
                         user["id"],
                     )
 

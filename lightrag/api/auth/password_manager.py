@@ -10,7 +10,7 @@ import secrets
 import re
 import hashlib
 from typing import List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -390,7 +390,7 @@ class PasswordManager:
                 """,
                 user_id,
                 password_hash,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
             )
 
             # Clean up old history beyond the limit
@@ -438,7 +438,7 @@ class PasswordManager:
                 return False, None
 
             locked_until = user_data.get("account_locked_until")
-            if locked_until and locked_until > datetime.utcnow():
+            if locked_until and locked_until > datetime.now(timezone.utc):
                 return True, locked_until
 
             return False, None
@@ -479,7 +479,7 @@ class PasswordManager:
                 and user_data["password_attempts"] >= self.policy.max_failed_attempts
             ):
                 # Lock account
-                lockout_until = datetime.utcnow() + timedelta(
+                lockout_until = datetime.now(timezone.utc) + timedelta(
                     minutes=self.policy.lockout_duration_minutes
                 )
 

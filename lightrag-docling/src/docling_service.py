@@ -397,7 +397,7 @@ async def global_exception_handler(request, exc):
             error="internal_server_error",
             message="An unexpected error occurred",
             timestamp=datetime.now(timezone.utc).isoformat(),
-        ).dict(),
+        ).model_dump(),
     )
 
 
