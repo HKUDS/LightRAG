@@ -1,8 +1,13 @@
 # LightRAG System Architecture and Data Flow Documentation
 
+**Related Documents**: [Complete Production Guide](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md) | [Repository Structure](REPOSITORY_STRUCTURE.md) | [MCP Integration](../integration_guides/MCP_IMPLEMENTATION_SUMMARY.md) | [Documentation Index](../DOCUMENTATION_INDEX.md)
+
 ## Executive Summary
 
 This document provides a comprehensive analysis of LightRAG's system interactions and data flow patterns across all components. LightRAG is a multi-component retrieval-augmented generation (RAG) system that combines knowledge graphs and vector retrieval for enhanced document processing and querying. The architecture spans Python core libraries, FastAPI web services, React/TypeScript frontends, MCP protocol servers, and containerized production deployments.
+
+> **💡 For Production Deployment**: See the [Complete Production Deployment Guide](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md) for detailed setup instructions.
+> **💡 For Development Setup**: See the [Repository Structure Guide](REPOSITORY_STRUCTURE.md) for codebase organization.
 
 ## System Overview
 
