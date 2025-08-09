@@ -477,7 +477,8 @@ async def openai_embed(
         )
         return np.array(
             [
-                np.array(dp.embedding, dtype=np.float32) if isinstance(dp.embedding, list)
+                np.array(dp.embedding, dtype=np.float32)
+                if isinstance(dp.embedding, list)
                 else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
                 for dp in response.data
             ]
