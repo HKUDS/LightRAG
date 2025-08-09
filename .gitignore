@@ -79,6 +79,13 @@ docling_test_*.txt
 .gradio/
 .history/
 
+# Coverage Reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
 # Docker
 .dockerignore
 
