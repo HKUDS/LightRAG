@@ -43,8 +43,19 @@ class JsonKVStorage(BaseKVStorage):
         self.storage_updated = None
         self.final_namespace = f"{self.workspace}_{self.namespace}"
 
+    async def _ensure_initialized(self):
+        """Ensure storage is initialized before use"""
+        if self._storage_lock is None or self._data is None:
+            await self.initialize()
+    
     async def initialize(self):
         """Initialize storage data"""
+        # Import initialize_share_data to ensure shared data is initialized
+        from .shared_storage import initialize_share_data
+        
+        # Initialize shared data if not already done (single process mode)
+        initialize_share_data(workers=1)
+        
         self._storage_lock = get_storage_lock()
         self.storage_updated = await get_update_flag(self.final_namespace)
         async with get_data_init_lock():
@@ -152,6 +163,7 @@ class JsonKVStorage(BaseKVStorage):
         current_time = int(time.time())  # Get current Unix timestamp
 
         logger.debug(f"Inserting {len(data)} records to {self.final_namespace}")
+        await self._ensure_initialized()
         async with self._storage_lock:
             # Add timestamps to data based on whether key exists
             for k, v in data.items():

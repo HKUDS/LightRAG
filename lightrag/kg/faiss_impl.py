@@ -69,6 +69,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize storage data"""
+        # Import initialize_share_data to ensure shared data is initialized
+        from .shared_storage import initialize_share_data
+        
+        # Initialize shared data if not already done (single process mode)
+        initialize_share_data(workers=1)
+        
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(self.namespace)
         # Get the storage lock for use in other methods

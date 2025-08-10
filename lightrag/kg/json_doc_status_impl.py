@@ -47,8 +47,19 @@ class JsonDocStatusStorage(DocStatusStorage):
         self.storage_updated = None
         self.final_namespace = f"{self.workspace}_{self.namespace}"
 
+    async def _ensure_initialized(self):
+        """Ensure storage is initialized before use"""
+        if self._storage_lock is None or self._data is None:
+            await self.initialize()
+    
     async def initialize(self):
         """Initialize storage data"""
+        # Import initialize_share_data to ensure shared data is initialized
+        from .shared_storage import initialize_share_data
+        
+        # Initialize shared data if not already done (single process mode)
+        initialize_share_data(workers=1)
+        
         self._storage_lock = get_storage_lock()
         self.storage_updated = await get_update_flag(self.final_namespace)
         async with get_data_init_lock():
@@ -65,6 +76,8 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
+        await self._ensure_initialized()
+        
         async with self._storage_lock:
             return set(keys) - set(self._data.keys())
 
