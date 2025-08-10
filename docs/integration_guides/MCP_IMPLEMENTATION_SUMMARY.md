@@ -4,6 +4,8 @@
 **Date**: 2025-01-29
 **Version**: 1.0.0
 
+**Related Documents**: [MCP Implementation Guide](MCP_IMPLEMENTATION_GUIDE.md) | [Production Deployment](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md#mcp-server-setup) | [System Architecture](../architecture/SYSTEM_ARCHITECTURE_AND_DATA_FLOW.md) | [Documentation Index](../DOCUMENTATION_INDEX.md)
+
 ## Overview
 
 Successfully implemented a complete Model Context Protocol (MCP) server for LightRAG, providing comprehensive RAG and knowledge graph capabilities to Claude CLI and other MCP-compatible clients.

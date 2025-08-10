@@ -1,6 +1,10 @@
 # LightRAG Integration Guides
 
+**Related Documents**: [Production Deployment](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md) | [System Architecture](../architecture/SYSTEM_ARCHITECTURE_AND_DATA_FLOW.md) | [Documentation Index](../DOCUMENTATION_INDEX.md)
+
 This directory contains comprehensive integration guides for connecting LightRAG with external services, protocols, and platforms.
+
+> **💡 For Production Integration**: All these integrations are covered in the [Complete Production Deployment Guide](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md) with configuration examples.
 
 ## Featured Integration: Model Context Protocol (MCP) 🚀
 

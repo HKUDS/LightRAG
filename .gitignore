@@ -71,13 +71,19 @@ docling_test_*.txt
 *_temp.py
 *_backup.*
 
-# Build Artifacts
+# Build Artifacts & Coverage
 .cache/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 .gradio/
 .history/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.coverage.*
 
 # Coverage Reports
 .coverage

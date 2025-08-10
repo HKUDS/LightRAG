@@ -1,6 +1,12 @@
 # Docker Security Hardening for LightRAG Production
 
+**Last Updated**: Current
+**Audience**: DevOps Engineers, Security Teams, Production Operations
+**Related Documents**: [Complete Production Guide](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md) | [Authentication Plans](AUTHENTICATION_IMPROVEMENT_PLAN.md) | [Documentation Index](../DOCUMENTATION_INDEX.md)
+
 This document outlines the security improvements implemented in the production Docker setup.
+
+> **💡 For Complete Production Setup**: See the [Complete Production Deployment Guide](../production/PRODUCTION_DEPLOYMENT_COMPLETE.md) which includes all security configurations.
 
 ## Security Principles Applied
 
