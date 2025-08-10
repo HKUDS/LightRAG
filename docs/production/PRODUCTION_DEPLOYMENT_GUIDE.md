@@ -1,6 +1,13 @@
 # 🚀 LightRAG Production Deployment Guide
 
-This comprehensive guide walks you through deploying LightRAG in a production environment with enterprise-grade security, monitoring, and reliability features.
+> **📘 This document has been consolidated into a comprehensive production guide.**
+> **Please use: [Complete Production Deployment Guide](PRODUCTION_DEPLOYMENT_COMPLETE.md)**
+
+**Status**: 🚨 **DEPRECATED** - Redirects to consolidated guide
+**Replacement**: [PRODUCTION_DEPLOYMENT_COMPLETE.md](PRODUCTION_DEPLOYMENT_COMPLETE.md)
+**Action Required**: Update bookmarks and references to use the new consolidated guide.
+
+This document previously provided comprehensive production deployment instructions but has been merged with other production guides to create a single authoritative source. The new consolidated guide includes all the information from this document plus additional deployment scenarios and enhanced troubleshooting.
 
 ## 📋 Table of Contents
 

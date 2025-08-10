@@ -2,14 +2,32 @@
 
 This directory contains comprehensive documentation for LightRAG, including core algorithms, deployment guides, integration documentation, and advanced features.
 
+> **📚 [COMPLETE DOCUMENTATION INDEX](DOCUMENTATION_INDEX.md)** - Navigate all documentation with cross-references and user journeys
 
-## Directory Structure
 
-### Core Documentation
-- `Algorithm.md` - LightRAG core algorithms and flowcharts
-- `DockerDeployment.md` - Docker deployment guide
-- `LightRAG_concurrent_explain.md` - Concurrency and parallel processing
-- `rerank_integration.md` - Reranking model integration
+## 📁 Documentation Structure
+
+### 🎯 Production & Operations
+- **[production/PRODUCTION_DEPLOYMENT_COMPLETE.md](production/PRODUCTION_DEPLOYMENT_COMPLETE.md)** - **AUTHORITATIVE** production guide
+- [security/](security/) - Security configuration and hardening guides
+- [monitoring/](production/PRODUCTION_DEPLOYMENT_COMPLETE.md#monitoring--observability) - Observability and alerting
+
+### 🏗️ Architecture & Core
+- [architecture/SYSTEM_ARCHITECTURE_AND_DATA_FLOW.md](architecture/SYSTEM_ARCHITECTURE_AND_DATA_FLOW.md) - Complete system overview
+- [architecture/REPOSITORY_STRUCTURE.md](architecture/REPOSITORY_STRUCTURE.md) - Codebase organization
+- [architecture/Algorithm.md](architecture/Algorithm.md) - LightRAG core algorithms and flowcharts
+- [architecture/LightRAG_concurrent_explain.md](architecture/LightRAG_concurrent_explain.md) - Concurrency and parallel processing
+
+### 🔧 Integration & Setup
+- [integration_guides/](integration_guides/) - External service integrations (MCP, xAI, Docling)
+- [integration_guides/rerank_integration.md](integration_guides/rerank_integration.md) - Reranking model integration
+
+### ⚠️ Deprecated Documents
+The following documents have been consolidated into authoritative guides:
+- ~~`DockerDeployment.md`~~ → [Complete Production Guide](production/PRODUCTION_DEPLOYMENT_COMPLETE.md)
+- ~~`production/PRODUCTION_DEPLOYMENT_GUIDE.md`~~ → [Complete Production Guide](production/PRODUCTION_DEPLOYMENT_COMPLETE.md)
+- ~~`production/PRODUCTION_IMPLEMENTATION_GUIDE.md`~~ → [Complete Production Guide](production/PRODUCTION_DEPLOYMENT_COMPLETE.md)
+- ~~`production/ProductionDeploymentGuide.md`~~ → [Complete Production Guide](production/PRODUCTION_DEPLOYMENT_COMPLETE.md)
 
 ### Integration Guides (`integration_guides/`)
 Complete guides for integrating LightRAG with external services and protocols:
@@ -24,23 +42,29 @@ Complete guides for integrating LightRAG with external services and protocols:
 - **xAI Grok Models** - Integration and troubleshooting guides
 - **Enhanced Docling** - Advanced document processing configuration
 
-## Quick Navigation
+## 🚀 Quick Navigation by Role
 
-### For New Users
-1. **Start with**: [Algorithm Overview](Algorithm.md) - Understand LightRAG's core approach
-2. **MCP Integration**: [MCP Implementation Summary](integration_guides/MCP_IMPLEMENTATION_SUMMARY.md) - Use LightRAG with Claude CLI
-3. **Deployment**: [Docker Deployment](DockerDeployment.md) - Get LightRAG running
+### 🆕 For New Users
+1. **🎯 Start Here**: [Algorithm Overview](architecture/Algorithm.md) - Understand LightRAG's core approach
+2. **🤖 Claude Integration**: [MCP Implementation Summary](integration_guides/MCP_IMPLEMENTATION_SUMMARY.md) - Use LightRAG with Claude CLI
+3. **🚀 Quick Deploy**: [Production Guide - Quick Start](production/PRODUCTION_DEPLOYMENT_COMPLETE.md#quick-start-deployments) - Get LightRAG running in 5 minutes
 
-### For Developers
-- [Concurrent Processing](LightRAG_concurrent_explain.md) - Parallel processing details
-- [MCP Implementation Guide](integration_guides/MCP_IMPLEMENTATION_GUIDE.md) - Build MCP integrations
+### 👩‍💻 For Developers
+- **🏗️ System Architecture**: [Complete System Overview](architecture/SYSTEM_ARCHITECTURE_AND_DATA_FLOW.md) - End-to-end system understanding
+- **⚡ Concurrent Processing**: [Parallel Processing Details](architecture/LightRAG_concurrent_explain.md) - Performance optimization
+- **🤖 MCP Development**: [MCP Implementation Guide](integration_guides/MCP_IMPLEMENTATION_GUIDE.md) - Build MCP integrations
+- **🔧 Integration Guides**: [External Services](integration_guides/) - xAI, Docling, PostgreSQL
 
-- [Integration Guides](integration_guides/) - External service integrations
+### 🚀 For DevOps & SRE
+- **🎯 PRODUCTION DEPLOYMENT**: **[Complete Production Guide](production/PRODUCTION_DEPLOYMENT_COMPLETE.md)** - Single authoritative source
+- **🔐 Security Setup**: [Security Hardening Guide](security/SECURITY_HARDENING.md) - Container and network security
+- **📊 Monitoring**: [Observability Setup](production/PRODUCTION_DEPLOYMENT_COMPLETE.md#monitoring--observability) - Metrics, logs, alerting
+- **🔄 Operations**: [Backup & Recovery](production/PRODUCTION_DEPLOYMENT_COMPLETE.md#backup--disaster-recovery) - Operational procedures
 
-### For DevOps
-- [Docker Deployment](DockerDeployment.md) - Container deployment
-- [Rerank Integration](rerank_integration.md) - Model optimization
-- [MCP Production Deployment](integration_guides/MCP_IMPLEMENTATION_SUMMARY.md#deployment-options) - MCP server deployment
+### 🔧 For System Integrators
+- **🤖 MCP Production**: [MCP Deployment](integration_guides/MCP_IMPLEMENTATION_SUMMARY.md#deployment-options) - Enterprise MCP setup
+- **🎛️ Model Optimization**: [Rerank Integration](integration_guides/rerank_integration.md) - Performance tuning
+- **🗄️ Storage Backends**: [Storage Architecture](architecture/SYSTEM_ARCHITECTURE_AND_DATA_FLOW.md#storage-backend-coordination) - Database setup
 
 ## Featured: Model Context Protocol (MCP) Integration
 

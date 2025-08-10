@@ -1,8 +1,17 @@
 # LightRAG Production Implementation Guide
 
+> **📘 This document has been consolidated into a comprehensive production guide.**
+> **Please use: [Complete Production Deployment Guide](PRODUCTION_DEPLOYMENT_COMPLETE.md)**
+
+**Status**: 🚨 **DEPRECATED** - Redirects to consolidated guide
+**Replacement**: [PRODUCTION_DEPLOYMENT_COMPLETE.md](PRODUCTION_DEPLOYMENT_COMPLETE.md)
+**Action Required**: Update bookmarks and references to use the new consolidated guide.
+
+This document previously provided xAI + Ollama production deployment instructions but has been merged into the consolidated guide under "Architecture Option 3: xAI + Ollama Stack".
+
 ## Overview
 
-This comprehensive guide provides step-by-step instructions for deploying LightRAG in production with the following components:
+~~This comprehensive guide provides step-by-step instructions for deploying LightRAG in production with the following components:~~
 
 - **LightRAG Core + Web UI**: Complete RAG system with React frontend
 - **xAI Grok**: Large Language Model for text generation

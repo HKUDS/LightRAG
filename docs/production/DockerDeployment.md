@@ -1,6 +1,15 @@
-# LightRAG
+# LightRAG Docker Deployment
 
-A lightweight Knowledge Graph Retrieval-Augmented Generation system with multiple LLM backend support.
+> **📘 This document has been consolidated into a comprehensive production guide.**
+> **Please use: [Complete Production Deployment Guide](PRODUCTION_DEPLOYMENT_COMPLETE.md)**
+
+**Status**: 🚨 **DEPRECATED** - Redirects to consolidated guide
+**Replacement**: [PRODUCTION_DEPLOYMENT_COMPLETE.md](PRODUCTION_DEPLOYMENT_COMPLETE.md)
+**Action Required**: Update bookmarks and references to use the new consolidated guide.
+
+This document previously provided Docker deployment instructions but has been merged into the consolidated guide under "Quick Start Deployments" section.
+
+~~A lightweight Knowledge Graph Retrieval-Augmented Generation system with multiple LLM backend support.~~
 
 ## 🚀 Installation
 

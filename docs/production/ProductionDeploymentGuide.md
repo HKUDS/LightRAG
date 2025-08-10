@@ -1,6 +1,15 @@
 # LightRAG Production Deployment Guide
 
-This guide provides step-by-step instructions for deploying a production-ready LightRAG environment using Docker Compose. This setup includes:
+> **📘 This document has been consolidated into a comprehensive production guide.**
+> **Please use: [Complete Production Deployment Guide](PRODUCTION_DEPLOYMENT_COMPLETE.md)**
+
+**Status**: 🚨 **DEPRECATED** - Redirects to consolidated guide
+**Replacement**: [PRODUCTION_DEPLOYMENT_COMPLETE.md](PRODUCTION_DEPLOYMENT_COMPLETE.md)
+**Action Required**: Update bookmarks and references to use the new consolidated guide.
+
+This document previously provided simple xAI-focused production deployment instructions but has been merged into the consolidated guide under "Quick Start Deployments - xAI + Ollama Stack".
+
+~~This guide provides step-by-step instructions for deploying a production-ready LightRAG environment using Docker Compose. This setup includes:~~
 
 - The **LightRAG application**, built from the current repository code.
 - A **PostgreSQL** database for robust data storage (including vector and graph data).
