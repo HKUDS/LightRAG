@@ -1455,10 +1455,15 @@ def create_document_routes(
                 }
             )
             # Cleaning history_messages without breaking it as a shared list object
-            del pipeline_status["history_messages"][:]
-            pipeline_status["history_messages"].append(
-                "Starting document clearing process"
-            )
+            # Check if history_messages exists before trying to clear it
+            if "history_messages" in pipeline_status:
+                del pipeline_status["history_messages"][:]
+                pipeline_status["history_messages"].append(
+                    "Starting document clearing process"
+                )
+            else:
+                # Initialize history_messages if it doesn't exist
+                pipeline_status["history_messages"] = ["Starting document clearing process"]
 
         try:
             # Use drop method to clear all data
