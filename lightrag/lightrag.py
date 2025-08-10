@@ -1229,6 +1229,7 @@ class LightRAG:
                     async with semaphore:
                         nonlocal processed_count
                         current_file_number = 0
+                        # Initialize to prevent UnboundLocalError in error handling
                         first_stage_tasks = []
                         entity_relation_task = None
                         try:
@@ -1352,9 +1353,7 @@ class LightRAG:
 
                             # Cancel tasks that are not yet completed
                             all_tasks = first_stage_tasks + (
-                                [entity_relation_task]
-                                if entity_relation_task
-                                else []
+                                [entity_relation_task] if entity_relation_task else []
                             )
                             for task in all_tasks:
                                 if task and not task.done():
