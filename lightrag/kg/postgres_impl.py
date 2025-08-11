@@ -30,7 +30,7 @@ from ..base import (
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 from ..constants import GRAPH_FIELD_SEP
-from ..kg.shared_storage import get_graph_db_lock
+from ..kg.shared_storage import get_graph_db_lock, get_storage_lock
 
 import pipmaster as pm
 
@@ -1406,23 +1406,26 @@ class PGKVStorage(BaseKVStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     async def initialize(self):
-        if self.db is None:
-            self.db = await ClientManager.get_client()
-        # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-        if self.db.workspace:
-            # Use PostgreSQLDB's workspace (highest priority)
-            self.workspace = self.db.workspace
-        elif hasattr(self, "workspace") and self.workspace:
-            # Use storage class's workspace (medium priority)
-            pass
-        else:
-            # Use "default" for compatibility (lowest priority)
-            self.workspace = "default"
+        async with get_storage_lock(enable_logging=True):
+            if self.db is None:
+                self.db = await ClientManager.get_client()
+
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                self.workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                pass
+            else:
+                # Use "default" for compatibility (lowest priority)
+                self.workspace = "default"
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_storage_lock(enable_logging=True):
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     ################ QUERY METHODS ################
     async def get_all(self) -> dict[str, Any]:
@@ -1834,21 +1837,22 @@ class PGKVStorage(BaseKVStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
+        async with get_storage_lock(enable_logging=True):
+            try:
+                table_name = namespace_to_table_name(self.namespace)
+                if not table_name:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown namespace: {self.namespace}",
+                    }
 
-            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
-            )
-            await self.db.execute(drop_sql, {"workspace": self.workspace})
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=table_name
+                )
+                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
 
 @final
@@ -1867,23 +1871,26 @@ class PGVectorStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
     async def initialize(self):
-        if self.db is None:
-            self.db = await ClientManager.get_client()
-        # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-        if self.db.workspace:
-            # Use PostgreSQLDB's workspace (highest priority)
-            self.workspace = self.db.workspace
-        elif hasattr(self, "workspace") and self.workspace:
-            # Use storage class's workspace (medium priority)
-            pass
-        else:
-            # Use "default" for compatibility (lowest priority)
-            self.workspace = "default"
+        async with get_storage_lock(enable_logging=True):
+            if self.db is None:
+                self.db = await ClientManager.get_client()
+
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                self.workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                pass
+            else:
+                # Use "default" for compatibility (lowest priority)
+                self.workspace = "default"
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_storage_lock(enable_logging=True):
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     def _upsert_chunks(
         self, item: dict[str, Any], current_time: datetime.datetime
@@ -2153,21 +2160,22 @@ class PGVectorStorage(BaseVectorStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
+        async with get_storage_lock(enable_logging=True):
+            try:
+                table_name = namespace_to_table_name(self.namespace)
+                if not table_name:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown namespace: {self.namespace}",
+                    }
 
-            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
-            )
-            await self.db.execute(drop_sql, {"workspace": self.workspace})
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=table_name
+                )
+                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2186,23 +2194,26 @@ class PGDocStatusStorage(DocStatusStorage):
         return dt.isoformat()
 
     async def initialize(self):
-        if self.db is None:
-            self.db = await ClientManager.get_client()
-        # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-        if self.db.workspace:
-            # Use PostgreSQLDB's workspace (highest priority)
-            self.workspace = self.db.workspace
-        elif hasattr(self, "workspace") and self.workspace:
-            # Use storage class's workspace (medium priority)
-            pass
-        else:
-            # Use "default" for compatibility (lowest priority)
-            self.workspace = "default"
+        async with get_storage_lock(enable_logging=True):
+            if self.db is None:
+                self.db = await ClientManager.get_client()
+
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                self.workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                pass
+            else:
+                # Use "default" for compatibility (lowest priority)
+                self.workspace = "default"
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_storage_lock(enable_logging=True):
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
@@ -2778,30 +2789,29 @@ class PGGraphStorage(BaseGraphStorage):
         return normalized_id
 
     async def initialize(self):
-        if self.db is None:
-            self.db = await ClientManager.get_client()
-        # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-        if self.db.workspace:
-            # Use PostgreSQLDB's workspace (highest priority)
-            self.workspace = self.db.workspace
-        elif hasattr(self, "workspace") and self.workspace:
-            # Use storage class's workspace (medium priority)
-            pass
-        else:
-            # Use "default" for compatibility (lowest priority)
-            self.workspace = "default"
+        async with get_graph_db_lock(enable_logging=True):
+            if self.db is None:
+                self.db = await ClientManager.get_client()
 
-        # Dynamically generate graph name based on workspace
-        self.graph_name = self._get_workspace_graph_name()
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                self.workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                pass
+            else:
+                # Use "default" for compatibility (lowest priority)
+                self.workspace = "default"
 
-        # Log the graph initialization for debugging
-        logger.info(
-            f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
-        )
+            # Dynamically generate graph name based on workspace
+            self.graph_name = self._get_workspace_graph_name()
 
-        # Use graph database lock to ensure atomic operations and prevent deadlocks
-        graph_db_lock = get_graph_db_lock(enable_logging=False)
-        async with graph_db_lock:
+            # Log the graph initialization for debugging
+            logger.info(
+                f"[{self.workspace}] PostgreSQL Graph initialized: graph_name='{self.graph_name}'"
+            )
+
             # Create AGE extension and configure graph environment once at initialization
             async with self.db.pool.acquire() as connection:
                 # First ensure AGE extension is created
@@ -2840,9 +2850,10 @@ class PGGraphStorage(BaseGraphStorage):
                 )
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_graph_db_lock(enable_logging=True):
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically

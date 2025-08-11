@@ -7,6 +7,7 @@ import hashlib
 import uuid
 from ..utils import logger
 from ..base import BaseVectorStorage
+from ..kg.shared_storage import get_storage_lock
 import configparser
 import pipmaster as pm
 
@@ -118,13 +119,33 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        QdrantVectorDBStorage.create_collection_if_not_exist(
-            self._client,
-            self.final_namespace,
-            vectors_config=models.VectorParams(
-                size=self.embedding_func.embedding_dim, distance=models.Distance.COSINE
-            ),
-        )
+        self._initialized = False
+
+    async def initialize(self):
+        """Initialize Qdrant collection"""
+        async with get_storage_lock(enable_logging=True):
+            if self._initialized:
+                return
+
+            try:
+                # Create collection if not exists
+                QdrantVectorDBStorage.create_collection_if_not_exist(
+                    self._client,
+                    self.final_namespace,
+                    vectors_config=models.VectorParams(
+                        size=self.embedding_func.embedding_dim,
+                        distance=models.Distance.COSINE,
+                    ),
+                )
+                self._initialized = True
+                logger.info(
+                    f"[{self.workspace}] Qdrant collection '{self.namespace}' initialized successfully"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Failed to initialize Qdrant collection '{self.namespace}': {e}"
+                )
+                raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
@@ -382,27 +403,28 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        try:
-            # Delete the collection and recreate it
-            if self._client.collection_exists(self.final_namespace):
-                self._client.delete_collection(self.final_namespace)
+        async with get_storage_lock(enable_logging=True):
+            try:
+                # Delete the collection and recreate it
+                if self._client.collection_exists(self.final_namespace):
+                    self._client.delete_collection(self.final_namespace)
 
-            # Recreate the collection
-            QdrantVectorDBStorage.create_collection_if_not_exist(
-                self._client,
-                self.final_namespace,
-                vectors_config=models.VectorParams(
-                    size=self.embedding_func.embedding_dim,
-                    distance=models.Distance.COSINE,
-                ),
-            )
+                # Recreate the collection
+                QdrantVectorDBStorage.create_collection_if_not_exist(
+                    self._client,
+                    self.final_namespace,
+                    vectors_config=models.VectorParams(
+                        size=self.embedding_func.embedding_dim,
+                        distance=models.Distance.COSINE,
+                    ),
+                )
 
-            logger.info(
-                f"[{self.workspace}] Process {os.getpid()} drop Qdrant collection {self.namespace}"
-            )
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping Qdrant collection {self.namespace}: {e}"
-            )
-            return {"status": "error", "message": str(e)}
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} drop Qdrant collection {self.namespace}"
+                )
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping Qdrant collection {self.namespace}: {e}"
+                )
+                return {"status": "error", "message": str(e)}

@@ -9,6 +9,7 @@ from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
+from ..kg.shared_storage import get_graph_db_lock
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -55,53 +56,56 @@ class MemgraphStorage(BaseGraphStorage):
         return self.workspace
 
     async def initialize(self):
-        URI = os.environ.get(
-            "MEMGRAPH_URI",
-            config.get("memgraph", "uri", fallback="bolt://localhost:7687"),
-        )
-        USERNAME = os.environ.get(
-            "MEMGRAPH_USERNAME", config.get("memgraph", "username", fallback="")
-        )
-        PASSWORD = os.environ.get(
-            "MEMGRAPH_PASSWORD", config.get("memgraph", "password", fallback="")
-        )
-        DATABASE = os.environ.get(
-            "MEMGRAPH_DATABASE", config.get("memgraph", "database", fallback="memgraph")
-        )
-
-        self._driver = AsyncGraphDatabase.driver(
-            URI,
-            auth=(USERNAME, PASSWORD),
-        )
-        self._DATABASE = DATABASE
-        try:
-            async with self._driver.session(database=DATABASE) as session:
-                # Create index for base nodes on entity_id if it doesn't exist
-                try:
-                    workspace_label = self._get_workspace_label()
-                    await session.run(
-                        f"""CREATE INDEX ON :{workspace_label}(entity_id)"""
-                    )
-                    logger.info(
-                        f"[{self.workspace}] Created index on :{workspace_label}(entity_id) in Memgraph."
-                    )
-                except Exception as e:
-                    # Index may already exist, which is not an error
-                    logger.warning(
-                        f"[{self.workspace}] Index creation on :{workspace_label}(entity_id) may have failed or already exists: {e}"
-                    )
-                await session.run("RETURN 1")
-                logger.info(f"[{self.workspace}] Connected to Memgraph at {URI}")
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Failed to connect to Memgraph at {URI}: {e}"
+        async with get_graph_db_lock(enable_logging=True):
+            URI = os.environ.get(
+                "MEMGRAPH_URI",
+                config.get("memgraph", "uri", fallback="bolt://localhost:7687"),
             )
-            raise
+            USERNAME = os.environ.get(
+                "MEMGRAPH_USERNAME", config.get("memgraph", "username", fallback="")
+            )
+            PASSWORD = os.environ.get(
+                "MEMGRAPH_PASSWORD", config.get("memgraph", "password", fallback="")
+            )
+            DATABASE = os.environ.get(
+                "MEMGRAPH_DATABASE",
+                config.get("memgraph", "database", fallback="memgraph"),
+            )
+
+            self._driver = AsyncGraphDatabase.driver(
+                URI,
+                auth=(USERNAME, PASSWORD),
+            )
+            self._DATABASE = DATABASE
+            try:
+                async with self._driver.session(database=DATABASE) as session:
+                    # Create index for base nodes on entity_id if it doesn't exist
+                    try:
+                        workspace_label = self._get_workspace_label()
+                        await session.run(
+                            f"""CREATE INDEX ON :{workspace_label}(entity_id)"""
+                        )
+                        logger.info(
+                            f"[{self.workspace}] Created index on :{workspace_label}(entity_id) in Memgraph."
+                        )
+                    except Exception as e:
+                        # Index may already exist, which is not an error
+                        logger.warning(
+                            f"[{self.workspace}] Index creation on :{workspace_label}(entity_id) may have failed or already exists: {e}"
+                        )
+                    await session.run("RETURN 1")
+                    logger.info(f"[{self.workspace}] Connected to Memgraph at {URI}")
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Failed to connect to Memgraph at {URI}: {e}"
+                )
+                raise
 
     async def finalize(self):
-        if self._driver is not None:
-            await self._driver.close()
-            self._driver = None
+        async with get_graph_db_lock(enable_logging=True):
+            if self._driver is not None:
+                await self._driver.close()
+                self._driver = None
 
     async def __aexit__(self, exc_type, exc, tb):
         await self.finalize()
@@ -739,21 +743,22 @@ class MemgraphStorage(BaseGraphStorage):
             raise RuntimeError(
                 "Memgraph driver is not initialized. Call 'await initialize()' first."
             )
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                workspace_label = self._get_workspace_label()
-                query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
-                result = await session.run(query)
-                await result.consume()
-                logger.info(
-                    f"[{self.workspace}] Dropped workspace {workspace_label} from Memgraph database {self._DATABASE}"
+        async with get_graph_db_lock(enable_logging=True):
+            try:
+                async with self._driver.session(database=self._DATABASE) as session:
+                    workspace_label = self._get_workspace_label()
+                    query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
+                    result = await session.run(query)
+                    await result.consume()
+                    logger.info(
+                        f"[{self.workspace}] Dropped workspace {workspace_label} from Memgraph database {self._DATABASE}"
+                    )
+                    return {"status": "success", "message": "workspace data dropped"}
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping workspace {workspace_label} from Memgraph database {self._DATABASE}: {e}"
                 )
-                return {"status": "success", "message": "workspace data dropped"}
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping workspace {workspace_label} from Memgraph database {self._DATABASE}: {e}"
-            )
-            return {"status": "error", "message": str(e)}
+                return {"status": "error", "message": str(e)}
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Get the total degree (sum of relationships) of two nodes.

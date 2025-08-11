@@ -20,6 +20,7 @@ from lightrag.base import (
     DocStatus,
     DocProcessingStatus,
 )
+from ..kg.shared_storage import get_storage_lock
 import json
 
 # Import tenacity for retry logic
@@ -179,32 +180,33 @@ class RedisKVStorage(BaseKVStorage):
 
     async def initialize(self):
         """Initialize Redis connection and migrate legacy cache structure if needed"""
-        if self._initialized:
-            return
+        async with get_storage_lock(enable_logging=True):
+            if self._initialized:
+                return
 
-        # Test connection
-        try:
-            async with self._get_redis_connection() as redis:
-                await redis.ping()
-                logger.info(
-                    f"[{self.workspace}] Connected to Redis for namespace {self.namespace}"
-                )
-                self._initialized = True
-        except Exception as e:
-            logger.error(f"[{self.workspace}] Failed to connect to Redis: {e}")
-            # Clean up on connection failure
-            await self.close()
-            raise
-
-        # Migrate legacy cache structure if this is a cache namespace
-        if self.namespace.endswith("_cache"):
+            # Test connection
             try:
-                await self._migrate_legacy_cache_structure()
+                async with self._get_redis_connection() as redis:
+                    await redis.ping()
+                    logger.info(
+                        f"[{self.workspace}] Connected to Redis for namespace {self.namespace}"
+                    )
+                    self._initialized = True
             except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Failed to migrate legacy cache structure: {e}"
-                )
-                # Don't fail initialization for migration errors, just log them
+                logger.error(f"[{self.workspace}] Failed to connect to Redis: {e}")
+                # Clean up on connection failure
+                await self.close()
+                raise
+
+            # Migrate legacy cache structure if this is a cache namespace
+            if self.namespace.endswith("_cache"):
+                try:
+                    await self._migrate_legacy_cache_structure()
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Failed to migrate legacy cache structure: {e}"
+                    )
+                    # Don't fail initialization for migration errors, just log them
 
     @asynccontextmanager
     async def _get_redis_connection(self):
@@ -426,39 +428,42 @@ class RedisKVStorage(BaseKVStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with self._get_redis_connection() as redis:
-            try:
-                # Use SCAN to find all keys with the namespace prefix
-                pattern = f"{self.final_namespace}:*"
-                cursor = 0
-                deleted_count = 0
+        async with get_storage_lock(enable_logging=True):
+            async with self._get_redis_connection() as redis:
+                try:
+                    # Use SCAN to find all keys with the namespace prefix
+                    pattern = f"{self.final_namespace}:*"
+                    cursor = 0
+                    deleted_count = 0
 
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
-                    if keys:
-                        # Delete keys in batches
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.delete(key)
-                        results = await pipe.execute()
-                        deleted_count += sum(results)
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            # Delete keys in batches
+                            pipe = redis.pipeline()
+                            for key in keys:
+                                pipe.delete(key)
+                            results = await pipe.execute()
+                            deleted_count += sum(results)
 
-                    if cursor == 0:
-                        break
+                        if cursor == 0:
+                            break
 
-                logger.info(
-                    f"[{self.workspace}] Dropped {deleted_count} keys from {self.namespace}"
-                )
-                return {
-                    "status": "success",
-                    "message": f"{deleted_count} keys dropped",
-                }
+                    logger.info(
+                        f"[{self.workspace}] Dropped {deleted_count} keys from {self.namespace}"
+                    )
+                    return {
+                        "status": "success",
+                        "message": f"{deleted_count} keys dropped",
+                    }
 
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping keys from {self.namespace}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error dropping keys from {self.namespace}: {e}"
+                    )
+                    return {"status": "error", "message": str(e)}
 
     async def _migrate_legacy_cache_structure(self):
         """Migrate legacy nested cache structure to flattened structure for Redis
@@ -601,23 +606,24 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         """Initialize Redis connection"""
-        if self._initialized:
-            return
+        async with get_storage_lock(enable_logging=True):
+            if self._initialized:
+                return
 
-        try:
-            async with self._get_redis_connection() as redis:
-                await redis.ping()
-                logger.info(
-                    f"[{self.workspace}] Connected to Redis for doc status namespace {self.namespace}"
+            try:
+                async with self._get_redis_connection() as redis:
+                    await redis.ping()
+                    logger.info(
+                        f"[{self.workspace}] Connected to Redis for doc status namespace {self.namespace}"
+                    )
+                    self._initialized = True
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Failed to connect to Redis for doc status: {e}"
                 )
-                self._initialized = True
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Failed to connect to Redis for doc status: {e}"
-            )
-            # Clean up on connection failure
-            await self.close()
-            raise
+                # Clean up on connection failure
+                await self.close()
+                raise
 
     @asynccontextmanager
     async def _get_redis_connection(self):
@@ -1043,32 +1049,35 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
-        try:
-            async with self._get_redis_connection() as redis:
-                # Use SCAN to find all keys with the namespace prefix
-                pattern = f"{self.final_namespace}:*"
-                cursor = 0
-                deleted_count = 0
+        async with get_storage_lock(enable_logging=True):
+            try:
+                async with self._get_redis_connection() as redis:
+                    # Use SCAN to find all keys with the namespace prefix
+                    pattern = f"{self.final_namespace}:*"
+                    cursor = 0
+                    deleted_count = 0
 
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
-                    if keys:
-                        # Delete keys in batches
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.delete(key)
-                        results = await pipe.execute()
-                        deleted_count += sum(results)
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            # Delete keys in batches
+                            pipe = redis.pipeline()
+                            for key in keys:
+                                pipe.delete(key)
+                            results = await pipe.execute()
+                            deleted_count += sum(results)
 
-                    if cursor == 0:
-                        break
+                        if cursor == 0:
+                            break
 
-                logger.info(
-                    f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"
+                    logger.info(
+                        f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"
+                    )
+                    return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping doc status {self.namespace}: {e}"
                 )
-                return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping doc status {self.namespace}: {e}"
-            )
-            return {"status": "error", "message": str(e)}
+                return {"status": "error", "message": str(e)}
