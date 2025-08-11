@@ -140,7 +140,7 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("LIGHTRAG_API_KEY", None),
         help="API key for authentication. This protects lightrag server against unauthorized access",
     )
-
+ 
     # Optional https parameters
     parser.add_argument(
         "--ssl",
@@ -280,6 +280,8 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
+    print(f"[DEBUG] AUTH_ACCOUNTS loaded: {args.auth_accounts}")
+    print(f"[DEBUG] Current working directory: {os.getcwd()}")
     args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)

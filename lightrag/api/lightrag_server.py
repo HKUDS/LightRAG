@@ -743,14 +743,15 @@ def main():
     # Check and install dependencies
     check_and_install_dependencies()
 
+    # Required for Windows systems when using multiprocessing (used internally by things like Uvicorn, LLM tasks, etc.).
+        # avoids errors like E.g. Runtime Error
     from multiprocessing import freeze_support
-
     freeze_support()
 
     # Configure logging before parsing args
-    configure_logging()
-    update_uvicorn_mode_config()
-    display_splash_screen(global_args)
+    configure_logging()                 # Sets up logging format, file, levels, etc.
+    update_uvicorn_mode_config()        # Adjusts internal settings for Uvicorn
+    display_splash_screen(global_args)  # Shows a welcome banner with info (optional UI touch)
 
     # Create application instance directly instead of using factory function
     app = create_app(global_args)

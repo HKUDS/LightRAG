@@ -11,7 +11,7 @@ from .config import global_args
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
+ 
 
 class TokenPayload(BaseModel):
     sub: str  # Username
@@ -19,8 +19,8 @@ class TokenPayload(BaseModel):
     role: str = "user"  # User role, default is regular user
     metadata: dict = {}  # Additional metadata
 
-
-class AuthHandler:
+ 
+class AuthHandler:  # handles token creation and validation
     def __init__(self):
         self.secret = global_args.token_secret
         self.algorithm = global_args.jwt_algorithm
@@ -84,7 +84,7 @@ class AuthHandler:
             HTTPException: If token is invalid or expired
         """
         try:
-            payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])
+            payload = jwt.decode(token, self.secret, algorithms=[self.algorithm])     # Decode here
             expire_timestamp = payload["exp"]
             expire_time = datetime.utcfromtimestamp(expire_timestamp)
 

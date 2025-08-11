@@ -52,7 +52,11 @@ from dotenv import load_dotenv
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
+"""
+Functions: 
+"""
 
+# splits a large text into smaller chunks based on token size
 def chunking_by_token_size(
     tokenizer: Tokenizer,
     content: str,
@@ -105,9 +109,12 @@ def chunking_by_token_size(
                     "chunk_order_index": index,
                 }
             )
+    
+    # Outputs: A list of dictionaries, each containing chunk details like token count, content, and order index.
     return results
 
 
+# handles summarizing entity or relation descriptions using a language model
 async def _handle_entity_relation_summary(
     entity_or_relation_name: str,
     description: str,
@@ -156,6 +163,7 @@ async def _handle_entity_relation_summary(
     return summary
 
 
+# handle the extraction and validation of entities from records.
 async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
@@ -209,6 +217,7 @@ async def _handle_single_entity_extraction(
     )
 
 
+# handle the extraction and validation of relationships from records.
 async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
@@ -268,6 +277,7 @@ async def _handle_single_relationship_extraction(
     )
 
 
+# rebuilds entity and relationship descriptions from cached extraction results using parallel processing
 async def _rebuild_knowledge_from_chunks(
     entities_to_rebuild: dict[str, set[str]],
     relationships_to_rebuild: dict[tuple[str, str], set[str]],
@@ -516,6 +526,7 @@ async def _rebuild_knowledge_from_chunks(
             pipeline_status["history_messages"].append(status_message)
 
 
+# Retrieves cached extraction results for specific chunk IDs.
 async def _get_cached_extraction_results(
     llm_response_cache: BaseKVStorage,
     chunk_ids: set[str],
@@ -587,9 +598,10 @@ async def _get_cached_extraction_results(
     logger.info(
         f"Found {valid_entries} valid cache entries, {len(cached_results)} chunks with results"
     )
-    return cached_results
+    return cached_results # A dictionary mapping chunk IDs to lists of extraction results.
 
 
+# Parses cached extraction results to extract entities and relationships.
 async def _parse_extraction_result(
     text_chunks_storage: BaseKVStorage, extraction_result: str, chunk_id: str
 ) -> tuple[dict, dict]:
@@ -650,7 +662,7 @@ async def _parse_extraction_result(
                 (relationship_data["src_id"], relationship_data["tgt_id"])
             ].append(relationship_data)
 
-    return dict(maybe_nodes), dict(maybe_edges)
+    return dict(maybe_nodes), dict(maybe_edges) # A tuple of dictionaries for entities and relationships.
 
 
 async def _rebuild_single_entity(
@@ -928,6 +940,7 @@ async def _rebuild_single_relationship(
     )
 
 
+# merge existing nodes with new data and upsert them into the knowledge graph
 async def _merge_nodes_then_upsert(
     entity_name: str,
     nodes_data: list[dict],
@@ -1021,6 +1034,7 @@ async def _merge_nodes_then_upsert(
     return node_data
 
 
+# merge existing edges with new data and upsert them into the knowledge graph
 async def _merge_edges_then_upsert(
     src_id: str,
     tgt_id: str,
@@ -1183,6 +1197,7 @@ async def _merge_edges_then_upsert(
     return edge_data
 
 
+# Merges nodes and edges from extraction results into the knowledge graph.
 async def merge_nodes_and_edges(
     chunk_results: list,
     knowledge_graph_inst: BaseGraphStorage,
@@ -1360,6 +1375,7 @@ async def merge_nodes_and_edges(
     # (No need to collect results since these tasks don't return values)
 
 
+# Extracts entities and relationships from text chunks using a language model.
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
@@ -1601,10 +1617,11 @@ async def extract_entities(
     # If all tasks completed successfully, collect results
     chunk_results = [task.result() for task in tasks]
 
-    # Return the chunk_results for later processing in merge_nodes_and_edges
+    # Return the chunk_results for later processing in merge_nodes_and_edges (A list of extracted entities and relationships.)
     return chunk_results
 
 
+# Performs a knowledge graph query using high-level and low-level keywords.
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -1881,6 +1898,7 @@ async def extract_keywords_only(
     return hl_keywords, ll_keywords
 
 
+# retrieve text chunks from vector storage and build a query context (def _build_query_context()) respectively
 async def _get_vector_context(
     query: str,
     chunks_vdb: BaseVectorStorage,
@@ -2295,6 +2313,7 @@ async def _build_query_context(
     return result
 
 
+# These functions (following 3 func) retrieve node-related data and find related text units or edges from entities.
 async def _get_node_data(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2560,6 +2579,7 @@ async def _find_most_related_edges_from_entities(
     return all_edges_data
 
 
+# These functions (following 3 func) retrieve edge-related data and find related entities or text units from relationships.
 async def _get_edge_data(
     keywords,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2781,6 +2801,7 @@ async def _find_related_text_unit_from_relationships(
     return result_chunks
 
 
+# Performs a naive vector-based query to retrieve document chunks.
 async def naive_query(
     query: str,
     chunks_vdb: BaseVectorStorage,
@@ -2959,7 +2980,7 @@ async def naive_query(
             ),
         )
 
-    return response
+    return response # A response string or async iterator from the language model.
 
 
 # TODO: Deprecated, use user_prompt in QueryParam instead

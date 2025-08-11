@@ -70,24 +70,29 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     # Use global whitelist_patterns and auth_configured variables
     # whitelist_patterns and auth_configured are already initialized at module level
 
-    # Only calculate api_key_configured as it depends on the function parameter
+    # Only calculate api_key_configured as it depends on the function parameter; 
+    # Calculate if API key is configured to controls whether API key validation will be applied. 
     api_key_configured = bool(api_key)
 
+    ## Define OAuth2 (JWT) security scheme
     # Create security dependencies with proper descriptions for Swagger UI
+    # Tells FastAPI that it can accept Authorization: Bearer <token> headers.
+    # auto_error=False means don’t auto-reject, let us handle it.
     oauth2_scheme = OAuth2PasswordBearer(
         tokenUrl="login", auto_error=False, description="OAuth2 Password Authentication"
     )
 
     # If API key is configured, create an API key header security
-    api_key_header = None
+    api_key_header = None   
     if api_key_configured:
         api_key_header = APIKeyHeader(
             name="X-API-Key", auto_error=False, description="API Key Authentication"
         )
 
+    # Internal function
     async def combined_dependency(
         request: Request,
-        token: str = Security(oauth2_scheme),
+        token: str = Security(oauth2_scheme),  # token: from Authorization: Bearer <token>
         api_key_header_value: Optional[str] = None
         if api_key_header is None
         else Security(api_key_header),

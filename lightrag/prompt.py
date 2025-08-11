@@ -2,16 +2,16 @@ from __future__ import annotations
 from typing import Any
 
 
-PROMPTS: dict[str, Any] = {}
+PROMPTS: dict[str, Any] = {} 
 
 PROMPTS["DEFAULT_LANGUAGE"] = "English"
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
-
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
-
+PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"] # constrain what entities can be extracted 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
+
+# {xxxx} == placeholder to be filled at runtime
 
 PROMPTS["entity_extraction"] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
