@@ -428,7 +428,7 @@ async def lightrag_batch_process(
         if "content" not in item:
             raise MCPError("INVALID_PARAMETER", f"Item {i} missing 'content'")
 
-    batch_id = f"batch_{hash(str(items))[:8]}"
+    batch_id = f"batch_{str(hash(str(items)))[:8]}"
     logger.info(f"Starting batch processing: {batch_id} with {len(items)} items")
 
     # Initialize results
