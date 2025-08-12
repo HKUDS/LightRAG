@@ -1,13 +1,296 @@
-# Docker Compose override for enhanced processing with Docling service
+# Enhanced Docker Compose for LightRAG with PostgreSQL 16 + pgvector + Apache AGE
+# Provides advanced vector similarity search and graph database capabilities
+
+version: '3.8'
 
 services:
   lightrag:
-    depends_on:
-      postgres:
-        condition: service_healthy
-      docling-service:
-        condition: service_healthy
+    container_name: lightrag_enhanced
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - lightrag:enhanced
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
     environment:
-      # Ensure enhanced processing is enabled
+      # Enhanced storage configuration
+      - POSTGRES_HOST=postgres-enhanced
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-lightrag}
+      - POSTGRES_USER=${POSTGRES_USER:-lightrag}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-lightrag_secure_password}
+      
+      # Vector storage enhancements
+      - VECTOR_STORAGE_TYPE=postgres_enhanced
+      - VECTOR_DIMENSION=1536
+      - VECTOR_INDEX_TYPE=hnsw
+      - VECTOR_DISTANCE_METRIC=cosine
+      - HNSW_M=16
+      - HNSW_EF_CONSTRUCTION=64
+      
+      # Graph storage enhancements
+      - GRAPH_STORAGE_TYPE=postgres_enhanced
+      - ENABLE_APACHE_AGE=true
+      - AGE_GRAPH_NAME=lightrag_knowledge
+      
+      # Performance optimizations
+      - MAX_ASYNC=4
+      - EMBEDDING_BATCH_SIZE=100
+      - VECTOR_SIMILARITY_THRESHOLD=0.8
+      
+      # Integration settings
+      - DOCLING_SERVICE_URL=http://docling-service:8080
+      - DOCLING_SERVICE_TIMEOUT=300
+      - DOCLING_SERVICE_RETRIES=3
+      - DOCLING_FALLBACK_ENABLED=true
       - LIGHTRAG_ENHANCED_PROCESSING=true
-      - DOCLING_SERVICE_MODE=auto
+    restart: unless-stopped
+    depends_on:
+      postgres-enhanced:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - lightrag-enhanced-network
+
+  # Enhanced PostgreSQL with pgvector + Apache AGE
+  postgres-enhanced:
+    container_name: lightrag_postgres_enhanced
+    image: lightrag/postgresql-lightrag:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lightrag}
+      POSTGRES_USER: ${POSTGRES_USER:-lightrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lightrag_secure_password}
+      
+      # Performance tuning
+      POSTGRES_SHARED_BUFFERS: 512MB
+      POSTGRES_WORK_MEM: 64MB
+      POSTGRES_MAINTENANCE_WORK_MEM: 256MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 2GB
+      POSTGRES_MAX_CONNECTIONS: 200
+      POSTGRES_MAX_PARALLEL_WORKERS: 8
+      
+      # Vector-specific settings
+      POSTGRES_RANDOM_PAGE_COST: 1.0
+      POSTGRES_SEQ_PAGE_COST: 1.0
+      
+      # Enable extensions
+      POSTGRES_EXTENSIONS: vector,age,pg_stat_statements,pg_trgm,btree_gin
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_enhanced_data:/var/lib/postgresql/data
+      - ./logs/postgresql:/var/log/postgresql
+      - ./build/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag} -d ${POSTGRES_DB:-lightrag}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - lightrag-enhanced-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Optional: Redis for caching (enhanced setup)
+  redis-enhanced:
+    container_name: lightrag_redis_enhanced
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: ["with-redis"]
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_enhanced_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - lightrag-enhanced-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Optional: Neo4j for advanced graph operations
+  neo4j-enhanced:
+    container_name: lightrag_neo4j_enhanced
+    image: neo4j:5.15-community
+    restart: unless-stopped
+    profiles: ["with-neo4j"]
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-lightrag_graph_password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_memory_heap_initial__size: 512m
+      NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_dbms_memory_pagecache_size: 512m
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_enhanced_data:/data
+      - neo4j_enhanced_logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-lightrag_graph_password}", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - lightrag-enhanced-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1'
+
+  # Enhanced document processing service
+  docling-service:
+    container_name: lightrag_docling_enhanced
+    profiles: ["enhanced-processing"]
+    build:
+      context: ./lightrag-docling
+      dockerfile: Dockerfile
+    environment:
+      - DOCLING_HOST=0.0.0.0
+      - DOCLING_PORT=8080
+      - DOCLING_LOG_LEVEL=INFO
+      
+      # Enhanced processing configuration
+      - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
+      - DOCLING_DEFAULT_MAX_WORKERS=4
+      - DOCLING_DEFAULT_ENABLE_OCR=true
+      - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
+      - DOCLING_DEFAULT_ENABLE_FIGURES=true
+      - DOCLING_ENABLE_VECTOR_EXTRACTION=true
+      
+      # Cache configuration
+      - DOCLING_CACHE_ENABLED=true
+      - DOCLING_CACHE_DIR=/app/cache
+      - DOCLING_CACHE_MAX_SIZE_GB=4
+      
+      # Production limits
+      - DOCLING_MAX_FILE_SIZE_MB=100
+      - DOCLING_MAX_BATCH_SIZE=10
+    volumes:
+      - docling_enhanced_cache:/app/cache
+    networks:
+      - lightrag-enhanced-network
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # Monitoring and observability
+  prometheus:
+    container_name: lightrag_prometheus
+    image: prom/prometheus:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - lightrag-enhanced-network
+
+  grafana:
+    container_name: lightrag_grafana
+    image: grafana/grafana:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - lightrag-enhanced-network
+
+networks:
+  lightrag-enhanced-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_enhanced_data:
+    driver: local
+  redis_enhanced_data:
+    driver: local
+  neo4j_enhanced_data:
+    driver: local
+  neo4j_enhanced_logs:
+    driver: local
+  docling_enhanced_cache:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# Usage Examples:
+# 
+# Start basic enhanced setup:
+#   docker compose -f docker-compose.enhanced.yml up -d
+#
+# Start with Redis caching:
+#   docker compose -f docker-compose.enhanced.yml --profile with-redis up -d
+#
+# Start with Neo4j for advanced graph operations:
+#   docker compose -f docker-compose.enhanced.yml --profile with-neo4j up -d
+#
+# Start with enhanced document processing:
+#   docker compose -f docker-compose.enhanced.yml --profile enhanced-processing up -d
+#
+# Start with monitoring:
+#   docker compose -f docker-compose.enhanced.yml --profile monitoring up -d
+#
+# Start everything:
+#   docker compose -f docker-compose.enhanced.yml --profile with-redis --profile with-neo4j --profile enhanced-processing --profile monitoring up -d

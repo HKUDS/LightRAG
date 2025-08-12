@@ -39,17 +39,39 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         # Where to save index file if you want persistent storage
         working_dir = self.global_config["working_dir"]
-        if self.workspace:
+
+        # Check for FAISS_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all FAISS storage instances
+        faiss_workspace = os.environ.get("FAISS_WORKSPACE")
+        if faiss_workspace and faiss_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = faiss_workspace.strip()
+            logger.info(
+                f"Using FAISS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        if effective_workspace:
             # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
+            workspace_dir = os.path.join(working_dir, effective_workspace)
             os.makedirs(workspace_dir, exist_ok=True)
             self._faiss_index_file = os.path.join(
                 workspace_dir, f"faiss_index_{self.namespace}.index"
             )
+            logger.debug(f"FAISS index file with workspace: '{self._faiss_index_file}'")
         else:
             # Default behavior when workspace is empty
             self._faiss_index_file = os.path.join(
                 working_dir, f"faiss_index_{self.namespace}.index"
+            )
+            logger.debug(
+                f"FAISS index file without workspace: '{self._faiss_index_file}'"
             )
         self._meta_file = self._faiss_index_file + ".meta.json"
 

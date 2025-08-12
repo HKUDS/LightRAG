@@ -213,11 +213,17 @@ bun run preview
 # Development environment
 docker compose up
 
+# Enhanced PostgreSQL environment (RECOMMENDED)
+docker compose -f docker-compose.enhanced.yml up -d
+
 # Production environment (security-hardened)
 docker compose -f docker-compose.production.yml up -d
 
 # Build specific service
 docker compose build lightrag
+
+# Build enhanced PostgreSQL image
+./scripts/build-postgresql.sh
 
 # Run in background
 docker compose up -d
@@ -228,6 +234,28 @@ docker compose logs -f lightrag
 # Monitor resources
 docker compose ps
 docker stats
+```
+
+### Enhanced PostgreSQL Development
+```bash
+# Start with all optional services
+docker compose -f docker-compose.enhanced.yml \
+  --profile with-redis \
+  --profile with-neo4j \
+  --profile enhanced-processing \
+  --profile monitoring up -d
+
+# Test vector operations
+docker compose -f docker-compose.enhanced.yml exec postgres-enhanced \
+  psql -U lightrag -d lightrag -c "SELECT '[1,2,3]'::vector(3) <-> '[4,5,6]'::vector(3);"
+
+# Test graph operations
+docker compose -f docker-compose.enhanced.yml exec postgres-enhanced \
+  psql -U lightrag -d lightrag -c "SELECT ag_catalog.create_graph('test_graph');"
+
+# Monitor performance
+docker compose -f docker-compose.enhanced.yml exec postgres-enhanced \
+  psql -U lightrag -d lightrag -c "SELECT * FROM pg_lightrag_health;"
 ```
 
 ### Kubernetes Deployment
@@ -303,11 +331,35 @@ kubectl logs -f deployment/lightrag -n lightrag
 LightRAG uses 4 storage types with multiple backend implementations:
 
 1. **KV Storage**: Document chunks, LLM cache (JsonKVStorage, PGKVStorage, RedisKVStorage, MongoKVStorage)
-2. **Vector Storage**: Embedding vectors (NanoVectorDBStorage, PGVectorStorage, MilvusVectorDBStorage, etc.)
-3. **Graph Storage**: Entity relationships (NetworkXStorage, Neo4JStorage, PGGraphStorage, MemgraphStorage)
+2. **Vector Storage**: Embedding vectors (NanoVectorDBStorage, PGVectorStorage, MilvusVectorDBStorage, **PGVectorStorageEnhanced**)
+3. **Graph Storage**: Entity relationships (NetworkXStorage, Neo4JStorage, PGGraphStorage, MemgraphStorage, **PGGraphStorageEnhanced**)
 4. **Document Status Storage**: Processing status (JsonDocStatusStorage, PGDocStatusStorage, MongoDocStatusStorage)
 
 Storage backends cannot be changed after documents are added to the system.
+
+### Enhanced PostgreSQL Storage (NEW)
+
+**PostgreSQL 16 + pgvector + Apache AGE** provides significant performance improvements:
+
+- **PGVectorStorageEnhanced**: Native vector similarity search with HNSW indexing (50-80% faster)
+- **PGGraphStorageEnhanced**: Apache AGE graph database with Cypher query support
+- **Multiple Distance Metrics**: Cosine, L2, Inner Product with optimized indexes
+- **Bulk Operations**: High-performance batch inserts using PostgreSQL COPY
+- **Production Ready**: Security hardening, monitoring, backup & recovery
+
+#### Quick Setup
+```bash
+# Build enhanced PostgreSQL image
+./scripts/build-postgresql.sh
+
+# Start enhanced stack
+docker compose -f docker-compose.enhanced.yml up -d
+
+# Or migrate from standard setup
+./scripts/migrate-to-enhanced-postgresql.sh
+```
+
+See `POSTGRESQL_ENHANCEMENT_GUIDE.md` for comprehensive documentation.
 
 ## API Structure
 

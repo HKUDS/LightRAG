@@ -38,17 +38,41 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
         working_dir = self.global_config["working_dir"]
-        if self.workspace:
+
+        # Check for NANO_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all NanoVectorDB storage instances
+        nano_workspace = os.environ.get("NANO_WORKSPACE")
+        if nano_workspace and nano_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = nano_workspace.strip()
+            logger.info(
+                f"Using NANO_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        if effective_workspace:
             # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
+            workspace_dir = os.path.join(working_dir, effective_workspace)
             os.makedirs(workspace_dir, exist_ok=True)
             self._client_file_name = os.path.join(
                 workspace_dir, f"vdb_{self.namespace}.json"
+            )
+            logger.debug(
+                f"NanoVectorDB file with workspace: '{self._client_file_name}'"
             )
         else:
             # Default behavior when workspace is empty
             self._client_file_name = os.path.join(
                 working_dir, f"vdb_{self.namespace}.json"
+            )
+            logger.debug(
+                f"NanoVectorDB file without workspace: '{self._client_file_name}'"
             )
         self._max_batch_size = self.global_config["embedding_batch_num"]
 

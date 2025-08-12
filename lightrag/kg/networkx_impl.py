@@ -39,17 +39,41 @@ class NetworkXStorage(BaseGraphStorage):
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
-        if self.workspace:
+
+        # Check for NETWORKX_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all NetworkX storage instances
+        networkx_workspace = os.environ.get("NETWORKX_WORKSPACE")
+        if networkx_workspace and networkx_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = networkx_workspace.strip()
+            logger.info(
+                f"Using NETWORKX_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        if effective_workspace:
             # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
+            workspace_dir = os.path.join(working_dir, effective_workspace)
             os.makedirs(workspace_dir, exist_ok=True)
             self._graphml_xml_file = os.path.join(
                 workspace_dir, f"graph_{self.namespace}.graphml"
+            )
+            logger.debug(
+                f"NetworkX graph file with workspace: '{self._graphml_xml_file}'"
             )
         else:
             # Default behavior when workspace is empty
             self._graphml_xml_file = os.path.join(
                 working_dir, f"graph_{self.namespace}.graphml"
+            )
+            logger.debug(
+                f"NetworkX graph file without workspace: '{self._graphml_xml_file}'"
             )
         self._storage_lock = None
         self.storage_updated = None

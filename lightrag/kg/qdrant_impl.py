@@ -7,6 +7,7 @@ import hashlib
 import uuid
 from ..utils import logger
 from ..base import BaseVectorStorage
+from .shared_storage import get_storage_lock
 import configparser
 import pipmaster as pm
 
@@ -111,6 +112,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+        # Initialize storage lock for multi-process safety
+        self._storage_lock = get_storage_lock(enable_logging=False)
+
         QdrantVectorDBStorage.create_collection_if_not_exist(
             self._client,
             self.namespace,
@@ -364,23 +369,25 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             - On failure: {"status": "error", "message": "<error details>"}
         """
         try:
-            # Delete the collection and recreate it
-            if self._client.collection_exists(self.namespace):
-                self._client.delete_collection(self.namespace)
+            # Use storage lock for multi-process safety during drop operations
+            async with self._storage_lock:
+                # Delete the collection and recreate it
+                if self._client.collection_exists(self.namespace):
+                    self._client.delete_collection(self.namespace)
 
-            # Recreate the collection
-            QdrantVectorDBStorage.create_collection_if_not_exist(
-                self._client,
-                self.namespace,
-                vectors_config=models.VectorParams(
-                    size=self.embedding_func.embedding_dim,
-                    distance=models.Distance.COSINE,
-                ),
-            )
+                # Recreate the collection
+                QdrantVectorDBStorage.create_collection_if_not_exist(
+                    self._client,
+                    self.namespace,
+                    vectors_config=models.VectorParams(
+                        size=self.embedding_func.embedding_dim,
+                        distance=models.Distance.COSINE,
+                    ),
+                )
 
-            logger.info(
-                f"Process {os.getpid()} drop Qdrant collection {self.namespace}"
-            )
+                logger.info(
+                    f"Process {os.getpid()} drop Qdrant collection {self.namespace}"
+                )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"Error dropping Qdrant collection {self.namespace}: {e}")

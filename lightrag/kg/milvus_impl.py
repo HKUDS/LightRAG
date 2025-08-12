@@ -6,6 +6,7 @@ import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
+from .shared_storage import get_storage_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -695,6 +696,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
+        # Initialize storage lock for multi-process safety
+        self._storage_lock = get_storage_lock(enable_logging=False)
+
         # Create collection and check compatibility
         self._create_collection_if_not_exist()
 
@@ -937,16 +941,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             - On failure: {"status": "error", "message": "<error details>"}
         """
         try:
-            # Drop the collection and recreate it
-            if self._client.has_collection(self.namespace):
-                self._client.drop_collection(self.namespace)
+            # Use storage lock for multi-process safety during drop operations
+            async with self._storage_lock:
+                # Drop the collection and recreate it
+                if self._client.has_collection(self.namespace):
+                    self._client.drop_collection(self.namespace)
 
-            # Recreate the collection
-            self._create_collection_if_not_exist()
+                # Recreate the collection
+                self._create_collection_if_not_exist()
 
-            logger.info(
-                f"Process {os.getpid()} drop Milvus collection {self.namespace}"
-            )
+                logger.info(
+                    f"Process {os.getpid()} drop Milvus collection {self.namespace}"
+                )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"Error dropping Milvus collection {self.namespace}: {e}")
