@@ -716,30 +716,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if "created_at" not in self.meta_fields:
             self.meta_fields.add("created_at")
 
-        self._client = MilvusClient(
-            uri=os.environ.get(
-                "MILVUS_URI",
-                config.get(
-                    "milvus",
-                    "uri",
-                    fallback=os.path.join(
-                        self.global_config["working_dir"], "milvus_lite.db"
-                    ),
-                ),
-            ),
-            user=os.environ.get(
-                "MILVUS_USER", config.get("milvus", "user", fallback=None)
-            ),
-            password=os.environ.get(
-                "MILVUS_PASSWORD", config.get("milvus", "password", fallback=None)
-            ),
-            token=os.environ.get(
-                "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
-            ),
-            db_name=os.environ.get(
-                "MILVUS_DB_NAME", config.get("milvus", "db_name", fallback=None)
-            ),
-        )
+        # Initialize client as None - will be created in initialize() method
+        self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._initialized = False
 
@@ -750,6 +728,38 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return
 
             try:
+                # Create MilvusClient if not already created
+                if self._client is None:
+                    self._client = MilvusClient(
+                        uri=os.environ.get(
+                            "MILVUS_URI",
+                            config.get(
+                                "milvus",
+                                "uri",
+                                fallback=os.path.join(
+                                    self.global_config["working_dir"], "milvus_lite.db"
+                                ),
+                            ),
+                        ),
+                        user=os.environ.get(
+                            "MILVUS_USER", config.get("milvus", "user", fallback=None)
+                        ),
+                        password=os.environ.get(
+                            "MILVUS_PASSWORD",
+                            config.get("milvus", "password", fallback=None),
+                        ),
+                        token=os.environ.get(
+                            "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
+                        ),
+                        db_name=os.environ.get(
+                            "MILVUS_DB_NAME",
+                            config.get("milvus", "db_name", fallback=None),
+                        ),
+                    )
+                    logger.debug(
+                        f"[{self.workspace}] MilvusClient created successfully"
+                    )
+
                 # Create collection and check compatibility
                 self._create_collection_if_not_exist()
                 self._initialized = True
@@ -763,7 +773,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        # logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 

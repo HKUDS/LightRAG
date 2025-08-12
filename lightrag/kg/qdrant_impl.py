@@ -110,14 +110,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
 
-        self._client = QdrantClient(
-            url=os.environ.get(
-                "QDRANT_URL", config.get("qdrant", "uri", fallback=None)
-            ),
-            api_key=os.environ.get(
-                "QDRANT_API_KEY", config.get("qdrant", "apikey", fallback=None)
-            ),
-        )
+        # Initialize client as None - will be created in initialize() method
+        self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._initialized = False
 
@@ -128,6 +122,21 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 return
 
             try:
+                # Create QdrantClient if not already created
+                if self._client is None:
+                    self._client = QdrantClient(
+                        url=os.environ.get(
+                            "QDRANT_URL", config.get("qdrant", "uri", fallback=None)
+                        ),
+                        api_key=os.environ.get(
+                            "QDRANT_API_KEY",
+                            config.get("qdrant", "apikey", fallback=None),
+                        ),
+                    )
+                    logger.debug(
+                        f"[{self.workspace}] QdrantClient created successfully"
+                    )
+
                 # Create collection if not exists
                 QdrantVectorDBStorage.create_collection_if_not_exist(
                     self._client,
