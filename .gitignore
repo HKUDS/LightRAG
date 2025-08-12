@@ -85,6 +85,13 @@ htmlcov/
 .nox/
 .coverage.*
 
+# Coverage Reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
 # Docker
 .dockerignore
 

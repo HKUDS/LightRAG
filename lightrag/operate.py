@@ -63,6 +63,12 @@ def chunking_by_token_size(
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
 ) -> list[dict[str, Any]]:
+    # Validate overlap size at the beginning
+    if overlap_token_size >= max_token_size:
+        raise ValueError(
+            f"overlap_token_size ({overlap_token_size}) must be less than max_token_size ({max_token_size})"
+        )
+
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
@@ -96,9 +102,10 @@ def chunking_by_token_size(
                 }
             )
     else:
-        for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size)
-        ):
+        # Normal overlap case
+        step_size = max_token_size - overlap_token_size
+
+        for index, start in enumerate(range(0, len(tokens), step_size)):
             chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
             results.append(
                 {
