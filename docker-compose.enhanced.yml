@@ -27,7 +27,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-lightrag}
       - POSTGRES_USER=${POSTGRES_USER:-lightrag}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-lightrag_secure_password}
-      
+
       # Vector storage enhancements
       - VECTOR_STORAGE_TYPE=postgres_enhanced
       - VECTOR_DIMENSION=1536
@@ -35,17 +35,17 @@ services:
       - VECTOR_DISTANCE_METRIC=cosine
       - HNSW_M=16
       - HNSW_EF_CONSTRUCTION=64
-      
+
       # Graph storage enhancements
       - GRAPH_STORAGE_TYPE=postgres_enhanced
       - ENABLE_APACHE_AGE=true
       - AGE_GRAPH_NAME=lightrag_knowledge
-      
+
       # Performance optimizations
       - MAX_ASYNC=4
       - EMBEDDING_BATCH_SIZE=100
       - VECTOR_SIMILARITY_THRESHOLD=0.8
-      
+
       # Integration settings
       - DOCLING_SERVICE_URL=http://docling-service:8080
       - DOCLING_SERVICE_TIMEOUT=300
@@ -70,7 +70,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-lightrag}
       POSTGRES_USER: ${POSTGRES_USER:-lightrag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lightrag_secure_password}
-      
+
       # Performance tuning
       POSTGRES_SHARED_BUFFERS: 512MB
       POSTGRES_WORK_MEM: 64MB
@@ -78,11 +78,11 @@ services:
       POSTGRES_EFFECTIVE_CACHE_SIZE: 2GB
       POSTGRES_MAX_CONNECTIONS: 200
       POSTGRES_MAX_PARALLEL_WORKERS: 8
-      
+
       # Vector-specific settings
       POSTGRES_RANDOM_PAGE_COST: 1.0
       POSTGRES_SEQ_PAGE_COST: 1.0
-      
+
       # Enable extensions
       POSTGRES_EXTENSIONS: vector,age,pg_stat_statements,pg_trgm,btree_gin
     ports:
@@ -176,7 +176,7 @@ services:
       - DOCLING_HOST=0.0.0.0
       - DOCLING_PORT=8080
       - DOCLING_LOG_LEVEL=INFO
-      
+
       # Enhanced processing configuration
       - DOCLING_DEFAULT_EXPORT_FORMAT=markdown
       - DOCLING_DEFAULT_MAX_WORKERS=4
@@ -184,12 +184,12 @@ services:
       - DOCLING_DEFAULT_ENABLE_TABLE_STRUCTURE=true
       - DOCLING_DEFAULT_ENABLE_FIGURES=true
       - DOCLING_ENABLE_VECTOR_EXTRACTION=true
-      
+
       # Cache configuration
       - DOCLING_CACHE_ENABLED=true
       - DOCLING_CACHE_DIR=/app/cache
       - DOCLING_CACHE_MAX_SIZE_GB=4
-      
+
       # Production limits
       - DOCLING_MAX_FILE_SIZE_MB=100
       - DOCLING_MAX_BATCH_SIZE=10
@@ -276,7 +276,7 @@ volumes:
     driver: local
 
 # Usage Examples:
-# 
+#
 # Start basic enhanced setup:
 #   docker compose -f docker-compose.enhanced.yml up -d
 #
