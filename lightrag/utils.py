@@ -604,7 +604,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
 def load_json(file_name):
     if not os.path.exists(file_name):
         return None
-    with open(file_name, encoding="utf-8") as f:
+    with open(file_name, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
