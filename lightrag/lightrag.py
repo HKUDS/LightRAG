@@ -1229,6 +1229,9 @@ class LightRAG:
                     async with semaphore:
                         nonlocal processed_count
                         current_file_number = 0
+                        # Initialize to prevent UnboundLocalError in error handling
+                        first_stage_tasks = []
+                        entity_relation_task = None
                         try:
                             # Get file path from status document
                             file_path = getattr(
@@ -1348,15 +1351,13 @@ class LightRAG:
                                 )
                                 pipeline_status["history_messages"].append(error_msg)
 
-                                # Cancel tasks that are not yet completed
-                                all_tasks = first_stage_tasks + (
-                                    [entity_relation_task]
-                                    if entity_relation_task
-                                    else []
-                                )
-                                for task in all_tasks:
-                                    if task and not task.done():
-                                        task.cancel()
+                            # Cancel tasks that are not yet completed
+                            all_tasks = first_stage_tasks + (
+                                [entity_relation_task] if entity_relation_task else []
+                            )
+                            for task in all_tasks:
+                                if task and not task.done():
+                                    task.cancel()
 
                             # Persistent llm cache
                             if self.llm_response_cache:
