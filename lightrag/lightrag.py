@@ -545,6 +545,7 @@ class LightRAG:
                 self.doc_status,
             ):
                 if storage:
+                    # logger.debug(f"Initializing storage: {storage}")
                     await storage.initialize()
 
             self._storages_status = StoragesStatus.INITIALIZED

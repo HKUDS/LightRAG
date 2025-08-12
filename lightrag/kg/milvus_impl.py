@@ -589,18 +589,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """Create collection if not exists and check existing collection compatibility"""
 
         try:
-            # First, list all collections to see what actually exists
-            try:
-                all_collections = self._client.list_collections()
-                logger.debug(
-                    f"[{self.workspace}] All collections in database: {all_collections}"
-                )
-            except Exception as list_error:
-                logger.warning(
-                    f"[{self.workspace}] Could not list collections: {list_error}"
-                )
-                all_collections = []
-
             # Check if our specific collection exists
             collection_exists = self._client.has_collection(self.final_namespace)
             logger.info(
