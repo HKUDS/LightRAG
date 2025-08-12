@@ -1094,14 +1094,19 @@ class PGKVStorage(BaseKVStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                final_workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: instance workspace > environment variable > shared workspace > "default"
+            # This ensures proper per-instance workspace isolation
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage instance's workspace (highest priority)
                 final_workspace = self.workspace
                 self.db.workspace = final_workspace
+            elif os.environ.get("POSTGRES_WORKSPACE"):
+                # Use environment variable workspace (high priority)
+                final_workspace = os.environ.get("POSTGRES_WORKSPACE")
+                self.db.workspace = final_workspace
+            elif self.db.workspace:
+                # Use PostgreSQLDB's existing workspace (medium priority)
+                final_workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 final_workspace = "default"
@@ -1438,14 +1443,19 @@ class PGVectorStorage(BaseVectorStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                final_workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: instance workspace > environment variable > shared workspace > "default"
+            # This ensures proper per-instance workspace isolation
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage instance's workspace (highest priority)
                 final_workspace = self.workspace
                 self.db.workspace = final_workspace
+            elif os.environ.get("POSTGRES_WORKSPACE"):
+                # Use environment variable workspace (high priority)
+                final_workspace = os.environ.get("POSTGRES_WORKSPACE")
+                self.db.workspace = final_workspace
+            elif self.db.workspace:
+                # Use PostgreSQLDB's existing workspace (medium priority)
+                final_workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 final_workspace = "default"
@@ -1741,14 +1751,19 @@ class PGDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                final_workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: instance workspace > environment variable > shared workspace > "default"
+            # This ensures proper per-instance workspace isolation
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage instance's workspace (highest priority)
                 final_workspace = self.workspace
                 self.db.workspace = final_workspace
+            elif os.environ.get("POSTGRES_WORKSPACE"):
+                # Use environment variable workspace (high priority)
+                final_workspace = os.environ.get("POSTGRES_WORKSPACE")
+                self.db.workspace = final_workspace
+            elif self.db.workspace:
+                # Use PostgreSQLDB's existing workspace (medium priority)
+                final_workspace = self.db.workspace
             else:
                 # Use "default" for compatibility (lowest priority)
                 final_workspace = "default"
@@ -2180,14 +2195,19 @@ class PGGraphStorage(BaseGraphStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
-            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > None
-            if self.db.workspace:
-                # Use PostgreSQLDB's workspace (highest priority)
-                final_workspace = self.db.workspace
-            elif hasattr(self, "workspace") and self.workspace:
-                # Use storage class's workspace (medium priority)
+            # Implement workspace priority: instance workspace > environment variable > shared workspace > None
+            # This ensures proper per-instance workspace isolation
+            if hasattr(self, "workspace") and self.workspace:
+                # Use storage instance's workspace (highest priority)
                 final_workspace = self.workspace
                 self.db.workspace = final_workspace
+            elif os.environ.get("POSTGRES_WORKSPACE"):
+                # Use environment variable workspace (high priority)
+                final_workspace = os.environ.get("POSTGRES_WORKSPACE")
+                self.db.workspace = final_workspace
+            elif self.db.workspace:
+                # Use PostgreSQLDB's existing workspace (medium priority)
+                final_workspace = self.db.workspace
             else:
                 # Use None for compatibility (lowest priority)
                 final_workspace = None

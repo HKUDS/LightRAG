@@ -469,24 +469,42 @@ def parse_args() -> argparse.Namespace:
 
 def update_uvicorn_mode_config():
     # If in uvicorn mode and workers > 1, force it to 1 and log warning
-    if global_args.workers > 1:
-        original_workers = global_args.workers
-        global_args.workers = 1
+    args = get_global_args()
+    if args.workers > 1:
+        original_workers = args.workers
+        args.workers = 1
         # Log warning directly here
         logging.warning(
             f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
         )
 
 
-# Try to parse arguments, fall back to environment-only configuration if parsing fails
-try:
-    global_args = parse_args()
-    if global_args is None:
-        raise ValueError("Gunicorn detected, using environment variables")
-except (SystemExit, argparse.ArgumentError, Exception):
-    # Argument parsing failed (likely due to gunicorn arguments)
-    # Create args from environment variables only
-    global_args = argparse.Namespace()
+# Initialize global_args as None - will be parsed on first access
+global_args = None
+
+
+# For backward compatibility, provide global_args as an alias
+def __getattr__(name):
+    if name == "global_args":
+        return get_global_args()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def get_global_args():
+    """Get global arguments, parsing them if not already done."""
+    global global_args
+    if global_args is not None:
+        return global_args
+
+    # Try to parse arguments, fall back to environment-only configuration if parsing fails
+    try:
+        global_args = parse_args()
+        if global_args is None:
+            raise ValueError("Gunicorn detected, using environment variables")
+    except (SystemExit, argparse.ArgumentError, Exception):
+        # Argument parsing failed (likely due to gunicorn arguments or test environment)
+        # Create args from environment variables only
+        global_args = argparse.Namespace()
 
     # Set all required attributes with defaults from environment
     global_args.host = get_env_value("HOST", "0.0.0.0")
@@ -623,3 +641,5 @@ except (SystemExit, argparse.ArgumentError, Exception):
     # Set ollama server infos
     ollama_server_infos.LIGHTRAG_NAME = global_args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = global_args.simulated_model_tag
+
+    return global_args

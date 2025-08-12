@@ -83,6 +83,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize storage data"""
+        # Ensure shared data is initialized before any operations
+        from .shared_storage import ensure_share_data_initialized
+
+        ensure_share_data_initialized()
+
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(self.namespace)
         # Get the storage lock for use in other methods

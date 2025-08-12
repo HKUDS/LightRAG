@@ -1052,6 +1052,25 @@ def initialize_share_data(workers: int = 1):
     _initialized = True
 
 
+def ensure_share_data_initialized():
+    """
+    Defensive initialization to ensure shared data is initialized.
+    This function can be called from storage initialization methods
+    to ensure shared data is ready before storage operations.
+
+    If shared data is already initialized, this function does nothing.
+    If not initialized, it initializes with workers=1 (single-process mode).
+    """
+    global _initialized
+    if not _initialized:
+        direct_log(
+            f"Process {os.getpid()} Shared-Data not initialized, initializing in single-process mode",
+            level="WARNING",
+            enable_output=True,
+        )
+        initialize_share_data(workers=1)
+
+
 async def initialize_pipeline_status():
     """
     Initialize pipeline namespace with default values.

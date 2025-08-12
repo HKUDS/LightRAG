@@ -4,7 +4,7 @@ Utility functions for the LightRAG API.
 
 import os
 import argparse
-from typing import Optional, List, Tuple
+from typing import Optional
 import sys
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__ as api_version
@@ -16,8 +16,8 @@ from fastapi import HTTPException, Security, Request, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 
-from lightrag.api.config import global_args, ollama_server_infos, get_env_value
-from lightrag.api.auth import auth_handler  # Corrected import
+from lightrag.api.config import ollama_server_infos, get_env_value
+# Auth handler imported when needed
 
 
 def check_env_file():
@@ -38,23 +38,47 @@ def check_env_file():
     return True
 
 
-# Get whitelist paths from global_args, only once during initialization
-whitelist_paths = global_args.whitelist_paths.split(",")
+# Lazy initialization for global configuration
+_whitelist_patterns = None
+_auth_configured = None
 
-# Pre-compile path matching patterns
-whitelist_patterns: List[Tuple[str, bool]] = []
-for path in whitelist_paths:
-    path = path.strip()
-    if path:
-        # If path ends with /*, match all paths with that prefix
-        if path.endswith("/*"):
-            prefix = path[:-2]
-            whitelist_patterns.append((prefix, True))  # (prefix, is_prefix_match)
-        else:
-            whitelist_patterns.append((path, False))  # (exact_path, is_prefix_match)
 
-# Global authentication configuration
-auth_configured = bool(auth_handler.accounts)
+def get_whitelist_patterns():
+    """Get whitelist patterns, initializing them if needed."""
+    global _whitelist_patterns
+    if _whitelist_patterns is None:
+        from lightrag.api.config import get_global_args
+
+        global_args = get_global_args()
+        whitelist_paths = global_args.whitelist_paths.split(",")
+
+        # Pre-compile path matching patterns
+        _whitelist_patterns = []
+        for path in whitelist_paths:
+            path = path.strip()
+            if path:
+                # If path ends with /*, match all paths with that prefix
+                if path.endswith("/*"):
+                    prefix = path[:-2]
+                    _whitelist_patterns.append(
+                        (prefix, True)
+                    )  # (prefix, is_prefix_match)
+                else:
+                    _whitelist_patterns.append(
+                        (path, False)
+                    )  # (exact_path, is_prefix_match)
+    return _whitelist_patterns
+
+
+def is_auth_configured():
+    """Check if authentication is configured, initializing if needed."""
+    global _auth_configured
+    if _auth_configured is None:
+        from lightrag.api.auth import get_auth_handler
+
+        auth_handler = get_auth_handler()
+        _auth_configured = bool(auth_handler.accounts)
+    return _auth_configured
 
 
 def get_combined_auth_dependency(api_key: Optional[str] = None):
@@ -68,10 +92,9 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     Returns:
         Callable: A dependency function that implements the authentication logic
     """
-    # Use global whitelist_patterns and auth_configured variables
-    # whitelist_patterns and auth_configured are already initialized at module level
-
-    # Only calculate api_key_configured as it depends on the function parameter
+    # Get configuration using lazy initialization
+    whitelist_patterns = get_whitelist_patterns()
+    auth_configured = is_auth_configured()
     api_key_configured = bool(api_key)
 
     # Create security dependencies with proper descriptions for Swagger UI
@@ -104,6 +127,9 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
         if token:
             try:
+                from lightrag.api.auth import get_auth_handler
+
+                auth_handler = get_auth_handler()
                 token_info = auth_handler.validate_token(token)
                 # Accept guest token if no auth is configured
                 if not auth_configured and token_info.get("role") == "guest":

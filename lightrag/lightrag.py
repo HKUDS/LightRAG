@@ -1064,6 +1064,9 @@ class LightRAG:
                 ) -> None:
                     """Process single document"""
                     file_extraction_stage_ok = False
+                    # Initialize processing time variables at the start to ensure they're available in exception handlers
+                    processing_start_time = int(time.time())
+
                     async with semaphore:
                         nonlocal processed_count
                         current_file_number = 0
@@ -1117,9 +1120,6 @@ class LightRAG:
 
                             if not chunks:
                                 logger.warning("No document chunks to process")
-
-                            # Record processing start time
-                            processing_start_time = int(time.time())
 
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)

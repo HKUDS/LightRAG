@@ -55,7 +55,7 @@ from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from lightrag.api.auth import auth_handler  # Corrected import
+# Auth handler imported when needed
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -70,8 +70,14 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 config = configparser.ConfigParser()
 config.read("config.ini")
 
-# Global authentication configuration
-auth_configured = bool(auth_handler.accounts)
+
+# Authentication configuration - lazily initialized
+def is_auth_configured():
+    """Check if authentication is configured."""
+    from lightrag.api.auth import get_auth_handler
+
+    auth_handler = get_auth_handler()
+    return bool(auth_handler.accounts)
 
 
 def create_app(args):
@@ -473,8 +479,12 @@ def create_app(args):
     @app.get("/auth-status")
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
+        from lightrag.api.auth import get_auth_handler
 
-        if not auth_handler.accounts:
+        auth_handler = get_auth_handler()
+
+        auth_configured = is_auth_configured()
+        if not auth_configured:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
                 username="guest", role="guest", metadata={"auth_mode": "disabled"}
@@ -502,6 +512,10 @@ def create_app(args):
 
     @app.post("/login")
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+        from lightrag.api.auth import get_auth_handler
+
+        auth_handler = get_auth_handler()
+
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
@@ -543,6 +557,7 @@ def create_app(args):
         try:
             pipeline_status = await get_namespace_data("pipeline_status")
 
+            auth_configured = is_auth_configured()
             if not auth_configured:
                 auth_mode = "disabled"
             else:

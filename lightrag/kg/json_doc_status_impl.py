@@ -48,6 +48,11 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         """Initialize storage data"""
+        # Ensure shared data is initialized before any operations
+        from .shared_storage import ensure_share_data_initialized
+
+        ensure_share_data_initialized()
+
         self._storage_lock = get_storage_lock()
         self.storage_updated = await get_update_flag(self.namespace)
         async with get_data_init_lock():

@@ -106,4 +106,13 @@ class AuthHandler:
             )
 
 
-auth_handler = AuthHandler()
+# Lazy initialization to avoid import-time argument parsing
+auth_handler = None
+
+
+def get_auth_handler():
+    """Get the auth handler, initializing it if needed."""
+    global auth_handler
+    if auth_handler is None:
+        auth_handler = AuthHandler()
+    return auth_handler
