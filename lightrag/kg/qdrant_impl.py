@@ -204,7 +204,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             score_threshold=self.cosine_better_than_threshold,
         )
 
-        logger.debug(f"[{self.workspace}] query result: {results}")
+        # logger.debug(f"[{self.workspace}] query result: {results}")
 
         return [
             {
@@ -253,9 +253,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         try:
             # Generate the entity ID
             entity_id = compute_mdhash_id_for_qdrant(entity_name, prefix="ent-")
-            logger.debug(
-                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
+            # logger.debug(
+            #     f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
+            # )
 
             # Delete the entity point from the collection
             self._client.delete(
