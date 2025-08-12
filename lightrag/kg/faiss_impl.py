@@ -42,15 +42,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            os.makedirs(workspace_dir, exist_ok=True)
-            self._faiss_index_file = os.path.join(
-                workspace_dir, f"faiss_index_{self.namespace}.index"
-            )
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
+
         else:
             # Default behavior when workspace is empty
-            self._faiss_index_file = os.path.join(
-                working_dir, f"faiss_index_{self.namespace}.index"
-            )
+            self.final_namespace = self.namespace
+            self.workspace = "_"
+            workspace_dir = working_dir
+
+        os.makedirs(workspace_dir, exist_ok=True)
+        self._faiss_index_file = os.path.join(
+            workspace_dir, f"faiss_index_{self.namespace}.index"
+        )
         self._meta_file = self._faiss_index_file + ".meta.json"
 
         self._max_batch_size = self.global_config["embedding_batch_num"]
@@ -70,7 +73,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.namespace)
+        self.storage_updated = await get_update_flag(self.final_namespace)
         # Get the storage lock for use in other methods
         self._storage_lock = get_storage_lock()
 
@@ -81,7 +84,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # Check if storage was updated by another process
             if self.storage_updated.value:
                 logger.info(
-                    f"Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process"
+                    f"[{self.workspace}] Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process"
                 )
                 # Reload data
                 self._index = faiss.IndexFlatIP(self._dim)
@@ -106,7 +109,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
            ...
         }
         """
-        logger.debug(f"FAISS: Inserting {len(data)} to {self.namespace}")
+        logger.debug(
+            f"[{self.workspace}] FAISS: Inserting {len(data)} to {self.namespace}"
+        )
         if not data:
             return
 
@@ -136,7 +141,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list, axis=0)
         if len(embeddings) != len(list_data):
             logger.error(
-                f"Embedding size mismatch. Embeddings: {len(embeddings)}, Data: {len(list_data)}"
+                f"[{self.workspace}] Embedding size mismatch. Embeddings: {len(embeddings)}, Data: {len(list_data)}"
             )
             return []
 
@@ -169,7 +174,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
             meta["__vector__"] = embeddings[i].tolist()
             self._id_to_meta.update({fid: meta})
 
-        logger.debug(f"Upserted {len(list_data)} vectors into Faiss index.")
+        logger.debug(
+            f"[{self.workspace}] Upserted {len(list_data)} vectors into Faiss index."
+        )
         return [m["__id__"] for m in list_data]
 
     async def query(
@@ -228,7 +235,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.debug(f"Deleting {len(ids)} vectors from {self.namespace}")
+        logger.debug(
+            f"[{self.workspace}] Deleting {len(ids)} vectors from {self.namespace}"
+        )
         to_remove = []
         for cid in ids:
             fid = self._find_faiss_id_by_custom_id(cid)
@@ -238,7 +247,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if to_remove:
             await self._remove_faiss_ids(to_remove)
         logger.debug(
-            f"Successfully deleted {len(to_remove)} vectors from {self.namespace}"
+            f"[{self.workspace}] Successfully deleted {len(to_remove)} vectors from {self.namespace}"
         )
 
     async def delete_entity(self, entity_name: str) -> None:
@@ -249,7 +258,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
            KG-storage-log should be used to avoid data corruption
         """
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-        logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
+        logger.debug(
+            f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
+        )
         await self.delete([entity_id])
 
     async def delete_entity_relation(self, entity_name: str) -> None:
@@ -259,16 +270,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.debug(f"Searching relations for entity {entity_name}")
+        logger.debug(f"[{self.workspace}] Searching relations for entity {entity_name}")
         relations = []
         for fid, meta in self._id_to_meta.items():
             if meta.get("src_id") == entity_name or meta.get("tgt_id") == entity_name:
                 relations.append(fid)
 
-        logger.debug(f"Found {len(relations)} relations for {entity_name}")
+        logger.debug(
+            f"[{self.workspace}] Found {len(relations)} relations for {entity_name}"
+        )
         if relations:
             await self._remove_faiss_ids(relations)
-            logger.debug(f"Deleted {len(relations)} relations for {entity_name}")
+            logger.debug(
+                f"[{self.workspace}] Deleted {len(relations)} relations for {entity_name}"
+            )
 
     # --------------------------------------------------------------------------------
     # Internal helper methods
@@ -330,7 +345,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         and rebuild in-memory structures so we can query.
         """
         if not os.path.exists(self._faiss_index_file):
-            logger.warning(f"No existing Faiss index file found for {self.namespace}")
+            logger.warning(
+                f"[{self.workspace}] No existing Faiss index file found for {self.namespace}"
+            )
             return
 
         try:
@@ -347,11 +364,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._id_to_meta[fid] = meta
 
             logger.info(
-                f"Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
+                f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
             )
         except Exception as e:
-            logger.error(f"Failed to load Faiss index or metadata: {e}")
-            logger.warning("Starting with an empty Faiss index.")
+            logger.error(
+                f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
+            )
+            logger.warning(f"[{self.workspace}] Starting with an empty Faiss index.")
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
 
@@ -361,7 +380,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.warning(
-                    f"Storage for FAISS {self.namespace} was updated by another process, reloading..."
+                    f"[{self.workspace}] Storage for FAISS {self.namespace} was updated by another process, reloading..."
                 )
                 self._index = faiss.IndexFlatIP(self._dim)
                 self._id_to_meta = {}
@@ -375,11 +394,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._save_faiss_index()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
             except Exception as e:
-                logger.error(f"Error saving FAISS index for {self.namespace}: {e}")
+                logger.error(
+                    f"[{self.workspace}] Error saving FAISS index for {self.namespace}: {e}"
+                )
                 return False  # Return error
 
         return True  # Return success
@@ -469,11 +490,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._load_faiss_index()
 
                 # Notify other processes
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
                 self.storage_updated.value = False
 
-                logger.info(f"Process {os.getpid()} drop FAISS index {self.namespace}")
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
+                )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping FAISS index {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}"
+            )
             return {"status": "error", "message": str(e)}

@@ -31,9 +31,9 @@ class NetworkXStorage(BaseGraphStorage):
         return None
 
     @staticmethod
-    def write_nx_graph(graph: nx.Graph, file_name):
+    def write_nx_graph(graph: nx.Graph, file_name, workspace="_"):
         logger.info(
-            f"Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
+            f"[{workspace}] Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
         )
         nx.write_graphml(graph, file_name)
 
@@ -42,15 +42,17 @@ class NetworkXStorage(BaseGraphStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            os.makedirs(workspace_dir, exist_ok=True)
-            self._graphml_xml_file = os.path.join(
-                workspace_dir, f"graph_{self.namespace}.graphml"
-            )
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self._graphml_xml_file = os.path.join(
-                working_dir, f"graph_{self.namespace}.graphml"
-            )
+            self.final_namespace = self.namespace
+            workspace_dir = working_dir
+            self.workspace = "_"
+
+        os.makedirs(workspace_dir, exist_ok=True)
+        self._graphml_xml_file = os.path.join(
+            working_dir, f"graph_{self.namespace}.graphml"
+        )
         self._storage_lock = None
         self.storage_updated = None
         self._graph = None
@@ -59,16 +61,18 @@ class NetworkXStorage(BaseGraphStorage):
         preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
         if preloaded_graph is not None:
             logger.info(
-                f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
+                f"[{self.workspace}] Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
             )
         else:
-            logger.info("Created new empty graph")
+            logger.info(
+                f"[{self.workspace}] Created new empty graph fiel: {self._graphml_xml_file}"
+            )
         self._graph = preloaded_graph or nx.Graph()
 
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.namespace)
+        self.storage_updated = await get_update_flag(self.final_namespace)
         # Get the storage lock for use in other methods
         self._storage_lock = get_storage_lock()
 
@@ -79,7 +83,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Check if data needs to be reloaded
             if self.storage_updated.value:
                 logger.info(
-                    f"Process {os.getpid()} reloading graph {self.namespace} due to update by another process"
+                    f"[{self.workspace}] Process {os.getpid()} reloading graph {self._graphml_xml_file} due to modifications by another process"
                 )
                 # Reload data
                 self._graph = (
@@ -156,9 +160,11 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         if graph.has_node(node_id):
             graph.remove_node(node_id)
-            logger.debug(f"Node {node_id} deleted from the graph.")
+            logger.debug(f"[{self.workspace}] Node {node_id} deleted from the graph")
         else:
-            logger.warning(f"Node {node_id} not found in the graph for deletion.")
+            logger.warning(
+                f"[{self.workspace}] Node {node_id} not found in the graph for deletion"
+            )
 
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
@@ -246,7 +252,7 @@ class NetworkXStorage(BaseGraphStorage):
             if len(sorted_nodes) > max_nodes:
                 result.is_truncated = True
                 logger.info(
-                    f"Graph truncated: {len(sorted_nodes)} nodes found, limited to {max_nodes}"
+                    f"[{self.workspace}] Graph truncated: {len(sorted_nodes)} nodes found, limited to {max_nodes}"
                 )
 
             limited_nodes = [node for node, _ in sorted_nodes[:max_nodes]]
@@ -255,7 +261,9 @@ class NetworkXStorage(BaseGraphStorage):
         else:
             # Check if node exists
             if node_label not in graph:
-                logger.warning(f"Node {node_label} not found in the graph")
+                logger.warning(
+                    f"[{self.workspace}] Node {node_label} not found in the graph"
+                )
                 return KnowledgeGraph()  # Return empty graph
 
             # Use modified BFS to get nodes, prioritizing high-degree nodes at the same depth
@@ -305,7 +313,7 @@ class NetworkXStorage(BaseGraphStorage):
             if queue and len(bfs_nodes) >= max_nodes:
                 result.is_truncated = True
                 logger.info(
-                    f"Graph truncated: breadth-first search limited to {max_nodes} nodes"
+                    f"[{self.workspace}] Graph truncated: breadth-first search limited to {max_nodes} nodes"
                 )
 
             # Create subgraph with BFS discovered nodes
@@ -362,7 +370,7 @@ class NetworkXStorage(BaseGraphStorage):
             seen_edges.add(edge_id)
 
         logger.info(
-            f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+            f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
         )
         return result
 
@@ -429,7 +437,7 @@ class NetworkXStorage(BaseGraphStorage):
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.info(
-                    f"Graph for {self.namespace} was updated by another process, reloading..."
+                    f"[{self.workspace}] Graph was updated by another process, reloading..."
                 )
                 self._graph = (
                     NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
@@ -442,14 +450,16 @@ class NetworkXStorage(BaseGraphStorage):
         async with self._storage_lock:
             try:
                 # Save data to disk
-                NetworkXStorage.write_nx_graph(self._graph, self._graphml_xml_file)
+                NetworkXStorage.write_nx_graph(
+                    self._graph, self._graphml_xml_file, self.workspace
+                )
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
-                logger.error(f"Error saving graph for {self.namespace}: {e}")
+                logger.error(f"[{self.workspace}] Error saving graph: {e}")
                 return False  # Return error
 
         return True
@@ -475,13 +485,15 @@ class NetworkXStorage(BaseGraphStorage):
                     os.remove(self._graphml_xml_file)
                 self._graph = nx.Graph()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 logger.info(
-                    f"Process {os.getpid()} drop graph {self.namespace} (file:{self._graphml_xml_file})"
+                    f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
                 )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping graph {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}"
+            )
             return {"status": "error", "message": str(e)}

@@ -20,6 +20,7 @@ from lightrag.base import (
     DocStatus,
     DocProcessingStatus,
 )
+from ..kg.shared_storage import get_storage_lock
 import json
 
 # Import tenacity for retry logic
@@ -141,11 +142,18 @@ class RedisKVStorage(BaseKVStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
-        # Build namespace with workspace prefix for data isolation
+        # Build final_namespace with workspace prefix for data isolation
+        # Keep original namespace unchanged for type detection logic
         if effective_workspace:
-            self.namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
-        # When workspace is empty, keep the original namespace unchanged
+            self.final_namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(
+                f"Final namespace with workspace prefix: '{self.final_namespace}'"
+            )
+        else:
+            # When workspace is empty, final_namespace equals original namespace
+            self.final_namespace = self.namespace
+            self.workspace = "_"
+            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._redis_url = os.environ.get(
             "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
@@ -159,39 +167,46 @@ class RedisKVStorage(BaseKVStorage):
             self._pool = RedisConnectionManager.get_pool(self._redis_url)
             self._redis = Redis(connection_pool=self._pool)
             logger.info(
-                f"Initialized Redis KV storage for {self.namespace} using shared connection pool"
+                f"[{self.workspace}] Initialized Redis KV storage for {self.namespace} using shared connection pool"
             )
         except Exception as e:
             # Clean up on initialization failure
             if self._redis_url:
                 RedisConnectionManager.release_pool(self._redis_url)
-            logger.error(f"Failed to initialize Redis KV storage: {e}")
+            logger.error(
+                f"[{self.workspace}] Failed to initialize Redis KV storage: {e}"
+            )
             raise
 
     async def initialize(self):
         """Initialize Redis connection and migrate legacy cache structure if needed"""
-        if self._initialized:
-            return
+        async with get_storage_lock(enable_logging=True):
+            if self._initialized:
+                return
 
-        # Test connection
-        try:
-            async with self._get_redis_connection() as redis:
-                await redis.ping()
-                logger.info(f"Connected to Redis for namespace {self.namespace}")
-                self._initialized = True
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
-            # Clean up on connection failure
-            await self.close()
-            raise
-
-        # Migrate legacy cache structure if this is a cache namespace
-        if self.namespace.endswith("_cache"):
+            # Test connection
             try:
-                await self._migrate_legacy_cache_structure()
+                async with self._get_redis_connection() as redis:
+                    await redis.ping()
+                    logger.info(
+                        f"[{self.workspace}] Connected to Redis for namespace {self.namespace}"
+                    )
+                    self._initialized = True
             except Exception as e:
-                logger.error(f"Failed to migrate legacy cache structure: {e}")
-                # Don't fail initialization for migration errors, just log them
+                logger.error(f"[{self.workspace}] Failed to connect to Redis: {e}")
+                # Clean up on connection failure
+                await self.close()
+                raise
+
+            # Migrate legacy cache structure if this is a cache namespace
+            if self.namespace.endswith("_cache"):
+                try:
+                    await self._migrate_legacy_cache_structure()
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Failed to migrate legacy cache structure: {e}"
+                    )
+                    # Don't fail initialization for migration errors, just log them
 
     @asynccontextmanager
     async def _get_redis_connection(self):
@@ -203,14 +218,18 @@ class RedisKVStorage(BaseKVStorage):
             # Use the existing Redis instance with shared pool
             yield self._redis
         except ConnectionError as e:
-            logger.error(f"Redis connection error in {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Redis connection error in {self.namespace}: {e}"
+            )
             raise
         except RedisError as e:
-            logger.error(f"Redis operation error in {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Redis operation error in {self.namespace}: {e}"
+            )
             raise
         except Exception as e:
             logger.error(
-                f"Unexpected error in Redis operation for {self.namespace}: {e}"
+                f"[{self.workspace}] Unexpected error in Redis operation for {self.namespace}: {e}"
             )
             raise
 
@@ -219,9 +238,11 @@ class RedisKVStorage(BaseKVStorage):
         if hasattr(self, "_redis") and self._redis:
             try:
                 await self._redis.close()
-                logger.debug(f"Closed Redis connection for {self.namespace}")
+                logger.debug(
+                    f"[{self.workspace}] Closed Redis connection for {self.namespace}"
+                )
             except Exception as e:
-                logger.error(f"Error closing Redis connection: {e}")
+                logger.error(f"[{self.workspace}] Error closing Redis connection: {e}")
             finally:
                 self._redis = None
 
@@ -230,7 +251,7 @@ class RedisKVStorage(BaseKVStorage):
             RedisConnectionManager.release_pool(self._redis_url)
             self._pool = None
             logger.debug(
-                f"Released Redis connection pool reference for {self.namespace}"
+                f"[{self.workspace}] Released Redis connection pool reference for {self.namespace}"
             )
 
     async def __aenter__(self):
@@ -245,7 +266,7 @@ class RedisKVStorage(BaseKVStorage):
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._get_redis_connection() as redis:
             try:
-                data = await redis.get(f"{self.namespace}:{id}")
+                data = await redis.get(f"{self.final_namespace}:{id}")
                 if data:
                     result = json.loads(data)
                     # Ensure time fields are present, provide default values for old data
@@ -254,7 +275,7 @@ class RedisKVStorage(BaseKVStorage):
                     return result
                 return None
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error for id {id}: {e}")
+                logger.error(f"[{self.workspace}] JSON decode error for id {id}: {e}")
                 return None
 
     @redis_retry
@@ -263,7 +284,7 @@ class RedisKVStorage(BaseKVStorage):
             try:
                 pipe = redis.pipeline()
                 for id in ids:
-                    pipe.get(f"{self.namespace}:{id}")
+                    pipe.get(f"{self.final_namespace}:{id}")
                 results = await pipe.execute()
 
                 processed_results = []
@@ -279,7 +300,7 @@ class RedisKVStorage(BaseKVStorage):
 
                 return processed_results
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error in batch get: {e}")
+                logger.error(f"[{self.workspace}] JSON decode error in batch get: {e}")
                 return [None] * len(ids)
 
     async def get_all(self) -> dict[str, Any]:
@@ -291,7 +312,7 @@ class RedisKVStorage(BaseKVStorage):
         async with self._get_redis_connection() as redis:
             try:
                 # Get all keys for this namespace
-                keys = await redis.keys(f"{self.namespace}:*")
+                keys = await redis.keys(f"{self.final_namespace}:*")
 
                 if not keys:
                     return {}
@@ -315,12 +336,16 @@ class RedisKVStorage(BaseKVStorage):
                             data.setdefault("update_time", 0)
                             result[key_id] = data
                         except json.JSONDecodeError as e:
-                            logger.error(f"JSON decode error for key {key}: {e}")
+                            logger.error(
+                                f"[{self.workspace}] JSON decode error for key {key}: {e}"
+                            )
                             continue
 
                 return result
             except Exception as e:
-                logger.error(f"Error getting all data from Redis: {e}")
+                logger.error(
+                    f"[{self.workspace}] Error getting all data from Redis: {e}"
+                )
                 return {}
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
@@ -328,7 +353,7 @@ class RedisKVStorage(BaseKVStorage):
             pipe = redis.pipeline()
             keys_list = list(keys)  # Convert set to list for indexing
             for key in keys_list:
-                pipe.exists(f"{self.namespace}:{key}")
+                pipe.exists(f"{self.final_namespace}:{key}")
             results = await pipe.execute()
 
             existing_ids = {keys_list[i] for i, exists in enumerate(results) if exists}
@@ -348,13 +373,13 @@ class RedisKVStorage(BaseKVStorage):
                 # Check which keys already exist to determine create vs update
                 pipe = redis.pipeline()
                 for k in data.keys():
-                    pipe.exists(f"{self.namespace}:{k}")
+                    pipe.exists(f"{self.final_namespace}:{k}")
                 exists_results = await pipe.execute()
 
                 # Add timestamps to data
                 for i, (k, v) in enumerate(data.items()):
                     # For text_chunks namespace, ensure llm_cache_list field exists
-                    if "text_chunks" in self.namespace:
+                    if self.namespace.endswith("text_chunks"):
                         if "llm_cache_list" not in v:
                             v["llm_cache_list"] = []
 
@@ -370,11 +395,11 @@ class RedisKVStorage(BaseKVStorage):
                 # Store the data
                 pipe = redis.pipeline()
                 for k, v in data.items():
-                    pipe.set(f"{self.namespace}:{k}", json.dumps(v))
+                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
                 await pipe.execute()
 
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error during upsert: {e}")
+                logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")
                 raise
 
     async def index_done_callback(self) -> None:
@@ -389,12 +414,12 @@ class RedisKVStorage(BaseKVStorage):
         async with self._get_redis_connection() as redis:
             pipe = redis.pipeline()
             for id in ids:
-                pipe.delete(f"{self.namespace}:{id}")
+                pipe.delete(f"{self.final_namespace}:{id}")
 
             results = await pipe.execute()
             deleted_count = sum(results)
             logger.info(
-                f"Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
+                f"[{self.workspace}] Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
             )
 
     async def drop(self) -> dict[str, str]:
@@ -403,35 +428,42 @@ class RedisKVStorage(BaseKVStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with self._get_redis_connection() as redis:
-            try:
-                # Use SCAN to find all keys with the namespace prefix
-                pattern = f"{self.namespace}:*"
-                cursor = 0
-                deleted_count = 0
+        async with get_storage_lock(enable_logging=True):
+            async with self._get_redis_connection() as redis:
+                try:
+                    # Use SCAN to find all keys with the namespace prefix
+                    pattern = f"{self.final_namespace}:*"
+                    cursor = 0
+                    deleted_count = 0
 
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
-                    if keys:
-                        # Delete keys in batches
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.delete(key)
-                        results = await pipe.execute()
-                        deleted_count += sum(results)
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            # Delete keys in batches
+                            pipe = redis.pipeline()
+                            for key in keys:
+                                pipe.delete(key)
+                            results = await pipe.execute()
+                            deleted_count += sum(results)
 
-                    if cursor == 0:
-                        break
+                        if cursor == 0:
+                            break
 
-                logger.info(f"Dropped {deleted_count} keys from {self.namespace}")
-                return {
-                    "status": "success",
-                    "message": f"{deleted_count} keys dropped",
-                }
+                    logger.info(
+                        f"[{self.workspace}] Dropped {deleted_count} keys from {self.namespace}"
+                    )
+                    return {
+                        "status": "success",
+                        "message": f"{deleted_count} keys dropped",
+                    }
 
-            except Exception as e:
-                logger.error(f"Error dropping keys from {self.namespace}: {e}")
-                return {"status": "error", "message": str(e)}
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error dropping keys from {self.namespace}: {e}"
+                    )
+                    return {"status": "error", "message": str(e)}
 
     async def _migrate_legacy_cache_structure(self):
         """Migrate legacy nested cache structure to flattened structure for Redis
@@ -445,7 +477,7 @@ class RedisKVStorage(BaseKVStorage):
 
         async with self._get_redis_connection() as redis:
             # Get all keys for this namespace
-            keys = await redis.keys(f"{self.namespace}:*")
+            keys = await redis.keys(f"{self.final_namespace}:*")
 
             if not keys:
                 return
@@ -480,7 +512,7 @@ class RedisKVStorage(BaseKVStorage):
             # If we found any flattened keys, assume migration is already done
             if has_flattened_keys:
                 logger.debug(
-                    f"Found flattened cache keys in {self.namespace}, skipping migration"
+                    f"[{self.workspace}] Found flattened cache keys in {self.namespace}, skipping migration"
                 )
                 return
 
@@ -499,7 +531,7 @@ class RedisKVStorage(BaseKVStorage):
                 for cache_hash, cache_entry in nested_data.items():
                     cache_type = cache_entry.get("cache_type", "extract")
                     flattened_key = generate_cache_key(mode, cache_type, cache_hash)
-                    full_key = f"{self.namespace}:{flattened_key}"
+                    full_key = f"{self.final_namespace}:{flattened_key}"
                     pipe.set(full_key, json.dumps(cache_entry))
                     migration_count += 1
 
@@ -507,7 +539,7 @@ class RedisKVStorage(BaseKVStorage):
 
             if migration_count > 0:
                 logger.info(
-                    f"Migrated {migration_count} legacy cache entries to flattened structure in Redis"
+                    f"[{self.workspace}] Migrated {migration_count} legacy cache entries to flattened structure in Redis"
                 )
 
 
@@ -534,11 +566,20 @@ class RedisDocStatusStorage(DocStatusStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
-        # Build namespace with workspace prefix for data isolation
+        # Build final_namespace with workspace prefix for data isolation
+        # Keep original namespace unchanged for type detection logic
         if effective_workspace:
-            self.namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
-        # When workspace is empty, keep the original namespace unchanged
+            self.final_namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(
+                f"[{self.workspace}] Final namespace with workspace prefix: '{self.namespace}'"
+            )
+        else:
+            # When workspace is empty, final_namespace equals original namespace
+            self.final_namespace = self.namespace
+            self.workspace = "_"
+            logger.debug(
+                f"[{self.workspace}] Final namespace (no workspace): '{self.namespace}'"
+            )
 
         self._redis_url = os.environ.get(
             "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
@@ -552,32 +593,37 @@ class RedisDocStatusStorage(DocStatusStorage):
             self._pool = RedisConnectionManager.get_pool(self._redis_url)
             self._redis = Redis(connection_pool=self._pool)
             logger.info(
-                f"Initialized Redis doc status storage for {self.namespace} using shared connection pool"
+                f"[{self.workspace}] Initialized Redis doc status storage for {self.namespace} using shared connection pool"
             )
         except Exception as e:
             # Clean up on initialization failure
             if self._redis_url:
                 RedisConnectionManager.release_pool(self._redis_url)
-            logger.error(f"Failed to initialize Redis doc status storage: {e}")
+            logger.error(
+                f"[{self.workspace}] Failed to initialize Redis doc status storage: {e}"
+            )
             raise
 
     async def initialize(self):
         """Initialize Redis connection"""
-        if self._initialized:
-            return
+        async with get_storage_lock(enable_logging=True):
+            if self._initialized:
+                return
 
-        try:
-            async with self._get_redis_connection() as redis:
-                await redis.ping()
-                logger.info(
-                    f"Connected to Redis for doc status namespace {self.namespace}"
+            try:
+                async with self._get_redis_connection() as redis:
+                    await redis.ping()
+                    logger.info(
+                        f"[{self.workspace}] Connected to Redis for doc status namespace {self.namespace}"
+                    )
+                    self._initialized = True
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Failed to connect to Redis for doc status: {e}"
                 )
-                self._initialized = True
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis for doc status: {e}")
-            # Clean up on connection failure
-            await self.close()
-            raise
+                # Clean up on connection failure
+                await self.close()
+                raise
 
     @asynccontextmanager
     async def _get_redis_connection(self):
@@ -589,14 +635,18 @@ class RedisDocStatusStorage(DocStatusStorage):
             # Use the existing Redis instance with shared pool
             yield self._redis
         except ConnectionError as e:
-            logger.error(f"Redis connection error in doc status {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Redis connection error in doc status {self.namespace}: {e}"
+            )
             raise
         except RedisError as e:
-            logger.error(f"Redis operation error in doc status {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Redis operation error in doc status {self.namespace}: {e}"
+            )
             raise
         except Exception as e:
             logger.error(
-                f"Unexpected error in Redis doc status operation for {self.namespace}: {e}"
+                f"[{self.workspace}] Unexpected error in Redis doc status operation for {self.namespace}: {e}"
             )
             raise
 
@@ -605,9 +655,11 @@ class RedisDocStatusStorage(DocStatusStorage):
         if hasattr(self, "_redis") and self._redis:
             try:
                 await self._redis.close()
-                logger.debug(f"Closed Redis connection for doc status {self.namespace}")
+                logger.debug(
+                    f"[{self.workspace}] Closed Redis connection for doc status {self.namespace}"
+                )
             except Exception as e:
-                logger.error(f"Error closing Redis connection: {e}")
+                logger.error(f"[{self.workspace}] Error closing Redis connection: {e}")
             finally:
                 self._redis = None
 
@@ -616,7 +668,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             RedisConnectionManager.release_pool(self._redis_url)
             self._pool = None
             logger.debug(
-                f"Released Redis connection pool reference for doc status {self.namespace}"
+                f"[{self.workspace}] Released Redis connection pool reference for doc status {self.namespace}"
             )
 
     async def __aenter__(self):
@@ -633,7 +685,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             pipe = redis.pipeline()
             keys_list = list(keys)
             for key in keys_list:
-                pipe.exists(f"{self.namespace}:{key}")
+                pipe.exists(f"{self.final_namespace}:{key}")
             results = await pipe.execute()
 
             existing_ids = {keys_list[i] for i, exists in enumerate(results) if exists}
@@ -645,7 +697,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             try:
                 pipe = redis.pipeline()
                 for id in ids:
-                    pipe.get(f"{self.namespace}:{id}")
+                    pipe.get(f"{self.final_namespace}:{id}")
                 results = await pipe.execute()
 
                 for result_data in results:
@@ -653,10 +705,12 @@ class RedisDocStatusStorage(DocStatusStorage):
                         try:
                             result.append(json.loads(result_data))
                         except json.JSONDecodeError as e:
-                            logger.error(f"JSON decode error in get_by_ids: {e}")
+                            logger.error(
+                                f"[{self.workspace}] JSON decode error in get_by_ids: {e}"
+                            )
                             continue
             except Exception as e:
-                logger.error(f"Error in get_by_ids: {e}")
+                logger.error(f"[{self.workspace}] Error in get_by_ids: {e}")
         return result
 
     async def get_status_counts(self) -> dict[str, int]:
@@ -668,7 +722,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                 cursor = 0
                 while True:
                     cursor, keys = await redis.scan(
-                        cursor, match=f"{self.namespace}:*", count=1000
+                        cursor, match=f"{self.final_namespace}:*", count=1000
                     )
                     if keys:
                         # Get all values in batch
@@ -691,7 +745,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                     if cursor == 0:
                         break
             except Exception as e:
-                logger.error(f"Error getting status counts: {e}")
+                logger.error(f"[{self.workspace}] Error getting status counts: {e}")
 
         return counts
 
@@ -706,7 +760,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                 cursor = 0
                 while True:
                     cursor, keys = await redis.scan(
-                        cursor, match=f"{self.namespace}:*", count=1000
+                        cursor, match=f"{self.final_namespace}:*", count=1000
                     )
                     if keys:
                         # Get all values in batch
@@ -740,14 +794,14 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         result[doc_id] = DocProcessingStatus(**data)
                                 except (json.JSONDecodeError, KeyError) as e:
                                     logger.error(
-                                        f"Error processing document {key}: {e}"
+                                        f"[{self.workspace}] Error processing document {key}: {e}"
                                     )
                                     continue
 
                     if cursor == 0:
                         break
             except Exception as e:
-                logger.error(f"Error getting docs by status: {e}")
+                logger.error(f"[{self.workspace}] Error getting docs by status: {e}")
 
         return result
 
@@ -762,7 +816,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                 cursor = 0
                 while True:
                     cursor, keys = await redis.scan(
-                        cursor, match=f"{self.namespace}:*", count=1000
+                        cursor, match=f"{self.final_namespace}:*", count=1000
                     )
                     if keys:
                         # Get all values in batch
@@ -796,14 +850,14 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         result[doc_id] = DocProcessingStatus(**data)
                                 except (json.JSONDecodeError, KeyError) as e:
                                     logger.error(
-                                        f"Error processing document {key}: {e}"
+                                        f"[{self.workspace}] Error processing document {key}: {e}"
                                     )
                                     continue
 
                     if cursor == 0:
                         break
             except Exception as e:
-                logger.error(f"Error getting docs by track_id: {e}")
+                logger.error(f"[{self.workspace}] Error getting docs by track_id: {e}")
 
         return result
 
@@ -817,7 +871,9 @@ class RedisDocStatusStorage(DocStatusStorage):
         if not data:
             return
 
-        logger.debug(f"Inserting {len(data)} records to {self.namespace}")
+        logger.debug(
+            f"[{self.workspace}] Inserting {len(data)} records to {self.namespace}"
+        )
         async with self._get_redis_connection() as redis:
             try:
                 # Ensure chunks_list field exists for new documents
@@ -827,20 +883,20 @@ class RedisDocStatusStorage(DocStatusStorage):
 
                 pipe = redis.pipeline()
                 for k, v in data.items():
-                    pipe.set(f"{self.namespace}:{k}", json.dumps(v))
+                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
                 await pipe.execute()
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error during upsert: {e}")
+                logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")
                 raise
 
     @redis_retry
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._get_redis_connection() as redis:
             try:
-                data = await redis.get(f"{self.namespace}:{id}")
+                data = await redis.get(f"{self.final_namespace}:{id}")
                 return json.loads(data) if data else None
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error for id {id}: {e}")
+                logger.error(f"[{self.workspace}] JSON decode error for id {id}: {e}")
                 return None
 
     async def delete(self, doc_ids: list[str]) -> None:
@@ -851,12 +907,12 @@ class RedisDocStatusStorage(DocStatusStorage):
         async with self._get_redis_connection() as redis:
             pipe = redis.pipeline()
             for doc_id in doc_ids:
-                pipe.delete(f"{self.namespace}:{doc_id}")
+                pipe.delete(f"{self.final_namespace}:{doc_id}")
 
             results = await pipe.execute()
             deleted_count = sum(results)
             logger.info(
-                f"Deleted {deleted_count} of {len(doc_ids)} doc status entries from {self.namespace}"
+                f"[{self.workspace}] Deleted {deleted_count} of {len(doc_ids)} doc status entries from {self.namespace}"
             )
 
     async def get_docs_paginated(
@@ -903,7 +959,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                 cursor = 0
                 while True:
                     cursor, keys = await redis.scan(
-                        cursor, match=f"{self.namespace}:*", count=1000
+                        cursor, match=f"{self.final_namespace}:*", count=1000
                     )
                     if keys:
                         # Get all values in batch
@@ -950,7 +1006,7 @@ class RedisDocStatusStorage(DocStatusStorage):
 
                                 except (json.JSONDecodeError, KeyError) as e:
                                     logger.error(
-                                        f"Error processing document {key}: {e}"
+                                        f"[{self.workspace}] Error processing document {key}: {e}"
                                     )
                                     continue
 
@@ -958,7 +1014,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                         break
 
             except Exception as e:
-                logger.error(f"Error getting paginated docs: {e}")
+                logger.error(f"[{self.workspace}] Error getting paginated docs: {e}")
                 return [], 0
 
         # Sort documents using the separate sort key
@@ -993,30 +1049,35 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
-        try:
-            async with self._get_redis_connection() as redis:
-                # Use SCAN to find all keys with the namespace prefix
-                pattern = f"{self.namespace}:*"
-                cursor = 0
-                deleted_count = 0
+        async with get_storage_lock(enable_logging=True):
+            try:
+                async with self._get_redis_connection() as redis:
+                    # Use SCAN to find all keys with the namespace prefix
+                    pattern = f"{self.final_namespace}:*"
+                    cursor = 0
+                    deleted_count = 0
 
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
-                    if keys:
-                        # Delete keys in batches
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.delete(key)
-                        results = await pipe.execute()
-                        deleted_count += sum(results)
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            # Delete keys in batches
+                            pipe = redis.pipeline()
+                            for key in keys:
+                                pipe.delete(key)
+                            results = await pipe.execute()
+                            deleted_count += sum(results)
 
-                    if cursor == 0:
-                        break
+                        if cursor == 0:
+                            break
 
-                logger.info(
-                    f"Dropped {deleted_count} doc status keys from {self.namespace}"
+                    logger.info(
+                        f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"
+                    )
+                    return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping doc status {self.namespace}: {e}"
                 )
-                return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            logger.error(f"Error dropping doc status {self.namespace}: {e}")
-            return {"status": "error", "message": str(e)}
+                return {"status": "error", "message": str(e)}

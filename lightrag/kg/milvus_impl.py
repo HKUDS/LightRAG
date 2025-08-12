@@ -6,10 +6,11 @@ import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
+from ..kg.shared_storage import get_storage_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
-    pm.install("pymilvus")
+    pm.install("pymilvus==2.5.2")
 
 import configparser
 from pymilvus import MilvusClient, DataType, CollectionSchema, FieldSchema  # type: ignore
@@ -37,7 +38,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         ]
 
         # Determine specific fields based on namespace
-        if "entities" in self.namespace.lower():
+        if self.namespace.endswith("entities"):
             specific_fields = [
                 FieldSchema(
                     name="entity_name",
@@ -54,7 +55,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             ]
             description = "LightRAG entities vector storage"
 
-        elif "relationships" in self.namespace.lower():
+        elif self.namespace.endswith("relationships"):
             specific_fields = [
                 FieldSchema(
                     name="src_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
@@ -71,7 +72,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             ]
             description = "LightRAG relationships vector storage"
 
-        elif "chunks" in self.namespace.lower():
+        elif self.namespace.endswith("chunks"):
             specific_fields = [
                 FieldSchema(
                     name="full_doc_id",
@@ -147,7 +148,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """Fallback method to create vector index using direct API"""
         try:
             self._client.create_index(
-                collection_name=self.namespace,
+                collection_name=self.final_namespace,
                 field_name="vector",
                 index_params={
                     "index_type": "HNSW",
@@ -155,29 +156,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     "params": {"M": 16, "efConstruction": 256},
                 },
             )
-            logger.debug("Created vector index using fallback method")
+            logger.debug(
+                f"[{self.workspace}] Created vector index using fallback method"
+            )
         except Exception as e:
-            logger.warning(f"Failed to create vector index using fallback method: {e}")
+            logger.warning(
+                f"[{self.workspace}] Failed to create vector index using fallback method: {e}"
+            )
 
     def _create_scalar_index_fallback(self, field_name: str, index_type: str):
         """Fallback method to create scalar index using direct API"""
         # Skip unsupported index types
         if index_type == "SORTED":
             logger.info(
-                f"Skipping SORTED index for {field_name} (not supported in this Milvus version)"
+                f"[{self.workspace}] Skipping SORTED index for {field_name} (not supported in this Milvus version)"
             )
             return
 
         try:
             self._client.create_index(
-                collection_name=self.namespace,
+                collection_name=self.final_namespace,
                 field_name=field_name,
                 index_params={"index_type": index_type},
             )
-            logger.debug(f"Created {field_name} index using fallback method")
+            logger.debug(
+                f"[{self.workspace}] Created {field_name} index using fallback method"
+            )
         except Exception as e:
             logger.info(
-                f"Could not create {field_name} index using fallback method: {e}"
+                f"[{self.workspace}] Could not create {field_name} index using fallback method: {e}"
             )
 
     def _create_indexes_after_collection(self):
@@ -198,15 +205,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         params={"M": 16, "efConstruction": 256},
                     )
                     self._client.create_index(
-                        collection_name=self.namespace, index_params=vector_index
+                        collection_name=self.final_namespace, index_params=vector_index
                     )
-                    logger.debug("Created vector index using IndexParams")
+                    logger.debug(
+                        f"[{self.workspace}] Created vector index using IndexParams"
+                    )
                 except Exception as e:
-                    logger.debug(f"IndexParams method failed for vector index: {e}")
+                    logger.debug(
+                        f"[{self.workspace}] IndexParams method failed for vector index: {e}"
+                    )
                     self._create_vector_index_fallback()
 
                 # Create scalar indexes based on namespace
-                if "entities" in self.namespace.lower():
+                if self.namespace.endswith("entities"):
                     # Create indexes for entity fields
                     try:
                         entity_name_index = self._get_index_params()
@@ -214,14 +225,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             field_name="entity_name", index_type="INVERTED"
                         )
                         self._client.create_index(
-                            collection_name=self.namespace,
+                            collection_name=self.final_namespace,
                             index_params=entity_name_index,
                         )
                     except Exception as e:
-                        logger.debug(f"IndexParams method failed for entity_name: {e}")
+                        logger.debug(
+                            f"[{self.workspace}] IndexParams method failed for entity_name: {e}"
+                        )
                         self._create_scalar_index_fallback("entity_name", "INVERTED")
 
-                elif "relationships" in self.namespace.lower():
+                elif self.namespace.endswith("relationships"):
                     # Create indexes for relationship fields
                     try:
                         src_id_index = self._get_index_params()
@@ -229,10 +242,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             field_name="src_id", index_type="INVERTED"
                         )
                         self._client.create_index(
-                            collection_name=self.namespace, index_params=src_id_index
+                            collection_name=self.final_namespace,
+                            index_params=src_id_index,
                         )
                     except Exception as e:
-                        logger.debug(f"IndexParams method failed for src_id: {e}")
+                        logger.debug(
+                            f"[{self.workspace}] IndexParams method failed for src_id: {e}"
+                        )
                         self._create_scalar_index_fallback("src_id", "INVERTED")
 
                     try:
@@ -241,13 +257,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             field_name="tgt_id", index_type="INVERTED"
                         )
                         self._client.create_index(
-                            collection_name=self.namespace, index_params=tgt_id_index
+                            collection_name=self.final_namespace,
+                            index_params=tgt_id_index,
                         )
                     except Exception as e:
-                        logger.debug(f"IndexParams method failed for tgt_id: {e}")
+                        logger.debug(
+                            f"[{self.workspace}] IndexParams method failed for tgt_id: {e}"
+                        )
                         self._create_scalar_index_fallback("tgt_id", "INVERTED")
 
-                elif "chunks" in self.namespace.lower():
+                elif self.namespace.endswith("chunks"):
                     # Create indexes for chunk fields
                     try:
                         doc_id_index = self._get_index_params()
@@ -255,10 +274,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             field_name="full_doc_id", index_type="INVERTED"
                         )
                         self._client.create_index(
-                            collection_name=self.namespace, index_params=doc_id_index
+                            collection_name=self.final_namespace,
+                            index_params=doc_id_index,
                         )
                     except Exception as e:
-                        logger.debug(f"IndexParams method failed for full_doc_id: {e}")
+                        logger.debug(
+                            f"[{self.workspace}] IndexParams method failed for full_doc_id: {e}"
+                        )
                         self._create_scalar_index_fallback("full_doc_id", "INVERTED")
 
                 # No common indexes needed
@@ -266,25 +288,29 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             else:
                 # Fallback to direct API calls if IndexParams is not available
                 logger.info(
-                    f"IndexParams not available, using fallback methods for {self.namespace}"
+                    f"[{self.workspace}] IndexParams not available, using fallback methods for {self.namespace}"
                 )
 
                 # Create vector index using fallback
                 self._create_vector_index_fallback()
 
                 # Create scalar indexes using fallback
-                if "entities" in self.namespace.lower():
+                if self.namespace.endswith("entities"):
                     self._create_scalar_index_fallback("entity_name", "INVERTED")
-                elif "relationships" in self.namespace.lower():
+                elif self.namespace.endswith("relationships"):
                     self._create_scalar_index_fallback("src_id", "INVERTED")
                     self._create_scalar_index_fallback("tgt_id", "INVERTED")
-                elif "chunks" in self.namespace.lower():
+                elif self.namespace.endswith("chunks"):
                     self._create_scalar_index_fallback("full_doc_id", "INVERTED")
 
-            logger.info(f"Created indexes for collection: {self.namespace}")
+            logger.info(
+                f"[{self.workspace}] Created indexes for collection: {self.namespace}"
+            )
 
         except Exception as e:
-            logger.warning(f"Failed to create some indexes for {self.namespace}: {e}")
+            logger.warning(
+                f"[{self.workspace}] Failed to create some indexes for {self.namespace}: {e}"
+            )
 
     def _get_required_fields_for_namespace(self) -> dict:
         """Get required core field definitions for current namespace"""
@@ -297,18 +323,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         }
 
         # Add specific fields based on namespace
-        if "entities" in self.namespace.lower():
+        if self.namespace.endswith("entities"):
             specific_fields = {
                 "entity_name": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
-        elif "relationships" in self.namespace.lower():
+        elif self.namespace.endswith("relationships"):
             specific_fields = {
                 "src_id": {"type": "VarChar"},
                 "tgt_id": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
-        elif "chunks" in self.namespace.lower():
+        elif self.namespace.endswith("chunks"):
             specific_fields = {
                 "full_doc_id": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
@@ -327,7 +353,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         expected_type = expected_config.get("type")
 
         logger.debug(
-            f"Checking field '{field_name}': existing_type={existing_type} (type={type(existing_type)}), expected_type={expected_type}"
+            f"[{self.workspace}] Checking field '{field_name}': existing_type={existing_type} (type={type(existing_type)}), expected_type={expected_type}"
         )
 
         # Convert DataType enum values to string names if needed
@@ -335,7 +361,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if hasattr(existing_type, "name"):
             existing_type = existing_type.name
             logger.debug(
-                f"Converted enum to name: {original_existing_type} -> {existing_type}"
+                f"[{self.workspace}] Converted enum to name: {original_existing_type} -> {existing_type}"
             )
         elif isinstance(existing_type, int):
             # Map common Milvus internal type codes to type names for backward compatibility
@@ -346,7 +372,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 9: "Double",
             }
             mapped_type = type_mapping.get(existing_type, str(existing_type))
-            logger.debug(f"Mapped numeric type: {existing_type} -> {mapped_type}")
+            logger.debug(
+                f"[{self.workspace}] Mapped numeric type: {existing_type} -> {mapped_type}"
+            )
             existing_type = mapped_type
 
         # Normalize type names for comparison
@@ -367,18 +395,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         if original_existing != existing_type or original_expected != expected_type:
             logger.debug(
-                f"Applied aliases: {original_existing} -> {existing_type}, {original_expected} -> {expected_type}"
+                f"[{self.workspace}] Applied aliases: {original_existing} -> {existing_type}, {original_expected} -> {expected_type}"
             )
 
         # Basic type compatibility check
         type_compatible = existing_type == expected_type
         logger.debug(
-            f"Type compatibility for '{field_name}': {existing_type} == {expected_type} -> {type_compatible}"
+            f"[{self.workspace}] Type compatibility for '{field_name}': {existing_type} == {expected_type} -> {type_compatible}"
         )
 
         if not type_compatible:
             logger.warning(
-                f"Type mismatch for field '{field_name}': expected {expected_type}, got {existing_type}"
+                f"[{self.workspace}] Type mismatch for field '{field_name}': expected {expected_type}, got {existing_type}"
             )
             return False
 
@@ -391,23 +419,25 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 or existing_field.get("primary_key", False)
             )
             logger.debug(
-                f"Primary key check for '{field_name}': expected=True, actual={is_primary}"
+                f"[{self.workspace}] Primary key check for '{field_name}': expected=True, actual={is_primary}"
             )
-            logger.debug(f"Raw field data for '{field_name}': {existing_field}")
+            logger.debug(
+                f"[{self.workspace}] Raw field data for '{field_name}': {existing_field}"
+            )
 
             # For ID field, be more lenient - if it's the ID field, assume it should be primary
             if field_name == "id" and not is_primary:
                 logger.info(
-                    f"ID field '{field_name}' not marked as primary in existing collection, but treating as compatible"
+                    f"[{self.workspace}] ID field '{field_name}' not marked as primary in existing collection, but treating as compatible"
                 )
                 # Don't fail for ID field primary key mismatch
             elif not is_primary:
                 logger.warning(
-                    f"Primary key mismatch for field '{field_name}': expected primary key, but field is not primary"
+                    f"[{self.workspace}] Primary key mismatch for field '{field_name}': expected primary key, but field is not primary"
                 )
                 return False
 
-        logger.debug(f"Field '{field_name}' is compatible")
+        logger.debug(f"[{self.workspace}] Field '{field_name}' is compatible")
         return True
 
     def _check_vector_dimension(self, collection_info: dict):
@@ -434,18 +464,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
                     if existing_dimension != current_dimension:
                         raise ValueError(
-                            f"Vector dimension mismatch for collection '{self.namespace}': "
+                            f"Vector dimension mismatch for collection '{self.final_namespace}': "
                             f"existing={existing_dimension}, current={current_dimension}"
                         )
 
-                    logger.debug(f"Vector dimension check passed: {current_dimension}")
+                    logger.debug(
+                        f"[{self.workspace}] Vector dimension check passed: {current_dimension}"
+                    )
                     return
 
         # If no vector field found, this might be an old collection created with simple schema
         logger.warning(
-            f"Vector field not found in collection '{self.namespace}'. This might be an old collection created with simple schema."
+            f"[{self.workspace}] Vector field not found in collection '{self.namespace}'. This might be an old collection created with simple schema."
         )
-        logger.warning("Consider recreating the collection for optimal performance.")
+        logger.warning(
+            f"[{self.workspace}] Consider recreating the collection for optimal performance."
+        )
         return
 
     def _check_schema_compatibility(self, collection_info: dict):
@@ -461,12 +495,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         if not has_vector_field:
             logger.warning(
-                f"Collection {self.namespace} appears to be created with old simple schema (no vector field)"
+                f"[{self.workspace}] Collection {self.namespace} appears to be created with old simple schema (no vector field)"
             )
             logger.warning(
-                "This collection will work but may have suboptimal performance"
+                f"[{self.workspace}] This collection will work but may have suboptimal performance"
             )
-            logger.warning("Consider recreating the collection for optimal performance")
+            logger.warning(
+                f"[{self.workspace}] Consider recreating the collection for optimal performance"
+            )
             return
 
         # For collections with vector field, check basic compatibility
@@ -486,7 +522,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         if incompatible_fields:
             raise ValueError(
-                f"Critical schema incompatibility in collection '{self.namespace}': {incompatible_fields}"
+                f"Critical schema incompatibility in collection '{self.final_namespace}': {incompatible_fields}"
             )
 
         # Get all expected fields for informational purposes
@@ -497,18 +533,20 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         if missing_fields:
             logger.info(
-                f"Collection {self.namespace} missing optional fields: {missing_fields}"
+                f"[{self.workspace}] Collection {self.namespace} missing optional fields: {missing_fields}"
             )
             logger.info(
                 "These fields would be available in a newly created collection for better performance"
             )
 
-        logger.debug(f"Schema compatibility check passed for {self.namespace}")
+        logger.debug(
+            f"[{self.workspace}] Schema compatibility check passed for {self.namespace}"
+        )
 
     def _validate_collection_compatibility(self):
         """Validate existing collection's dimension and schema compatibility"""
         try:
-            collection_info = self._client.describe_collection(self.namespace)
+            collection_info = self._client.describe_collection(self.final_namespace)
 
             # 1. Check vector dimension
             self._check_vector_dimension(collection_info)
@@ -517,12 +555,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             self._check_schema_compatibility(collection_info)
 
             logger.info(
-                f"VectorDB Collection '{self.namespace}' compatibility validation passed"
+                f"[{self.workspace}] VectorDB Collection '{self.namespace}' compatibility validation passed"
             )
 
         except Exception as e:
             logger.error(
-                f"Collection compatibility validation failed for {self.namespace}: {e}"
+                f"[{self.workspace}] Collection compatibility validation failed for {self.namespace}: {e}"
             )
             raise
 
@@ -530,61 +568,57 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """Ensure the collection is loaded into memory for search operations"""
         try:
             # Check if collection exists first
-            if not self._client.has_collection(self.namespace):
-                logger.error(f"Collection {self.namespace} does not exist")
-                raise ValueError(f"Collection {self.namespace} does not exist")
+            if not self._client.has_collection(self.final_namespace):
+                logger.error(
+                    f"[{self.workspace}] Collection {self.namespace} does not exist"
+                )
+                raise ValueError(f"Collection {self.final_namespace} does not exist")
 
             # Load the collection if it's not already loaded
             # In Milvus, collections need to be loaded before they can be searched
-            self._client.load_collection(self.namespace)
-            # logger.debug(f"Collection {self.namespace} loaded successfully")
+            self._client.load_collection(self.final_namespace)
+            # logger.debug(f"[{self.workspace}] Collection {self.namespace} loaded successfully")
 
         except Exception as e:
-            logger.error(f"Failed to load collection {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Failed to load collection {self.namespace}: {e}"
+            )
             raise
 
     def _create_collection_if_not_exist(self):
         """Create collection if not exists and check existing collection compatibility"""
 
         try:
-            # First, list all collections to see what actually exists
-            try:
-                all_collections = self._client.list_collections()
-                logger.debug(f"All collections in database: {all_collections}")
-            except Exception as list_error:
-                logger.warning(f"Could not list collections: {list_error}")
-                all_collections = []
-
             # Check if our specific collection exists
-            collection_exists = self._client.has_collection(self.namespace)
+            collection_exists = self._client.has_collection(self.final_namespace)
             logger.info(
-                f"VectorDB collection '{self.namespace}' exists check: {collection_exists}"
+                f"[{self.workspace}] VectorDB collection '{self.namespace}' exists check: {collection_exists}"
             )
 
             if collection_exists:
                 # Double-check by trying to describe the collection
                 try:
-                    self._client.describe_collection(self.namespace)
+                    self._client.describe_collection(self.final_namespace)
                     self._validate_collection_compatibility()
                     # Ensure the collection is loaded after validation
                     self._ensure_collection_loaded()
                     return
                 except Exception as describe_error:
                     logger.warning(
-                        f"Collection '{self.namespace}' exists but cannot be described: {describe_error}"
+                        f"[{self.workspace}] Collection '{self.namespace}' exists but cannot be described: {describe_error}"
                     )
                     logger.info(
-                        "Treating as if collection doesn't exist and creating new one..."
+                        f"[{self.workspace}] Treating as if collection doesn't exist and creating new one..."
                     )
                     # Fall through to creation logic
 
             # Collection doesn't exist, create new collection
-            logger.info(f"Creating new collection: {self.namespace}")
+            logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
             schema = self._create_schema_for_namespace()
 
             # Create collection with schema only first
             self._client.create_collection(
-                collection_name=self.namespace, schema=schema
+                collection_name=self.final_namespace, schema=schema
             )
 
             # Then create indexes
@@ -593,43 +627,49 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Load the newly created collection
             self._ensure_collection_loaded()
 
-            logger.info(f"Successfully created Milvus collection: {self.namespace}")
+            logger.info(
+                f"[{self.workspace}] Successfully created Milvus collection: {self.namespace}"
+            )
 
         except Exception as e:
             logger.error(
-                f"Error in _create_collection_if_not_exist for {self.namespace}: {e}"
+                f"[{self.workspace}] Error in _create_collection_if_not_exist for {self.namespace}: {e}"
             )
 
             # If there's any error, try to force create the collection
-            logger.info(f"Attempting to force create collection {self.namespace}...")
+            logger.info(
+                f"[{self.workspace}] Attempting to force create collection {self.namespace}..."
+            )
             try:
                 # Try to drop the collection first if it exists in a bad state
                 try:
-                    if self._client.has_collection(self.namespace):
+                    if self._client.has_collection(self.final_namespace):
                         logger.info(
-                            f"Dropping potentially corrupted collection {self.namespace}"
+                            f"[{self.workspace}] Dropping potentially corrupted collection {self.namespace}"
                         )
-                        self._client.drop_collection(self.namespace)
+                        self._client.drop_collection(self.final_namespace)
                 except Exception as drop_error:
                     logger.warning(
-                        f"Could not drop collection {self.namespace}: {drop_error}"
+                        f"[{self.workspace}] Could not drop collection {self.namespace}: {drop_error}"
                     )
 
                 # Create fresh collection
                 schema = self._create_schema_for_namespace()
                 self._client.create_collection(
-                    collection_name=self.namespace, schema=schema
+                    collection_name=self.final_namespace, schema=schema
                 )
                 self._create_indexes_after_collection()
 
                 # Load the newly created collection
                 self._ensure_collection_loaded()
 
-                logger.info(f"Successfully force-created collection {self.namespace}")
+                logger.info(
+                    f"[{self.workspace}] Successfully force-created collection {self.namespace}"
+                )
 
             except Exception as create_error:
                 logger.error(
-                    f"Failed to force-create collection {self.namespace}: {create_error}"
+                    f"[{self.workspace}] Failed to force-create collection {self.namespace}: {create_error}"
                 )
                 raise
 
@@ -651,11 +691,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
-        # Build namespace with workspace prefix for data isolation
+        # Build final_namespace with workspace prefix for data isolation
+        # Keep original namespace unchanged for type detection logic
         if effective_workspace:
-            self.namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
-        # When workspace is empty, keep the original namespace unchanged
+            self.final_namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(
+                f"Final namespace with workspace prefix: '{self.final_namespace}'"
+            )
+        else:
+            # When workspace is empty, final_namespace equals original namespace
+            self.final_namespace = self.namespace
+            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
+            self.workspace = "_"
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -669,37 +716,64 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if "created_at" not in self.meta_fields:
             self.meta_fields.add("created_at")
 
-        self._client = MilvusClient(
-            uri=os.environ.get(
-                "MILVUS_URI",
-                config.get(
-                    "milvus",
-                    "uri",
-                    fallback=os.path.join(
-                        self.global_config["working_dir"], "milvus_lite.db"
-                    ),
-                ),
-            ),
-            user=os.environ.get(
-                "MILVUS_USER", config.get("milvus", "user", fallback=None)
-            ),
-            password=os.environ.get(
-                "MILVUS_PASSWORD", config.get("milvus", "password", fallback=None)
-            ),
-            token=os.environ.get(
-                "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
-            ),
-            db_name=os.environ.get(
-                "MILVUS_DB_NAME", config.get("milvus", "db_name", fallback=None)
-            ),
-        )
+        # Initialize client as None - will be created in initialize() method
+        self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._initialized = False
 
-        # Create collection and check compatibility
-        self._create_collection_if_not_exist()
+    async def initialize(self):
+        """Initialize Milvus collection"""
+        async with get_storage_lock(enable_logging=True):
+            if self._initialized:
+                return
+
+            try:
+                # Create MilvusClient if not already created
+                if self._client is None:
+                    self._client = MilvusClient(
+                        uri=os.environ.get(
+                            "MILVUS_URI",
+                            config.get(
+                                "milvus",
+                                "uri",
+                                fallback=os.path.join(
+                                    self.global_config["working_dir"], "milvus_lite.db"
+                                ),
+                            ),
+                        ),
+                        user=os.environ.get(
+                            "MILVUS_USER", config.get("milvus", "user", fallback=None)
+                        ),
+                        password=os.environ.get(
+                            "MILVUS_PASSWORD",
+                            config.get("milvus", "password", fallback=None),
+                        ),
+                        token=os.environ.get(
+                            "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
+                        ),
+                        db_name=os.environ.get(
+                            "MILVUS_DB_NAME",
+                            config.get("milvus", "db_name", fallback=None),
+                        ),
+                    )
+                    logger.debug(
+                        f"[{self.workspace}] MilvusClient created successfully"
+                    )
+
+                # Create collection and check compatibility
+                self._create_collection_if_not_exist()
+                self._initialized = True
+                logger.info(
+                    f"[{self.workspace}] Milvus collection '{self.namespace}' initialized successfully"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Failed to initialize Milvus collection '{self.namespace}': {e}"
+                )
+                raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"Inserting {len(data)} to {self.namespace}")
+        # logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
@@ -730,7 +804,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["vector"] = embeddings[i]
-        results = self._client.upsert(collection_name=self.namespace, data=list_data)
+        results = self._client.upsert(
+            collection_name=self.final_namespace, data=list_data
+        )
         return results
 
     async def query(
@@ -747,7 +823,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         output_fields = list(self.meta_fields)
 
         results = self._client.search(
-            collection_name=self.namespace,
+            collection_name=self.final_namespace,
             data=embedding,
             limit=top_k,
             output_fields=output_fields,
@@ -780,21 +856,25 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Compute entity ID from name
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             logger.debug(
-                f"Attempting to delete entity {entity_name} with ID {entity_id}"
+                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
             )
 
             # Delete the entity from Milvus collection
             result = self._client.delete(
-                collection_name=self.namespace, pks=[entity_id]
+                collection_name=self.final_namespace, pks=[entity_id]
             )
 
             if result and result.get("delete_count", 0) > 0:
-                logger.debug(f"Successfully deleted entity {entity_name}")
+                logger.debug(
+                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
+                )
             else:
-                logger.debug(f"Entity {entity_name} not found in storage")
+                logger.debug(
+                    f"[{self.workspace}] Entity {entity_name} not found in storage"
+                )
 
         except Exception as e:
-            logger.error(f"Error deleting entity {entity_name}: {e}")
+            logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete all relations associated with an entity
@@ -811,31 +891,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Find all relations involving this entity
             results = self._client.query(
-                collection_name=self.namespace, filter=expr, output_fields=["id"]
+                collection_name=self.final_namespace, filter=expr, output_fields=["id"]
             )
 
             if not results or len(results) == 0:
-                logger.debug(f"No relations found for entity {entity_name}")
+                logger.debug(
+                    f"[{self.workspace}] No relations found for entity {entity_name}"
+                )
                 return
 
             # Extract IDs of relations to delete
             relation_ids = [item["id"] for item in results]
             logger.debug(
-                f"Found {len(relation_ids)} relations for entity {entity_name}"
+                f"[{self.workspace}] Found {len(relation_ids)} relations for entity {entity_name}"
             )
 
             # Delete the relations
             if relation_ids:
                 delete_result = self._client.delete(
-                    collection_name=self.namespace, pks=relation_ids
+                    collection_name=self.final_namespace, pks=relation_ids
                 )
 
                 logger.debug(
-                    f"Deleted {delete_result.get('delete_count', 0)} relations for {entity_name}"
+                    f"[{self.workspace}] Deleted {delete_result.get('delete_count', 0)} relations for {entity_name}"
                 )
 
         except Exception as e:
-            logger.error(f"Error deleting relations for {entity_name}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
+            )
 
     async def delete(self, ids: list[str]) -> None:
         """Delete vectors with specified IDs
@@ -848,17 +932,21 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             self._ensure_collection_loaded()
 
             # Delete vectors by IDs
-            result = self._client.delete(collection_name=self.namespace, pks=ids)
+            result = self._client.delete(collection_name=self.final_namespace, pks=ids)
 
             if result and result.get("delete_count", 0) > 0:
                 logger.debug(
-                    f"Successfully deleted {result.get('delete_count', 0)} vectors from {self.namespace}"
+                    f"[{self.workspace}] Successfully deleted {result.get('delete_count', 0)} vectors from {self.namespace}"
                 )
             else:
-                logger.debug(f"No vectors were deleted from {self.namespace}")
+                logger.debug(
+                    f"[{self.workspace}] No vectors were deleted from {self.namespace}"
+                )
 
         except Exception as e:
-            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
+            )
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
@@ -878,7 +966,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Query Milvus for a specific ID
             result = self._client.query(
-                collection_name=self.namespace,
+                collection_name=self.final_namespace,
                 filter=f'id == "{id}"',
                 output_fields=output_fields,
             )
@@ -888,7 +976,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             return result[0]
         except Exception as e:
-            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error retrieving vector data for ID {id}: {e}"
+            )
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -916,14 +1006,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Query Milvus with the filter
             result = self._client.query(
-                collection_name=self.namespace,
+                collection_name=self.final_namespace,
                 filter=filter_expr,
                 output_fields=output_fields,
             )
 
             return result or []
         except Exception as e:
-            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
+            )
             return []
 
     async def drop(self) -> dict[str, str]:
@@ -936,18 +1028,21 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        try:
-            # Drop the collection and recreate it
-            if self._client.has_collection(self.namespace):
-                self._client.drop_collection(self.namespace)
+        async with get_storage_lock(enable_logging=True):
+            try:
+                # Drop the collection and recreate it
+                if self._client.has_collection(self.final_namespace):
+                    self._client.drop_collection(self.final_namespace)
 
-            # Recreate the collection
-            self._create_collection_if_not_exist()
+                # Recreate the collection
+                self._create_collection_if_not_exist()
 
-            logger.info(
-                f"Process {os.getpid()} drop Milvus collection {self.namespace}"
-            )
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            logger.error(f"Error dropping Milvus collection {self.namespace}: {e}")
-            return {"status": "error", "message": str(e)}
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
+                )
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
+                )
+                return {"status": "error", "message": str(e)}

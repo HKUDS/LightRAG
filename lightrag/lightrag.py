@@ -530,10 +530,8 @@ class LightRAG:
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
-        """Asynchronously initialize the storages"""
+        """Storage initialization must be called one by one to prevent deadlock"""
         if self._storages_status == StoragesStatus.CREATED:
-            tasks = []
-
             for storage in (
                 self.full_docs,
                 self.text_chunks,
@@ -547,9 +545,8 @@ class LightRAG:
                 self.doc_status,
             ):
                 if storage:
-                    tasks.append(storage.initialize())
-
-            await asyncio.gather(*tasks)
+                    # logger.debug(f"Initializing storage: {storage}")
+                    await storage.initialize()
 
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
