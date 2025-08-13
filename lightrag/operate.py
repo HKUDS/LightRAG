@@ -3019,11 +3019,10 @@ async def _find_related_text_unit_from_relations(
         if relation_info["chunks"]
     ]
 
-    logger.info(
-        f"Find {len(relations_with_chunks)} additional relations-related chunks ({len(removed_entity_chunk_ids)} duplicated chunks removed)"
-    )
-
     if not relations_with_chunks:
+        logger.info(
+            f"Find no additional relations-related chunks from {len(edge_datas)} relations"
+        )
         return []
 
     # Step 3: Sort chunks for each relationship by occurrence count (higher count = higher priority)
@@ -3036,6 +3035,13 @@ async def _find_related_text_unit_from_relations(
         )
         relation_info["sorted_chunks"] = sorted_chunks
         total_relation_chunks += len(sorted_chunks)
+
+    logger.info(
+        f"Find {total_relation_chunks} additional relations-related chunks ({len(removed_entity_chunk_ids)} duplicated chunks removed)"
+    )
+    logger.debug(
+        f"Only {len(relations_with_chunks)} out of {len(edge_datas)} relations have additional chunks after chunk deduplication"
+    )
 
     # Step 4: Apply the selected chunk selection algorithm
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
