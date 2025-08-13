@@ -7,7 +7,7 @@ import hashlib
 import uuid
 from ..utils import logger
 from ..base import BaseVectorStorage
-from ..kg.shared_storage import get_storage_lock
+from ..kg.shared_storage import get_data_init_lock, get_storage_lock
 import configparser
 import pipmaster as pm
 
@@ -117,7 +117,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize Qdrant collection"""
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self._initialized:
                 return
 
@@ -412,7 +412,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 # Delete the collection and recreate it
                 if self._client.collection_exists(self.final_namespace):

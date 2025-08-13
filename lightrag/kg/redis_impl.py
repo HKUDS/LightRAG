@@ -20,7 +20,7 @@ from lightrag.base import (
     DocStatus,
     DocProcessingStatus,
 )
-from ..kg.shared_storage import get_storage_lock
+from ..kg.shared_storage import get_data_init_lock, get_storage_lock
 import json
 
 # Import tenacity for retry logic
@@ -180,7 +180,7 @@ class RedisKVStorage(BaseKVStorage):
 
     async def initialize(self):
         """Initialize Redis connection and migrate legacy cache structure if needed"""
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self._initialized:
                 return
 
@@ -428,7 +428,7 @@ class RedisKVStorage(BaseKVStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             async with self._get_redis_connection() as redis:
                 try:
                     # Use SCAN to find all keys with the namespace prefix
@@ -606,7 +606,7 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         """Initialize Redis connection"""
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self._initialized:
                 return
 
@@ -1049,7 +1049,7 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 async with self._get_redis_connection() as redis:
                     # Use SCAN to find all keys with the namespace prefix
