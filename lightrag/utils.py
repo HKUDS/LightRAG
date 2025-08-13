@@ -762,7 +762,7 @@ async def handle_cache(
     prompt,
     mode="default",
     cache_type=None,
-) -> str|None:
+) -> str | None:
     """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
         return None
