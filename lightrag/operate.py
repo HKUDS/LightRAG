@@ -46,6 +46,7 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
@@ -2712,12 +2713,13 @@ async def _find_related_text_unit_from_entities(
         logger.warning("No entities with text chunks found")
         return []
 
-    # Check chunk selection method from environment variable
-    kg_chunk_pick_method = os.getenv("KG_CHUNK_PICK_METHOD", "WEIGHT").upper()
-
+    kg_chunk_pick_method = text_chunks_db.global_config.get(
+        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    )
     max_related_chunks = text_chunks_db.global_config.get(
         "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
     )
+
     # Step 2: Count chunk occurrences and deduplicate (keep chunks from earlier positioned entities)
     chunk_occurrence_count = {}
     for entity_info in entities_with_chunks:
@@ -2967,9 +2969,9 @@ async def _find_related_text_unit_from_relations(
         logger.warning("No relation-related chunks found")
         return []
 
-    # Check chunk selection method from environment variable
-    kg_chunk_pick_method = os.getenv("KG_CHUNK_PICK_METHOD", "WEIGHT").upper()
-
+    kg_chunk_pick_method = text_chunks_db.global_config.get(
+        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    )
     max_related_chunks = text_chunks_db.global_config.get(
         "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
     )
@@ -3025,6 +3027,7 @@ async def _find_related_text_unit_from_relations(
         return []
 
     # Step 3: Sort chunks for each relationship by occurrence count (higher count = higher priority)
+    total_relation_chunks = 0
     for relation_info in relations_with_chunks:
         sorted_chunks = sorted(
             relation_info["chunks"],
@@ -3032,6 +3035,7 @@ async def _find_related_text_unit_from_relations(
             reverse=True,
         )
         relation_info["sorted_chunks"] = sorted_chunks
+        total_relation_chunks += len(sorted_chunks)
 
     # Step 4: Apply the selected chunk selection algorithm
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
@@ -3074,7 +3078,7 @@ async def _find_related_text_unit_from_relations(
                     )
                 else:
                     logger.info(
-                        f"Selecting {len(selected_chunk_ids)} relation-related chunks by vector similarity"
+                        f"Selecting {len(selected_chunk_ids)} from {total_relation_chunks} relation-related chunks by vector similarity"
                     )
 
             except Exception as e:
@@ -3090,7 +3094,7 @@ async def _find_related_text_unit_from_relations(
         )
 
         logger.info(
-            f"Selecting {len(selected_chunk_ids)} relation-related chunks by weighted polling"
+            f"Selecting {len(selected_chunk_ids)} from {total_relation_chunks} relation-related chunks by weighted polling"
         )
 
     logger.debug(
