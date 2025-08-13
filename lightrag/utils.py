@@ -762,27 +762,27 @@ async def handle_cache(
     prompt,
     mode="default",
     cache_type=None,
-):
+) -> str|None:
     """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
-        return None, None, None, None
+        return None
 
     if mode != "default":  # handle cache for all type of query
         if not hashing_kv.global_config.get("enable_llm_cache"):
-            return None, None, None, None
+            return None
     else:  # handle cache for entity extraction
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
-            return None, None, None, None
+            return None
 
     # Use flattened cache key format: {mode}:{cache_type}:{hash}
     flattened_key = generate_cache_key(mode, cache_type, args_hash)
     cache_entry = await hashing_kv.get_by_id(flattened_key)
     if cache_entry:
         logger.debug(f"Flattened cache hit(key:{flattened_key})")
-        return cache_entry["return"], None, None, None
+        return cache_entry["return"]
 
     logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
-    return None, None, None, None
+    return None
 
 
 @dataclass
@@ -1409,7 +1409,7 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
-        cached_return, _1, _2, _3 = await handle_cache(
+        cached_return = await handle_cache(
             llm_response_cache,
             arg_hash,
             _prompt,
