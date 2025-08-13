@@ -60,7 +60,7 @@ def get_env_value(
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from lightrag.base import BaseKVStorage, QueryParam
+    from lightrag.base import BaseKVStorage, BaseVectorStorage, QueryParam
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -1648,6 +1648,115 @@ def linear_gradient_weighted_polling(
             break
 
     return selected_chunks
+
+
+async def vector_similarity_sorting(
+    query: str,
+    text_chunks_storage: "BaseKVStorage",
+    chunks_vdb: "BaseVectorStorage",
+    num_of_chunks: int,
+    entity_info: list[dict[str, Any]],
+    embedding_func: callable,
+) -> list[str]:
+    """
+    Vector similarity-based text chunk selection algorithm.
+
+    This algorithm selects text chunks based on cosine similarity between
+    the query embedding and text chunk embeddings.
+
+    Args:
+        query: User's original query string
+        text_chunks_storage: Text chunks storage instance
+        chunks_vdb: Vector database storage for chunks
+        num_of_chunks: Number of chunks to select
+        entity_info: List of entity information containing chunk IDs
+        embedding_func: Embedding function to compute query embedding
+
+    Returns:
+        List of selected text chunk IDs sorted by similarity (highest first)
+    """
+    logger.debug(
+        f"Vector similarity chunk selection: num_of_chunks={num_of_chunks}, entity_info_count={len(entity_info) if entity_info else 0}"
+    )
+
+    if not entity_info or num_of_chunks <= 0:
+        return []
+
+    # Collect all unique chunk IDs from entity info
+    all_chunk_ids = set()
+    for i, entity in enumerate(entity_info):
+        chunk_ids = entity.get("sorted_chunks", [])
+        all_chunk_ids.update(chunk_ids)
+
+    if not all_chunk_ids:
+        logger.warning(
+            "Vector similarity chunk selection:  no chunk IDs found in entity_info"
+        )
+        return []
+
+    logger.debug(
+        f"Vector similarity chunk selection: {len(all_chunk_ids)} unique chunk IDs collected"
+    )
+
+    all_chunk_ids = list(all_chunk_ids)
+
+    try:
+        # Get query embedding
+        query_embedding = await embedding_func([query])
+        query_embedding = query_embedding[
+            0
+        ]  # Extract first embedding from batch result
+
+        # Get chunk embeddings from vector database
+        chunk_vectors = await chunks_vdb.get_vectors_by_ids(all_chunk_ids)
+        logger.debug(
+            f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
+        )
+
+        if not chunk_vectors:
+            logger.warning(
+                "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+            )
+            return []
+
+        # Calculate cosine similarities
+        similarities = []
+        valid_vectors = 0
+        for chunk_id in all_chunk_ids:
+            if chunk_id in chunk_vectors:
+                chunk_embedding = chunk_vectors[chunk_id]
+                try:
+                    # Calculate cosine similarity
+                    similarity = cosine_similarity(query_embedding, chunk_embedding)
+                    similarities.append((chunk_id, similarity))
+                    valid_vectors += 1
+                except Exception as e:
+                    logger.warning(
+                        f"Vector similarity chunk selection: failed to calculate similarity for chunk {chunk_id}: {e}"
+                    )
+            else:
+                logger.warning(
+                    f"Vector similarity chunk selection:  no vector found for chunk {chunk_id}"
+                )
+
+        # Sort by similarity (highest first) and select top num_of_chunks
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        selected_chunks = [chunk_id for chunk_id, _ in similarities[:num_of_chunks]]
+
+        logger.debug(
+            f"Vector similarity chunk selection: {len(selected_chunks)} chunks from {len(all_chunk_ids)} candidates"
+        )
+
+        return selected_chunks
+
+    except Exception as e:
+        logger.error(f"[VECTOR_SIMILARITY] Error in vector similarity sorting: {e}")
+        import traceback
+
+        logger.error(f"[VECTOR_SIMILARITY] Traceback: {traceback.format_exc()}")
+        # Fallback to simple truncation
+        logger.debug("[VECTOR_SIMILARITY] Falling back to simple truncation")
+        return all_chunk_ids[:num_of_chunks]
 
 
 class TokenTracker:
