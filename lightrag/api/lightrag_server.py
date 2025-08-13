@@ -106,6 +106,7 @@ def create_app(args):
         "openai",
         "openai-ollama",
         "azure_openai",
+        "aws_bedrock",
     ]:
         raise Exception("llm binding not supported")
 
@@ -114,6 +115,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
+        "aws_bedrock",
         "jina",
     ]:
         raise Exception("embedding binding not supported")
@@ -128,9 +130,7 @@ def create_app(args):
     # Add SSL validation
     if args.ssl:
         if not args.ssl_certfile or not args.ssl_keyfile:
-            raise Exception(
-                "SSL certificate and key files must be provided when SSL is enabled"
-            )
+            raise Exception("SSL certificate and key files must be provided when SSL is enabled")
         if not os.path.exists(args.ssl_certfile):
             raise Exception(f"SSL certificate file not found: {args.ssl_certfile}")
         if not os.path.exists(args.ssl_keyfile):
@@ -188,10 +188,11 @@ def create_app(args):
     # Initialize FastAPI
     app_kwargs = {
         "title": "LightRAG Server API",
-        "description": "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-        + "(With authentication)"
-        if api_key
-        else "",
+        "description": (
+            "Providing API for LightRAG core, Web UI and Ollama Model Emulation" + "(With authentication)"
+            if api_key
+            else ""
+        ),
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
@@ -244,9 +245,9 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+    if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
+        from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
-        from lightrag.llm.openai import openai_complete_if_cache
-        from lightrag.llm.ollama import ollama_embed
         from lightrag.llm.binding_options import OllamaEmbeddingOptions
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
@@ -312,41 +313,80 @@ def create_app(args):
             **kwargs,
         )
 
+    async def bedrock_model_complete(
+        prompt,
+        system_prompt=None,
+        history_messages=None,
+        keyword_extraction=False,
+        **kwargs,
+    ) -> str:
+        keyword_extraction = kwargs.pop("keyword_extraction", None)
+        if keyword_extraction:
+            kwargs["response_format"] = GPTKeywordExtractionFormat
+        if history_messages is None:
+            history_messages = []
+
+        # Use global temperature for Bedrock
+        kwargs["temperature"] = args.temperature
+
+        return await bedrock_complete_if_cache(
+            args.llm_model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            **kwargs,
+        )
+
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=lambda texts: lollms_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "lollms"
-        else ollama_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-            options=OllamaEmbeddingOptions.options_dict(args),
-        )
-        if args.embedding_binding == "ollama"
-        else azure_openai_embed(
-            texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "azure_openai"
-        else jina_embed(
-            texts,
-            dimensions=args.embedding_dim,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "jina"
-        else openai_embed(
-            texts,
-            model=args.embedding_model,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
+        func=lambda texts: (
+            lollms_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+            if args.embedding_binding == "lollms"
+            else (
+                ollama_embed(
+                    texts,
+                    embed_model=args.embedding_model,
+                    host=args.embedding_binding_host,
+                    api_key=args.embedding_binding_api_key,
+                    options=OllamaEmbeddingOptions.options_dict(args),
+                )
+                if args.embedding_binding == "ollama"
+                else (
+                    azure_openai_embed(
+                        texts,
+                        model=args.embedding_model,  # no host is used for openai,
+                        api_key=args.embedding_binding_api_key,
+                    )
+                    if args.embedding_binding == "azure_openai"
+                    else (
+                        bedrock_embed(
+                            texts,
+                            model=args.embedding_model,
+                        )
+                        if args.embedding_binding == "aws_bedrock"
+                        else (
+                            jina_embed(
+                                texts,
+                                dimensions=args.embedding_dim,
+                                base_url=args.embedding_binding_host,
+                                api_key=args.embedding_binding_api_key,
+                            )
+                            if args.embedding_binding == "jina"
+                            else openai_embed(
+                                texts,
+                                model=args.embedding_model,
+                                base_url=args.embedding_binding_host,
+                                api_key=args.embedding_binding_api_key,
+                            )
+                        )
+                    )
+                )
+            )
         ),
     )
 
@@ -355,9 +395,7 @@ def create_app(args):
     if args.rerank_binding_api_key and args.rerank_binding_host:
         from lightrag.rerank import custom_rerank
 
-        async def server_rerank_func(
-            query: str, documents: list, top_n: int = None, **kwargs
-        ):
+        async def server_rerank_func(query: str, documents: list, top_n: int = None, **kwargs):
             """Server rerank function with configuration from environment variables"""
             return await custom_rerank(
                 query=query,
@@ -370,9 +408,7 @@ def create_app(args):
             )
 
         rerank_model_func = server_rerank_func
-        logger.info(
-            f"Rerank model configured: {args.rerank_model} (can be enabled per query)"
-        )
+        logger.info(f"Rerank model configured: {args.rerank_model} (can be enabled per query)")
     else:
         logger.info(
             "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
@@ -381,41 +417,43 @@ def create_app(args):
     # Create ollama_server_infos from command line arguments
     from lightrag.api.config import OllamaServerInfos
 
-    ollama_server_infos = OllamaServerInfos(
-        name=args.simulated_model_name, tag=args.simulated_model_tag
-    )
+    ollama_server_infos = OllamaServerInfos(name=args.simulated_model_name, tag=args.simulated_model_tag)
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai"]:
+    if args.llm_binding in ["lollms", "ollama", "openai", "aws_bedrock"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
+            llm_model_func=(
+                lollms_model_complete
+                if args.llm_binding == "lollms"
+                else (
+                    ollama_model_complete
+                    if args.llm_binding == "ollama"
+                    else bedrock_model_complete if args.llm_binding == "aws_bedrock" else openai_alike_model_complete
+                )
+            ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": OllamaLLMOptions.options_dict(args),
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
+            llm_model_kwargs=(
+                {
+                    "host": args.llm_binding_host,
+                    "timeout": args.timeout,
+                    "options": OllamaLLMOptions.options_dict(args),
+                    "api_key": args.llm_binding_api_key,
+                }
+                if args.llm_binding == "lollms" or args.llm_binding == "ollama"
+                else {}
+            ),
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
+            vector_db_storage_cls_kwargs={"cosine_better_than_threshold": args.cosine_threshold},
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
@@ -442,9 +480,7 @@ def create_app(args):
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
+            vector_db_storage_cls_kwargs={"cosine_better_than_threshold": args.cosine_threshold},
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
             rerank_model_func=rerank_model_func,
@@ -480,9 +516,7 @@ def create_app(args):
 
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
-            guest_token = auth_handler.create_token(
-                username="guest", role="guest", metadata={"auth_mode": "disabled"}
-            )
+            guest_token = auth_handler.create_token(username="guest", role="guest", metadata={"auth_mode": "disabled"})
             return {
                 "auth_configured": False,
                 "access_token": guest_token,
@@ -508,9 +542,7 @@ def create_app(args):
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
-            guest_token = auth_handler.create_token(
-                username="guest", role="guest", metadata={"auth_mode": "disabled"}
-            )
+            guest_token = auth_handler.create_token(username="guest", role="guest", metadata={"auth_mode": "disabled"})
             return {
                 "access_token": guest_token,
                 "token_type": "bearer",
@@ -523,14 +555,10 @@ def create_app(args):
             }
         username = form_data.username
         if auth_handler.accounts.get(username) != form_data.password:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials")
 
         # Regular user login
-        user_token = auth_handler.create_token(
-            username=username, role="user", metadata={"auth_mode": "enabled"}
-        )
+        user_token = auth_handler.create_token(username=username, role="user", metadata={"auth_mode": "enabled"})
         return {
             "access_token": user_token,
             "token_type": "bearer",
@@ -579,12 +607,8 @@ def create_app(args):
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration (based on whether rerank model is configured)
                     "enable_rerank": rerank_model_func is not None,
-                    "rerank_model": args.rerank_model
-                    if rerank_model_func is not None
-                    else None,
-                    "rerank_binding_host": args.rerank_binding_host
-                    if rerank_model_func is not None
-                    else None,
+                    "rerank_model": args.rerank_model if rerank_model_func is not None else None,
+                    "rerank_binding_host": args.rerank_binding_host if rerank_model_func is not None else None,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
                     "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
@@ -614,17 +638,11 @@ def create_app(args):
             response = await super().get_response(path, scope)
 
             if path.endswith(".html"):
-                response.headers["Cache-Control"] = (
-                    "no-cache, no-store, must-revalidate"
-                )
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
-            elif (
-                "/assets/" in path
-            ):  # Assets (JS, CSS, images, fonts) generated by Vite with hash in filename
-                response.headers["Cache-Control"] = (
-                    "public, max-age=31536000, immutable"
-                )
+            elif "/assets/" in path:  # Assets (JS, CSS, images, fonts) generated by Vite with hash in filename
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             # Add other rules here if needed for non-HTML, non-asset files
 
             # Ensure correct Content-Type
@@ -640,9 +658,7 @@ def create_app(args):
     static_dir.mkdir(exist_ok=True)
     app.mount(
         "/webui",
-        SmartStaticFiles(
-            directory=static_dir, html=True, check_dir=True
-        ),  # Use SmartStaticFiles
+        SmartStaticFiles(directory=static_dir, html=True, check_dir=True),  # Use SmartStaticFiles
         name="webui",
     )
 
@@ -798,9 +814,7 @@ def main():
             }
         )
 
-    print(
-        f"Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}"
-    )
+    print(f"Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}")
     uvicorn.run(**uvicorn_config)
 
 
