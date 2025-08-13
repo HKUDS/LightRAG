@@ -2803,7 +2803,7 @@ async def _find_related_text_unit_from_entities(
             entities_with_chunks, max_related_chunks, min_related_chunks=1
         )
 
-        logger.debug(
+        logger.info(
             f"Selecting {len(selected_chunk_ids)} from {total_entity_chunks} entity-related chunks by weighted polling"
         )
 
