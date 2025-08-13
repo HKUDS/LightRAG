@@ -1749,7 +1749,7 @@ async def kg_query(
         query_param.user_prompt or "",
         query_param.enable_rerank,
     )
-    cached_response, quantized, min_val, max_val = await handle_cache(
+    cached_response = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
@@ -1924,18 +1924,10 @@ async def extract_keywords_only(
     args_hash = compute_args_hash(
         param.mode,
         text,
-        param.response_type,
-        param.top_k,
-        param.chunk_top_k,
-        param.max_entity_tokens,
-        param.max_relation_tokens,
-        param.max_total_tokens,
         param.hl_keywords or [],
         param.ll_keywords or [],
-        param.user_prompt or "",
-        param.enable_rerank,
     )
-    cached_response, quantized, min_val, max_val = await handle_cache(
+    cached_response = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
     )
     if cached_response is not None:
@@ -3137,7 +3129,7 @@ async def naive_query(
         query_param.user_prompt or "",
         query_param.enable_rerank,
     )
-    cached_response, quantized, min_val, max_val = await handle_cache(
+    cached_response = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
