@@ -6,7 +6,7 @@ import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
-from ..kg.shared_storage import get_storage_lock
+from ..kg.shared_storage import get_data_init_lock, get_storage_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -723,7 +723,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize Milvus collection"""
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock(enable_logging=True):
             if self._initialized:
                 return
 
@@ -1028,7 +1028,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 # Drop the collection and recreate it
                 if self._client.has_collection(self.final_namespace):

@@ -18,7 +18,7 @@ from ..base import (
 from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
-from ..kg.shared_storage import get_storage_lock, get_graph_db_lock
+from ..kg.shared_storage import get_data_init_lock, get_storage_lock, get_graph_db_lock
 
 import pipmaster as pm
 
@@ -126,7 +126,7 @@ class MongoKVStorage(BaseKVStorage):
         self._collection_name = self.final_namespace
 
     async def initialize(self):
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
@@ -136,7 +136,7 @@ class MongoKVStorage(BaseKVStorage):
             )
 
     async def finalize(self):
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             if self.db is not None:
                 await ClientManager.release_client(self.db)
                 self.db = None
@@ -255,7 +255,7 @@ class MongoKVStorage(BaseKVStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 result = await self._data.delete_many({})
                 deleted_count = result.deleted_count
@@ -323,7 +323,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         self._collection_name = self.final_namespace
 
     async def initialize(self):
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
@@ -340,7 +340,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             )
 
     async def finalize(self):
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             if self.db is not None:
                 await ClientManager.release_client(self.db)
                 self.db = None
@@ -455,7 +455,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 result = await self._data.delete_many({})
                 deleted_count = result.deleted_count
@@ -708,7 +708,7 @@ class MongoGraphStorage(BaseGraphStorage):
         self._edge_collection_name = f"{self._collection_name}_edges"
 
     async def initialize(self):
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
@@ -723,7 +723,7 @@ class MongoGraphStorage(BaseGraphStorage):
             )
 
     async def finalize(self):
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_graph_db_lock():
             if self.db is not None:
                 await ClientManager.release_client(self.db)
                 self.db = None
@@ -1579,7 +1579,7 @@ class MongoGraphStorage(BaseGraphStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_graph_db_lock():
             try:
                 result = await self.collection.delete_many({})
                 deleted_count = result.deleted_count
@@ -1674,7 +1674,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     async def initialize(self):
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self.db is None:
                 self.db = await ClientManager.get_client()
 
@@ -1688,7 +1688,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
 
     async def finalize(self):
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             if self.db is not None:
                 await ClientManager.release_client(self.db)
                 self.db = None
@@ -1973,7 +1973,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 # Delete all documents
                 result = await self._data.delete_many({})
