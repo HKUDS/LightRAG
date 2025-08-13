@@ -811,20 +811,20 @@ async def pipeline_enqueue_file(
                     # Validate content
                     if not content or len(content.strip()) == 0:
                         logger.error(f"Empty content in file: {file_path.name}")
-                        return False
+                        return False, ""
 
                     # Check if content looks like binary data string representation
                     if content.startswith("b'") or content.startswith('b"'):
                         logger.error(
                             f"File {file_path.name} appears to contain binary data representation instead of text"
                         )
-                        return False
+                        return False, ""
 
                 except UnicodeDecodeError:
                     logger.error(
                         f"File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
                     )
-                    return False
+                    return False, ""
             case ".pdf":
                 if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
@@ -920,7 +920,7 @@ async def pipeline_enqueue_file(
                 logger.error(
                     f"Unsupported file type: {file_path.name} (extension {ext})"
                 )
-                return False
+                return False, ""
 
         # Insert into the RAG queue
         if content:
@@ -942,6 +942,7 @@ async def pipeline_enqueue_file(
             return True, track_id
         else:
             logger.error(f"No content could be extracted from file: {file_path.name}")
+            return False, ""
 
     except Exception as e:
         logger.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
