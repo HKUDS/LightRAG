@@ -2752,7 +2752,6 @@ async def _find_related_text_unit_from_entities(
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        # Calculate num_of_chunks = max_related_chunks * len(entity_info) / 2
         num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
 
         # Get embedding function from global config
@@ -2762,15 +2761,7 @@ async def _find_related_text_unit_from_entities(
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                # Extract the actual callable function from EmbeddingFunc
-                if hasattr(embedding_func_config, "func"):
-                    actual_embedding_func = embedding_func_config.func
-                else:
-                    logger.warning(
-                        "Invalid embedding function format, falling back to WEIGHT method"
-                    )
-                    kg_chunk_pick_method = "WEIGHT"
-                    actual_embedding_func = None
+                actual_embedding_func = embedding_func_config.func
 
                 selected_chunk_ids = None
                 if actual_embedding_func:
@@ -3037,17 +3028,13 @@ async def _find_related_text_unit_from_relations(
         total_relation_chunks += len(sorted_chunks)
 
     logger.info(
-        f"Find {total_relation_chunks} additional relations-related chunks ({len(removed_entity_chunk_ids)} duplicated chunks removed)"
-    )
-    logger.debug(
-        f"Only {len(relations_with_chunks)} out of {len(edge_datas)} relations have additional chunks after chunk deduplication"
+        f"Find {total_relation_chunks} additional chunks in {len(relations_with_chunks)} relations ({len(removed_entity_chunk_ids)} duplicated chunks removed)"
     )
 
     # Step 4: Apply the selected chunk selection algorithm
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        # Calculate num_of_chunks = max_related_chunks * len(entity_info) / 2
         num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
 
         # Get embedding function from global config
@@ -3057,15 +3044,7 @@ async def _find_related_text_unit_from_relations(
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                # Extract the actual callable function from EmbeddingFunc
-                if hasattr(embedding_func_config, "func"):
-                    actual_embedding_func = embedding_func_config.func
-                else:
-                    logger.warning(
-                        "Invalid embedding function format, falling back to WEIGHT method"
-                    )
-                    kg_chunk_pick_method = "WEIGHT"
-                    actual_embedding_func = None
+                actual_embedding_func = embedding_func_config.func
 
                 if actual_embedding_func:
                     selected_chunk_ids = await vector_similarity_sorting(
