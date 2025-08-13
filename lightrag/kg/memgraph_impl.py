@@ -9,7 +9,7 @@ from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
-from ..kg.shared_storage import get_graph_db_lock
+from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -56,7 +56,7 @@ class MemgraphStorage(BaseGraphStorage):
         return self.workspace
 
     async def initialize(self):
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_data_init_lock():
             URI = os.environ.get(
                 "MEMGRAPH_URI",
                 config.get("memgraph", "uri", fallback="bolt://localhost:7687"),
@@ -102,7 +102,7 @@ class MemgraphStorage(BaseGraphStorage):
                 raise
 
     async def finalize(self):
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_graph_db_lock():
             if self._driver is not None:
                 await self._driver.close()
                 self._driver = None
@@ -743,7 +743,7 @@ class MemgraphStorage(BaseGraphStorage):
             raise RuntimeError(
                 "Memgraph driver is not initialized. Call 'await initialize()' first."
             )
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_graph_db_lock():
             try:
                 async with self._driver.session(database=self._DATABASE) as session:
                     workspace_label = self._get_workspace_label()

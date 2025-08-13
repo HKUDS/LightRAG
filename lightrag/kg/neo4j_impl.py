@@ -17,7 +17,7 @@ from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
-from ..kg.shared_storage import get_graph_db_lock
+from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -71,7 +71,7 @@ class Neo4JStorage(BaseGraphStorage):
         return self.workspace
 
     async def initialize(self):
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_data_init_lock():
             URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
             USERNAME = os.environ.get(
                 "NEO4J_USERNAME", config.get("neo4j", "username", fallback=None)
@@ -241,7 +241,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def finalize(self):
         """Close the Neo4j driver and release all resources"""
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_graph_db_lock():
             if self._driver:
                 await self._driver.close()
                 self._driver = None
@@ -1533,7 +1533,7 @@ class Neo4JStorage(BaseGraphStorage):
             - On success: {"status": "success", "message": "workspace data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_graph_db_lock(enable_logging=True):
+        async with get_graph_db_lock():
             workspace_label = self._get_workspace_label()
             try:
                 async with self._driver.session(database=self._DATABASE) as session:
