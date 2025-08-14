@@ -1713,10 +1713,15 @@ async def vector_similarity_sorting(
             f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
         )
 
-        if not chunk_vectors:
-            logger.warning(
-                "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
-            )
+        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
+            if not chunk_vectors:
+                logger.warning(
+                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+                )
+            else:
+                logger.warning(
+                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
+                )
             return []
 
         # Calculate cosine similarities
