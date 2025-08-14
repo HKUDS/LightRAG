@@ -1052,12 +1052,16 @@ async def run_scanning_process(
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")
 
-        if not new_files:
-            return
-
-        # Process all files at once with track_id
-        await pipeline_index_files(rag, new_files, track_id)
-        logger.info(f"Scanning process completed: {total_files} files Processed.")
+        if new_files:
+            # Process all files at once with track_id
+            await pipeline_index_files(rag, new_files, track_id)
+            logger.info(f"Scanning process completed: {total_files} files Processed.")
+        else:
+            # No new files to index, check if there are any documents in the queue
+            logger.info(
+                "No upload file found, check if there are any documents in the queue..."
+            )
+            await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
