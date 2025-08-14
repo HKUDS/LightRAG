@@ -1103,6 +1103,8 @@ class LightRAG:
             for doc_id in new_docs.keys()
         }
         await self.full_docs.upsert(full_docs_data)
+        # Persist data to disk immediately
+        await self.full_docs.index_done_callback()
 
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
