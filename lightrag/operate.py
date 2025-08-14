@@ -2354,6 +2354,7 @@ async def _build_query_context(
                 seen_edges.add(pair)
 
     # Get text chunks based on final filtered data
+    # To preserve the influence of entity order,  entiy-based chunks should not be deduplcicated by vector_chunks
     if final_node_datas:
         entity_chunks = await _find_related_text_unit_from_entities(
             final_node_datas,
@@ -2365,6 +2366,8 @@ async def _build_query_context(
             chunk_tracking=chunk_tracking,
         )
 
+    # Find deduplcicated chunks from edge
+    # Deduplication cause chunks solely relation-based to be prioritized and sent to the LLM when re-ranking is disabled
     if final_edge_datas:
         relation_chunks = await _find_related_text_unit_from_relations(
             final_edge_datas,
