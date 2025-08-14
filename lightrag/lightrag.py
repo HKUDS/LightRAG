@@ -1125,16 +1125,11 @@ class LightRAG:
             content_data = await self.full_docs.get_by_id(doc_id)
             if not content_data:
                 inconsistent_docs.append(doc_id)
-                async with pipeline_status_lock:
-                    log_message = f"Data inconsistency detected: Document {doc_id} ({status_doc.file_path}) missing content data"
-                    logger.warning(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
 
         # Delete inconsistent document entries one by one
         if inconsistent_docs:
             async with pipeline_status_lock:
-                summary_message = f"Starting cleanup of {len(inconsistent_docs)} inconsistent document entries"
+                summary_message = f"Inconsistent document entries found: {len(inconsistent_docs)}"
                 logger.info(summary_message)
                 pipeline_status["latest_message"] = summary_message
                 pipeline_status["history_messages"].append(summary_message)
@@ -1151,7 +1146,7 @@ class LightRAG:
 
                     # Log successful deletion
                     async with pipeline_status_lock:
-                        log_message = f"Deleted inconsistent document entry: {doc_id} ({file_path})"
+                        log_message = f"Deleted entry: {doc_id} ({file_path})"
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
@@ -1163,7 +1158,7 @@ class LightRAG:
                     # Log deletion failure
                     async with pipeline_status_lock:
                         error_message = (
-                            f"Failed to delete document entry: {doc_id} - {str(e)}"
+                            f"Failed to delete entry: {doc_id} - {str(e)}"
                         )
                         logger.error(error_message)
                         pipeline_status["latest_message"] = error_message
