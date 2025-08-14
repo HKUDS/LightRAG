@@ -1131,7 +1131,9 @@ class LightRAG:
         # Delete inconsistent document entries one by one
         if inconsistent_docs:
             async with pipeline_status_lock:
-                summary_message = f"Inconsistent document entries found: {len(inconsistent_docs)}"
+                summary_message = (
+                    f"Inconsistent document entries found: {len(inconsistent_docs)}"
+                )
                 logger.info(summary_message)
                 pipeline_status["latest_message"] = summary_message
                 pipeline_status["history_messages"].append(summary_message)
@@ -1159,9 +1161,7 @@ class LightRAG:
                 except Exception as e:
                     # Log deletion failure
                     async with pipeline_status_lock:
-                        error_message = (
-                            f"Failed to delete entry: {doc_id} - {str(e)}"
-                        )
+                        error_message = f"Failed to delete entry: {doc_id} - {str(e)}"
                         logger.error(error_message)
                         pipeline_status["latest_message"] = error_message
                         pipeline_status["history_messages"].append(error_message)

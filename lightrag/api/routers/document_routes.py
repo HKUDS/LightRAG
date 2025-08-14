@@ -1058,7 +1058,9 @@ async def run_scanning_process(
             logger.info(f"Scanning process completed: {total_files} files Processed.")
         else:
             # No new files to index, check if there are any documents in the queue
-            logger.info("No upload file found, check if there are any documents in the queue...")
+            logger.info(
+                "No upload file found, check if there are any documents in the queue..."
+            )
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
