@@ -27,8 +27,8 @@ from .utils import (
     use_llm_func_with_cache,
     update_chunk_cache_list,
     remove_think_tags,
-    linear_gradient_weighted_polling,
-    vector_similarity_sorting,
+    pick_by_weighted_polling,
+    pick_by_vector_similarity,
     process_chunks_unified,
     build_file_path,
 )
@@ -2757,7 +2757,7 @@ async def _find_related_text_unit_from_entities(
 
                 selected_chunk_ids = None
                 if actual_embedding_func:
-                    selected_chunk_ids = await vector_similarity_sorting(
+                    selected_chunk_ids = await pick_by_vector_similarity(
                         query=query,
                         text_chunks_storage=text_chunks_db,
                         chunks_vdb=chunks_vdb,
@@ -2784,7 +2784,7 @@ async def _find_related_text_unit_from_entities(
 
     if kg_chunk_pick_method == "WEIGHT":
         # Apply linear gradient weighted polling algorithm
-        selected_chunk_ids = linear_gradient_weighted_polling(
+        selected_chunk_ids = pick_by_weighted_polling(
             entities_with_chunks, max_related_chunks, min_related_chunks=1
         )
 
@@ -3039,7 +3039,7 @@ async def _find_related_text_unit_from_relations(
                 actual_embedding_func = embedding_func_config.func
 
                 if actual_embedding_func:
-                    selected_chunk_ids = await vector_similarity_sorting(
+                    selected_chunk_ids = await pick_by_vector_similarity(
                         query=query,
                         text_chunks_storage=text_chunks_db,
                         chunks_vdb=chunks_vdb,
@@ -3066,7 +3066,7 @@ async def _find_related_text_unit_from_relations(
 
     if kg_chunk_pick_method == "WEIGHT":
         # Apply linear gradient weighted polling algorithm
-        selected_chunk_ids = linear_gradient_weighted_polling(
+        selected_chunk_ids = pick_by_weighted_polling(
             relations_with_chunks, max_related_chunks, min_related_chunks=1
         )
 

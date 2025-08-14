@@ -1570,7 +1570,7 @@ def check_storage_env_vars(storage_name: str) -> None:
         )
 
 
-def linear_gradient_weighted_polling(
+def pick_by_weighted_polling(
     entities_or_relations: list[dict],
     max_related_chunks: int,
     min_related_chunks: int = 1,
@@ -1650,7 +1650,7 @@ def linear_gradient_weighted_polling(
     return selected_chunks
 
 
-async def vector_similarity_sorting(
+async def pick_by_vector_similarity(
     query: str,
     text_chunks_storage: "BaseKVStorage",
     chunks_vdb: "BaseVectorStorage",
