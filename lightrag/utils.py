@@ -1901,6 +1901,13 @@ async def process_chunks_unified(
 
     # 1. Apply reranking if enabled and query is provided
     if query_param.enable_rerank and query and unique_chunks:
+        # 保存 chunk_id 字段，因为 rerank 可能会丢失这个字段
+        chunk_ids = {}
+        for chunk in unique_chunks:
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                chunk_ids[id(chunk)] = chunk_id
+
         rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
         unique_chunks = await apply_rerank_if_enabled(
             query=query,
@@ -1909,6 +1916,11 @@ async def process_chunks_unified(
             enable_rerank=query_param.enable_rerank,
             top_n=rerank_top_k,
         )
+
+        # 恢复 chunk_id 字段
+        for chunk in unique_chunks:
+            if id(chunk) in chunk_ids:
+                chunk["chunk_id"] = chunk_ids[id(chunk)]
 
     # 2. Filter by minimum rerank score if reranking is enabled
     if query_param.enable_rerank and unique_chunks:
@@ -1956,12 +1968,26 @@ async def process_chunks_unified(
             )
 
         original_count = len(unique_chunks)
+
+        # Keep chunk_id field, cause truncate_list_by_token_size will lose it
+        chunk_ids_map = {}
+        for i, chunk in enumerate(unique_chunks):
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                chunk_ids_map[i] = chunk_id
+
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
             key=lambda x: x.get("content", ""),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
+
+        # restore chunk_id feiled
+        for i, chunk in enumerate(unique_chunks):
+            if i in chunk_ids_map:
+                chunk["chunk_id"] = chunk_ids_map[i]
+
         logger.debug(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
