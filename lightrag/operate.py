@@ -2354,7 +2354,6 @@ async def _build_query_context(
                 seen_edges.add(pair)
 
     # Get text chunks based on final filtered data
-    logger.info(f"chunk_tracking: {chunk_tracking}")
     if final_node_datas:
         entity_chunks = await _find_related_text_unit_from_entities(
             final_node_datas,
@@ -2365,7 +2364,7 @@ async def _build_query_context(
             chunks_vdb,
             chunk_tracking=chunk_tracking,
         )
-    logger.info(f"chunk_tracking: {chunk_tracking}")
+
     if final_edge_datas:
         relation_chunks = await _find_related_text_unit_from_relations(
             final_edge_datas,
@@ -2376,7 +2375,6 @@ async def _build_query_context(
             chunks_vdb,
             chunk_tracking=chunk_tracking,
         )
-    logger.info(f"chunk_tracking: {chunk_tracking}")
 
     # Round-robin merge chunks from different sources with deduplication by chunk_id
     merged_chunks = []
