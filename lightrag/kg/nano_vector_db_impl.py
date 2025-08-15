@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import os
+import zlib
 from typing import Any, final
 from dataclasses import dataclass
 import numpy as np
@@ -93,8 +95,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-
-        logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        # logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
@@ -120,6 +121,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         if len(embeddings) == len(list_data):
             for i, d in enumerate(list_data):
+                # Compress vector using Float16 + zlib + Base64 for storage optimization
+                vector_f16 = embeddings[i].astype(np.float16)
+                compressed_vector = zlib.compress(vector_f16.tobytes())
+                encoded_vector = base64.b64encode(compressed_vector).decode("utf-8")
+                d["vector"] = encoded_vector
                 d["__vector__"] = embeddings[i]
             client = await self._get_client()
             results = client.upsert(datas=list_data)
@@ -147,7 +153,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         results = [
             {
-                **dp,
+                **{k: v for k, v in dp.items() if k != "vector"},
                 "id": dp["__id__"],
                 "distance": dp["__metrics__"],
                 "created_at": dp.get("__created_at__"),
@@ -296,7 +302,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if result:
             dp = result[0]
             return {
-                **dp,
+                **{k: v for k, v in dp.items() if k != "vector"},
                 "id": dp.get("__id__"),
                 "created_at": dp.get("__created_at__"),
             }
@@ -318,12 +324,40 @@ class NanoVectorDBStorage(BaseVectorStorage):
         results = client.get(ids)
         return [
             {
-                **dp,
+                **{k: v for k, v in dp.items() if k != "vector"},
                 "id": dp.get("__id__"),
                 "created_at": dp.get("__created_at__"),
             }
             for dp in results
         ]
+
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        if not ids:
+            return {}
+
+        client = await self._get_client()
+        results = client.get(ids)
+
+        vectors_dict = {}
+        for result in results:
+            if result and "vector" in result and "__id__" in result:
+                # Decompress vector data (Base64 + zlib + Float16 compressed)
+                decoded = base64.b64decode(result["vector"])
+                decompressed = zlib.decompress(decoded)
+                vector_f16 = np.frombuffer(decompressed, dtype=np.float16)
+                vector_f32 = vector_f16.astype(np.float32).tolist()
+                vectors_dict[result["__id__"]] = vector_f32
+
+        return vectors_dict
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources

@@ -7,7 +7,7 @@ import hashlib
 import uuid
 from ..utils import logger
 from ..base import BaseVectorStorage
-from ..kg.shared_storage import get_storage_lock
+from ..kg.shared_storage import get_data_init_lock, get_storage_lock
 import configparser
 import pipmaster as pm
 
@@ -117,7 +117,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize Qdrant collection"""
-        async with get_storage_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self._initialized:
                 return
 
@@ -402,6 +402,50 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
             return []
 
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        if not ids:
+            return {}
+
+        try:
+            # Convert to Qdrant compatible IDs
+            qdrant_ids = [compute_mdhash_id_for_qdrant(id) for id in ids]
+
+            # Retrieve the points by IDs with vectors
+            results = self._client.retrieve(
+                collection_name=self.final_namespace,
+                ids=qdrant_ids,
+                with_vectors=True,  # Important: request vectors
+                with_payload=True,
+            )
+
+            vectors_dict = {}
+            for point in results:
+                if point and point.vector is not None and point.payload:
+                    # Get original ID from payload
+                    original_id = point.payload.get("id")
+                    if original_id:
+                        # Convert numpy array to list if needed
+                        vector_data = point.vector
+                        if isinstance(vector_data, np.ndarray):
+                            vector_data = vector_data.tolist()
+                        vectors_dict[original_id] = vector_data
+
+            return vectors_dict
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
+            )
+            return {}
+
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
 
@@ -412,7 +456,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_storage_lock(enable_logging=True):
+        async with get_storage_lock():
             try:
                 # Delete the collection and recreate it
                 if self._client.collection_exists(self.final_namespace):

@@ -60,7 +60,7 @@ def get_env_value(
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from lightrag.base import BaseKVStorage, QueryParam
+    from lightrag.base import BaseKVStorage, BaseVectorStorage, QueryParam
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -762,27 +762,27 @@ async def handle_cache(
     prompt,
     mode="default",
     cache_type=None,
-):
+) -> str | None:
     """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
-        return None, None, None, None
+        return None
 
     if mode != "default":  # handle cache for all type of query
         if not hashing_kv.global_config.get("enable_llm_cache"):
-            return None, None, None, None
+            return None
     else:  # handle cache for entity extraction
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
-            return None, None, None, None
+            return None
 
     # Use flattened cache key format: {mode}:{cache_type}:{hash}
     flattened_key = generate_cache_key(mode, cache_type, args_hash)
     cache_entry = await hashing_kv.get_by_id(flattened_key)
     if cache_entry:
         logger.debug(f"Flattened cache hit(key:{flattened_key})")
-        return cache_entry["return"], None, None, None
+        return cache_entry["return"]
 
     logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
-    return None, None, None, None
+    return None
 
 
 @dataclass
@@ -1409,7 +1409,7 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
-        cached_return, _1, _2, _3 = await handle_cache(
+        cached_return = await handle_cache(
             llm_response_cache,
             arg_hash,
             _prompt,
@@ -1570,7 +1570,7 @@ def check_storage_env_vars(storage_name: str) -> None:
         )
 
 
-def linear_gradient_weighted_polling(
+def pick_by_weighted_polling(
     entities_or_relations: list[dict],
     max_related_chunks: int,
     min_related_chunks: int = 1,
@@ -1648,6 +1648,120 @@ def linear_gradient_weighted_polling(
             break
 
     return selected_chunks
+
+
+async def pick_by_vector_similarity(
+    query: str,
+    text_chunks_storage: "BaseKVStorage",
+    chunks_vdb: "BaseVectorStorage",
+    num_of_chunks: int,
+    entity_info: list[dict[str, Any]],
+    embedding_func: callable,
+) -> list[str]:
+    """
+    Vector similarity-based text chunk selection algorithm.
+
+    This algorithm selects text chunks based on cosine similarity between
+    the query embedding and text chunk embeddings.
+
+    Args:
+        query: User's original query string
+        text_chunks_storage: Text chunks storage instance
+        chunks_vdb: Vector database storage for chunks
+        num_of_chunks: Number of chunks to select
+        entity_info: List of entity information containing chunk IDs
+        embedding_func: Embedding function to compute query embedding
+
+    Returns:
+        List of selected text chunk IDs sorted by similarity (highest first)
+    """
+    logger.debug(
+        f"Vector similarity chunk selection: num_of_chunks={num_of_chunks}, entity_info_count={len(entity_info) if entity_info else 0}"
+    )
+
+    if not entity_info or num_of_chunks <= 0:
+        return []
+
+    # Collect all unique chunk IDs from entity info
+    all_chunk_ids = set()
+    for i, entity in enumerate(entity_info):
+        chunk_ids = entity.get("sorted_chunks", [])
+        all_chunk_ids.update(chunk_ids)
+
+    if not all_chunk_ids:
+        logger.warning(
+            "Vector similarity chunk selection:  no chunk IDs found in entity_info"
+        )
+        return []
+
+    logger.debug(
+        f"Vector similarity chunk selection: {len(all_chunk_ids)} unique chunk IDs collected"
+    )
+
+    all_chunk_ids = list(all_chunk_ids)
+
+    try:
+        # Get query embedding
+        query_embedding = await embedding_func([query])
+        query_embedding = query_embedding[
+            0
+        ]  # Extract first embedding from batch result
+
+        # Get chunk embeddings from vector database
+        chunk_vectors = await chunks_vdb.get_vectors_by_ids(all_chunk_ids)
+        logger.debug(
+            f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
+        )
+
+        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
+            if not chunk_vectors:
+                logger.warning(
+                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+                )
+            else:
+                logger.warning(
+                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
+                )
+            return []
+
+        # Calculate cosine similarities
+        similarities = []
+        valid_vectors = 0
+        for chunk_id in all_chunk_ids:
+            if chunk_id in chunk_vectors:
+                chunk_embedding = chunk_vectors[chunk_id]
+                try:
+                    # Calculate cosine similarity
+                    similarity = cosine_similarity(query_embedding, chunk_embedding)
+                    similarities.append((chunk_id, similarity))
+                    valid_vectors += 1
+                except Exception as e:
+                    logger.warning(
+                        f"Vector similarity chunk selection: failed to calculate similarity for chunk {chunk_id}: {e}"
+                    )
+            else:
+                logger.warning(
+                    f"Vector similarity chunk selection:  no vector found for chunk {chunk_id}"
+                )
+
+        # Sort by similarity (highest first) and select top num_of_chunks
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        selected_chunks = [chunk_id for chunk_id, _ in similarities[:num_of_chunks]]
+
+        logger.debug(
+            f"Vector similarity chunk selection: {len(selected_chunks)} chunks from {len(all_chunk_ids)} candidates"
+        )
+
+        return selected_chunks
+
+    except Exception as e:
+        logger.error(f"[VECTOR_SIMILARITY] Error in vector similarity sorting: {e}")
+        import traceback
+
+        logger.error(f"[VECTOR_SIMILARITY] Traceback: {traceback.format_exc()}")
+        # Fallback to simple truncation
+        logger.debug("[VECTOR_SIMILARITY] Falling back to simple truncation")
+        return all_chunk_ids[:num_of_chunks]
 
 
 class TokenTracker:
@@ -1787,6 +1901,13 @@ async def process_chunks_unified(
 
     # 1. Apply reranking if enabled and query is provided
     if query_param.enable_rerank and query and unique_chunks:
+        # 保存 chunk_id 字段，因为 rerank 可能会丢失这个字段
+        chunk_ids = {}
+        for chunk in unique_chunks:
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                chunk_ids[id(chunk)] = chunk_id
+
         rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
         unique_chunks = await apply_rerank_if_enabled(
             query=query,
@@ -1795,6 +1916,11 @@ async def process_chunks_unified(
             enable_rerank=query_param.enable_rerank,
             top_n=rerank_top_k,
         )
+
+        # 恢复 chunk_id 字段
+        for chunk in unique_chunks:
+            if id(chunk) in chunk_ids:
+                chunk["chunk_id"] = chunk_ids[id(chunk)]
 
     # 2. Filter by minimum rerank score if reranking is enabled
     if query_param.enable_rerank and unique_chunks:
@@ -1842,12 +1968,26 @@ async def process_chunks_unified(
             )
 
         original_count = len(unique_chunks)
+
+        # Keep chunk_id field, cause truncate_list_by_token_size will lose it
+        chunk_ids_map = {}
+        for i, chunk in enumerate(unique_chunks):
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                chunk_ids_map[i] = chunk_id
+
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
             key=lambda x: x.get("content", ""),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
+
+        # restore chunk_id feiled
+        for i, chunk in enumerate(unique_chunks):
+            if i in chunk_ids_map:
+                chunk["chunk_id"] = chunk_ids_map[i]
+
         logger.debug(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"

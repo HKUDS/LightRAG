@@ -31,6 +31,7 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_MAX_ASYNC,
@@ -174,6 +175,11 @@ class LightRAG:
         default=get_env_value("RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int)
     )
     """Number of related chunks to grab from single entity or relation."""
+
+    kg_chunk_pick_method: str = field(
+        default=get_env_value("KG_CHUNK_PICK_METHOD", DEFAULT_KG_CHUNK_PICK_METHOD, str)
+    )
+    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection."""
 
     # Entity extraction
     # ---
@@ -1103,12 +1109,77 @@ class LightRAG:
             for doc_id in new_docs.keys()
         }
         await self.full_docs.upsert(full_docs_data)
+        # Persist data to disk immediately
+        await self.full_docs.index_done_callback()
 
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
         return track_id
+
+    async def _validate_and_fix_document_consistency(
+        self,
+        to_process_docs: dict[str, DocProcessingStatus],
+        pipeline_status: dict,
+        pipeline_status_lock: asyncio.Lock,
+    ) -> dict[str, DocProcessingStatus]:
+        """Validate and fix document data consistency by deleting inconsistent entries"""
+        inconsistent_docs = []
+
+        # Check each document's data consistency
+        for doc_id, status_doc in to_process_docs.items():
+            # Check if corresponding content exists in full_docs
+            content_data = await self.full_docs.get_by_id(doc_id)
+            if not content_data:
+                inconsistent_docs.append(doc_id)
+
+        # Delete inconsistent document entries one by one
+        if inconsistent_docs:
+            async with pipeline_status_lock:
+                summary_message = (
+                    f"Inconsistent document entries found: {len(inconsistent_docs)}"
+                )
+                logger.info(summary_message)
+                pipeline_status["latest_message"] = summary_message
+                pipeline_status["history_messages"].append(summary_message)
+
+            successful_deletions = 0
+            for doc_id in inconsistent_docs:
+                try:
+                    status_doc = to_process_docs[doc_id]
+                    file_path = getattr(status_doc, "file_path", "unknown_source")
+
+                    # Delete doc_status entry
+                    await self.doc_status.delete([doc_id])
+                    successful_deletions += 1
+
+                    # Log successful deletion
+                    async with pipeline_status_lock:
+                        log_message = f"Deleted entry: {doc_id} ({file_path})"
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+
+                    # Remove from processing list
+                    to_process_docs.pop(doc_id, None)
+
+                except Exception as e:
+                    # Log deletion failure
+                    async with pipeline_status_lock:
+                        error_message = f"Failed to delete entry: {doc_id} - {str(e)}"
+                        logger.error(error_message)
+                        pipeline_status["latest_message"] = error_message
+                        pipeline_status["history_messages"].append(error_message)
+
+            # Final summary log
+            async with pipeline_status_lock:
+                final_message = f"Data consistency cleanup completed: successfully deleted {successful_deletions} entries"
+                logger.info(final_message)
+                pipeline_status["latest_message"] = final_message
+                pipeline_status["history_messages"].append(final_message)
+
+        return to_process_docs
 
     async def apipeline_process_enqueue_documents(
         self,
@@ -1121,9 +1192,10 @@ class LightRAG:
         document status.
 
         1. Get all pending, failed, and abnormally terminated processing documents.
-        2. Split document content into chunks
-        3. Process each chunk for entity and relation extraction
-        4. Update the document status
+        2. Validate document data consistency and fix any issues
+        3. Split document content into chunks
+        4. Process each chunk for entity and relation extraction
+        5. Update the document status
         """
 
         # Get pipeline status shared data and lock
@@ -1176,6 +1248,20 @@ class LightRAG:
             while True:
                 if not to_process_docs:
                     log_message = "All documents have been processed or are duplicates"
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+                    break
+
+                # Validate document data consistency and fix any issues as part of the pipeline
+                to_process_docs = await self._validate_and_fix_document_consistency(
+                    to_process_docs, pipeline_status, pipeline_status_lock
+                )
+
+                if not to_process_docs:
+                    log_message = (
+                        "No valid documents to process after consistency check"
+                    )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
