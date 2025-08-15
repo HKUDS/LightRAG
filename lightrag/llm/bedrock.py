@@ -100,10 +100,14 @@ async def bedrock_complete_if_cache(
         "top_p": "topP",
         "stop_sequences": "stopSequences",
     }
-    if inference_params := list(set(kwargs) & set(["max_tokens", "temperature", "top_p", "stop_sequences"])):
+    if inference_params := list(
+        set(kwargs) & set(["max_tokens", "temperature", "top_p", "stop_sequences"])
+    ):
         args["inferenceConfig"] = {}
         for param in inference_params:
-            args["inferenceConfig"][inference_params_map.get(param, param)] = kwargs.pop(param)
+            args["inferenceConfig"][inference_params_map.get(param, param)] = (
+                kwargs.pop(param)
+            )
 
     # Import logging for error handling
     import logging
@@ -119,7 +123,9 @@ async def bedrock_complete_if_cache(
             nonlocal client
 
             # Create the client outside the generator to ensure it stays open
-            client = await session.client("bedrock-runtime", region_name=region).__aenter__()
+            client = await session.client(
+                "bedrock-runtime", region_name=region
+            ).__aenter__()
             event_stream = None
             iteration_started = False
 
@@ -158,7 +164,9 @@ async def bedrock_complete_if_cache(
                     try:
                         await event_stream.aclose()
                     except Exception as close_error:
-                        logging.warning(f"Failed to close Bedrock event stream: {close_error}")
+                        logging.warning(
+                            f"Failed to close Bedrock event stream: {close_error}"
+                        )
 
                 raise BedrockError(f"Streaming error: {e}")
 
@@ -173,21 +181,27 @@ async def bedrock_complete_if_cache(
                     try:
                         await event_stream.aclose()
                     except Exception as close_error:
-                        logging.warning(f"Failed to close Bedrock event stream in finally block: {close_error}")
+                        logging.warning(
+                            f"Failed to close Bedrock event stream in finally block: {close_error}"
+                        )
 
                 # Clean up the client
                 if client:
                     try:
                         await client.__aexit__(None, None, None)
                     except Exception as client_close_error:
-                        logging.warning(f"Failed to close Bedrock client: {client_close_error}")
+                        logging.warning(
+                            f"Failed to close Bedrock client: {client_close_error}"
+                        )
 
         # Return the generator that manages its own lifecycle
         return stream_generator()
 
     # For non-streaming responses, use the standard async context manager pattern
     session = aioboto3.Session()
-    async with session.client("bedrock-runtime", region_name=region) as bedrock_async_client:
+    async with session.client(
+        "bedrock-runtime", region_name=region
+    ) as bedrock_async_client:
         try:
             # Use converse for non-streaming responses
             response = await bedrock_async_client.converse(**args, **kwargs)
@@ -257,7 +271,9 @@ async def bedrock_embed(
     region = os.environ.get("AWS_REGION")
 
     session = aioboto3.Session()
-    async with session.client("bedrock-runtime", region_name=region) as bedrock_async_client:
+    async with session.client(
+        "bedrock-runtime", region_name=region
+    ) as bedrock_async_client:
         if (model_provider := model.split(".")[0]) == "amazon":
             embed_texts = []
             for text in texts:
@@ -285,7 +301,9 @@ async def bedrock_embed(
 
                 embed_texts.append(response_body["embedding"])
         elif model_provider == "cohere":
-            body = json.dumps({"texts": texts, "input_type": "search_document", "truncate": "NONE"})
+            body = json.dumps(
+                {"texts": texts, "input_type": "search_document", "truncate": "NONE"}
+            )
 
             response = await bedrock_async_client.invoke_model(
                 model=model,

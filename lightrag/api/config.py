@@ -77,7 +77,9 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: Parsed arguments
     """
 
-    parser = argparse.ArgumentParser(description="LightRAG FastAPI Server with separate working and input directories")
+    parser = argparse.ArgumentParser(
+        description="LightRAG FastAPI Server with separate working and input directories"
+    )
 
     # Server configuration
     parser.add_argument(
@@ -207,7 +209,14 @@ def parse_args() -> argparse.Namespace:
         "--llm-binding",
         type=str,
         default=get_env_value("LLM_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "openai-ollama", "azure_openai", "aws_bedrock"],
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "openai-ollama",
+            "azure_openai",
+            "aws_bedrock",
+        ],
         help="LLM binding type (default: from env or ollama)",
     )
     parser.add_argument(
@@ -270,10 +279,18 @@ def parse_args() -> argparse.Namespace:
     args.input_dir = os.path.abspath(args.input_dir)
 
     # Inject storage configuration from environment variables
-    args.kv_storage = get_env_value("LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE)
-    args.doc_status_storage = get_env_value("LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE)
-    args.graph_storage = get_env_value("LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE)
-    args.vector_storage = get_env_value("LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE)
+    args.kv_storage = get_env_value(
+        "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
+    )
+    args.doc_status_storage = get_env_value(
+        "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
+    )
+    args.graph_storage = get_env_value(
+        "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
+    )
+    args.vector_storage = get_env_value(
+        "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+    )
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
@@ -289,8 +306,12 @@ def parse_args() -> argparse.Namespace:
     # Ollama ctx_num
     args.ollama_num_ctx = get_env_value("OLLAMA_NUM_CTX", 32768, int)
 
-    args.llm_binding_host = get_env_value("LLM_BINDING_HOST", get_default_host(args.llm_binding))
-    args.embedding_binding_host = get_env_value("EMBEDDING_BINDING_HOST", get_default_host(args.embedding_binding))
+    args.llm_binding_host = get_env_value(
+        "LLM_BINDING_HOST", get_default_host(args.llm_binding)
+    )
+    args.embedding_binding_host = get_env_value(
+        "EMBEDDING_BINDING_HOST", get_default_host(args.embedding_binding)
+    )
     args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
     args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
 
@@ -304,7 +325,9 @@ def parse_args() -> argparse.Namespace:
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
     # Inject LLM cache configuration
-    args.enable_llm_cache_for_extract = get_env_value("ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool)
+    args.enable_llm_cache_for_extract = get_env_value(
+        "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
+    )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
     # Handle Ollama LLM temperature with priority cascade when llm-binding is ollama
@@ -354,24 +377,40 @@ def parse_args() -> argparse.Namespace:
     args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
 
     # Min rerank score configuration
-    args.min_rerank_score = get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
+    args.min_rerank_score = get_env_value(
+        "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
+    )
 
     # Query configuration
     args.history_turns = get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)
     args.top_k = get_env_value("TOP_K", DEFAULT_TOP_K, int)
     args.chunk_top_k = get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int)
-    args.max_entity_tokens = get_env_value("MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS, int)
-    args.max_relation_tokens = get_env_value("MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS, int)
-    args.max_total_tokens = get_env_value("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS, int)
-    args.cosine_threshold = get_env_value("COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float)
-    args.related_chunk_number = get_env_value("RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int)
+    args.max_entity_tokens = get_env_value(
+        "MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS, int
+    )
+    args.max_relation_tokens = get_env_value(
+        "MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS, int
+    )
+    args.max_total_tokens = get_env_value(
+        "MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS, int
+    )
+    args.cosine_threshold = get_env_value(
+        "COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float
+    )
+    args.related_chunk_number = get_env_value(
+        "RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int
+    )
 
     # Add missing environment variables for health endpoint
     args.force_llm_summary_on_merge = get_env_value(
         "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
     )
-    args.embedding_func_max_async = get_env_value("EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int)
-    args.embedding_batch_num = get_env_value("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int)
+    args.embedding_func_max_async = get_env_value(
+        "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
+    )
+    args.embedding_batch_num = get_env_value(
+        "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
+    )
 
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
@@ -385,7 +424,9 @@ def update_uvicorn_mode_config():
         original_workers = global_args.workers
         global_args.workers = 1
         # Log warning directly here
-        logging.warning(f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1")
+        logging.warning(
+            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
+        )
 
 
 global_args = parse_args()
