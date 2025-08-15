@@ -1967,6 +1967,37 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
             return []
 
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        if not ids:
+            return {}
+
+        try:
+            # Query MongoDB for the specified IDs, only retrieving the vector field
+            cursor = self._data.find({"_id": {"$in": ids}}, {"vector": 1})
+            results = await cursor.to_list(length=None)
+
+            vectors_dict = {}
+            for result in results:
+                if result and "vector" in result and "_id" in result:
+                    # MongoDB stores vectors as arrays, so they should already be lists
+                    vectors_dict[result["_id"]] = result["vector"]
+
+            return vectors_dict
+        except PyMongoError as e:
+            logger.error(
+                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
+            )
+            return {}
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection and recreating vector index.
 
