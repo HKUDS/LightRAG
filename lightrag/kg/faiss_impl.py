@@ -210,9 +210,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 continue
 
             meta = self._id_to_meta.get(idx, {})
+            # Filter out __vector__ from query results to avoid returning large vector data
+            filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
             results.append(
                 {
-                    **meta,
+                    **filtered_meta,
                     "id": meta.get("__id__"),
                     "distance": float(dist),
                     "created_at": meta.get("__created_at__"),
@@ -424,8 +426,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not metadata:
             return None
 
+        # Filter out __vector__ from metadata to avoid returning large vector data
+        filtered_metadata = {k: v for k, v in metadata.items() if k != "__vector__"}
         return {
-            **metadata,
+            **filtered_metadata,
             "id": metadata.get("__id__"),
             "created_at": metadata.get("__created_at__"),
         }
@@ -448,15 +452,44 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if fid is not None:
                 metadata = self._id_to_meta.get(fid, {})
                 if metadata:
+                    # Filter out __vector__ from metadata to avoid returning large vector data
+                    filtered_metadata = {
+                        k: v for k, v in metadata.items() if k != "__vector__"
+                    }
                     results.append(
                         {
-                            **metadata,
+                            **filtered_metadata,
                             "id": metadata.get("__id__"),
                             "created_at": metadata.get("__created_at__"),
                         }
                     )
 
         return results
+
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        if not ids:
+            return {}
+
+        vectors_dict = {}
+        for id in ids:
+            # Find the Faiss internal ID for the custom ID
+            fid = self._find_faiss_id_by_custom_id(id)
+            if fid is not None and fid in self._id_to_meta:
+                metadata = self._id_to_meta[fid]
+                # Get the stored vector from metadata
+                if "__vector__" in metadata:
+                    vectors_dict[id] = metadata["__vector__"]
+
+        return vectors_dict
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
