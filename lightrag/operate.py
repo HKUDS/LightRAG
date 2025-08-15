@@ -2779,9 +2779,12 @@ async def _find_related_text_unit_from_entities(
         entity_info["sorted_chunks"] = sorted_chunks
         total_entity_chunks += len(sorted_chunks)
 
-    # Step 4: Apply the selected chunk selection algorithm
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
+    # Step 4: Apply the selected chunk selection algorithm
+    # Pick by vector similarity: 
+    #     The order of text chunks aligns with the naive retrieval's destination. 
+    #     When reranking is disabled, the text chunks delivered to the LLM tend to favor naive retrieval.
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
         num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
 
@@ -2822,7 +2825,8 @@ async def _find_related_text_unit_from_entities(
                 kg_chunk_pick_method = "WEIGHT"
 
     if kg_chunk_pick_method == "WEIGHT":
-        # Apply linear gradient weighted polling algorithm
+        # Pick by entity and chunk weight:
+        #     When reranking is disabled, delivered more solely KG related chunks to the LLM
         selected_chunk_ids = pick_by_weighted_polling(
             entities_with_chunks, max_related_chunks, min_related_chunks=1
         )
