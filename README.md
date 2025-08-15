@@ -144,7 +144,7 @@ LightRAG's demands on the capabilities of Large Language Models (LLMs) are signi
 - **Embedding Model**:
   - A high-performance Embedding model is essential for RAG.
   - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
-  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase.
+  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
 - **Reranker Model Configuration**:
   - Configuring a Reranker model can significantly enhance LightRAG's retrieval performance.
   - When a Reranker model is enabled, it is recommended to set the "mix mode" as the default query mode.

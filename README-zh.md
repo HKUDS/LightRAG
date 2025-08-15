@@ -145,7 +145,7 @@ LightRAG对大型语言模型（LLM）的能力要求远高于传统RAG，因为
 - **Embedding模型**：
   - 高性能的Embedding模型对RAG至关重要。
   - 推荐使用主流的多语言Embedding模型，例如：BAAI/bge-m3 和 text-embedding-3-large。
-  - **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。
+  - **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。有些存储（例如PostgreSQL）在首次建立数表的时候需要确定向量维度，因此更换Embedding模型后需要删除向量相关库表，以便让LightRAG重建新的库表。
 - **Reranker模型配置**：
   - 配置Reranker模型能够显著提升LightRAG的检索效果。
   - 启用Reranker模型后，推荐将“mix模式”设为默认查询模式。
