@@ -1018,6 +1018,50 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
             return []
 
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        if not ids:
+            return {}
+
+        try:
+            # Ensure collection is loaded before querying
+            self._ensure_collection_loaded()
+
+            # Prepare the ID filter expression
+            id_list = '", "'.join(ids)
+            filter_expr = f'id in ["{id_list}"]'
+
+            # Query Milvus with the filter, requesting only vector field
+            result = self._client.query(
+                collection_name=self.final_namespace,
+                filter=filter_expr,
+                output_fields=["vector"],
+            )
+
+            vectors_dict = {}
+            for item in result:
+                if item and "vector" in item and "id" in item:
+                    # Convert numpy array to list if needed
+                    vector_data = item["vector"]
+                    if isinstance(vector_data, np.ndarray):
+                        vector_data = vector_data.tolist()
+                    vectors_dict[item["id"]] = vector_data
+
+            return vectors_dict
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
+            )
+            return {}
+
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
 
