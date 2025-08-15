@@ -155,7 +155,7 @@ class Neo4JStorage(BaseGraphStorage):
                         except neo4jExceptions.ServiceUnavailable as e:
                             logger.error(
                                 f"[{self.workspace}] "
-                                + f"{database} at {URI} is not available".capitalize()
+                                + f"Database {database} at {URI} is not available"
                             )
                             raise e
                 except neo4jExceptions.AuthError as e:
@@ -167,7 +167,7 @@ class Neo4JStorage(BaseGraphStorage):
                     if e.code == "Neo.ClientError.Database.DatabaseNotFound":
                         logger.info(
                             f"[{self.workspace}] "
-                            + f"{database} at {URI} not found. Try to create specified database.".capitalize()
+                            + f"Database {database} at {URI} not found. Try to create specified database."
                         )
                         try:
                             async with self._driver.session() as session:
@@ -177,7 +177,7 @@ class Neo4JStorage(BaseGraphStorage):
                                 await result.consume()  # Ensure result is consumed
                                 logger.info(
                                     f"[{self.workspace}] "
-                                    + f"{database} at {URI} created".capitalize()
+                                    + f"Database {database} at {URI} created"
                                 )
                                 connected = True
                         except (
