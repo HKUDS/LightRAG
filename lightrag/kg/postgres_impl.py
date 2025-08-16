@@ -4578,50 +4578,86 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-        WITH relevant_chunks AS (
-            SELECT id as chunk_id
-            FROM LIGHTRAG_VDB_CHUNKS
-            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
-        )
-        SELECT r.source_id as src_id, r.target_id as tgt_id,
-               EXTRACT(EPOCH FROM r.create_time)::BIGINT as created_at
-        FROM LIGHTRAG_VDB_RELATION r
-        JOIN relevant_chunks c ON c.chunk_id = ANY(r.chunk_ids)
-        WHERE r.workspace = $1
-          AND r.content_vector <=> '[{embedding_string}]'::vector < $3
-        ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
-        LIMIT $4
-    """,
+                     WITH relevant_chunks AS (SELECT id as chunk_id
+                                              FROM LIGHTRAG_VDB_CHUNKS
+                                              WHERE $2
+                         :: varchar [] IS NULL OR full_doc_id = ANY ($2:: varchar [])
+                         )
+                        , rc AS (
+                     SELECT array_agg(chunk_id) AS chunk_arr
+                     FROM relevant_chunks
+                         ), cand AS (
+                     SELECT
+                         r.id, r.source_id AS src_id, r.target_id AS tgt_id, r.chunk_ids, r.create_time, r.content_vector <=> '[{embedding_string}]'::vector AS dist
+                     FROM LIGHTRAG_VDB_RELATION r
+                     WHERE r.workspace = $1
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                         LIMIT ($4 * 50)
+                         )
+                     SELECT c.src_id,
+                            c.tgt_id,
+                            EXTRACT(EPOCH FROM c.create_time) ::BIGINT AS created_at
+                     FROM cand c
+                              JOIN rc ON TRUE
+                     WHERE c.dist < $3
+                       AND c.chunk_ids && (rc.chunk_arr::varchar[])
+                     ORDER BY c.dist, c.id 
+                         LIMIT $4;
+                     """,
     "entities": """
-        WITH relevant_chunks AS (
-            SELECT id as chunk_id
-            FROM LIGHTRAG_VDB_CHUNKS
-            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
-        )
-        SELECT e.entity_name,
-               EXTRACT(EPOCH FROM e.create_time)::BIGINT as created_at
-        FROM LIGHTRAG_VDB_ENTITY e
-        JOIN relevant_chunks c ON c.chunk_id = ANY(e.chunk_ids)
-        WHERE e.workspace = $1
-          AND e.content_vector <=> '[{embedding_string}]'::vector < $3
-        ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
-        LIMIT $4
-    """,
+                WITH relevant_chunks AS (SELECT id as chunk_id
+                                         FROM LIGHTRAG_VDB_CHUNKS
+                                         WHERE $2
+                    :: varchar [] IS NULL OR full_doc_id = ANY ($2:: varchar [])
+                    )
+                   , rc AS (
+                SELECT array_agg(chunk_id) AS chunk_arr
+                FROM relevant_chunks
+                    ), cand AS (
+                SELECT
+                    e.id, e.entity_name, e.chunk_ids, e.create_time, e.content_vector <=> '[{embedding_string}]'::vector AS dist
+                FROM LIGHTRAG_VDB_ENTITY e
+                WHERE e.workspace = $1
+                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                    LIMIT ($4 * 50)
+                    )
+                SELECT c.entity_name,
+                       EXTRACT(EPOCH FROM c.create_time) ::BIGINT AS created_at
+                FROM cand c
+                         JOIN rc ON TRUE
+                WHERE c.dist < $3
+                  AND c.chunk_ids && (rc.chunk_arr::varchar[])
+                ORDER BY c.dist, c.id 
+                    LIMIT $4;
+                """,
     "chunks": """
-        WITH relevant_chunks AS (
-            SELECT id as chunk_id
-            FROM LIGHTRAG_VDB_CHUNKS
-            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
-        )
-        SELECT id, content, file_path,
-               EXTRACT(EPOCH FROM create_time)::BIGINT as created_at
-        FROM LIGHTRAG_VDB_CHUNKS
-        WHERE workspace = $1
-          AND id IN (SELECT chunk_id FROM relevant_chunks)
-          AND content_vector <=> '[{embedding_string}]'::vector < $3
-        ORDER BY content_vector <=> '[{embedding_string}]'::vector
-        LIMIT $4
-    """,
+              WITH relevant_chunks AS (SELECT id as chunk_id
+                                       FROM LIGHTRAG_VDB_CHUNKS
+                                       WHERE $2
+                  :: varchar [] IS NULL OR full_doc_id = ANY ($2:: varchar [])
+                  )
+                 , rc AS (
+              SELECT array_agg(chunk_id) AS chunk_arr
+              FROM relevant_chunks
+                  ), cand AS (
+              SELECT
+                  id, content, file_path, create_time, content_vector <=> '[{embedding_string}]'::vector AS dist
+              FROM LIGHTRAG_VDB_CHUNKS
+              WHERE workspace = $1
+              ORDER BY content_vector <=> '[{embedding_string}]'::vector
+                  LIMIT ($4 * 50)
+                  )
+              SELECT c.id,
+                     c.content,
+                     c.file_path,
+                     EXTRACT(EPOCH FROM c.create_time) ::BIGINT AS created_at
+              FROM cand c
+                       JOIN rc ON TRUE
+              WHERE c.dist < $3
+                AND c.id = ANY (rc.chunk_arr)
+              ORDER BY c.dist, c.id
+                  LIMIT $4;
+              """,
     # DROP tables
     "drop_specifiy_table_workspace": """
         DELETE FROM {table_name} WHERE workspace=$1
