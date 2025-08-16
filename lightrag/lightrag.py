@@ -1108,6 +1108,83 @@ class LightRAG:
 
         return track_id
 
+    async def apipeline_enqueue_error_documents(
+        self,
+        error_files: list[dict[str, Any]],
+        track_id: str | None = None,
+    ) -> None:
+        """
+        Record file extraction errors in doc_status storage.
+
+        This function creates error document entries in the doc_status storage for files
+        that failed during the extraction process. Each error entry contains information
+        about the failure to help with debugging and monitoring.
+
+        Args:
+            error_files: List of dictionaries containing error information for each failed file.
+                Each dictionary should contain:
+                - file_path: Original file name/path
+                - error_description: Brief error description (for content_summary)
+                - original_error: Full error message (for error_msg)
+                - file_size: File size in bytes (for content_length, 0 if unknown)
+            track_id: Optional tracking ID for grouping related operations
+
+        Returns:
+            None
+        """
+        if not error_files:
+            logger.debug("No error files to record")
+            return
+
+        # Generate track_id if not provided
+        if track_id is None or track_id.strip() == "":
+            track_id = generate_track_id("error")
+
+        error_docs: dict[str, Any] = {}
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        for error_file in error_files:
+            file_path = error_file.get("file_path", "unknown_file")
+            error_description = error_file.get(
+                "error_description", "File extraction failed"
+            )
+            original_error = error_file.get("original_error", "Unknown error")
+            file_size = error_file.get("file_size", 0)
+
+            # Generate unique doc_id with "error-" prefix
+            doc_id_content = f"{file_path}-{error_description}"
+            doc_id = compute_mdhash_id(doc_id_content, prefix="error-")
+
+            error_docs[doc_id] = {
+                "status": DocStatus.FAILED,
+                "content_summary": error_description,
+                "content_length": file_size,
+                "error_msg": original_error,
+                "chunks_count": 0,  # No chunks for failed files
+                "created_at": current_time,
+                "updated_at": current_time,
+                "file_path": file_path,
+                "track_id": track_id,
+                "metadata": {
+                    "error_type": "file_extraction_error",
+                },
+            }
+
+        # Store error documents in doc_status
+        if error_docs:
+            await self.doc_status.upsert(error_docs)
+            logger.info(
+                f"Recorded {len(error_docs)} file extraction errors in doc_status"
+            )
+
+            # Log each error for debugging
+            for doc_id, error_doc in error_docs.items():
+                logger.error(
+                    f"File extraction error recorded - ID: {doc_id}, "
+                    f"File: {error_doc['file_path']}, "
+                    f"Error: {error_doc['content_summary']}"
+                )
+
     async def _validate_and_fix_document_consistency(
         self,
         to_process_docs: dict[str, DocProcessingStatus],
