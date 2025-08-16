@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
@@ -15,7 +15,7 @@ import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { clearDocuments, clearCache } from '@/api/lightrag'
 
-import { EraserIcon, AlertTriangleIcon } from 'lucide-react'
+import { EraserIcon, AlertTriangleIcon, Loader2Icon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 // 简单的Label组件
@@ -43,18 +43,51 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
   const [clearCacheOption, setClearCacheOption] = useState(false)
+  const [isClearing, setIsClearing] = useState(false)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes'
+
+  // 超时常量 (30秒)
+  const CLEAR_TIMEOUT = 30000
 
   // 重置状态当对话框关闭时
   useEffect(() => {
     if (!open) {
       setConfirmText('')
       setClearCacheOption(false)
+      setIsClearing(false)
+
+      // 清理超时定时器
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
     }
   }, [open])
 
+  // 组件卸载时的清理
+  useEffect(() => {
+    return () => {
+      // 组件卸载时清理超时定时器
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+      }
+    }
+  }, [])
+
   const handleClear = useCallback(async () => {
-    if (!isConfirmEnabled) return
+    if (!isConfirmEnabled || isClearing) return
+
+    setIsClearing(true)
+
+    // 设置超时保护
+    timeoutRef.current = setTimeout(() => {
+      if (isClearing) {
+        toast.error(t('documentPanel.clearDocuments.timeout'))
+        setIsClearing(false)
+        setConfirmText('') // 超时后重置确认文本
+      }
+    }, CLEAR_TIMEOUT)
 
     try {
       const result = await clearDocuments()
@@ -86,8 +119,15 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
+    } finally {
+      // 清除超时定时器
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+      setIsClearing(false)
     }
-  }, [isConfirmEnabled, clearCacheOption, setOpen, t, onDocumentsCleared])
+  }, [isConfirmEnabled, isClearing, clearCacheOption, setOpen, t, onDocumentsCleared, CLEAR_TIMEOUT])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -125,6 +165,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmText(e.target.value)}
               placeholder={t('documentPanel.clearDocuments.confirmPlaceholder')}
               className="w-full"
+              disabled={isClearing}
             />
           </div>
 
@@ -133,6 +174,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
               id="clear-cache"
               checked={clearCacheOption}
               onCheckedChange={(checked: boolean | 'indeterminate') => setClearCacheOption(checked === true)}
+              disabled={isClearing}
             />
             <Label htmlFor="clear-cache" className="text-sm font-medium cursor-pointer">
               {t('documentPanel.clearDocuments.clearCache')}
@@ -141,15 +183,26 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
+          <Button
+            variant="outline"
+            onClick={() => setOpen(false)}
+            disabled={isClearing}
+          >
             {t('common.cancel')}
           </Button>
           <Button
             variant="destructive"
             onClick={handleClear}
-            disabled={!isConfirmEnabled}
+            disabled={!isConfirmEnabled || isClearing}
           >
-            {t('documentPanel.clearDocuments.confirmButton')}
+            {isClearing ? (
+              <>
+                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                {t('documentPanel.clearDocuments.clearing')}
+              </>
+            ) : (
+              t('documentPanel.clearDocuments.confirmButton')
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -50,6 +50,8 @@
       "confirmPlaceholder": "Tapez yes pour confirmer",
       "clearCache": "Effacer le cache LLM",
       "confirmButton": "OUI",
+      "clearing": "Effacement en cours...",
+      "timeout": "L'opération d'effacement a expiré, veuillez réessayer",
       "success": "Documents effacés avec succès",
       "cacheCleared": "Cache effacé avec succès",
       "cacheClearFailed": "Échec de l'effacement du cache :\n{{error}}",
