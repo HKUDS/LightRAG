@@ -1077,19 +1077,21 @@ class LightRAG:
         # 4. Filter out already processed documents
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
-        # Exclude IDs of documents that are already in progress
+        # Exclude IDs of documents that are already enqueued
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
-        # Log ignored document IDs
-        ignored_ids = [
-            doc_id for doc_id in unique_new_doc_ids if doc_id not in new_docs
-        ]
+        # Log ignored document IDs (documents that were filtered out because they already exist)
+        ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
         if ignored_ids:
-            logger.warning(
-                f"Ignoring {len(ignored_ids)} document IDs not found in new_docs"
-            )
             for doc_id in ignored_ids:
-                logger.warning(f"Ignored document ID: {doc_id}")
+                file_path = new_docs.get(doc_id, {}).get("file_path", "unknown_source")
+                logger.warning(
+                    f"Ignoring document ID (already exists): {doc_id} ({file_path})"
+                )
+            if len(ignored_ids) > 3:
+                logger.warning(
+                    f"Total Ignoring {len(ignored_ids)} document IDs that already exist in storage"
+                )
 
         # Filter new_docs to only include documents with unique IDs
         new_docs = {
@@ -1099,7 +1101,7 @@ class LightRAG:
         }
 
         if not new_docs:
-            logger.info("No new unique documents were found.")
+            logger.warning("No new unique documents were found.")
             return
 
         # 5. Store document content in full_docs and status in doc_status
