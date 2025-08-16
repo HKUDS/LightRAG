@@ -104,7 +104,6 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
-        "openai-ollama",
         "azure_openai",
         "aws_bedrock",
     ]:
@@ -250,7 +249,7 @@ def create_app(args):
         )
     if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
         from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
-    if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
+    if args.embedding_binding == "ollama":
         from lightrag.llm.binding_options import OllamaEmbeddingOptions
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
