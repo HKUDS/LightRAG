@@ -3068,7 +3068,7 @@ class PGGraphStorage(BaseGraphStorage):
             if readonly:
                 data = await self.db.query(
                     query,
-                    params=self.params,
+                    params,
                     multirows=True,
                     with_age=True,
                     graph_name=self.graph_name,
@@ -3387,7 +3387,9 @@ class PGGraphStorage(BaseGraphStorage):
                 logger.error(f"[{self.workspace}] Error during edge deletion: {str(e)}")
                 raise
 
-    async def get_nodes_batch(self, node_ids: list[str], batch_size: int = 1000) -> dict[str, dict]:
+    async def get_nodes_batch(
+        self, node_ids: list[str], batch_size: int = 1000
+    ) -> dict[str, dict]:
         """
         Retrieve multiple nodes in one query using UNWIND.
 
@@ -3453,7 +3455,9 @@ class PGGraphStorage(BaseGraphStorage):
 
         return nodes_dict
 
-    async def node_degrees_batch(self, node_ids: list[str], batch_size: int = 500) -> dict[str, int]:
+    async def node_degrees_batch(
+        self, node_ids: list[str], batch_size: int = 500
+    ) -> dict[str, int]:
         """
         Retrieve the degree for multiple nodes in a single query using UNWIND.
         Calculates the total degree by counting distinct relationships.
@@ -3482,7 +3486,7 @@ class PGGraphStorage(BaseGraphStorage):
         in_degrees = {}
 
         for i in range(0, len(unique_ids), batch_size):
-            batch = unique_ids[i:i + batch_size]
+            batch = unique_ids[i : i + batch_size]
 
             query = f"""
                     WITH input(v, ord) AS (
@@ -3602,7 +3606,7 @@ class PGGraphStorage(BaseGraphStorage):
         edges_dict: dict[tuple[str, str], dict] = {}
 
         for i in range(0, len(uniq_pairs), batch_size):
-            batch = uniq_pairs[i:i + batch_size]
+            batch = uniq_pairs[i : i + batch_size]
 
             pairs = [{"src": p["src"], "tgt": p["tgt"]} for p in batch]
 
@@ -3709,7 +3713,7 @@ class PGGraphStorage(BaseGraphStorage):
         edges_norm: dict[str, list[tuple[str, str]]] = {n: [] for n in unique_ids}
 
         for i in range(0, len(unique_ids), batch_size):
-            batch = unique_ids[i:i + batch_size]
+            batch = unique_ids[i : i + batch_size]
             # Format node IDs for the query
             formatted_ids = ", ".join([f'"{n}"' for n in batch])
 
@@ -4601,7 +4605,7 @@ SQL_TEMPLATES = {
                               JOIN rc ON TRUE
                      WHERE c.dist < $3
                        AND c.chunk_ids && (rc.chunk_arr::varchar[])
-                     ORDER BY c.dist, c.id 
+                     ORDER BY c.dist, c.id
                          LIMIT $4;
                      """,
     "entities": """
@@ -4627,7 +4631,7 @@ SQL_TEMPLATES = {
                          JOIN rc ON TRUE
                 WHERE c.dist < $3
                   AND c.chunk_ids && (rc.chunk_arr::varchar[])
-                ORDER BY c.dist, c.id 
+                ORDER BY c.dist, c.id
                     LIMIT $4;
                 """,
     "chunks": """
