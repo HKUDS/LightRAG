@@ -50,6 +50,8 @@
       "confirmPlaceholder": "输入 yes 确认",
       "clearCache": "清空LLM缓存",
       "confirmButton": "确定",
+      "clearing": "正在清除...",
+      "timeout": "清除操作超时，请重试",
       "success": "文档清空成功",
       "cacheCleared": "缓存清空成功",
       "cacheClearFailed": "清空缓存失败：\n{{error}}",

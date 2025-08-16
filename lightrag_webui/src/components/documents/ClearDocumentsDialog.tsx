@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
@@ -15,10 +15,10 @@ import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { clearDocuments, clearCache } from '@/api/lightrag'
 
-import { EraserIcon, AlertTriangleIcon } from 'lucide-react'
+import { EraserIcon, AlertTriangleIcon, Loader2Icon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-// 简单的Label组件
+// Simple Label component
 const Label = ({
   htmlFor,
   className,
@@ -43,18 +43,51 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
   const [clearCacheOption, setClearCacheOption] = useState(false)
+  const [isClearing, setIsClearing] = useState(false)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes'
 
-  // 重置状态当对话框关闭时
+  // Timeout constant (30 seconds)
+  const CLEAR_TIMEOUT = 30000
+
+  // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
       setConfirmText('')
       setClearCacheOption(false)
+      setIsClearing(false)
+
+      // Clear timeout timer
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
     }
   }, [open])
 
+  // Cleanup when component unmounts
+  useEffect(() => {
+    return () => {
+      // Clear timeout timer when component unmounts
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+      }
+    }
+  }, [])
+
   const handleClear = useCallback(async () => {
-    if (!isConfirmEnabled) return
+    if (!isConfirmEnabled || isClearing) return
+
+    setIsClearing(true)
+
+    // Set timeout protection
+    timeoutRef.current = setTimeout(() => {
+      if (isClearing) {
+        toast.error(t('documentPanel.clearDocuments.timeout'))
+        setIsClearing(false)
+        setConfirmText('') // Reset confirmation text after timeout
+      }
+    }, CLEAR_TIMEOUT)
 
     try {
       const result = await clearDocuments()
@@ -81,13 +114,20 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         onDocumentsCleared().catch(console.error)
       }
 
-      // 所有操作成功后关闭对话框
+      // Close dialog after all operations succeed
       setOpen(false)
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
+    } finally {
+      // Clear timeout timer
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+      setIsClearing(false)
     }
-  }, [isConfirmEnabled, clearCacheOption, setOpen, t, onDocumentsCleared])
+  }, [isConfirmEnabled, isClearing, clearCacheOption, setOpen, t, onDocumentsCleared, CLEAR_TIMEOUT])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -125,6 +165,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmText(e.target.value)}
               placeholder={t('documentPanel.clearDocuments.confirmPlaceholder')}
               className="w-full"
+              disabled={isClearing}
             />
           </div>
 
@@ -133,6 +174,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
               id="clear-cache"
               checked={clearCacheOption}
               onCheckedChange={(checked: boolean | 'indeterminate') => setClearCacheOption(checked === true)}
+              disabled={isClearing}
             />
             <Label htmlFor="clear-cache" className="text-sm font-medium cursor-pointer">
               {t('documentPanel.clearDocuments.clearCache')}
@@ -141,15 +183,26 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
+          <Button
+            variant="outline"
+            onClick={() => setOpen(false)}
+            disabled={isClearing}
+          >
             {t('common.cancel')}
           </Button>
           <Button
             variant="destructive"
             onClick={handleClear}
-            disabled={!isConfirmEnabled}
+            disabled={!isConfirmEnabled || isClearing}
           >
-            {t('documentPanel.clearDocuments.confirmButton')}
+            {isClearing ? (
+              <>
+                <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                {t('documentPanel.clearDocuments.clearing')}
+              </>
+            ) : (
+              t('documentPanel.clearDocuments.confirmButton')
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

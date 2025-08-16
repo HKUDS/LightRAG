@@ -50,6 +50,8 @@
       "confirmPlaceholder": "輸入 yes 以確認",
       "clearCache": "清空 LLM 快取",
       "confirmButton": "確定",
+      "clearing": "正在清除...",
+      "timeout": "清除操作逾時，請重試",
       "success": "文件清空成功",
       "cacheCleared": "快取清空成功",
       "cacheClearFailed": "清空快取失敗：\n{{error}}",

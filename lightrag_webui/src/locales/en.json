@@ -50,6 +50,8 @@
       "confirmPlaceholder": "Type yes to confirm",
       "clearCache": "Clear LLM cache",
       "confirmButton": "YES",
+      "clearing": "Clearing...",
+      "timeout": "Clear operation timed out, please try again",
       "success": "Documents cleared successfully",
       "cacheCleared": "Cache cleared successfully",
       "cacheClearFailed": "Failed to clear cache:\n{{error}}",
