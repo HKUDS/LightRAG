@@ -1173,16 +1173,10 @@ class LightRAG:
         # Store error documents in doc_status
         if error_docs:
             await self.doc_status.upsert(error_docs)
-            logger.info(
-                f"Recorded {len(error_docs)} file extraction errors in doc_status"
-            )
-
             # Log each error for debugging
             for doc_id, error_doc in error_docs.items():
                 logger.error(
-                    f"File extraction error recorded - ID: {doc_id}, "
-                    f"File: {error_doc['file_path']}, "
-                    f"Error: {error_doc['content_summary']}"
+                    f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
                 )
 
     async def _validate_and_fix_document_consistency(

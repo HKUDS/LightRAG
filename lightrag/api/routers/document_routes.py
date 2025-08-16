@@ -734,7 +734,7 @@ class DocumentManager:
         new_files = []
         for ext in self.supported_extensions:
             logger.debug(f"Scanning for {ext} files in {self.input_dir}")
-            for file_path in self.input_dir.rglob(f"*{ext}"):
+            for file_path in self.input_dir.glob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
         return new_files
@@ -1122,12 +1122,14 @@ async def pipeline_enqueue_file(
                 {
                     "file_path": str(file_path.name),
                     "error_description": "File format processing error",
-                    "original_error": f"Unexpected error during file processing: {str(e)}",
+                    "original_error": f"Unexpected error during file extracting: {str(e)}",
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"Unexpected error processing file {file_path.name}: {str(e)}")
+            logger.error(
+                f"Unexpected error during {file_path.name} extracting: {str(e)}"
+            )
             return False, track_id
 
         # Insert into the RAG queue
@@ -1144,7 +1146,7 @@ async def pipeline_enqueue_file(
                 ]
                 await rag.apipeline_enqueue_error_documents(error_files, track_id)
                 logger.warning(
-                    f"File contains only whitespace characters. file_paths={file_path.name}"
+                    f"File contains only whitespace characters: {file_path.name}"
                 )
                 return False, track_id
 
@@ -1168,7 +1170,7 @@ async def pipeline_enqueue_file(
 
                     # Move the file
                     file_path.rename(target_path)
-                    logger.info(
+                    logger.debug(
                         f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
                     )
 
@@ -1202,7 +1204,7 @@ async def pipeline_enqueue_file(
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"No content could be extracted from file: {file_path.name}")
+            logger.error(f"No content extracted from file: {file_path.name}")
             return False, track_id
 
     except Exception as e:
@@ -1221,7 +1223,7 @@ async def pipeline_enqueue_file(
             }
         ]
         await rag.apipeline_enqueue_error_documents(error_files, track_id)
-        logger.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
+        logger.error(f"Enqueuing file {file_path.name} error: {str(e)}")
         logger.error(traceback.format_exc())
         return False, track_id
     finally:
