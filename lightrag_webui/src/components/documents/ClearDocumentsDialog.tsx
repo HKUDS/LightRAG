@@ -18,7 +18,7 @@ import { clearDocuments, clearCache } from '@/api/lightrag'
 import { EraserIcon, AlertTriangleIcon, Loader2Icon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-// 简单的Label组件
+// Simple Label component
 const Label = ({
   htmlFor,
   className,
@@ -47,17 +47,17 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes'
 
-  // 超时常量 (30秒)
+  // Timeout constant (30 seconds)
   const CLEAR_TIMEOUT = 30000
 
-  // 重置状态当对话框关闭时
+  // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
       setConfirmText('')
       setClearCacheOption(false)
       setIsClearing(false)
 
-      // 清理超时定时器
+      // Clear timeout timer
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
         timeoutRef.current = null
@@ -65,10 +65,10 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
     }
   }, [open])
 
-  // 组件卸载时的清理
+  // Cleanup when component unmounts
   useEffect(() => {
     return () => {
-      // 组件卸载时清理超时定时器
+      // Clear timeout timer when component unmounts
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
       }
@@ -80,12 +80,12 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
 
     setIsClearing(true)
 
-    // 设置超时保护
+    // Set timeout protection
     timeoutRef.current = setTimeout(() => {
       if (isClearing) {
         toast.error(t('documentPanel.clearDocuments.timeout'))
         setIsClearing(false)
-        setConfirmText('') // 超时后重置确认文本
+        setConfirmText('') // Reset confirmation text after timeout
       }
     }, CLEAR_TIMEOUT)
 
@@ -114,13 +114,13 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         onDocumentsCleared().catch(console.error)
       }
 
-      // 所有操作成功后关闭对话框
+      // Close dialog after all operations succeed
       setOpen(false)
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
     } finally {
-      // 清除超时定时器
+      // Clear timeout timer
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
         timeoutRef.current = null
