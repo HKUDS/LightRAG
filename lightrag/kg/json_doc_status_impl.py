@@ -11,6 +11,7 @@ from lightrag.utils import (
     load_json,
     logger,
     write_json,
+    get_pinyin_sort_key,
 )
 from .shared_storage import (
     get_namespace_data,
@@ -241,6 +242,10 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Add sort key for sorting
                     if sort_field == "id":
                         doc_status._sort_key = doc_id
+                    elif sort_field == "file_path":
+                        # Use pinyin sorting for file_path field to support Chinese characters
+                        file_path_value = getattr(doc_status, sort_field, "")
+                        doc_status._sort_key = get_pinyin_sort_key(file_path_value)
                     else:
                         doc_status._sort_key = getattr(doc_status, sort_field, "")
 

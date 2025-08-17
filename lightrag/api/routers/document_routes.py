@@ -3,8 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from pyuca import Collator
-from lightrag.utils import logger
+from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
@@ -1269,9 +1268,10 @@ async def pipeline_index_files(
     try:
         enqueued = False
 
-        # Create Collator for Unicode sorting
-        collator = Collator()
-        sorted_file_paths = sorted(file_paths, key=lambda p: collator.sort_key(str(p)))
+        # Use get_pinyin_sort_key for Chinese pinyin sorting
+        sorted_file_paths = sorted(
+            file_paths, key=lambda p: get_pinyin_sort_key(str(p))
+        )
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:

@@ -12,7 +12,7 @@ if not pm.is_installed("redis"):
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
 from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
-from lightrag.utils import logger
+from lightrag.utils import logger, get_pinyin_sort_key
 
 from lightrag.base import (
     BaseKVStorage,
@@ -998,6 +998,10 @@ class RedisDocStatusStorage(DocStatusStorage):
                                     # Calculate sort key for sorting (but don't add to data)
                                     if sort_field == "id":
                                         sort_key = doc_id
+                                    elif sort_field == "file_path":
+                                        # Use pinyin sorting for file_path field to support Chinese characters
+                                        file_path_value = data.get(sort_field, "")
+                                        sort_key = get_pinyin_sort_key(file_path_value)
                                     else:
                                         sort_key = data.get(sort_field, "")
 

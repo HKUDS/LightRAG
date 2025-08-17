@@ -17,6 +17,20 @@ from hashlib import md5
 from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import numpy as np
 from dotenv import load_dotenv
+
+# Import pyuca for Chinese pinyin sorting
+try:
+    import pyuca
+
+    _pinyin_collator = pyuca.Collator()
+    _pyuca_available = True
+except ImportError:
+    _pinyin_collator = None
+    _pyuca_available = False
+except Exception:
+    _pinyin_collator = None
+    _pyuca_available = False
+
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -2059,3 +2073,32 @@ def generate_track_id(prefix: str = "upload") -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid.uuid4())[:8]  # Use first 8 characters of UUID
     return f"{prefix}_{timestamp}_{unique_id}"
+
+
+def get_pinyin_sort_key(text: str) -> str:
+    """Generate sort key for Chinese pinyin sorting
+
+    This function uses pyuca (Python Unicode Collation Algorithm) to generate
+    sort keys that handle Chinese characters by their pinyin pronunciation.
+    For non-Chinese text, it falls back to standard Unicode sorting.
+
+    Args:
+        text: Text to generate sort key for
+
+    Returns:
+        str: Sort key that can be used for comparison and sorting
+    """
+    if not text:
+        return ""
+
+    # Use the globally initialized collator
+    if _pyuca_available and _pinyin_collator is not None:
+        try:
+            return _pinyin_collator.sort_key(text)
+        except Exception as e:
+            logger.warning(
+                f"Failed to generate pinyin sort key for '{text}': {e}. Using fallback."
+            )
+
+    # Fallback to standard string sorting
+    return text.lower()
