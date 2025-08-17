@@ -483,20 +483,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Define collation configuration for Chinese pinyin sorting
             collation_config = {"locale": "zh", "numericOrdering": True}
 
-            # 1. Handle file_path index migration: drop old indexes without collation
-            for idx in existing_indexes:
-                if (
-                    "file_path" in str(idx.get("key", {}))
-                    and not idx.get("collation")
-                    and idx.get("name")
-                    not in ["file_path_zh_collation", "status_file_path_zh_collation"]
-                ):
-                    await self._data.drop_index(idx["name"])
-                    logger.info(
-                        f"[{self.workspace}] Migrated: dropped old file_path index {idx['name']}"
-                    )
-
-            # 2. Define all indexes needed (including original pagination indexes and new collation indexes)
+            # 1. Define all indexes needed (including original pagination indexes and new collation indexes)
             all_indexes = [
                 # Original pagination indexes
                 {
@@ -524,6 +511,51 @@ class MongoDocStatusStorage(DocStatusStorage):
                 },
             ]
 
+            # 2. Handle index migration: drop conflicting indexes with different names but same key patterns
+            for index_info in all_indexes:
+                target_keys = index_info["keys"]
+                target_name = index_info["name"]
+                target_collation = index_info.get("collation")
+
+                # Find existing indexes with the same key pattern but different names or collation
+                conflicting_indexes = []
+                for idx in existing_indexes:
+                    idx_name = idx.get("name", "")
+                    idx_keys = list(idx.get("key", {}).items())
+                    idx_collation = idx.get("collation")
+
+                    # Skip the _id_ index (MongoDB default)
+                    if idx_name == "_id_":
+                        continue
+
+                    # Check if keys match but name or collation differs
+                    if idx_keys == target_keys:
+                        if (
+                            idx_name != target_name
+                            or (target_collation and not idx_collation)
+                            or (not target_collation and idx_collation)
+                            or (
+                                target_collation
+                                and idx_collation
+                                and target_collation != idx_collation
+                            )
+                        ):
+                            conflicting_indexes.append(idx_name)
+
+                # Drop conflicting indexes
+                for conflicting_name in conflicting_indexes:
+                    try:
+                        await self._data.drop_index(conflicting_name)
+                        logger.info(
+                            f"[{self.workspace}] Migrated: dropped conflicting index '{conflicting_name}' for collection {self._collection_name}"
+                        )
+                        # Remove from existing_index_names to allow recreation
+                        existing_index_names.discard(conflicting_name)
+                    except PyMongoError as drop_error:
+                        logger.warning(
+                            f"[{self.workspace}] Failed to drop conflicting index '{conflicting_name}': {drop_error}"
+                        )
+
             # 3. Create all needed indexes
             for index_info in all_indexes:
                 index_name = index_info["name"]
@@ -532,10 +564,18 @@ class MongoDocStatusStorage(DocStatusStorage):
                     if "collation" in index_info:
                         create_kwargs["collation"] = index_info["collation"]
 
-                    await self._data.create_index(index_info["keys"], **create_kwargs)
-                    logger.info(
-                        f"[{self.workspace}] Created index '{index_name}' for collection {self._collection_name}"
-                    )
+                    try:
+                        await self._data.create_index(
+                            index_info["keys"], **create_kwargs
+                        )
+                        logger.info(
+                            f"[{self.workspace}] Created index '{index_name}' for collection {self._collection_name}"
+                        )
+                    except PyMongoError as create_error:
+                        # If creation still fails, log the error but continue with other indexes
+                        logger.error(
+                            f"[{self.workspace}] Failed to create index '{index_name}' for collection {self._collection_name}: {create_error}"
+                        )
                 else:
                     logger.debug(
                         f"[{self.workspace}] Index '{index_name}' already exists for collection {self._collection_name}"
