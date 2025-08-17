@@ -74,15 +74,11 @@
       "failed": "刪除文件失敗：\n{{message}}",
       "error": "刪除文件失敗：\n{{error}}",
       "busy": "pipeline 被佔用，請稍後再試",
-      "notAllowed": "沒有操作權限",
-      "cannotDeleteAll": "無法刪除所有文件。如確實需要刪除所有文件請使用清空文件功能。"
+      "notAllowed": "沒有操作權限"
     },
-    "deselectDocuments": {
-      "button": "取消選取",
-      "tooltip": "取消選取所有文件",
-      "title": "取消選取文件",
-      "description": "此操作將清除所有選取的文件（已選取 {{count}} 個）",
-      "confirmButton": "取消全部選取"
+    "selectDocuments": {
+      "selectCurrentPage": "全選當前頁 ({{count}})",
+      "deselectAll": "取消全選 ({{count}})"
     },
     "uploadDocuments": {
       "button": "上傳",

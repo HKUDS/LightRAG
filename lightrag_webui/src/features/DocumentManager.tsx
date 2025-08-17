@@ -17,7 +17,6 @@ import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
-import DeselectDocumentsDialog from '@/components/documents/DeselectDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -33,7 +32,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -326,6 +325,52 @@ export default function DocumentManager() {
 
     return allDocuments;
   }, [docs, sortField, sortDirection, statusFilter, sortDocuments]);
+
+  // Calculate current page selection state (after filteredAndSortedDocs is defined)
+  const currentPageDocIds = useMemo(() => {
+    return filteredAndSortedDocs?.map(doc => doc.id) || []
+  }, [filteredAndSortedDocs])
+
+  const selectedCurrentPageCount = useMemo(() => {
+    return currentPageDocIds.filter(id => selectedDocIds.includes(id)).length
+  }, [currentPageDocIds, selectedDocIds])
+
+  const isCurrentPageFullySelected = useMemo(() => {
+    return currentPageDocIds.length > 0 && selectedCurrentPageCount === currentPageDocIds.length
+  }, [currentPageDocIds, selectedCurrentPageCount])
+
+  const hasCurrentPageSelection = useMemo(() => {
+    return selectedCurrentPageCount > 0
+  }, [selectedCurrentPageCount])
+
+  // Handle select current page
+  const handleSelectCurrentPage = useCallback(() => {
+    setSelectedDocIds(currentPageDocIds)
+  }, [currentPageDocIds])
+
+
+  // Get selection button properties
+  const getSelectionButtonProps = useCallback(() => {
+    if (!hasCurrentPageSelection) {
+      return {
+        text: t('documentPanel.selectDocuments.selectCurrentPage', { count: currentPageDocIds.length }),
+        action: handleSelectCurrentPage,
+        icon: CheckSquareIcon
+      }
+    } else if (isCurrentPageFullySelected) {
+      return {
+        text: t('documentPanel.selectDocuments.deselectAll', { count: currentPageDocIds.length }),
+        action: handleDeselectAll,
+        icon: XIcon
+      }
+    } else {
+      return {
+        text: t('documentPanel.selectDocuments.selectCurrentPage', { count: currentPageDocIds.length }),
+        action: handleSelectCurrentPage,
+        icon: CheckSquareIcon
+      }
+    }
+  }, [hasCurrentPageSelection, isCurrentPageFullySelected, currentPageDocIds.length, handleSelectCurrentPage, handleDeselectAll, t])
 
   // Calculate document counts for each status
   const documentCounts = useMemo(() => {
@@ -766,6 +811,11 @@ export default function DocumentManager() {
     }
   }, [showFileName, sortField]);
 
+  // Reset selection state when page, status filter, or sort changes
+  useEffect(() => {
+    setSelectedDocIds([])
+  }, [pagination.page, statusFilter, sortField, sortDirection]);
+
   // Central effect to handle all data fetching
   useEffect(() => {
     if (currentTab === 'documents') {
@@ -830,18 +880,29 @@ export default function DocumentManager() {
             {isSelectionMode && (
               <DeleteDocumentsDialog
                 selectedDocIds={selectedDocIds}
-                totalCompletedCount={documentCounts.processed || 0}
                 onDocumentsDeleted={handleDocumentsDeleted}
               />
             )}
-            {isSelectionMode ? (
-              <DeselectDocumentsDialog
-                selectedCount={selectedDocIds.length}
-                onDeselect={handleDeselectAll}
-              />
-            ) : (
+            {isSelectionMode && hasCurrentPageSelection ? (
+              (() => {
+                const buttonProps = getSelectionButtonProps();
+                const IconComponent = buttonProps.icon;
+                return (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={buttonProps.action}
+                    side="bottom"
+                    tooltip={buttonProps.text}
+                  >
+                    <IconComponent className="h-4 w-4" />
+                    {buttonProps.text}
+                  </Button>
+                );
+              })()
+            ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
-            )}
+            ) : null}
             <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
             <PipelineStatusDialog
               open={showPipelineStatus}
