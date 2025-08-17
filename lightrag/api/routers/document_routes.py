@@ -1154,7 +1154,7 @@ async def pipeline_enqueue_file(
                     content, file_paths=file_path.name, track_id=track_id
                 )
 
-                logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
+                logger.info(f"Successfully extracted and enqueued file: {file_path.name}")
 
                 # Move file to __enqueued__ directory after enqueuing
                 try:

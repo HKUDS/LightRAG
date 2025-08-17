@@ -1330,7 +1330,7 @@ class LightRAG:
             # Process documents until no more documents or requests
             while True:
                 if not to_process_docs:
-                    log_message = "All documents have been processed or are duplicates"
+                    log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
