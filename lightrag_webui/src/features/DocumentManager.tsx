@@ -532,15 +532,25 @@ export default function DocumentManager() {
       // Reset health check timer with 1 second delay to avoid race condition
       useBackendState.getState().resetHealthCheckTimerDelayed(1000);
 
-      // Schedule a health check 2 seconds after successful scan
+      // Start fast refresh with 2-second interval immediately after scan
       startPollingInterval(2000);
+
+      // Set recovery timer to restore normal polling interval after 15 seconds
+      setTimeout(() => {
+        if (isMountedRef.current && currentTab === 'documents' && health) {
+          // Restore intelligent polling interval based on document status
+          const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
+          const normalInterval = hasActiveDocuments ? 5000 : 30000;
+          startPollingInterval(normalInterval);
+        }
+      }, 15000); // Restore after 15 seconds
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
         toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
       }
     }
-  }, [t, startPollingInterval])
+  }, [t, startPollingInterval, currentTab, health, statusCounts])
 
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
