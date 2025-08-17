@@ -2179,13 +2179,13 @@ class LightRAG:
             doc_status = doc_status_data.get("status")
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
-                    warning_msg = f"WARNING: Deleting {doc_id} ('{file_path}') - previous status: PENDING"
+                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: PENDING)"
                 elif doc_status == DocStatus.PROCESSING:
-                    warning_msg = f"WARNING: Deleting {doc_id} ('{file_path}') - previous status: PROCESSING"
+                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: PROCESSING)"
                 elif doc_status == DocStatus.FAILED:
-                    warning_msg = f"WARNING: Deleting {doc_id} ('{file_path}') - previous status: FAILED"
+                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: FAILED)"
                 else:
-                    warning_msg = f"WARNING: Deleting {doc_id} ('{file_path}') - previous status: {doc_status.value}"
+                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
 
                 logger.warning(warning_msg)
 
