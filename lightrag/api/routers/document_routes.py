@@ -491,7 +491,7 @@ class DocumentsRequest(BaseModel):
         status_filter: Filter by document status, None for all statuses
         page: Page number (1-based)
         page_size: Number of documents per page (10-200)
-        sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+        sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path')
         sort_direction: Sort direction ('asc' or 'desc')
     """
 

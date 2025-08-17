@@ -18,19 +18,6 @@ from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import numpy as np
 from dotenv import load_dotenv
 
-# Import pyuca for Chinese pinyin sorting
-try:
-    import pyuca
-
-    _pinyin_collator = pyuca.Collator()
-    _pyuca_available = True
-except ImportError:
-    _pinyin_collator = None
-    _pyuca_available = False
-except Exception:
-    _pinyin_collator = None
-    _pyuca_available = False
-
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -39,6 +26,21 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
+
+# Global import for pypinyin with startup-time logging
+try:
+    import pypinyin
+
+    _PYPINYIN_AVAILABLE = True
+    logger = logging.getLogger("lightrag")
+    logger.info("pypinyin loaded successfully for Chinese pinyin sorting")
+except ImportError:
+    pypinyin = None
+    _PYPINYIN_AVAILABLE = False
+    logger = logging.getLogger("lightrag")
+    logger.warning(
+        "pypinyin is not installed. Chinese pinyin sorting will use simple string sorting."
+    )
 
 
 def get_env_value(
@@ -2078,9 +2080,8 @@ def generate_track_id(prefix: str = "upload") -> str:
 def get_pinyin_sort_key(text: str) -> str:
     """Generate sort key for Chinese pinyin sorting
 
-    This function uses pyuca (Python Unicode Collation Algorithm) to generate
-    sort keys that handle Chinese characters by their pinyin pronunciation.
-    For non-Chinese text, it falls back to standard Unicode sorting.
+    This function uses pypinyin for true Chinese pinyin sorting.
+    If pypinyin is not available, it falls back to simple lowercase string sorting.
 
     Args:
         text: Text to generate sort key for
@@ -2091,14 +2092,14 @@ def get_pinyin_sort_key(text: str) -> str:
     if not text:
         return ""
 
-    # Use the globally initialized collator
-    if _pyuca_available and _pinyin_collator is not None:
+    if _PYPINYIN_AVAILABLE:
         try:
-            return _pinyin_collator.sort_key(text)
-        except Exception as e:
-            logger.warning(
-                f"Failed to generate pinyin sort key for '{text}': {e}. Using fallback."
-            )
-
-    # Fallback to standard string sorting
-    return text.lower()
+            # Convert Chinese characters to pinyin, keep non-Chinese as-is
+            pinyin_list = pypinyin.lazy_pinyin(text, style=pypinyin.Style.NORMAL)
+            return "".join(pinyin_list).lower()
+        except Exception:
+            # Silently fall back to simple string sorting on any error
+            return text.lower()
+    else:
+        # pypinyin not available, use simple string sorting
+        return text.lower()
