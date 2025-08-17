@@ -3068,7 +3068,7 @@ class PGGraphStorage(BaseGraphStorage):
             if readonly:
                 data = await self.db.query(
                     query,
-                    params=self.params,
+                    params=params,
                     multirows=True,
                     with_age=True,
                     graph_name=self.graph_name,
