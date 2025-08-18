@@ -241,7 +241,7 @@ You are an expert keyword extractor, specializing in analyzing user queries for 
 
 ---Goal---
 Given a user query, your task is to extract two distinct types of keywords:
-1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked. 
+1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked.
 2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
 
 ---Instructions & Constraints---
