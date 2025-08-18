@@ -36,7 +36,7 @@ DEFAULT_ENABLE_RERANK = True
 DEFAULT_MIN_RERANK_SCORE = 0.0
 
 # File path configuration for vector and graph database(Should not be changed, used in Milvus Schema)
-DEFAULT_MAX_FILE_PATH_LENGTH = 4090
+DEFAULT_MAX_FILE_PATH_LENGTH = 32768
 
 # Default temperature for LLM
 DEFAULT_TEMPERATURE = 1.0
