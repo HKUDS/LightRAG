@@ -2013,7 +2013,7 @@ async def process_chunks_unified(
 
 
 def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with length limit and deduplication
+    """Build file path string with UTF-8 byte length limit and deduplication
 
     Args:
         already_file_paths: List of existing file paths
@@ -2028,6 +2028,14 @@ def build_file_path(already_file_paths, data_list, target):
 
     # string: filter empty value and keep file order in already_file_paths
     file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+
+    # Check if initial file_paths already exceeds byte length limit
+    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
+        logger.warning(
+            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"current size: {len(file_paths.encode('utf-8'))} bytes"
+        )
+
     # ignored file_paths
     file_paths_ignore = ""
     # add file_paths
@@ -2043,22 +2051,22 @@ def build_file_path(already_file_paths, data_list, target):
         # add
         file_paths_set.add(cur_file_path)
 
-        # check the length
+        # check the UTF-8 byte length
+        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
         if (
-            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
-            < DEFAULT_MAX_FILE_PATH_LENGTH
+            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
+            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
         ):
             # append
-            file_paths += (
-                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-            )
+            file_paths += new_addition
         else:
             # ignore
             file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
 
     if file_paths_ignore:
         logger.warning(
-            f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
+            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"ignoring file path: {file_paths_ignore}"
         )
     return file_paths
 
