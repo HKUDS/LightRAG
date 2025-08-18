@@ -219,7 +219,7 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 
 **2. Formatting & Language:**
 - Format the response using markdown with appropriate section headings.
-- The response language must match the user's question language.
+- The response language must in the same language as the user's question.
 - Target format and length: {response_type}
 
 **3. Citations / References:**
@@ -237,12 +237,12 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 Response:"""
 
 PROMPTS["keywords_extraction"] = """---Role---
-You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify keywords that will be used for effective document retrieval.
+You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
 
 ---Goal---
 Given a user query, your task is to extract two distinct types of keywords:
-1. **high_level_keywords**: These capture the user's **core intent, the subject area, or the type of question being asked**. They are typically **abstract, conceptual, or thematic** terms that help scope the search to a general topic. Examples: "performance comparison", "how-to guide", "historical background", "advantages and disadvantages", "troubleshooting steps".
-2. **low_level_keywords**: These identify the **specific entities, proper nouns, technical jargon, product names, or concrete items** mentioned in the query. They are the **specific, tangible** terms that serve as primary anchors for retrieval. Examples: "GPT-4o", "Elon Musk", "Q4 2023 earnings report", "Python", "React framework".
+1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked. 
+2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
 
 ---Instructions & Constraints---
 1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), or any other text before or after the JSON. It will be parsed directly by a JSON parser.
