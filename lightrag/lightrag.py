@@ -1104,7 +1104,7 @@ class LightRAG:
 
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
-        logger.info(f"Stored {len(new_docs)} new unique documents")
+        logger.debug(f"Stored {len(new_docs)} new unique documents")
 
         return track_id
 
