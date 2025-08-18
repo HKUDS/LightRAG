@@ -219,7 +219,7 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 
 **2. Formatting & Language:**
 - Format the response using markdown with appropriate section headings.
-- The response language must match the user's question language.
+- The response language must in the same language as the user's question.
 - Target format and length: {response_type}
 
 **3. Citations / References:**
@@ -237,37 +237,27 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 Response:"""
 
 PROMPTS["keywords_extraction"] = """---Role---
-
-You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query and conversation history.
+You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
 
 ---Goal---
+Given a user query, your task is to extract two distinct types of keywords:
+1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked.
+2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
 
-Given the query and conversation history, list both high-level and low-level keywords. High-level keywords focus on overarching concepts or themes, while low-level keywords focus on specific entities, details, or concrete terms.
+---Instructions & Constraints---
+1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), or any other text before or after the JSON. It will be parsed directly by a JSON parser.
+2. **Source of Truth**: All keywords must be derived directly from or be a direct interpretation of the user query.
+3. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", you should extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
+4. **No Overlap**: A keyword or its core concept should not appear in both the high-level and low-level lists.
+5. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), you must return a JSON object with empty lists for both keyword types.
 
----Instructions---
-
-- Consider both the current query and relevant conversation history when extracting keywords
-- Output the keywords in JSON format, it will be parsed by a JSON parser, do not add any extra content in output
-- The JSON should have two keys:
-  - "high_level_keywords" for overarching concepts or themes
-  - "low_level_keywords" for specific entities or details
-
-######################
 ---Examples---
-######################
 {examples}
 
-######################
 ---Real Data---
-######################
-Conversation History:
-{history}
+User Query: {query}
 
-Current Query: {query}
-######################
-The `Output` should be in JSON format, with no other text before and after the JSON. Use the same language as `Current Query`.
-
-Output:
+---Output---
 """
 
 PROMPTS["keywords_extraction_examples"] = [
