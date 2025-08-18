@@ -1994,7 +1994,7 @@ async def process_chunks_unified(
 
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
-            key=lambda x: x.get("content", ""),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
