@@ -17,6 +17,7 @@ from hashlib import md5
 from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import numpy as np
 from dotenv import load_dotenv
+
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -25,6 +26,21 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
+
+# Global import for pypinyin with startup-time logging
+try:
+    import pypinyin
+
+    _PYPINYIN_AVAILABLE = True
+    logger = logging.getLogger("lightrag")
+    logger.info("pypinyin loaded successfully for Chinese pinyin sorting")
+except ImportError:
+    pypinyin = None
+    _PYPINYIN_AVAILABLE = False
+    logger = logging.getLogger("lightrag")
+    logger.warning(
+        "pypinyin is not installed. Chinese pinyin sorting will use simple string sorting."
+    )
 
 
 def get_env_value(
@@ -1978,7 +1994,7 @@ async def process_chunks_unified(
 
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
-            key=lambda x: x.get("content", ""),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
@@ -1997,7 +2013,7 @@ async def process_chunks_unified(
 
 
 def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with length limit and deduplication
+    """Build file path string with UTF-8 byte length limit and deduplication
 
     Args:
         already_file_paths: List of existing file paths
@@ -2012,6 +2028,14 @@ def build_file_path(already_file_paths, data_list, target):
 
     # string: filter empty value and keep file order in already_file_paths
     file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+
+    # Check if initial file_paths already exceeds byte length limit
+    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
+        logger.warning(
+            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"current size: {len(file_paths.encode('utf-8'))} bytes"
+        )
+
     # ignored file_paths
     file_paths_ignore = ""
     # add file_paths
@@ -2027,22 +2051,22 @@ def build_file_path(already_file_paths, data_list, target):
         # add
         file_paths_set.add(cur_file_path)
 
-        # check the length
+        # check the UTF-8 byte length
+        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
         if (
-            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
-            < DEFAULT_MAX_FILE_PATH_LENGTH
+            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
+            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
         ):
             # append
-            file_paths += (
-                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-            )
+            file_paths += new_addition
         else:
             # ignore
             file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
 
     if file_paths_ignore:
         logger.warning(
-            f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
+            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"ignoring file path: {file_paths_ignore}"
         )
     return file_paths
 
@@ -2059,3 +2083,31 @@ def generate_track_id(prefix: str = "upload") -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid.uuid4())[:8]  # Use first 8 characters of UUID
     return f"{prefix}_{timestamp}_{unique_id}"
+
+
+def get_pinyin_sort_key(text: str) -> str:
+    """Generate sort key for Chinese pinyin sorting
+
+    This function uses pypinyin for true Chinese pinyin sorting.
+    If pypinyin is not available, it falls back to simple lowercase string sorting.
+
+    Args:
+        text: Text to generate sort key for
+
+    Returns:
+        str: Sort key that can be used for comparison and sorting
+    """
+    if not text:
+        return ""
+
+    if _PYPINYIN_AVAILABLE:
+        try:
+            # Convert Chinese characters to pinyin, keep non-Chinese as-is
+            pinyin_list = pypinyin.lazy_pinyin(text, style=pypinyin.Style.NORMAL)
+            return "".join(pinyin_list).lower()
+        except Exception:
+            # Silently fall back to simple string sorting on any error
+            return text.lower()
+    else:
+        # pypinyin not available, use simple string sorting
+        return text.lower()

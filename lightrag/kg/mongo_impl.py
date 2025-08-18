@@ -329,11 +329,8 @@ class MongoDocStatusStorage(DocStatusStorage):
 
             self._data = await get_or_create_collection(self.db, self._collection_name)
 
-            # Create track_id index for better query performance
-            await self.create_track_id_index_if_not_exists()
-
-            # Create pagination indexes for better query performance
-            await self.create_pagination_indexes_if_not_exists()
+            # Create and migrate all indexes including Chinese collation for file_path
+            await self.create_and_migrate_indexes_if_not_exists()
 
             logger.debug(
                 f"[{self.workspace}] Use MongoDB as DocStatus {self._collection_name}"
@@ -476,39 +473,19 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def delete(self, ids: list[str]) -> None:
         await self._data.delete_many({"_id": {"$in": ids}})
 
-    async def create_track_id_index_if_not_exists(self):
-        """Create track_id index for better query performance"""
-        try:
-            # Check if index already exists
-            indexes_cursor = await self._data.list_indexes()
-            existing_indexes = await indexes_cursor.to_list(length=None)
-            track_id_index_exists = any(
-                "track_id" in idx.get("key", {}) for idx in existing_indexes
-            )
-
-            if not track_id_index_exists:
-                await self._data.create_index("track_id")
-                logger.info(
-                    f"[{self.workspace}] Created track_id index for collection {self._collection_name}"
-                )
-            else:
-                logger.debug(
-                    f"[{self.workspace}] track_id index already exists for collection {self._collection_name}"
-                )
-
-        except PyMongoError as e:
-            logger.error(
-                f"[{self.workspace}] Error creating track_id index for {self._collection_name}: {e}"
-            )
-
-    async def create_pagination_indexes_if_not_exists(self):
-        """Create indexes to optimize pagination queries"""
+    async def create_and_migrate_indexes_if_not_exists(self):
+        """Create indexes to optimize pagination queries and migrate file_path indexes for Chinese collation"""
         try:
             indexes_cursor = await self._data.list_indexes()
             existing_indexes = await indexes_cursor.to_list(length=None)
+            existing_index_names = {idx.get("name", "") for idx in existing_indexes}
 
-            # Define indexes needed for pagination
-            pagination_indexes = [
+            # Define collation configuration for Chinese pinyin sorting
+            collation_config = {"locale": "zh", "numericOrdering": True}
+
+            # 1. Define all indexes needed (including original pagination indexes and new collation indexes)
+            all_indexes = [
+                # Original pagination indexes
                 {
                     "name": "status_updated_at",
                     "keys": [("status", 1), ("updated_at", -1)],
@@ -520,27 +497,93 @@ class MongoDocStatusStorage(DocStatusStorage):
                 {"name": "updated_at", "keys": [("updated_at", -1)]},
                 {"name": "created_at", "keys": [("created_at", -1)]},
                 {"name": "id", "keys": [("_id", 1)]},
-                {"name": "file_path", "keys": [("file_path", 1)]},
+                {"name": "track_id", "keys": [("track_id", 1)]},
+                # New file_path indexes with Chinese collation
+                {
+                    "name": "file_path_zh_collation",
+                    "keys": [("file_path", 1)],
+                    "collation": collation_config,
+                },
+                {
+                    "name": "status_file_path_zh_collation",
+                    "keys": [("status", 1), ("file_path", 1)],
+                    "collation": collation_config,
+                },
             ]
 
-            # Check which indexes already exist
-            existing_index_names = {idx.get("name", "") for idx in existing_indexes}
+            # 2. Handle index migration: drop conflicting indexes with different names but same key patterns
+            for index_info in all_indexes:
+                target_keys = index_info["keys"]
+                target_name = index_info["name"]
+                target_collation = index_info.get("collation")
 
-            for index_info in pagination_indexes:
+                # Find existing indexes with the same key pattern but different names or collation
+                conflicting_indexes = []
+                for idx in existing_indexes:
+                    idx_name = idx.get("name", "")
+                    idx_keys = list(idx.get("key", {}).items())
+                    idx_collation = idx.get("collation")
+
+                    # Skip the _id_ index (MongoDB default)
+                    if idx_name == "_id_":
+                        continue
+
+                    # Check if keys match but name or collation differs
+                    if idx_keys == target_keys:
+                        if (
+                            idx_name != target_name
+                            or (target_collation and not idx_collation)
+                            or (not target_collation and idx_collation)
+                            or (
+                                target_collation
+                                and idx_collation
+                                and target_collation != idx_collation
+                            )
+                        ):
+                            conflicting_indexes.append(idx_name)
+
+                # Drop conflicting indexes
+                for conflicting_name in conflicting_indexes:
+                    try:
+                        await self._data.drop_index(conflicting_name)
+                        logger.info(
+                            f"[{self.workspace}] Migrated: dropped conflicting index '{conflicting_name}' for collection {self._collection_name}"
+                        )
+                        # Remove from existing_index_names to allow recreation
+                        existing_index_names.discard(conflicting_name)
+                    except PyMongoError as drop_error:
+                        logger.warning(
+                            f"[{self.workspace}] Failed to drop conflicting index '{conflicting_name}': {drop_error}"
+                        )
+
+            # 3. Create all needed indexes
+            for index_info in all_indexes:
                 index_name = index_info["name"]
                 if index_name not in existing_index_names:
-                    await self._data.create_index(index_info["keys"], name=index_name)
-                    logger.info(
-                        f"[{self.workspace}] Created pagination index '{index_name}' for collection {self._collection_name}"
-                    )
+                    create_kwargs = {"name": index_name}
+                    if "collation" in index_info:
+                        create_kwargs["collation"] = index_info["collation"]
+
+                    try:
+                        await self._data.create_index(
+                            index_info["keys"], **create_kwargs
+                        )
+                        logger.info(
+                            f"[{self.workspace}] Created index '{index_name}' for collection {self._collection_name}"
+                        )
+                    except PyMongoError as create_error:
+                        # If creation still fails, log the error but continue with other indexes
+                        logger.error(
+                            f"[{self.workspace}] Failed to create index '{index_name}' for collection {self._collection_name}: {create_error}"
+                        )
                 else:
                     logger.debug(
-                        f"[{self.workspace}] Pagination index '{index_name}' already exists for collection {self._collection_name}"
+                        f"[{self.workspace}] Index '{index_name}' already exists for collection {self._collection_name}"
                     )
 
         except PyMongoError as e:
             logger.error(
-                f"[{self.workspace}] Error creating pagination indexes for {self._collection_name}: {e}"
+                f"[{self.workspace}] Error creating/migrating indexes for {self._collection_name}: {e}"
             )
 
     async def get_docs_paginated(
@@ -592,13 +635,24 @@ class MongoDocStatusStorage(DocStatusStorage):
         sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
         sort_criteria = [(sort_field, sort_direction_value)]
 
-        # Query for paginated data
-        cursor = (
-            self._data.find(query_filter)
-            .sort(sort_criteria)
-            .skip(skip)
-            .limit(page_size)
-        )
+        # Query for paginated data with Chinese collation for file_path sorting
+        if sort_field == "file_path":
+            # Use Chinese collation for pinyin sorting
+            cursor = (
+                self._data.find(query_filter)
+                .sort(sort_criteria)
+                .collation({"locale": "zh", "numericOrdering": True})
+                .skip(skip)
+                .limit(page_size)
+            )
+        else:
+            # Use default sorting for other fields
+            cursor = (
+                self._data.find(query_filter)
+                .sort(sort_criteria)
+                .skip(skip)
+                .limit(page_size)
+            )
         result = await cursor.to_list(length=page_size)
 
         # Convert to (doc_id, DocProcessingStatus) tuples

@@ -3,8 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from pyuca import Collator
-from lightrag.utils import logger
+from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
@@ -492,7 +491,7 @@ class DocumentsRequest(BaseModel):
         status_filter: Filter by document status, None for all statuses
         page: Page number (1-based)
         page_size: Number of documents per page (10-200)
-        sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+        sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path')
         sort_direction: Sort direction ('asc' or 'desc')
     """
 
@@ -1155,7 +1154,9 @@ async def pipeline_enqueue_file(
                     content, file_paths=file_path.name, track_id=track_id
                 )
 
-                logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
+                logger.info(
+                    f"Successfully extracted and enqueued file: {file_path.name}"
+                )
 
                 # Move file to __enqueued__ directory after enqueuing
                 try:
@@ -1269,9 +1270,10 @@ async def pipeline_index_files(
     try:
         enqueued = False
 
-        # Create Collator for Unicode sorting
-        collator = Collator()
-        sorted_file_paths = sorted(file_paths, key=lambda p: collator.sort_key(str(p)))
+        # Use get_pinyin_sort_key for Chinese pinyin sorting
+        sorted_file_paths = sorted(
+            file_paths, key=lambda p: get_pinyin_sort_key(str(p))
+        )
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
