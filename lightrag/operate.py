@@ -1954,15 +1954,17 @@ async def extract_keywords_only(
     )
 
     # 3. Process conversation history
-    history_context = ""
-    if param.conversation_history:
-        history_context = get_conversation_turns(
-            param.conversation_history, param.history_turns
-        )
+    # history_context = ""
+    # if param.conversation_history:
+    #     history_context = get_conversation_turns(
+    #         param.conversation_history, param.history_turns
+    #     )
 
     # 4. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
-        query=text, examples=examples, language=language, history=history_context
+        query=text,
+        examples=examples,
+        language=language,
     )
 
     tokenizer: Tokenizer = global_config["tokenizer"]
