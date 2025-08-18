@@ -822,14 +822,42 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     # Ensure the collection is loaded after validation
                     self._ensure_collection_loaded()
                     return
-                except Exception as describe_error:
-                    logger.warning(
-                        f"[{self.workspace}] Collection '{self.namespace}' exists but cannot be described: {describe_error}"
+                except Exception as validation_error:
+                    # CRITICAL: Collection exists but validation failed
+                    # This indicates potential data migration failure or incompatible schema
+                    # Stop execution to prevent data loss and require manual intervention
+                    logger.error(
+                        f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
                     )
-                    logger.info(
-                        f"[{self.workspace}] Treating as if collection doesn't exist and creating new one..."
+                    logger.error(
+                        f"[{self.workspace}] This indicates potential data migration failure or schema incompatibility."
                     )
-                    # Fall through to creation logic
+                    logger.error(
+                        f"[{self.workspace}] Validation error: {validation_error}"
+                    )
+                    logger.error(f"[{self.workspace}] MANUAL INTERVENTION REQUIRED:")
+                    logger.error(
+                        f"[{self.workspace}] 1. Check the existing collection schema and data integrity"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] 2. Backup existing data if needed"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] 3. Manually resolve schema compatibility issues"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] 4. Consider dropping and recreating the collection if data is not critical"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] Program execution stopped to prevent potential data loss."
+                    )
+
+                    # Raise a specific exception to stop execution
+                    raise RuntimeError(
+                        f"Collection validation failed for '{self.final_namespace}'. "
+                        f"Data migration failure detected. Manual intervention required to prevent data loss. "
+                        f"Original error: {validation_error}"
+                    )
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
@@ -850,12 +878,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Successfully created Milvus collection: {self.namespace}"
             )
 
+        except RuntimeError:
+            # Re-raise RuntimeError (validation failures) without modification
+            # These are critical errors that should stop execution
+            raise
+
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error in _create_collection_if_not_exist for {self.namespace}: {e}"
             )
 
-            # If there's any error, try to force create the collection
+            # If there's any error (other than validation failure), try to force create the collection
             logger.info(
                 f"[{self.workspace}] Attempting to force create collection {self.namespace}..."
             )
