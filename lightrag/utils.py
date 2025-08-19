@@ -1422,7 +1422,7 @@ async def use_llm_func_with_cache(
         LLM response text
     """
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
-    safe_input_text = safe_encode_for_llm(input_text, f"llm_input_{cache_type}")
+    safe_input_text = sanitize_text_for_encoding(input_text)
 
     # Sanitize history messages if provided
     safe_history_messages = None
@@ -1431,9 +1431,7 @@ async def use_llm_func_with_cache(
         for i, msg in enumerate(history_messages):
             safe_msg = msg.copy()
             if "content" in safe_msg:
-                safe_msg["content"] = safe_encode_for_llm(
-                    safe_msg["content"], f"history_message_{i}"
-                )
+                safe_msg["content"] = sanitize_text_for_encoding(safe_msg["content"])
             safe_history_messages.append(safe_msg)
 
     if llm_response_cache:
@@ -1666,49 +1664,6 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         logger.error(f"Text sanitization: Unexpected error: {str(e)}")
         # Return original text if no encoding issues detected
         return text
-
-
-def safe_encode_for_llm(content: str, context: str = "unknown") -> str:
-    """Safely encode content for LLM API calls with comprehensive error handling.
-
-    This is the main function to use before sending text to LLM APIs to prevent
-    UTF-8 encoding errors.
-
-    Args:
-        content: Text content to encode safely
-        context: Context description for logging (e.g., "document_chunk", "prompt")
-
-    Returns:
-        Safely encoded text that won't cause UTF-8 encoding errors
-    """
-    if not content:
-        return content
-
-    original_length = len(content)
-
-    try:
-        # Apply text sanitization
-        sanitized = sanitize_text_for_encoding(content)
-
-        # Check if any changes were made
-        if len(sanitized) != original_length or sanitized != content:
-            # Count replaced characters (empty replacement chars)
-            replaced_count = original_length - len(sanitized)
-            logger.info(
-                f"Text encoding safety: Removed {replaced_count} problematic chars "
-                f"(original: {original_length} chars, sanitized: {len(sanitized)} chars)"
-            )
-
-        return sanitized
-
-    except Exception as e:
-        logger.error(
-            f"Text encoding safety: Failed to sanitize {context} content: {str(e)}"
-        )
-        # Return a safe fallback
-        return (
-            f"[CONTENT_SANITIZATION_ERROR: {original_length} characters from {context}]"
-        )
 
 
 def check_storage_env_vars(storage_name: str) -> None:
