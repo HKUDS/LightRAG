@@ -12,6 +12,7 @@ from lightrag.utils import (
     logger,
     write_json,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
     get_storage_lock,
@@ -65,11 +66,15 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             return set(keys) - set(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for id in ids:
                 data = self._data.get(id, None)
@@ -80,6 +85,8 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         counts = {status.value: 0 for status in DocStatus}
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for doc in self._data.values():
                 counts[doc["status"]] += 1
@@ -160,6 +167,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         if not data:
             return
         logger.debug(f"Inserting {len(data)} records to {self.final_namespace}")
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             # Ensure chunks_list field exists for new documents
             for doc_id, doc_data in data.items():
