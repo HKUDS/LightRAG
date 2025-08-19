@@ -814,37 +814,41 @@ async def pipeline_enqueue_file(
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "Permission denied - cannot read file",
+                    "error_description": "[File Extraction]Permission denied - cannot read file",
                     "original_error": str(e),
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"Permission denied reading file: {file_path.name}")
+            logger.error(
+                f"[File Extraction]Permission denied reading file: {file_path.name}"
+            )
             return False, track_id
         except FileNotFoundError as e:
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "File not found",
+                    "error_description": "[File Extraction]File not found",
                     "original_error": str(e),
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"File not found: {file_path.name}")
+            logger.error(f"[File Extraction]File not found: {file_path.name}")
             return False, track_id
         except Exception as e:
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "File reading error",
+                    "error_description": "[File Extraction]File reading error",
                     "original_error": str(e),
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"Error reading file {file_path.name}: {str(e)}")
+            logger.error(
+                f"[File Extraction]Error reading file {file_path.name}: {str(e)}"
+            )
             return False, track_id
 
         # Process based on file type
@@ -894,7 +898,7 @@ async def pipeline_enqueue_file(
                             error_files = [
                                 {
                                     "file_path": str(file_path.name),
-                                    "error_description": "Empty file content",
+                                    "error_description": "[File Extraction]Empty file content",
                                     "original_error": "File contains no content or only whitespace",
                                     "file_size": file_size,
                                 }
@@ -902,7 +906,9 @@ async def pipeline_enqueue_file(
                             await rag.apipeline_enqueue_error_documents(
                                 error_files, track_id
                             )
-                            logger.error(f"Empty content in file: {file_path.name}")
+                            logger.error(
+                                f"[File Extraction]Empty content in file: {file_path.name}"
+                            )
                             return False, track_id
 
                         # Check if content looks like binary data string representation
@@ -910,7 +916,7 @@ async def pipeline_enqueue_file(
                             error_files = [
                                 {
                                     "file_path": str(file_path.name),
-                                    "error_description": "Binary data in text file",
+                                    "error_description": "[File Extraction]Binary data in text file",
                                     "original_error": "File appears to contain binary data representation instead of text",
                                     "file_size": file_size,
                                 }
@@ -919,7 +925,7 @@ async def pipeline_enqueue_file(
                                 error_files, track_id
                             )
                             logger.error(
-                                f"File {file_path.name} appears to contain binary data representation instead of text"
+                                f"[File Extraction]File {file_path.name} appears to contain binary data representation instead of text"
                             )
                             return False, track_id
 
@@ -927,7 +933,7 @@ async def pipeline_enqueue_file(
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "UTF-8 encoding error",
+                                "error_description": "[File Extraction]UTF-8 encoding error, please convert it to UTF-8 before processing",
                                 "original_error": f"File is not valid UTF-8 encoded text: {str(e)}",
                                 "file_size": file_size,
                             }
@@ -936,7 +942,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                            f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
                         )
                         return False, track_id
 
@@ -964,7 +970,7 @@ async def pipeline_enqueue_file(
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "PDF processing error",
+                                "error_description": "[File Extraction]PDF processing error",
                                 "original_error": f"Failed to extract text from PDF: {str(e)}",
                                 "file_size": file_size,
                             }
@@ -972,7 +978,9 @@ async def pipeline_enqueue_file(
                         await rag.apipeline_enqueue_error_documents(
                             error_files, track_id
                         )
-                        logger.error(f"Error processing PDF {file_path.name}: {str(e)}")
+                        logger.error(
+                            f"[File Extraction]Error processing PDF {file_path.name}: {str(e)}"
+                        )
                         return False, track_id
 
                 case ".docx":
@@ -1003,7 +1011,7 @@ async def pipeline_enqueue_file(
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "DOCX processing error",
+                                "error_description": "[File Extraction]DOCX processing error",
                                 "original_error": f"Failed to extract text from DOCX: {str(e)}",
                                 "file_size": file_size,
                             }
@@ -1012,7 +1020,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"Error processing DOCX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
@@ -1042,7 +1050,7 @@ async def pipeline_enqueue_file(
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "PPTX processing error",
+                                "error_description": "[File Extraction]PPTX processing error",
                                 "original_error": f"Failed to extract text from PPTX: {str(e)}",
                                 "file_size": file_size,
                             }
@@ -1051,7 +1059,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"Error processing PPTX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error processing PPTX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
@@ -1088,7 +1096,7 @@ async def pipeline_enqueue_file(
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
-                                "error_description": "XLSX processing error",
+                                "error_description": "[File Extraction]XLSX processing error",
                                 "original_error": f"Failed to extract text from XLSX: {str(e)}",
                                 "file_size": file_size,
                             }
@@ -1097,7 +1105,7 @@ async def pipeline_enqueue_file(
                             error_files, track_id
                         )
                         logger.error(
-                            f"Error processing XLSX {file_path.name}: {str(e)}"
+                            f"[File Extraction]Error processing XLSX {file_path.name}: {str(e)}"
                         )
                         return False, track_id
 
@@ -1105,14 +1113,14 @@ async def pipeline_enqueue_file(
                     error_files = [
                         {
                             "file_path": str(file_path.name),
-                            "error_description": f"Unsupported file type: {ext}",
+                            "error_description": f"[File Extraction]Unsupported file type: {ext}",
                             "original_error": f"File extension {ext} is not supported",
                             "file_size": file_size,
                         }
                     ]
                     await rag.apipeline_enqueue_error_documents(error_files, track_id)
                     logger.error(
-                        f"Unsupported file type: {file_path.name} (extension {ext})"
+                        f"[File Extraction]Unsupported file type: {file_path.name} (extension {ext})"
                     )
                     return False, track_id
 
@@ -1120,14 +1128,14 @@ async def pipeline_enqueue_file(
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "File format processing error",
+                    "error_description": "[File Extraction]File format processing error",
                     "original_error": f"Unexpected error during file extracting: {str(e)}",
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
             logger.error(
-                f"Unexpected error during {file_path.name} extracting: {str(e)}"
+                f"[File Extraction]Unexpected error during {file_path.name} extracting: {str(e)}"
             )
             return False, track_id
 
@@ -1138,14 +1146,14 @@ async def pipeline_enqueue_file(
                 error_files = [
                     {
                         "file_path": str(file_path.name),
-                        "error_description": "File contains only whitespace",
+                        "error_description": "[File Extraction]File contains only whitespace",
                         "original_error": "File content contains only whitespace characters",
                         "file_size": file_size,
                     }
                 ]
                 await rag.apipeline_enqueue_error_documents(error_files, track_id)
                 logger.warning(
-                    f"File contains only whitespace characters: {file_path.name}"
+                    f"[File Extraction]File contains only whitespace characters: {file_path.name}"
                 )
                 return False, track_id
 
