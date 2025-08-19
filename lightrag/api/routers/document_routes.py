@@ -1428,30 +1428,51 @@ async def background_delete_documents(
                         and result.file_path != "unknown_source"
                     ):
                         try:
+                            deleted_files = []
+                            # check and delete files from input_dir directory
                             file_path = doc_manager.input_dir / result.file_path
                             if file_path.exists():
                                 file_path.unlink()
-                                file_delete_msg = (
-                                    f"Successfully deleted file: {result.file_path}"
-                                )
+                                deleted_files.append(file_path.name)
+                                file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
                                 logger.info(file_delete_msg)
                                 async with pipeline_status_lock:
                                     pipeline_status["latest_message"] = file_delete_msg
                                     pipeline_status["history_messages"].append(
                                         file_delete_msg
                                     )
-                            else:
-                                file_not_found_msg = (
-                                    f"File not found for deletion: {result.file_path}"
-                                )
-                                logger.warning(file_not_found_msg)
+
+                            # Also check and delete files from __enqueued__ directory
+                            enqueued_dir = doc_manager.input_dir / "__enqueued__"
+                            if enqueued_dir.exists():
+                                # Look for files with the same name or similar names (with numeric suffixes)
+                                base_name = Path(result.file_path).stem
+                                extension = Path(result.file_path).suffix
+
+                                # Search for exact match and files with numeric suffixes
+                                for enqueued_file in enqueued_dir.glob(
+                                    f"{base_name}*{extension}"
+                                ):
+                                    try:
+                                        enqueued_file.unlink()
+                                        deleted_files.append(enqueued_file.name)
+                                        logger.info(
+                                            f"Deleted enqueued file: {enqueued_file.name}"
+                                        )
+                                    except Exception as enqueued_error:
+                                        logger.error(
+                                            f"Failed to delete enqueued file {enqueued_file.name}: {str(enqueued_error)}"
+                                        )
+
+                            if not deleted_files:
+                                file_error_msg = f"File deletion skipped, missing file: {result.file_path}"
+                                logger.warning(file_error_msg)
                                 async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = (
-                                        file_not_found_msg
-                                    )
+                                    pipeline_status["latest_message"] = file_error_msg
                                     pipeline_status["history_messages"].append(
-                                        file_not_found_msg
+                                        file_error_msg
                                     )
+
                         except Exception as file_error:
                             file_error_msg = f"Failed to delete file {result.file_path}: {str(file_error)}"
                             logger.error(file_error_msg)
@@ -1461,7 +1482,9 @@ async def background_delete_documents(
                                     file_error_msg
                                 )
                     elif delete_file:
-                        no_file_msg = f"No valid file path found for document {doc_id}"
+                        no_file_msg = (
+                            f"File deletion skipped, missing file path: {doc_id}"
+                        )
                         logger.warning(no_file_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = no_file_msg
