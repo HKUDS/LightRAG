@@ -265,7 +265,8 @@ class EmbeddingFunc:
 
 
 def compute_args_hash(*args: Any) -> str:
-    """Compute a hash for the given arguments.
+    """Compute a hash for the given arguments with safe Unicode handling.
+
     Args:
         *args: Arguments to hash
     Returns:
@@ -276,8 +277,14 @@ def compute_args_hash(*args: Any) -> str:
     # Convert all arguments to strings and join them
     args_str = "".join([str(arg) for arg in args])
 
-    # Compute MD5 hash
-    return hashlib.md5(args_str.encode()).hexdigest()
+    # Use 'replace' error handling to safely encode problematic Unicode characters
+    # This replaces invalid characters with Unicode replacement character (U+FFFD)
+    try:
+        return hashlib.md5(args_str.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        # Handle surrogate characters and other encoding issues
+        safe_bytes = args_str.encode("utf-8", errors="replace")
+        return hashlib.md5(safe_bytes).hexdigest()
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
