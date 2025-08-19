@@ -1575,18 +1575,6 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
     return name
 
 
-def clean_text(text: str) -> str:
-    """Clean text by removing null bytes (0x00) and whitespace
-
-    Args:
-        text: Input text to clean
-
-    Returns:
-        Cleaned text
-    """
-    return text.strip().replace("\x00", "")
-
-
 def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
 
@@ -1594,6 +1582,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     - Surrogate characters (the main cause of the encoding error)
     - Other invalid Unicode sequences
     - Control characters that might cause issues
+    - Whitespace trimming
 
     Args:
         text: Input text to sanitize
@@ -1609,7 +1598,14 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         return text
 
     try:
-        # First, try to encode/decode to catch any encoding issues early
+        # First, strip whitespace
+        text = text.strip()
+
+        # Early return if text is empty after basic cleaning
+        if not text:
+            return text
+
+        # Try to encode/decode to catch any encoding issues early
         text.encode("utf-8")
 
         # Remove or replace surrogate characters (U+D800 to U+DFFF)
@@ -1630,8 +1626,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
             else:
                 sanitized += char
 
-        # Additional cleanup: remove null bytes and other control characters
-        # that might cause issues (but preserve common whitespace)
+        # Additional cleanup: remove null bytes  and other control characters that might cause issues
+        # (but preserve common whitespace like \t, \n, \r)
         sanitized = re.sub(
             r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
         )
