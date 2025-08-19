@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Any, final, Union
 from dataclasses import dataclass
 import pipmaster as pm
@@ -50,7 +51,7 @@ redis_retry = retry(
         | retry_if_exception_type(TimeoutError)
         | retry_if_exception_type(RedisError)
     ),
-    before_sleep=before_sleep_log(logger, "WARNING"),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
 
