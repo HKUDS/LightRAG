@@ -2219,16 +2219,20 @@ class LightRAG:
             doc_status = doc_status_data.get("status")
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
-                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: PENDING)"
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: PENDING)"
+                    )
                 elif doc_status == DocStatus.PROCESSING:
-                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: PROCESSING)"
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: PROCESSING)"
+                    )
                 elif doc_status == DocStatus.FAILED:
-                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: FAILED)"
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: FAILED)"
+                    )
                 else:
-                    warning_msg = f"WARNING: Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
-
-                logger.warning(warning_msg)
-
+                    warning_msg = f"Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
+                logger.info(warning_msg)
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = warning_msg
