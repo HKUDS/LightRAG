@@ -1626,9 +1626,7 @@ class LightRAG:
                                         doc_id: {
                                             "status": DocStatus.PROCESSED,
                                             "chunks_count": len(chunks),
-                                            "chunks_list": list(
-                                                chunks.keys()
-                                            ),  # 保留 chunks_list
+                                            "chunks_list": list(chunks.keys()),
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
