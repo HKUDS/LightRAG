@@ -82,10 +82,15 @@ async def anthropic_complete_if_cache(
     timeout = kwargs.pop("timeout", None)
 
     anthropic_async_client = (
-        AsyncAnthropic(default_headers=default_headers, api_key=api_key, timeout=timeout)
+        AsyncAnthropic(
+            default_headers=default_headers, api_key=api_key, timeout=timeout
+        )
         if base_url is None
         else AsyncAnthropic(
-            base_url=base_url, default_headers=default_headers, api_key=api_key, timeout=timeout
+            base_url=base_url,
+            default_headers=default_headers,
+            api_key=api_key,
+            timeout=timeout,
         )
     )
 

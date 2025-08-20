@@ -327,7 +327,7 @@ def create_app(args):
             history_messages = []
 
         # Use global temperature for Bedrock
-        kwargs["temperature"] = args.temperature
+        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
 
         return await bedrock_complete_if_cache(
             args.llm_model,
@@ -479,9 +479,6 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": llm_timeout,
-            },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.max_tokens,

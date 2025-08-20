@@ -158,9 +158,10 @@ async def openai_complete_if_cache(
 
     # Create the OpenAI client
     openai_async_client = create_openai_async_client(
-        api_key=api_key, base_url=base_url, client_configs=client_configs,
+        api_key=api_key,
+        base_url=base_url,
+        client_configs=client_configs,
     )
-
 
     # Prepare messages
     messages: list[dict[str, Any]] = []
