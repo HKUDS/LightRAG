@@ -31,42 +31,42 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
-    '.html',
-    '.htm',
-    '.tex',
-    '.json',
-    '.xml',
-    '.yaml',
-    '.yml',
-    '.rtf',
-    '.odt',
-    '.epub',
-    '.csv',
-    '.log',
-    '.conf',
-    '.ini',
-    '.properties',
-    '.sql',
-    '.bat',
-    '.sh',
-    '.c',
-    '.cpp',
-    '.py',
-    '.java',
-    '.js',
-    '.ts',
-    '.swift',
-    '.go',
-    '.rb',
-    '.php',
-    '.css',
-    '.scss',
+    '.rtf',  //# Rich Text Format
+    '.odt', // # OpenDocument Text
+    '.tex', // # LaTeX
+    '.epub', // # Electronic Publication
+    '.html', // # HyperText Markup Language
+    '.htm', // # HyperText Markup Language
+    '.csv', // # Comma-Separated Values
+    '.json', // # JavaScript Object Notation
+    '.xml', // # eXtensible Markup Language
+    '.yaml', // # YAML Ain't Markup Language
+    '.yml', // # YAML
+    '.log', // # Log files
+    '.conf', // # Configuration files
+    '.ini', // # Initialization files
+    '.properties', // # Java properties files
+    '.sql', // # SQL scripts
+    '.bat', // # Batch files
+    '.sh', // # Shell scripts
+    '.c', // # C source code
+    '.cpp', // # C++ source code
+    '.py', // # Python source code
+    '.java', // # Java source code
+    '.js', // # JavaScript source code
+    '.ts', // # TypeScript source code
+    '.swift', // # Swift source code
+    '.go', // # Go source code
+    '.rb', // # Ruby source code
+    '.php', // # PHP source code
+    '.css', // # Cascading Style Sheets
+    '.scss',  //# Sassy CSS
     '.less'
   ],
   'application/pdf': ['.pdf'],
-  'application/msword': ['.doc'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx']
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
 }
 
 export const SiteInfo = {

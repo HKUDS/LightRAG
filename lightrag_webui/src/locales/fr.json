@@ -50,6 +50,8 @@
       "confirmPlaceholder": "Tapez yes pour confirmer",
       "clearCache": "Effacer le cache LLM",
       "confirmButton": "OUI",
+      "clearing": "Effacement en cours...",
+      "timeout": "L'opération d'effacement a expiré, veuillez réessayer",
       "success": "Documents effacés avec succès",
       "cacheCleared": "Cache effacé avec succès",
       "cacheClearFailed": "Échec de l'effacement du cache :\n{{error}}",
@@ -72,15 +74,11 @@
       "failed": "Échec de la suppression des documents :\n{{message}}",
       "error": "Échec de la suppression des documents :\n{{error}}",
       "busy": "Le pipeline est occupé, veuillez réessayer plus tard",
-      "notAllowed": "Aucune autorisation pour effectuer cette opération",
-      "cannotDeleteAll": "Impossible de supprimer tous les documents. Si vous devez supprimer tous les documents, veuillez utiliser la fonction Effacer les documents."
+      "notAllowed": "Aucune autorisation pour effectuer cette opération"
     },
-    "deselectDocuments": {
-      "button": "Désélectionner",
-      "tooltip": "Désélectionner tous les documents sélectionnés",
-      "title": "Désélectionner les documents",
-      "description": "Cette action effacera tous les documents sélectionnés ({{count}} sélectionnés)",
-      "confirmButton": "Tout désélectionner"
+    "selectDocuments": {
+      "selectCurrentPage": "Sélectionner la page actuelle ({{count}})",
+      "deselectAll": "Tout désélectionner ({{count}})"
     },
     "uploadDocuments": {
       "button": "Télécharger",

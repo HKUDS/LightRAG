@@ -40,6 +40,7 @@ LightRAG 需要同时集成 LLM（大型语言模型）和嵌入模型以有效�
 * lollms
 * openai 或 openai 兼容
 * azure_openai
+* aws_bedrock
 
 建议使用环境变量来配置 LightRAG 服务器。项目根目录中有一个名为 `env.example` 的示例环境变量文件。请将此文件复制到启动目录并重命名为 `.env`。之后，您可以在 `.env` 文件中修改与 LLM 和嵌入模型相关的参数。需要注意的是，LightRAG 服务器每次启动时都会将 `.env` 中的环境变量加载到系统环境变量中。**LightRAG 服务器会优先使用系统环境变量中的设置**。
 
@@ -359,6 +360,7 @@ LightRAG 支持绑定到各种 LLM/嵌入后端：
 * openai 和 openai 兼容
 * azure_openai
 * lollms
+* aws_bedrock
 
 使用环境变量 `LLM_BINDING` 或 CLI 参数 `--llm-binding` 选择 LLM 后端类型。使用环境变量 `EMBEDDING_BINDING` 或 CLI 参数 `--embedding-binding` 选择嵌入后端类型。
 

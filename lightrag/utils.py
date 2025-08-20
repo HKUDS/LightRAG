@@ -17,6 +17,7 @@ from hashlib import md5
 from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import numpy as np
 from dotenv import load_dotenv
+
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -25,6 +26,21 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
+
+# Global import for pypinyin with startup-time logging
+try:
+    import pypinyin
+
+    _PYPINYIN_AVAILABLE = True
+    logger = logging.getLogger("lightrag")
+    logger.info("pypinyin loaded successfully for Chinese pinyin sorting")
+except ImportError:
+    pypinyin = None
+    _PYPINYIN_AVAILABLE = False
+    logger = logging.getLogger("lightrag")
+    logger.warning(
+        "pypinyin is not installed. Chinese pinyin sorting will use simple string sorting."
+    )
 
 
 def get_env_value(
@@ -249,19 +265,33 @@ class EmbeddingFunc:
 
 
 def compute_args_hash(*args: Any) -> str:
-    """Compute a hash for the given arguments.
+    """Compute a hash for the given arguments with safe Unicode handling.
+
     Args:
         *args: Arguments to hash
     Returns:
         str: Hash string
     """
-    import hashlib
-
     # Convert all arguments to strings and join them
     args_str = "".join([str(arg) for arg in args])
 
-    # Compute MD5 hash
-    return hashlib.md5(args_str.encode()).hexdigest()
+    # Use 'replace' error handling to safely encode problematic Unicode characters
+    # This replaces invalid characters with Unicode replacement character (U+FFFD)
+    try:
+        return md5(args_str.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        # Handle surrogate characters and other encoding issues
+        safe_bytes = args_str.encode("utf-8", errors="replace")
+        return md5(safe_bytes).hexdigest()
+
+
+def compute_mdhash_id(content: str, prefix: str = "") -> str:
+    """
+    Compute a unique ID for a given content string.
+
+    The ID is a combination of the given prefix and the MD5 hash of the content string.
+    """
+    return prefix + compute_args_hash(content)
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
@@ -291,15 +321,6 @@ def parse_cache_key(cache_key: str) -> tuple[str, str, str] | None:
     if len(parts) == 3:
         return parts[0], parts[1], parts[2]
     return None
-
-
-def compute_mdhash_id(content: str, prefix: str = "") -> str:
-    """
-    Compute a unique ID for a given content string.
-
-    The ID is a combination of the given prefix and the MD5 hash of the content string.
-    """
-    return prefix + md5(content.encode()).hexdigest()
 
 
 # Custom exception class
@@ -1379,10 +1400,12 @@ async def use_llm_func_with_cache(
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
 ) -> str:
-    """Call LLM function with cache support
+    """Call LLM function with cache support and text sanitization
 
     If cache is available and enabled (determined by handle_cache based on mode),
     retrieve result from cache; otherwise call LLM function and save result to cache.
+
+    This function applies text sanitization to prevent UTF-8 encoding errors for all LLM providers.
 
     Args:
         input_text: Input text to send to LLM
@@ -1398,12 +1421,25 @@ async def use_llm_func_with_cache(
     Returns:
         LLM response text
     """
+    # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
+    safe_input_text = sanitize_text_for_encoding(input_text)
+
+    # Sanitize history messages if provided
+    safe_history_messages = None
+    if history_messages:
+        safe_history_messages = []
+        for i, msg in enumerate(history_messages):
+            safe_msg = msg.copy()
+            if "content" in safe_msg:
+                safe_msg["content"] = sanitize_text_for_encoding(safe_msg["content"])
+            safe_history_messages.append(safe_msg)
+
     if llm_response_cache:
-        if history_messages:
-            history = json.dumps(history_messages, ensure_ascii=False)
-            _prompt = history + "\n" + input_text
+        if safe_history_messages:
+            history = json.dumps(safe_history_messages, ensure_ascii=False)
+            _prompt = history + "\n" + safe_input_text
         else:
-            _prompt = input_text
+            _prompt = safe_input_text
 
         arg_hash = compute_args_hash(_prompt)
         # Generate cache key for this LLM call
@@ -1427,14 +1463,14 @@ async def use_llm_func_with_cache(
             return cached_return
         statistic_data["llm_call"] += 1
 
-        # Call LLM
+        # Call LLM with sanitized input
         kwargs = {}
-        if history_messages:
-            kwargs["history_messages"] = history_messages
+        if safe_history_messages:
+            kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        res: str = await use_llm_func(input_text, **kwargs)
+        res: str = await use_llm_func(safe_input_text, **kwargs)
         res = remove_think_tags(res)
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
@@ -1455,15 +1491,15 @@ async def use_llm_func_with_cache(
 
         return res
 
-    # When cache is disabled, directly call LLM
+    # When cache is disabled, directly call LLM with sanitized input
     kwargs = {}
-    if history_messages:
-        kwargs["history_messages"] = history_messages
+    if safe_history_messages:
+        kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    logger.info(f"Call LLM function with query text length: {len(input_text)}")
-    res = await use_llm_func(input_text, **kwargs)
+    logger.info(f"Call LLM function with query text length: {len(safe_input_text)}")
+    res = await use_llm_func(safe_input_text, **kwargs)
     return remove_think_tags(res)
 
 
@@ -1537,16 +1573,97 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
     return name
 
 
-def clean_text(text: str) -> str:
-    """Clean text by removing null bytes (0x00) and whitespace
+def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
+    """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
+
+    This function handles:
+    - Surrogate characters (the main cause of the encoding error)
+    - Other invalid Unicode sequences
+    - Control characters that might cause issues
+    - Whitespace trimming
 
     Args:
-        text: Input text to clean
+        text: Input text to sanitize
+        replacement_char: Character to use for replacing invalid sequences
 
     Returns:
-        Cleaned text
+        Sanitized text that can be safely encoded as UTF-8
     """
-    return text.strip().replace("\x00", "")
+    if not isinstance(text, str):
+        return str(text)
+
+    if not text:
+        return text
+
+    try:
+        # First, strip whitespace
+        text = text.strip()
+
+        # Early return if text is empty after basic cleaning
+        if not text:
+            return text
+
+        # Try to encode/decode to catch any encoding issues early
+        text.encode("utf-8")
+
+        # Remove or replace surrogate characters (U+D800 to U+DFFF)
+        # These are the main cause of the encoding error
+        sanitized = ""
+        for char in text:
+            code_point = ord(char)
+            # Check for surrogate characters
+            if 0xD800 <= code_point <= 0xDFFF:
+                # Replace surrogate with replacement character
+                sanitized += replacement_char
+                continue
+            # Check for other problematic characters
+            elif code_point == 0xFFFE or code_point == 0xFFFF:
+                # These are non-characters in Unicode
+                sanitized += replacement_char
+                continue
+            else:
+                sanitized += char
+
+        # Additional cleanup: remove null bytes  and other control characters that might cause issues
+        # (but preserve common whitespace like \t, \n, \r)
+        sanitized = re.sub(
+            r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
+        )
+
+        # Test final encoding to ensure it's safe
+        sanitized.encode("utf-8")
+
+        return sanitized
+
+    except UnicodeEncodeError as e:
+        logger.warning(
+            f"Text sanitization: UnicodeEncodeError encountered, applying aggressive cleaning: {str(e)[:100]}"
+        )
+
+        # Aggressive fallback: encode with error handling
+        try:
+            # Use 'replace' error handling to substitute problematic characters
+            safe_bytes = text.encode("utf-8", errors="replace")
+            sanitized = safe_bytes.decode("utf-8")
+
+            # Additional cleanup
+            sanitized = re.sub(
+                r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
+            )
+
+            return sanitized
+
+        except Exception as fallback_error:
+            logger.error(
+                f"Text sanitization: Aggressive fallback failed: {str(fallback_error)}"
+            )
+            # Last resort: return a safe placeholder
+            return f"[TEXT_ENCODING_ERROR: {len(text)} characters]"
+
+    except Exception as e:
+        logger.error(f"Text sanitization: Unexpected error: {str(e)}")
+        # Return original text if no encoding issues detected
+        return text
 
 
 def check_storage_env_vars(storage_name: str) -> None:
@@ -1978,7 +2095,7 @@ async def process_chunks_unified(
 
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
-            key=lambda x: x.get("content", ""),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
@@ -1997,7 +2114,7 @@ async def process_chunks_unified(
 
 
 def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with length limit and deduplication
+    """Build file path string with UTF-8 byte length limit and deduplication
 
     Args:
         already_file_paths: List of existing file paths
@@ -2012,6 +2129,14 @@ def build_file_path(already_file_paths, data_list, target):
 
     # string: filter empty value and keep file order in already_file_paths
     file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+
+    # Check if initial file_paths already exceeds byte length limit
+    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
+        logger.warning(
+            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"current size: {len(file_paths.encode('utf-8'))} bytes"
+        )
+
     # ignored file_paths
     file_paths_ignore = ""
     # add file_paths
@@ -2027,22 +2152,22 @@ def build_file_path(already_file_paths, data_list, target):
         # add
         file_paths_set.add(cur_file_path)
 
-        # check the length
+        # check the UTF-8 byte length
+        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
         if (
-            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
-            < DEFAULT_MAX_FILE_PATH_LENGTH
+            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
+            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
         ):
             # append
-            file_paths += (
-                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-            )
+            file_paths += new_addition
         else:
             # ignore
             file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
 
     if file_paths_ignore:
         logger.warning(
-            f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
+            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"ignoring file path: {file_paths_ignore}"
         )
     return file_paths
 
@@ -2059,3 +2184,31 @@ def generate_track_id(prefix: str = "upload") -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid.uuid4())[:8]  # Use first 8 characters of UUID
     return f"{prefix}_{timestamp}_{unique_id}"
+
+
+def get_pinyin_sort_key(text: str) -> str:
+    """Generate sort key for Chinese pinyin sorting
+
+    This function uses pypinyin for true Chinese pinyin sorting.
+    If pypinyin is not available, it falls back to simple lowercase string sorting.
+
+    Args:
+        text: Text to generate sort key for
+
+    Returns:
+        str: Sort key that can be used for comparison and sorting
+    """
+    if not text:
+        return ""
+
+    if _PYPINYIN_AVAILABLE:
+        try:
+            # Convert Chinese characters to pinyin, keep non-Chinese as-is
+            pinyin_list = pypinyin.lazy_pinyin(text, style=pypinyin.Style.NORMAL)
+            return "".join(pinyin_list).lower()
+        except Exception:
+            # Silently fall back to simple string sorting on any error
+            return text.lower()
+    else:
+        # pypinyin not available, use simple string sorting
+        return text.lower()

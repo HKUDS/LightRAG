@@ -1954,15 +1954,17 @@ async def extract_keywords_only(
     )
 
     # 3. Process conversation history
-    history_context = ""
-    if param.conversation_history:
-        history_context = get_conversation_turns(
-            param.conversation_history, param.history_turns
-        )
+    # history_context = ""
+    # if param.conversation_history:
+    #     history_context = get_conversation_turns(
+    #         param.conversation_history, param.history_turns
+    #     )
 
     # 4. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
-        query=text, examples=examples, language=language, history=history_context
+        query=text,
+        examples=examples,
+        language=language,
     )
 
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -2297,8 +2299,11 @@ async def _build_query_context(
     if entities_context:
         # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
         for entity in entities_context:
-            if "file_path" in entity and entity["file_path"]:
-                entity["file_path"] = entity["file_path"].replace(GRAPH_FIELD_SEP, ";")
+            # remove file_path and created_at
+            entity.pop("file_path", None)
+            entity.pop("created_at", None)
+            # if "file_path" in entity and entity["file_path"]:
+            #     entity["file_path"] = entity["file_path"].replace(GRAPH_FIELD_SEP, ";")
 
         entities_context = truncate_list_by_token_size(
             entities_context,
@@ -2311,10 +2316,13 @@ async def _build_query_context(
     if relations_context:
         # Process relations context to replace GRAPH_FIELD_SEP with : in file_path fields
         for relation in relations_context:
-            if "file_path" in relation and relation["file_path"]:
-                relation["file_path"] = relation["file_path"].replace(
-                    GRAPH_FIELD_SEP, ";"
-                )
+            # remove file_path and created_at
+            relation.pop("file_path", None)
+            relation.pop("created_at", None)
+            # if "file_path" in relation and relation["file_path"]:
+            #     relation["file_path"] = relation["file_path"].replace(
+            #         GRAPH_FIELD_SEP, ";"
+            #     )
 
         relations_context = truncate_list_by_token_size(
             relations_context,

@@ -83,7 +83,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=1024,
+                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
                     nullable=True,
                 ),
             ]
@@ -95,7 +95,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=1024,
+                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
                     nullable=True,
                 ),
             ]
@@ -482,8 +482,33 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         return
 
+    def _check_file_path_length_restriction(self, collection_info: dict) -> bool:
+        """Check if collection has file_path length restrictions that need migration
+
+        Returns:
+            bool: True if migration is needed, False otherwise
+        """
+        existing_fields = {
+            field["name"]: field for field in collection_info.get("fields", [])
+        }
+
+        # Check if file_path field exists and has length restrictions
+        if "file_path" in existing_fields:
+            file_path_field = existing_fields["file_path"]
+            # Get max_length from field params
+            max_length = file_path_field.get("params", {}).get("max_length")
+
+            if max_length and max_length < DEFAULT_MAX_FILE_PATH_LENGTH:
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} has file_path max_length={max_length}, "
+                    f"needs migration to {DEFAULT_MAX_FILE_PATH_LENGTH}"
+                )
+                return True
+
+        return False
+
     def _check_schema_compatibility(self, collection_info: dict):
-        """Check schema field compatibility"""
+        """Check schema field compatibility and detect migration needs"""
         existing_fields = {
             field["name"]: field for field in collection_info.get("fields", [])
         }
@@ -503,6 +528,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"[{self.workspace}] Consider recreating the collection for optimal performance"
             )
+            return
+
+        # Check if migration is needed for file_path length restrictions
+        if self._check_file_path_length_restriction(collection_info):
+            logger.info(
+                f"[{self.workspace}] Starting automatic migration for collection {self.namespace}"
+            )
+            self._migrate_collection_schema()
             return
 
         # For collections with vector field, check basic compatibility
@@ -542,6 +575,177 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         logger.debug(
             f"[{self.workspace}] Schema compatibility check passed for {self.namespace}"
         )
+
+    def _migrate_collection_schema(self):
+        """Migrate collection schema using query_iterator - completely solves query window limitations"""
+        original_collection_name = self.final_namespace
+        temp_collection_name = f"{self.final_namespace}_temp"
+        iterator = None
+
+        try:
+            logger.info(
+                f"[{self.workspace}] Starting iterator-based schema migration for {self.namespace}"
+            )
+
+            # Step 1: Create temporary collection with new schema
+            logger.info(
+                f"[{self.workspace}] Step 1: Creating temporary collection: {temp_collection_name}"
+            )
+            # Temporarily update final_namespace for index creation
+            self.final_namespace = temp_collection_name
+            new_schema = self._create_schema_for_namespace()
+            self._client.create_collection(
+                collection_name=temp_collection_name, schema=new_schema
+            )
+            try:
+                self._create_indexes_after_collection()
+            except Exception as index_error:
+                logger.warning(
+                    f"[{self.workspace}] Failed to create indexes for new collection: {index_error}"
+                )
+                # Continue with migration even if index creation fails
+
+            # Load the new collection
+            self._client.load_collection(temp_collection_name)
+
+            # Step 2: Copy data using query_iterator (solves query window limitation)
+            logger.info(
+                f"[{self.workspace}] Step 2: Copying data using query_iterator from: {original_collection_name}"
+            )
+
+            # Create query iterator
+            try:
+                iterator = self._client.query_iterator(
+                    collection_name=original_collection_name,
+                    batch_size=2000,  # Adjustable batch size for optimal performance
+                    output_fields=["*"],  # Get all fields
+                )
+                logger.debug(f"[{self.workspace}] Query iterator created successfully")
+            except Exception as iterator_error:
+                logger.error(
+                    f"[{self.workspace}] Failed to create query iterator: {iterator_error}"
+                )
+                raise
+
+            # Iterate through all data
+            total_migrated = 0
+            batch_number = 1
+
+            while True:
+                try:
+                    batch_data = iterator.next()
+                    if not batch_data:
+                        # No more data available
+                        break
+
+                    # Insert batch data to new collection
+                    try:
+                        self._client.insert(
+                            collection_name=temp_collection_name, data=batch_data
+                        )
+                        total_migrated += len(batch_data)
+
+                        logger.info(
+                            f"[{self.workspace}] Iterator batch {batch_number}: "
+                            f"processed {len(batch_data)} records, total migrated: {total_migrated}"
+                        )
+                        batch_number += 1
+
+                    except Exception as batch_error:
+                        logger.error(
+                            f"[{self.workspace}] Failed to insert iterator batch {batch_number}: {batch_error}"
+                        )
+                        raise
+
+                except Exception as next_error:
+                    logger.error(
+                        f"[{self.workspace}] Iterator next() failed at batch {batch_number}: {next_error}"
+                    )
+                    raise
+
+            if total_migrated > 0:
+                logger.info(
+                    f"[{self.workspace}] Successfully migrated {total_migrated} records using iterator"
+                )
+            else:
+                logger.info(
+                    f"[{self.workspace}] No data found in original collection, migration completed"
+                )
+
+            # Step 3: Rename origin collection (keep for safety)
+            logger.info(
+                f"[{self.workspace}] Step 3: Rename origin collection to {original_collection_name}_old"
+            )
+            try:
+                self._client.rename_collection(
+                    original_collection_name, f"{original_collection_name}_old"
+                )
+            except Exception as rename_error:
+                try:
+                    logger.warning(
+                        f"[{self.workspace}] Try to drop origin collection instead"
+                    )
+                    self._client.drop_collection(original_collection_name)
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Rename operation failed: {rename_error}"
+                    )
+                    raise e
+
+            # Step 4: Rename temporary collection to original name
+            logger.info(
+                f"[{self.workspace}] Step 4: Renaming collection {temp_collection_name} -> {original_collection_name}"
+            )
+            try:
+                self._client.rename_collection(
+                    temp_collection_name, original_collection_name
+                )
+                logger.info(f"[{self.workspace}] Rename operation completed")
+            except Exception as rename_error:
+                logger.error(
+                    f"[{self.workspace}] Rename operation failed: {rename_error}"
+                )
+                raise RuntimeError(
+                    f"Failed to rename collection: {rename_error}"
+                ) from rename_error
+
+            # Restore final_namespace
+            self.final_namespace = original_collection_name
+
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Iterator-based migration failed for {self.namespace}: {e}"
+            )
+
+            # Attempt cleanup of temporary collection if it exists
+            try:
+                if self._client and self._client.has_collection(temp_collection_name):
+                    logger.info(
+                        f"[{self.workspace}] Cleaning up failed migration temporary collection"
+                    )
+                    self._client.drop_collection(temp_collection_name)
+            except Exception as cleanup_error:
+                logger.warning(
+                    f"[{self.workspace}] Failed to cleanup temporary collection: {cleanup_error}"
+                )
+
+            # Re-raise the original error
+            raise RuntimeError(
+                f"Iterator-based migration failed for collection {self.namespace}: {e}"
+            ) from e
+
+        finally:
+            # Ensure iterator is properly closed
+            if iterator:
+                try:
+                    iterator.close()
+                    logger.debug(
+                        f"[{self.workspace}] Query iterator closed successfully"
+                    )
+                except Exception as close_error:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to close query iterator: {close_error}"
+                    )
 
     def _validate_collection_compatibility(self):
         """Validate existing collection's dimension and schema compatibility"""
@@ -603,14 +807,42 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     # Ensure the collection is loaded after validation
                     self._ensure_collection_loaded()
                     return
-                except Exception as describe_error:
-                    logger.warning(
-                        f"[{self.workspace}] Collection '{self.namespace}' exists but cannot be described: {describe_error}"
+                except Exception as validation_error:
+                    # CRITICAL: Collection exists but validation failed
+                    # This indicates potential data migration failure or incompatible schema
+                    # Stop execution to prevent data loss and require manual intervention
+                    logger.error(
+                        f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
                     )
-                    logger.info(
-                        f"[{self.workspace}] Treating as if collection doesn't exist and creating new one..."
+                    logger.error(
+                        f"[{self.workspace}] This indicates potential data migration failure or schema incompatibility."
                     )
-                    # Fall through to creation logic
+                    logger.error(
+                        f"[{self.workspace}] Validation error: {validation_error}"
+                    )
+                    logger.error(f"[{self.workspace}] MANUAL INTERVENTION REQUIRED:")
+                    logger.error(
+                        f"[{self.workspace}] 1. Check the existing collection schema and data integrity"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] 2. Backup existing data if needed"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] 3. Manually resolve schema compatibility issues"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] 4. Consider dropping and recreating the collection if data is not critical"
+                    )
+                    logger.error(
+                        f"[{self.workspace}] Program execution stopped to prevent potential data loss."
+                    )
+
+                    # Raise a specific exception to stop execution
+                    raise RuntimeError(
+                        f"Collection validation failed for '{self.final_namespace}'. "
+                        f"Data migration failure detected. Manual intervention required to prevent data loss. "
+                        f"Original error: {validation_error}"
+                    )
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
@@ -631,12 +863,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Successfully created Milvus collection: {self.namespace}"
             )
 
+        except RuntimeError:
+            # Re-raise RuntimeError (validation failures) without modification
+            # These are critical errors that should stop execution
+            raise
+
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error in _create_collection_if_not_exist for {self.namespace}: {e}"
             )
 
-            # If there's any error, try to force create the collection
+            # If there's any error (other than validation failure), try to force create the collection
             logger.info(
                 f"[{self.workspace}] Attempting to force create collection {self.namespace}..."
             )

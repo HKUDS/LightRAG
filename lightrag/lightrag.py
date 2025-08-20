@@ -85,7 +85,7 @@ from .utils import (
     lazy_external_import,
     priority_limit_async_func_call,
     get_content_summary,
-    clean_text,
+    sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
     logger,
@@ -908,8 +908,8 @@ class LightRAG:
         update_storage = False
         try:
             # Clean input texts
-            full_text = clean_text(full_text)
-            text_chunks = [clean_text(chunk) for chunk in text_chunks]
+            full_text = sanitize_text_for_encoding(full_text)
+            text_chunks = [sanitize_text_for_encoding(chunk) for chunk in text_chunks]
             file_path = ""
 
             # Process cleaned texts
@@ -971,11 +971,10 @@ class LightRAG:
         """
         Pipeline for Processing Documents
 
-        1. Validate ids if provided or generate MD5 hash IDs
-        2. Remove duplicate contents
-        3. Generate document initial status
-        4. Filter out already processed documents
-        5. Enqueue document in status
+        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
+        2. Generate document initial status
+        3. Filter out already processed documents
+        4. Enqueue document in status
 
         Args:
             input: Single document string or list of document strings
@@ -1008,7 +1007,7 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
-        # 1. Validate ids if provided or generate MD5 hash IDs
+        # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
             if len(ids) != len(input):
@@ -1018,22 +1017,25 @@ class LightRAG:
             if len(ids) != len(set(ids)):
                 raise ValueError("IDs must be unique")
 
-            # Generate contents dict of IDs provided by user and documents
+            # Generate contents dict and remove duplicates in one pass
+            unique_contents = {}
+            for id_, doc, path in zip(ids, input, file_paths):
+                cleaned_content = sanitize_text_for_encoding(doc)
+                if cleaned_content not in unique_contents:
+                    unique_contents[cleaned_content] = (id_, path)
+
+            # Reconstruct contents with unique content
             contents = {
-                id_: {"content": doc, "file_path": path}
-                for id_, doc, path in zip(ids, input, file_paths)
+                id_: {"content": content, "file_path": file_path}
+                for content, (id_, file_path) in unique_contents.items()
             }
         else:
-            # Clean input text and remove duplicates
-            cleaned_input = [
-                (clean_text(doc), path) for doc, path in zip(input, file_paths)
-            ]
+            # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
-
-            # Keep track of unique content and their paths
-            for content, path in cleaned_input:
-                if content not in unique_content_with_paths:
-                    unique_content_with_paths[content] = path
+            for doc, path in zip(input, file_paths):
+                cleaned_content = sanitize_text_for_encoding(doc)
+                if cleaned_content not in unique_content_with_paths:
+                    unique_content_with_paths[cleaned_content] = path
 
             # Generate contents dict of MD5 hash IDs and documents with paths
             contents = {
@@ -1044,21 +1046,7 @@ class LightRAG:
                 for content, path in unique_content_with_paths.items()
             }
 
-        # 2. Remove duplicate contents
-        unique_contents = {}
-        for id_, content_data in contents.items():
-            content = content_data["content"]
-            file_path = content_data["file_path"]
-            if content not in unique_contents:
-                unique_contents[content] = (id_, file_path)
-
-        # Reconstruct contents with unique content
-        contents = {
-            id_: {"content": content, "file_path": file_path}
-            for content, (id_, file_path) in unique_contents.items()
-        }
-
-        # 3. Generate document initial status (without content)
+        # 2. Generate document initial status (without content)
         new_docs: dict[str, Any] = {
             id_: {
                 "status": DocStatus.PENDING,
@@ -1074,22 +1062,24 @@ class LightRAG:
             for id_, content_data in contents.items()
         }
 
-        # 4. Filter out already processed documents
+        # 3. Filter out already processed documents
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
-        # Exclude IDs of documents that are already in progress
+        # Exclude IDs of documents that are already enqueued
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
 
-        # Log ignored document IDs
-        ignored_ids = [
-            doc_id for doc_id in unique_new_doc_ids if doc_id not in new_docs
-        ]
+        # Log ignored document IDs (documents that were filtered out because they already exist)
+        ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
         if ignored_ids:
-            logger.warning(
-                f"Ignoring {len(ignored_ids)} document IDs not found in new_docs"
-            )
             for doc_id in ignored_ids:
-                logger.warning(f"Ignored document ID: {doc_id}")
+                file_path = new_docs.get(doc_id, {}).get("file_path", "unknown_source")
+                logger.warning(
+                    f"Ignoring document ID (already exists): {doc_id} ({file_path})"
+                )
+            if len(ignored_ids) > 3:
+                logger.warning(
+                    f"Total Ignoring {len(ignored_ids)} document IDs that already exist in storage"
+                )
 
         # Filter new_docs to only include documents with unique IDs
         new_docs = {
@@ -1099,11 +1089,11 @@ class LightRAG:
         }
 
         if not new_docs:
-            logger.info("No new unique documents were found.")
+            logger.warning("No new unique documents were found.")
             return
 
-        # 5. Store document content in full_docs and status in doc_status
-        # Store full document content separately
+        # 4. Store document content in full_docs and status in doc_status
+        #    Store full document content separately
         full_docs_data = {
             doc_id: {"content": contents[doc_id]["content"]}
             for doc_id in new_docs.keys()
@@ -1114,9 +1104,80 @@ class LightRAG:
 
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
-        logger.info(f"Stored {len(new_docs)} new unique documents")
+        logger.debug(f"Stored {len(new_docs)} new unique documents")
 
         return track_id
+
+    async def apipeline_enqueue_error_documents(
+        self,
+        error_files: list[dict[str, Any]],
+        track_id: str | None = None,
+    ) -> None:
+        """
+        Record file extraction errors in doc_status storage.
+
+        This function creates error document entries in the doc_status storage for files
+        that failed during the extraction process. Each error entry contains information
+        about the failure to help with debugging and monitoring.
+
+        Args:
+            error_files: List of dictionaries containing error information for each failed file.
+                Each dictionary should contain:
+                - file_path: Original file name/path
+                - error_description: Brief error description (for content_summary)
+                - original_error: Full error message (for error_msg)
+                - file_size: File size in bytes (for content_length, 0 if unknown)
+            track_id: Optional tracking ID for grouping related operations
+
+        Returns:
+            None
+        """
+        if not error_files:
+            logger.debug("No error files to record")
+            return
+
+        # Generate track_id if not provided
+        if track_id is None or track_id.strip() == "":
+            track_id = generate_track_id("error")
+
+        error_docs: dict[str, Any] = {}
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        for error_file in error_files:
+            file_path = error_file.get("file_path", "unknown_file")
+            error_description = error_file.get(
+                "error_description", "File extraction failed"
+            )
+            original_error = error_file.get("original_error", "Unknown error")
+            file_size = error_file.get("file_size", 0)
+
+            # Generate unique doc_id with "error-" prefix
+            doc_id_content = f"{file_path}-{error_description}"
+            doc_id = compute_mdhash_id(doc_id_content, prefix="error-")
+
+            error_docs[doc_id] = {
+                "status": DocStatus.FAILED,
+                "content_summary": error_description,
+                "content_length": file_size,
+                "error_msg": original_error,
+                "chunks_count": 0,  # No chunks for failed files
+                "created_at": current_time,
+                "updated_at": current_time,
+                "file_path": file_path,
+                "track_id": track_id,
+                "metadata": {
+                    "error_type": "file_extraction_error",
+                },
+            }
+
+        # Store error documents in doc_status
+        if error_docs:
+            await self.doc_status.upsert(error_docs)
+            # Log each error for debugging
+            for doc_id, error_doc in error_docs.items():
+                logger.error(
+                    f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
+                )
 
     async def _validate_and_fix_document_consistency(
         self,
@@ -1124,17 +1185,38 @@ class LightRAG:
         pipeline_status: dict,
         pipeline_status_lock: asyncio.Lock,
     ) -> dict[str, DocProcessingStatus]:
-        """Validate and fix document data consistency by deleting inconsistent entries"""
+        """Validate and fix document data consistency by deleting inconsistent entries, but preserve failed documents"""
         inconsistent_docs = []
+        failed_docs_to_preserve = []
+        successful_deletions = 0
 
         # Check each document's data consistency
         for doc_id, status_doc in to_process_docs.items():
             # Check if corresponding content exists in full_docs
             content_data = await self.full_docs.get_by_id(doc_id)
             if not content_data:
-                inconsistent_docs.append(doc_id)
+                # Check if this is a failed document that should be preserved
+                if (
+                    hasattr(status_doc, "status")
+                    and status_doc.status == DocStatus.FAILED
+                ):
+                    failed_docs_to_preserve.append(doc_id)
+                else:
+                    inconsistent_docs.append(doc_id)
 
-        # Delete inconsistent document entries one by one
+        # Log information about failed documents that will be preserved
+        if failed_docs_to_preserve:
+            async with pipeline_status_lock:
+                preserve_message = f"Preserving {len(failed_docs_to_preserve)} failed document entries for manual review"
+                logger.info(preserve_message)
+                pipeline_status["latest_message"] = preserve_message
+                pipeline_status["history_messages"].append(preserve_message)
+
+            # Remove failed documents from processing list but keep them in doc_status
+            for doc_id in failed_docs_to_preserve:
+                to_process_docs.pop(doc_id, None)
+
+        # Delete inconsistent document entries(excluding failed documents)
         if inconsistent_docs:
             async with pipeline_status_lock:
                 summary_message = (
@@ -1156,7 +1238,9 @@ class LightRAG:
 
                     # Log successful deletion
                     async with pipeline_status_lock:
-                        log_message = f"Deleted entry: {doc_id} ({file_path})"
+                        log_message = (
+                            f"Deleted inconsistent entry: {doc_id} ({file_path})"
+                        )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
@@ -1172,12 +1256,53 @@ class LightRAG:
                         pipeline_status["latest_message"] = error_message
                         pipeline_status["history_messages"].append(error_message)
 
-            # Final summary log
+        # Final summary log
+        # async with pipeline_status_lock:
+        #     final_message = f"Successfully deleted {successful_deletions} inconsistent entries, preserved {len(failed_docs_to_preserve)} failed documents"
+        #     logger.info(final_message)
+        #     pipeline_status["latest_message"] = final_message
+        #     pipeline_status["history_messages"].append(final_message)
+
+        # Reset PROCESSING and FAILED documents that pass consistency checks to PENDING status
+        docs_to_reset = {}
+        reset_count = 0
+
+        for doc_id, status_doc in to_process_docs.items():
+            # Check if document has corresponding content in full_docs (consistency check)
+            content_data = await self.full_docs.get_by_id(doc_id)
+            if content_data:  # Document passes consistency check
+                # Check if document is in PROCESSING or FAILED status
+                if hasattr(status_doc, "status") and status_doc.status in [
+                    DocStatus.PROCESSING,
+                    DocStatus.FAILED,
+                ]:
+                    # Prepare document for status reset to PENDING
+                    docs_to_reset[doc_id] = {
+                        "status": DocStatus.PENDING,
+                        "content_summary": status_doc.content_summary,
+                        "content_length": status_doc.content_length,
+                        "created_at": status_doc.created_at,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "file_path": getattr(status_doc, "file_path", "unknown_source"),
+                        "track_id": getattr(status_doc, "track_id", ""),
+                        # Clear any error messages and processing metadata
+                        "error_msg": "",
+                        "metadata": {},
+                    }
+
+                    # Update the status in to_process_docs as well
+                    status_doc.status = DocStatus.PENDING
+                    reset_count += 1
+
+        # Update doc_status storage if there are documents to reset
+        if docs_to_reset:
+            await self.doc_status.upsert(docs_to_reset)
+
             async with pipeline_status_lock:
-                final_message = f"Data consistency cleanup completed: successfully deleted {successful_deletions} entries"
-                logger.info(final_message)
-                pipeline_status["latest_message"] = final_message
-                pipeline_status["history_messages"].append(final_message)
+                reset_message = f"Reset {reset_count} documents from PROCESSING/FAILED to PENDING status"
+                logger.info(reset_message)
+                pipeline_status["latest_message"] = reset_message
+                pipeline_status["history_messages"].append(reset_message)
 
         return to_process_docs
 
@@ -1247,7 +1372,7 @@ class LightRAG:
             # Process documents until no more documents or requests
             while True:
                 if not to_process_docs:
-                    log_message = "All documents have been processed or are duplicates"
+                    log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
@@ -1501,9 +1626,7 @@ class LightRAG:
                                         doc_id: {
                                             "status": DocStatus.PROCESSED,
                                             "chunks_count": len(chunks),
-                                            "chunks_list": list(
-                                                chunks.keys()
-                                            ),  # 保留 chunks_list
+                                            "chunks_list": list(chunks.keys()),
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
@@ -1619,7 +1742,7 @@ class LightRAG:
                 to_process_docs.update(pending_docs)
 
         finally:
-            log_message = "Document processing pipeline completed"
+            log_message = "Enqueued document processing pipeline stoped"
             logger.info(log_message)
             # Always reset busy status when done or if an exception occurs (with lock)
             async with pipeline_status_lock:
@@ -1694,7 +1817,7 @@ class LightRAG:
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", []):
-                chunk_content = clean_text(chunk_data["content"])
+                chunk_content = sanitize_text_for_encoding(chunk_data["content"])
                 source_id = chunk_data["source_id"]
                 file_path = chunk_data.get("file_path", "custom_kg")
                 tokens = len(self.tokenizer.encode(chunk_content))
@@ -2096,17 +2219,20 @@ class LightRAG:
             doc_status = doc_status_data.get("status")
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
-                    warning_msg = f"WARNING: Deleting PENDING document {doc_id} ('{file_path}') - document was never processed"
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: PENDING)"
+                    )
                 elif doc_status == DocStatus.PROCESSING:
-                    warning_msg = f"WARNING: Deleting PROCESSING document {doc_id} ('{file_path}') - legacy processing state detected"
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: PROCESSING)"
+                    )
                 elif doc_status == DocStatus.FAILED:
-                    error_msg = doc_status_data.get("error_msg", "Unknown error")
-                    warning_msg = f"WARNING: Deleting FAILED document {doc_id} ('{file_path}') - processing failed: {error_msg}"
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: FAILED)"
+                    )
                 else:
-                    warning_msg = f"WARNING: Deleting document {doc_id} ('{file_path}') with unexpected status: {doc_status}"
-
-                logger.warning(warning_msg)
-
+                    warning_msg = f"Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
+                logger.info(warning_msg)
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = warning_msg
@@ -2123,7 +2249,6 @@ class LightRAG:
                     # Still need to delete the doc status and full doc
                     await self.full_docs.delete([doc_id])
                     await self.doc_status.delete([doc_id])
-                    logger.info(f"Deleted document {doc_id} with no associated chunks")
                 except Exception as e:
                     logger.error(
                         f"Failed to delete document {doc_id} with no chunks: {e}"
@@ -2132,7 +2257,7 @@ class LightRAG:
 
                 async with pipeline_status_lock:
                     log_message = (
-                        f"Document {doc_id} is deleted without associated chunks."
+                        f"Document deleted without associated chunks: {doc_id}"
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message

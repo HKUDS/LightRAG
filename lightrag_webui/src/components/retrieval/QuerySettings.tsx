@@ -30,9 +30,9 @@ export default function QuerySettings() {
     mode: 'mix' as QueryMode,
     response_type: 'Multiple Paragraphs',
     top_k: 40,
-    chunk_top_k: 10,
-    max_entity_tokens: 10000,
-    max_relation_tokens: 10000,
+    chunk_top_k: 20,
+    max_entity_tokens: 6000,
+    max_relation_tokens: 8000,
     max_total_tokens: 30000
   }), [])
 
@@ -179,7 +179,7 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('top_k', 1)
+                      handleChange('top_k', 40)
                     }
                   }}
                   min={1}
@@ -219,7 +219,7 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('chunk_top_k', 1)
+                      handleChange('chunk_top_k', 20)
                     }
                   }}
                   min={1}
@@ -259,7 +259,7 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('max_entity_tokens', 1000)
+                      handleChange('max_entity_tokens', 6000)
                     }
                   }}
                   min={1}
@@ -299,7 +299,7 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('max_relation_tokens', 1000)
+                      handleChange('max_relation_tokens', 8000)
                     }
                   }}
                   min={1}
@@ -339,7 +339,7 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('max_total_tokens', 32000)
+                      handleChange('max_total_tokens', 30000)
                     }
                   }}
                   min={1}
