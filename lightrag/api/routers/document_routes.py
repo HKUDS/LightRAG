@@ -1415,7 +1415,7 @@ async def background_delete_documents(
                 if result.status == "success":
                     successful_deletions.append(doc_id)
                     success_msg = (
-                        f"Deleted document {i}/{total_docs}: {doc_id}[{file_path}]"
+                        f"Document deleted {i}/{total_docs}: {doc_id}[{file_path}]"
                     )
                     logger.info(success_msg)
                     async with pipeline_status_lock:
@@ -1432,15 +1432,28 @@ async def background_delete_documents(
                             # check and delete files from input_dir directory
                             file_path = doc_manager.input_dir / result.file_path
                             if file_path.exists():
-                                file_path.unlink()
-                                deleted_files.append(file_path.name)
-                                file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
-                                logger.info(file_delete_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = file_delete_msg
-                                    pipeline_status["history_messages"].append(
-                                        file_delete_msg
-                                    )
+                                try:
+                                    file_path.unlink()
+                                    deleted_files.append(file_path.name)
+                                    file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
+                                    logger.info(file_delete_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = (
+                                            file_delete_msg
+                                        )
+                                        pipeline_status["history_messages"].append(
+                                            file_delete_msg
+                                        )
+                                except Exception as file_error:
+                                    file_error_msg = f"Failed to delete input_dir file {result.file_path}: {str(file_error)}"
+                                    logger.debug(file_error_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = (
+                                            file_error_msg
+                                        )
+                                        pipeline_status["history_messages"].append(
+                                            file_error_msg
+                                        )
 
                             # Also check and delete files from __enqueued__ directory
                             enqueued_dir = doc_manager.input_dir / "__enqueued__"
@@ -1457,14 +1470,20 @@ async def background_delete_documents(
                                         enqueued_file.unlink()
                                         deleted_files.append(enqueued_file.name)
                                         logger.info(
-                                            f"Deleted enqueued file: {enqueued_file.name}"
+                                            f"Successfully deleted enqueued file: {enqueued_file.name}"
                                         )
                                     except Exception as enqueued_error:
-                                        logger.error(
-                                            f"Failed to delete enqueued file {enqueued_file.name}: {str(enqueued_error)}"
-                                        )
+                                        file_error_msg = f"Failed to delete enqueued file {enqueued_file.name}: {str(enqueued_error)}"
+                                        logger.debug(file_error_msg)
+                                        async with pipeline_status_lock:
+                                            pipeline_status["latest_message"] = (
+                                                file_error_msg
+                                            )
+                                            pipeline_status["history_messages"].append(
+                                                file_error_msg
+                                            )
 
-                            if not deleted_files:
+                            if deleted_files == []:
                                 file_error_msg = f"File deletion skipped, missing file: {result.file_path}"
                                 logger.warning(file_error_msg)
                                 async with pipeline_status_lock:

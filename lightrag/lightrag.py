@@ -2249,7 +2249,6 @@ class LightRAG:
                     # Still need to delete the doc status and full doc
                     await self.full_docs.delete([doc_id])
                     await self.doc_status.delete([doc_id])
-                    logger.info(f"Deleted document {doc_id} with no associated chunks")
                 except Exception as e:
                     logger.error(
                         f"Failed to delete document {doc_id} with no chunks: {e}"
@@ -2258,7 +2257,7 @@ class LightRAG:
 
                 async with pipeline_status_lock:
                     log_message = (
-                        f"Document {doc_id} is deleted without associated chunks."
+                        f"Document deleted without associated chunks: {doc_id}"
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
