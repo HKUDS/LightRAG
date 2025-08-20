@@ -2055,7 +2055,7 @@ async def _get_vector_context(
         # Use chunk_top_k if specified, otherwise fall back to top_k
         search_top_k = query_param.chunk_top_k or query_param.top_k
 
-        results = await chunks_vdb.query(query, top_k=search_top_k, ids=query_param.ids)
+        results = await chunks_vdb.query(query, top_k=search_top_k)
         if not results:
             return []
 
@@ -2599,7 +2599,7 @@ async def _get_node_data(
     )
 
     results = await entities_vdb.query(
-        query, top_k=query_param.top_k, ids=query_param.ids
+        query, top_k=query_param.top_k
     )
 
     if not len(results):
@@ -2875,7 +2875,7 @@ async def _get_edge_data(
     )
 
     results = await relationships_vdb.query(
-        keywords, top_k=query_param.top_k, ids=query_param.ids
+        keywords, top_k=query_param.top_k
     )
 
     if not len(results):

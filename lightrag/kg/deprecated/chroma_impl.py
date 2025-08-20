@@ -165,7 +165,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             raise
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int
     ) -> list[dict[str, Any]]:
         try:
             embedding = await self.embedding_func(

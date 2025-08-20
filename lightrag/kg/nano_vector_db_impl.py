@@ -137,7 +137,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int
     ) -> list[dict[str, Any]]:
         # Execute embedding outside of lock to avoid improve cocurrent
         embedding = await self.embedding_func(
