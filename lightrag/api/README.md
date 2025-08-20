@@ -485,7 +485,7 @@ SUMMARY_LANGUAGE=Chinese
 MAX_PARALLEL_INSERT=2
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
-TIMEOUT=200
+TIMEOUT=150
 MAX_ASYNC=4
 
 LLM_BINDING=openai
