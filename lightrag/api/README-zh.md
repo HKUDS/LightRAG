@@ -389,51 +389,9 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 * GRAPH_STORAGE：实体关系图
 * DOC_STATUS_STORAGE：文档索引状态
 
-每种存储类型都有几种实现：
+每种存储类型都有多种存储实现方式。LightRAG Server默认的存储实现为内存数据库，数据通过文件持久化保存到WORKING_DIR目录。LightRAG还支持PostgreSQL、MongoDB、FAISS、Milvus、Qdrant、Neo4j、Memgraph和Redis等存储实现方式。详细的存储支持方式请参考根目录下的`README.md`文件中关于存储的相关内容。
 
-* KV_STORAGE 支持的实现名称
-
-```
-JsonKVStorage    JsonFile(默认)
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MogonDB
-```
-
-* GRAPH_STORAGE 支持的实现名称
-
-```
-NetworkXStorage      NetworkX(默认)
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE plugin
-```
-
-> 在测试中Neo4j图形数据库相比PostgreSQL AGE有更好的性能表现。
-
-* VECTOR_STORAGE 支持的实现名称
-
-```
-NanoVectorDBStorage         NanoVector(默认)
-PGVectorStorage             Postgres
-MilvusVectorDBStorge        Milvus
-FaissVectorDBStorage        Faiss
-QdrantVectorDBStorage       Qdrant
-MongoVectorDBStorage        MongoDB
-```
-
-* DOC_STATUS_STORAGE 支持的实现名称
-
-```
-JsonDocStatusStorage        JsonFile(默认)
-PGDocStatusStorage          Postgres
-MongoDocStatusStorage       MongoDB
-```
-
-每一种存储类型的链接配置范例可以在 `env.example` 文件中找到。链接字符串中的数据库实例是需要你预先在数据库服务器上创建好的，LightRAG 仅负责在数据库实例中创建数据表，不负责创建数据库实例。如果使用 Redis 作为存储，记得给 Redis 配置自动持久化数据规则，否则 Redis 服务重启后数据会丢失。如果使用PostgreSQL数据库，推荐使用16.6版本或以上。
-
-### 如何选择存储实现
-
-您可以通过环境变量选择存储实现。在首次启动 API 服务器之前，您可以将以下环境变量设置为特定的存储实现名称：
+您可以通过环境变量选择存储实现。例如，在首次启动 API 服务器之前，您可以将以下环境变量设置为特定的存储实现名称：
 
 ```
 LIGHTRAG_KV_STORAGE=PGKVStorage
@@ -442,7 +400,7 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多信息请阅读示例 env 文件或 config.ini 文件。
+在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `env.exampl`e文件。
 
 ### LightRag API 服务器命令行选项
 
@@ -453,18 +411,14 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --working-dir | ./rag_storage | RAG 存储的工作目录 |
 | --input-dir | ./inputs | 包含输入文档的目录 |
 | --max-async | 4 | 最大异步操作数 |
-| --max-tokens | 32768 | 最大 token 大小 |
-| --timeout | 150 | 超时时间（秒）。None 表示无限超时（不推荐） |
 | --log-level | INFO | 日志级别（DEBUG、INFO、WARNING、ERROR、CRITICAL） |
 | --verbose | - | 详细调试输出（True、False） |
 | --key | None | 用于认证的 API 密钥。保护 lightrag 服务器免受未授权访问 |
 | --ssl | False | 启用 HTTPS |
 | --ssl-certfile | None | SSL 证书文件路径（如果启用 --ssl 则必需） |
 | --ssl-keyfile | None | SSL 私钥文件路径（如果启用 --ssl 则必需） |
-| --top-k | 50 | 要检索的 top-k 项目数；在"local"模式下对应实体，在"global"模式下对应关系。 |
-| --cosine-threshold | 0.4 | 节点和关系检索的余弦阈值，与 top-k 一起控制节点和关系的检索。 |
-| --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai） |
-| --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai） |
+| --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai、aws_bedrock） |
+| --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、aws_bedrock） |
 | auto-scan-at-startup | - | 扫描输入目录中的新文件并开始索引 |
 
 ### .env 文件示例

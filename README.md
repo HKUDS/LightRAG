@@ -800,7 +800,7 @@ MongoDocStatusStorage       MongoDB
 Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
 
 <details>
-<summary> <b>Using Neo4J for Storage</b> </summary>
+<summary> <b>Using Neo4J Storage</b> </summary>
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
 * for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
@@ -839,7 +839,7 @@ see test_neo4j.py for a working example.
 </details>
 
 <details>
-<summary> <b>Using PostgreSQL for Storage</b> </summary>
+<summary> <b>Using PostgreSQL Storage</b> </summary>
 
 For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
 
@@ -851,7 +851,7 @@ For production level scenarios you will most likely want to leverage an enterpri
 </details>
 
 <details>
-<summary> <b>Using Faiss for Storage</b> </summary>
+<summary> <b>Using Faiss Storage</b> </summary>
 Before using Faiss vector database, you must manually install `faiss-cpu` or `faiss-gpu`.
 
 - Install the required dependencies:
@@ -918,6 +918,30 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+```
+
+</details>
+
+<details>
+<summary> <b>Using MongoDB Storage</b> </summary>
+
+MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
+
+</details>
+
+<details>
+<summary> <b>Using Redis Storage</b> </summary>
+
+LightRAG supports using Redis as KV storage. When using Redis storage, attention should be paid to persistence configuration and memory usage configuration. The following is the recommended Redis configuration:
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
 ```
 
 </details>
