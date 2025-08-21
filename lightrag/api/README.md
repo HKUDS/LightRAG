@@ -360,7 +360,7 @@ Most of the configurations come with default settings; check out the details in 
 LightRAG supports binding to various LLM/Embedding backends:
 
 * ollama
-* openai & openai compatible
+* openai (including openai compatible)
 * azure_openai
 * lollms
 * aws_bedrock
@@ -373,6 +373,8 @@ lightrag-server --llm-binding openai --help
 lightrag-server --llm-binding ollama --help
 lightrag-server --embedding-binding ollama --help
 ```
+
+> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM. You can pass additional parameters to OpenRouter or vLLM through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
 ### Entity Extraction Configuration
 * ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
@@ -485,7 +487,7 @@ SUMMARY_LANGUAGE=Chinese
 MAX_PARALLEL_INSERT=2
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
-TIMEOUT=200
+TIMEOUT=150
 MAX_ASYNC=4
 
 LLM_BINDING=openai

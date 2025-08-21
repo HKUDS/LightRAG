@@ -254,6 +254,8 @@ def create_app(args):
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
 
+    llm_timeout = get_env_value("LLM_TIMEOUT", args.timeout, int)
+
     async def openai_alike_model_complete(
         prompt,
         system_prompt=None,
@@ -267,12 +269,10 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use OpenAI LLM options if available, otherwise fallback to global temperature
-        if args.llm_binding == "openai":
-            openai_options = OpenAILLMOptions.options_dict(args)
-            kwargs.update(openai_options)
-        else:
-            kwargs["temperature"] = args.temperature
+        # Use OpenAI LLM options if available
+        openai_options = OpenAILLMOptions.options_dict(args)
+        kwargs["timeout"] = llm_timeout
+        kwargs.update(openai_options)
 
         return await openai_complete_if_cache(
             args.llm_model,
@@ -297,12 +297,10 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use OpenAI LLM options if available, otherwise fallback to global temperature
-        if args.llm_binding == "azure_openai":
-            openai_options = OpenAILLMOptions.options_dict(args)
-            kwargs.update(openai_options)
-        else:
-            kwargs["temperature"] = args.temperature
+        # Use OpenAI LLM options
+        openai_options = OpenAILLMOptions.options_dict(args)
+        kwargs["timeout"] = llm_timeout
+        kwargs.update(openai_options)
 
         return await azure_openai_complete_if_cache(
             args.llm_model,
@@ -329,7 +327,7 @@ def create_app(args):
             history_messages = []
 
         # Use global temperature for Bedrock
-        kwargs["temperature"] = args.temperature
+        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
 
         return await bedrock_complete_if_cache(
             args.llm_model,
@@ -451,7 +449,7 @@ def create_app(args):
             llm_model_kwargs=(
                 {
                     "host": args.llm_binding_host,
-                    "timeout": args.timeout,
+                    "timeout": llm_timeout,
                     "options": OllamaLLMOptions.options_dict(args),
                     "api_key": args.llm_binding_api_key,
                 }
@@ -481,9 +479,6 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": args.timeout,
-            },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.max_tokens,
