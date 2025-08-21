@@ -283,7 +283,7 @@ class LightRAG:
     """Name of the LLM model used for generating responses."""
 
     summary_max_tokens: int = field(
-        default=int(os.getenv("MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
+        default=int(os.getenv("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
     )
     """Maximum number of tokens allowed per LLM response."""
 

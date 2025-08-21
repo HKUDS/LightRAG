@@ -122,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=get_env_value("MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
+        default=get_env_value("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
         help=f"Maximum token size (default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
     )
 
