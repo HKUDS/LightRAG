@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 
 
+# All namespace should not be changed
 class NameSpace:
     KV_STORE_FULL_DOCS = "full_docs"
     KV_STORE_TEXT_CHUNKS = "text_chunks"

@@ -141,10 +141,12 @@ LightRAG's demands on the capabilities of Large Language Models (LLMs) are signi
 - **LLM Selection**:
   - It is recommended to use an LLM with at least 32 billion parameters.
   - The context length should be at least 32KB, with 64KB being recommended.
+  - It is not recommended to choose reasoning models during the document indexing stage.
+  - During the query stage, it is recommended to choose models with stronger capabilities than those used in the indexing stage to achieve better query results.
 - **Embedding Model**:
   - A high-performance Embedding model is essential for RAG.
   - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
-  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase.
+  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
 - **Reranker Model Configuration**:
   - Configuring a Reranker model can significantly enhance LightRAG's retrieval performance.
   - When a Reranker model is enabled, it is recommended to set the "mix mode" as the default query mode.
@@ -272,7 +274,7 @@ A full list of LightRAG init parameters:
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `meta-llama/Llama-3.2-1B-Instruct` |
-| **summary_max_tokens** | `int` | Maximum tokens send to LLM to generate entity relation summaries | `32000`（default value changed by env var MAX_TOKENS) |
+| **summary_max_tokens** | `int` | Maximum tokens send to LLM to generate entity relation summaries | `30000`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
@@ -315,15 +317,15 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "10"))
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "20"))
     """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "10000"))
+    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "6000"))
     """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "10000"))
+    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "8000"))
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
     max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "30000"))
@@ -798,7 +800,7 @@ MongoDocStatusStorage       MongoDB
 Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
 
 <details>
-<summary> <b>Using Neo4J for Storage</b> </summary>
+<summary> <b>Using Neo4J Storage</b> </summary>
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
 * for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
@@ -837,7 +839,7 @@ see test_neo4j.py for a working example.
 </details>
 
 <details>
-<summary> <b>Using PostgreSQL for Storage</b> </summary>
+<summary> <b>Using PostgreSQL Storage</b> </summary>
 
 For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
 
@@ -849,7 +851,7 @@ For production level scenarios you will most likely want to leverage an enterpri
 </details>
 
 <details>
-<summary> <b>Using Faiss for Storage</b> </summary>
+<summary> <b>Using Faiss Storage</b> </summary>
 Before using Faiss vector database, you must manually install `faiss-cpu` or `faiss-gpu`.
 
 - Install the required dependencies:
@@ -916,6 +918,30 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+```
+
+</details>
+
+<details>
+<summary> <b>Using MongoDB Storage</b> </summary>
+
+MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
+
+</details>
+
+<details>
+<summary> <b>Using Redis Storage</b> </summary>
+
+LightRAG supports using Redis as KV storage. When using Redis storage, attention should be paid to persistence configuration and memory usage configuration. The following is the recommended Redis configuration:
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
 ```
 
 </details>
@@ -1287,8 +1313,10 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                     ),
                 )
             )
+
             # Initialize storage (this will load existing data if available)
             await lightrag_instance.initialize_storages()
+
             # Now initialize RAGAnything with the existing LightRAG instance
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # Pass the existing LightRAG instance
@@ -1317,12 +1345,14 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 )
                 # Note: working_dir, llm_model_func, embedding_func, etc. are inherited from lightrag_instance
             )
+
             # Query the existing knowledge base
             result = await rag.query_with_multimodal(
                 "What data has been processed in this LightRAG instance?",
                 mode="hybrid"
             )
             print("Query result:", result)
+
             # Add new multimodal documents to the existing LightRAG instance
             await rag.process_document_complete(
                 file_path="path/to/new/multimodal_document.pdf",

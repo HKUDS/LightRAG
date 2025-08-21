@@ -27,7 +27,8 @@ from .utils import (
     use_llm_func_with_cache,
     update_chunk_cache_list,
     remove_think_tags,
-    linear_gradient_weighted_polling,
+    pick_by_weighted_polling,
+    pick_by_vector_similarity,
     process_chunks_unified,
     build_file_path,
 )
@@ -45,6 +46,7 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
@@ -1248,7 +1250,7 @@ async def merge_nodes_and_edges(
     semaphore = asyncio.Semaphore(graph_max_async)
 
     # ===== Phase 1: Process all entities concurrently =====
-    log_message = f"Phase 1: Processing {total_entities_count} entities (async: {graph_max_async})"
+    log_message = f"Phase 1: Processing {total_entities_count} entities from {doc_id} (async: {graph_max_async})"
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
@@ -1312,7 +1314,7 @@ async def merge_nodes_and_edges(
         processed_entities = [task.result() for task in entity_tasks]
 
     # ===== Phase 2: Process all relationships concurrently =====
-    log_message = f"Phase 2: Processing {total_relations_count} relations (async: {graph_max_async})"
+    log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
@@ -1421,6 +1423,12 @@ async def merge_nodes_and_edges(
                     if src_id and tgt_id:
                         relation_pair = tuple(sorted([src_id, tgt_id]))
                         final_relation_pairs.add(relation_pair)
+
+            log_message = f"Phase 3: Updating final {len(final_entity_names)}({len(processed_entities)}+{len(all_added_entities)}) entities and  {len(final_relation_pairs)} relations from {doc_id}"
+            logger.info(log_message)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
             # Update storage
             if final_entity_names:
@@ -1741,7 +1749,7 @@ async def kg_query(
         query_param.user_prompt or "",
         query_param.enable_rerank,
     )
-    cached_response, quantized, min_val, max_val = await handle_cache(
+    cached_response = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
@@ -1916,18 +1924,10 @@ async def extract_keywords_only(
     args_hash = compute_args_hash(
         param.mode,
         text,
-        param.response_type,
-        param.top_k,
-        param.chunk_top_k,
-        param.max_entity_tokens,
-        param.max_relation_tokens,
-        param.max_total_tokens,
         param.hl_keywords or [],
         param.ll_keywords or [],
-        param.user_prompt or "",
-        param.enable_rerank,
     )
-    cached_response, quantized, min_val, max_val = await handle_cache(
+    cached_response = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
     )
     if cached_response is not None:
@@ -1954,15 +1954,17 @@ async def extract_keywords_only(
     )
 
     # 3. Process conversation history
-    history_context = ""
-    if param.conversation_history:
-        history_context = get_conversation_turns(
-            param.conversation_history, param.history_turns
-        )
+    # history_context = ""
+    # if param.conversation_history:
+    #     history_context = get_conversation_turns(
+    #         param.conversation_history, param.history_turns
+    #     )
 
     # 4. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
-        query=text, examples=examples, language=language, history=history_context
+        query=text,
+        examples=examples,
+        language=language,
     )
 
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -2107,6 +2109,29 @@ async def _build_query_context(
     global_entities = []
     global_relations = []
 
+    # Track chunk sources and metadata for final logging
+    chunk_tracking = {}  # chunk_id -> {source, frequency, order}
+
+    # Pre-compute query embedding if vector similarity method is used
+    kg_chunk_pick_method = text_chunks_db.global_config.get(
+        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    )
+    query_embedding = None
+    if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
+        embedding_func_config = text_chunks_db.embedding_func
+        if embedding_func_config and embedding_func_config.func:
+            try:
+                query_embedding = await embedding_func_config.func([query])
+                query_embedding = query_embedding[
+                    0
+                ]  # Extract first embedding from batch result
+                logger.debug(
+                    "Pre-computed query embedding for vector similarity chunk selection"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to pre-compute query embedding: {e}")
+                query_embedding = None
+
     # Handle local and global modes
     if query_param.mode == "local":
         local_entities, local_relations = await _get_node_data(
@@ -2145,6 +2170,15 @@ async def _build_query_context(
                 chunks_vdb,
                 query_param,
             )
+            # Track vector chunks with source metadata
+            for i, chunk in enumerate(vector_chunks):
+                chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                if chunk_id:
+                    chunk_tracking[chunk_id] = {
+                        "source": "C",
+                        "frequency": 1,  # Vector chunks always have frequency 1
+                        "order": i + 1,  # 1-based order in vector search results
+                    }
 
     # Use round-robin merge to combine local and global data fairly
     final_entities = []
@@ -2285,8 +2319,11 @@ async def _build_query_context(
     if entities_context:
         # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
         for entity in entities_context:
-            if "file_path" in entity and entity["file_path"]:
-                entity["file_path"] = entity["file_path"].replace(GRAPH_FIELD_SEP, ";")
+            # remove file_path and created_at
+            entity.pop("file_path", None)
+            entity.pop("created_at", None)
+            # if "file_path" in entity and entity["file_path"]:
+            #     entity["file_path"] = entity["file_path"].replace(GRAPH_FIELD_SEP, ";")
 
         entities_context = truncate_list_by_token_size(
             entities_context,
@@ -2299,10 +2336,13 @@ async def _build_query_context(
     if relations_context:
         # Process relations context to replace GRAPH_FIELD_SEP with : in file_path fields
         for relation in relations_context:
-            if "file_path" in relation and relation["file_path"]:
-                relation["file_path"] = relation["file_path"].replace(
-                    GRAPH_FIELD_SEP, ";"
-                )
+            # remove file_path and created_at
+            relation.pop("file_path", None)
+            relation.pop("created_at", None)
+            # if "file_path" in relation and relation["file_path"]:
+            #     relation["file_path"] = relation["file_path"].replace(
+            #         GRAPH_FIELD_SEP, ";"
+            #     )
 
         relations_context = truncate_list_by_token_size(
             relations_context,
@@ -2342,20 +2382,31 @@ async def _build_query_context(
                 seen_edges.add(pair)
 
     # Get text chunks based on final filtered data
+    # To preserve the influence of entity order,  entiy-based chunks should not be deduplcicated by vector_chunks
     if final_node_datas:
-        entity_chunks = await _find_most_related_text_unit_from_entities(
+        entity_chunks = await _find_related_text_unit_from_entities(
             final_node_datas,
             query_param,
             text_chunks_db,
             knowledge_graph_inst,
+            query,
+            chunks_vdb,
+            chunk_tracking=chunk_tracking,
+            query_embedding=query_embedding,
         )
 
+    # Find deduplcicated chunks from edge
+    # Deduplication cause chunks solely relation-based to be prioritized and sent to the LLM when re-ranking is disabled
     if final_edge_datas:
-        relation_chunks = await _find_related_text_unit_from_relationships(
+        relation_chunks = await _find_related_text_unit_from_relations(
             final_edge_datas,
             query_param,
             text_chunks_db,
             entity_chunks,
+            query,
+            chunks_vdb,
+            chunk_tracking=chunk_tracking,
+            query_embedding=query_embedding,
         )
 
     # Round-robin merge chunks from different sources with deduplication by chunk_id
@@ -2375,6 +2426,7 @@ async def _build_query_context(
                     {
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
+                        "chunk_id": chunk_id,
                     }
                 )
 
@@ -2388,6 +2440,7 @@ async def _build_query_context(
                     {
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
+                        "chunk_id": chunk_id,
                     }
                 )
 
@@ -2401,10 +2454,11 @@ async def _build_query_context(
                     {
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
+                        "chunk_id": chunk_id,
                     }
                 )
 
-    logger.debug(
+    logger.info(
         f"Round-robin merged total chunks from {origin_len} to {len(merged_chunks)}"
     )
 
@@ -2519,6 +2573,24 @@ async def _build_query_context(
     if not entities_context and not relations_context:
         return None
 
+    # output chunks tracking infomations
+    # format: <source><frequency>/<order> (e.g., E5/2 R2/1 C1/1)
+    if truncated_chunks and chunk_tracking:
+        chunk_tracking_log = []
+        for chunk in truncated_chunks:
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id and chunk_id in chunk_tracking:
+                tracking_info = chunk_tracking[chunk_id]
+                source = tracking_info["source"]
+                frequency = tracking_info["frequency"]
+                order = tracking_info["order"]
+                chunk_tracking_log.append(f"{source}{frequency}/{order}")
+            else:
+                chunk_tracking_log.append("?0/0")
+
+        if chunk_tracking_log:
+            logger.info(f"chunks: {' '.join(chunk_tracking_log)}")
+
     entities_str = json.dumps(entities_context, ensure_ascii=False)
     relations_str = json.dumps(relations_context, ensure_ascii=False)
     text_units_str = json.dumps(text_units_context, ensure_ascii=False)
@@ -2605,104 +2677,6 @@ async def _get_node_data(
     return node_datas, use_relations
 
 
-async def _find_most_related_text_unit_from_entities(
-    node_datas: list[dict],
-    query_param: QueryParam,
-    text_chunks_db: BaseKVStorage,
-    knowledge_graph_inst: BaseGraphStorage,
-):
-    """
-    Find text chunks related to entities using linear gradient weighted polling algorithm.
-
-    This function implements the optimized text chunk selection strategy:
-    1. Sort text chunks for each entity by occurrence count in other entities
-    2. Use linear gradient weighted polling to select chunks fairly
-    """
-    logger.debug(f"Searching text chunks for {len(node_datas)} entities")
-
-    if not node_datas:
-        return []
-
-    # Step 1: Collect all text chunks for each entity
-    entities_with_chunks = []
-    for entity in node_datas:
-        if entity.get("source_id"):
-            chunks = split_string_by_multi_markers(
-                entity["source_id"], [GRAPH_FIELD_SEP]
-            )
-            if chunks:
-                entities_with_chunks.append(
-                    {
-                        "entity_name": entity["entity_name"],
-                        "chunks": chunks,
-                        "entity_data": entity,
-                    }
-                )
-
-    if not entities_with_chunks:
-        logger.warning("No entities with text chunks found")
-        return []
-
-    # Step 2: Count chunk occurrences and deduplicate (keep chunks from earlier positioned entities)
-    chunk_occurrence_count = {}
-    for entity_info in entities_with_chunks:
-        deduplicated_chunks = []
-        for chunk_id in entity_info["chunks"]:
-            chunk_occurrence_count[chunk_id] = (
-                chunk_occurrence_count.get(chunk_id, 0) + 1
-            )
-
-            # If this is the first occurrence (count == 1), keep it; otherwise skip (duplicate from later position)
-            if chunk_occurrence_count[chunk_id] == 1:
-                deduplicated_chunks.append(chunk_id)
-            # count > 1 means this chunk appeared in an earlier entity, so skip it
-
-        # Update entity's chunks to deduplicated chunks
-        entity_info["chunks"] = deduplicated_chunks
-
-    # Step 3: Sort chunks for each entity by occurrence count (higher count = higher priority)
-    for entity_info in entities_with_chunks:
-        sorted_chunks = sorted(
-            entity_info["chunks"],
-            key=lambda chunk_id: chunk_occurrence_count.get(chunk_id, 0),
-            reverse=True,
-        )
-        entity_info["sorted_chunks"] = sorted_chunks
-
-    # Step 4: Apply linear gradient weighted polling algorithm
-    max_related_chunks = text_chunks_db.global_config.get(
-        "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
-    )
-
-    selected_chunk_ids = linear_gradient_weighted_polling(
-        entities_with_chunks, max_related_chunks, min_related_chunks=1
-    )
-
-    logger.debug(
-        f"Found {len(selected_chunk_ids)} entity-related chunks using linear gradient weighted polling"
-    )
-
-    if not selected_chunk_ids:
-        return []
-
-    # Step 5: Batch retrieve chunk data
-    unique_chunk_ids = list(
-        dict.fromkeys(selected_chunk_ids)
-    )  # Remove duplicates while preserving order
-    chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
-
-    # Step 6: Build result chunks with valid data
-    result_chunks = []
-    for chunk_id, chunk_data in zip(unique_chunk_ids, chunk_data_list):
-        if chunk_data is not None and "content" in chunk_data:
-            chunk_data_copy = chunk_data.copy()
-            chunk_data_copy["source_type"] = "entity"
-            chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
-            result_chunks.append(chunk_data_copy)
-
-    return result_chunks
-
-
 async def _find_most_related_edges_from_entities(
     node_datas: list[dict],
     query_param: QueryParam,
@@ -2757,6 +2731,169 @@ async def _find_most_related_edges_from_entities(
     )
 
     return all_edges_data
+
+
+async def _find_related_text_unit_from_entities(
+    node_datas: list[dict],
+    query_param: QueryParam,
+    text_chunks_db: BaseKVStorage,
+    knowledge_graph_inst: BaseGraphStorage,
+    query: str = None,
+    chunks_vdb: BaseVectorStorage = None,
+    chunk_tracking: dict = None,
+    query_embedding=None,
+):
+    """
+    Find text chunks related to entities using configurable chunk selection method.
+
+    This function supports two chunk selection strategies:
+    1. WEIGHT: Linear gradient weighted polling based on chunk occurrence count
+    2. VECTOR: Vector similarity-based selection using embedding cosine similarity
+    """
+    logger.debug(f"Finding text chunks from {len(node_datas)} entities")
+
+    if not node_datas:
+        return []
+
+    # Step 1: Collect all text chunks for each entity
+    entities_with_chunks = []
+    for entity in node_datas:
+        if entity.get("source_id"):
+            chunks = split_string_by_multi_markers(
+                entity["source_id"], [GRAPH_FIELD_SEP]
+            )
+            if chunks:
+                entities_with_chunks.append(
+                    {
+                        "entity_name": entity["entity_name"],
+                        "chunks": chunks,
+                        "entity_data": entity,
+                    }
+                )
+
+    if not entities_with_chunks:
+        logger.warning("No entities with text chunks found")
+        return []
+
+    kg_chunk_pick_method = text_chunks_db.global_config.get(
+        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    )
+    max_related_chunks = text_chunks_db.global_config.get(
+        "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+    )
+
+    # Step 2: Count chunk occurrences and deduplicate (keep chunks from earlier positioned entities)
+    chunk_occurrence_count = {}
+    for entity_info in entities_with_chunks:
+        deduplicated_chunks = []
+        for chunk_id in entity_info["chunks"]:
+            chunk_occurrence_count[chunk_id] = (
+                chunk_occurrence_count.get(chunk_id, 0) + 1
+            )
+
+            # If this is the first occurrence (count == 1), keep it; otherwise skip (duplicate from later position)
+            if chunk_occurrence_count[chunk_id] == 1:
+                deduplicated_chunks.append(chunk_id)
+            # count > 1 means this chunk appeared in an earlier entity, so skip it
+
+        # Update entity's chunks to deduplicated chunks
+        entity_info["chunks"] = deduplicated_chunks
+
+    # Step 3: Sort chunks for each entity by occurrence count (higher count = higher priority)
+    total_entity_chunks = 0
+    for entity_info in entities_with_chunks:
+        sorted_chunks = sorted(
+            entity_info["chunks"],
+            key=lambda chunk_id: chunk_occurrence_count.get(chunk_id, 0),
+            reverse=True,
+        )
+        entity_info["sorted_chunks"] = sorted_chunks
+        total_entity_chunks += len(sorted_chunks)
+
+    selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
+
+    # Step 4: Apply the selected chunk selection algorithm
+    # Pick by vector similarity:
+    #     The order of text chunks aligns with the naive retrieval's destination.
+    #     When reranking is disabled, the text chunks delivered to the LLM tend to favor naive retrieval.
+    if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
+        num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
+
+        # Get embedding function from global config
+        embedding_func_config = text_chunks_db.embedding_func
+        if not embedding_func_config:
+            logger.warning("No embedding function found, falling back to WEIGHT method")
+            kg_chunk_pick_method = "WEIGHT"
+        else:
+            try:
+                actual_embedding_func = embedding_func_config.func
+
+                selected_chunk_ids = None
+                if actual_embedding_func:
+                    selected_chunk_ids = await pick_by_vector_similarity(
+                        query=query,
+                        text_chunks_storage=text_chunks_db,
+                        chunks_vdb=chunks_vdb,
+                        num_of_chunks=num_of_chunks,
+                        entity_info=entities_with_chunks,
+                        embedding_func=actual_embedding_func,
+                        query_embedding=query_embedding,
+                    )
+
+                if selected_chunk_ids == []:
+                    kg_chunk_pick_method = "WEIGHT"
+                    logger.warning(
+                        "No entity-related chunks selected by vector similarity, falling back to WEIGHT method"
+                    )
+                else:
+                    logger.info(
+                        f"Selecting {len(selected_chunk_ids)} from {total_entity_chunks} entity-related chunks by vector similarity"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Error in vector similarity sorting: {e}, falling back to WEIGHT method"
+                )
+                kg_chunk_pick_method = "WEIGHT"
+
+    if kg_chunk_pick_method == "WEIGHT":
+        # Pick by entity and chunk weight:
+        #     When reranking is disabled, delivered more solely KG related chunks to the LLM
+        selected_chunk_ids = pick_by_weighted_polling(
+            entities_with_chunks, max_related_chunks, min_related_chunks=1
+        )
+
+        logger.info(
+            f"Selecting {len(selected_chunk_ids)} from {total_entity_chunks} entity-related chunks by weighted polling"
+        )
+
+    if not selected_chunk_ids:
+        return []
+
+    # Step 5: Batch retrieve chunk data
+    unique_chunk_ids = list(
+        dict.fromkeys(selected_chunk_ids)
+    )  # Remove duplicates while preserving order
+    chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
+
+    # Step 6: Build result chunks with valid data and update chunk tracking
+    result_chunks = []
+    for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
+        if chunk_data is not None and "content" in chunk_data:
+            chunk_data_copy = chunk_data.copy()
+            chunk_data_copy["source_type"] = "entity"
+            chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+            result_chunks.append(chunk_data_copy)
+
+            # Update chunk tracking if provided
+            if chunk_tracking is not None:
+                chunk_tracking[chunk_id] = {
+                    "source": "E",
+                    "frequency": chunk_occurrence_count.get(chunk_id, 1),
+                    "order": i + 1,  # 1-based order in final entity-related results
+                }
+
+    return result_chunks
 
 
 async def _get_edge_data(
@@ -2850,20 +2987,24 @@ async def _find_most_related_entities_from_relationships(
     return node_datas
 
 
-async def _find_related_text_unit_from_relationships(
+async def _find_related_text_unit_from_relations(
     edge_datas: list[dict],
     query_param: QueryParam,
     text_chunks_db: BaseKVStorage,
     entity_chunks: list[dict] = None,
+    query: str = None,
+    chunks_vdb: BaseVectorStorage = None,
+    chunk_tracking: dict = None,
+    query_embedding=None,
 ):
     """
-    Find text chunks related to relationships using linear gradient weighted polling algorithm.
+    Find text chunks related to relationships using configurable chunk selection method.
 
-    This function implements the optimized text chunk selection strategy:
-    1. Sort text chunks for each relationship by occurrence count in other relationships
-    2. Use linear gradient weighted polling to select chunks fairly
+    This function supports two chunk selection strategies:
+    1. WEIGHT: Linear gradient weighted polling based on chunk occurrence count
+    2. VECTOR: Vector similarity-based selection using embedding cosine similarity
     """
-    logger.debug(f"Searching text chunks for {len(edge_datas)} relationships")
+    logger.debug(f"Finding text chunks from {len(edge_datas)} relations")
 
     if not edge_datas:
         return []
@@ -2893,14 +3034,40 @@ async def _find_related_text_unit_from_relationships(
                 )
 
     if not relations_with_chunks:
-        logger.warning("No relationships with text chunks found")
+        logger.warning("No relation-related chunks found")
         return []
 
+    kg_chunk_pick_method = text_chunks_db.global_config.get(
+        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    )
+    max_related_chunks = text_chunks_db.global_config.get(
+        "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+    )
+
     # Step 2: Count chunk occurrences and deduplicate (keep chunks from earlier positioned relationships)
+    # Also remove duplicates with entity_chunks
+
+    # Extract chunk IDs from entity_chunks for deduplication
+    entity_chunk_ids = set()
+    if entity_chunks:
+        for chunk in entity_chunks:
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                entity_chunk_ids.add(chunk_id)
+
     chunk_occurrence_count = {}
+    # Track unique chunk_ids that have been removed to avoid double counting
+    removed_entity_chunk_ids = set()
+
     for relation_info in relations_with_chunks:
         deduplicated_chunks = []
         for chunk_id in relation_info["chunks"]:
+            # Skip chunks that already exist in entity_chunks
+            if chunk_id in entity_chunk_ids:
+                # Only count each unique chunk_id once
+                removed_entity_chunk_ids.add(chunk_id)
+                continue
+
             chunk_occurrence_count[chunk_id] = (
                 chunk_occurrence_count.get(chunk_id, 0) + 1
             )
@@ -2913,7 +3080,21 @@ async def _find_related_text_unit_from_relationships(
         # Update relationship's chunks to deduplicated chunks
         relation_info["chunks"] = deduplicated_chunks
 
+    # Check if any relations still have chunks after deduplication
+    relations_with_chunks = [
+        relation_info
+        for relation_info in relations_with_chunks
+        if relation_info["chunks"]
+    ]
+
+    if not relations_with_chunks:
+        logger.info(
+            f"Find no additional relations-related chunks from {len(edge_datas)} relations"
+        )
+        return []
+
     # Step 3: Sort chunks for each relationship by occurrence count (higher count = higher priority)
+    total_relation_chunks = 0
     for relation_info in relations_with_chunks:
         sorted_chunks = sorted(
             relation_info["chunks"],
@@ -2921,50 +3102,70 @@ async def _find_related_text_unit_from_relationships(
             reverse=True,
         )
         relation_info["sorted_chunks"] = sorted_chunks
+        total_relation_chunks += len(sorted_chunks)
 
-    # Step 4: Apply linear gradient weighted polling algorithm
-    max_related_chunks = text_chunks_db.global_config.get(
-        "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+    logger.info(
+        f"Find {total_relation_chunks} additional chunks in {len(relations_with_chunks)} relations ({len(removed_entity_chunk_ids)} duplicated chunks removed)"
     )
 
-    selected_chunk_ids = linear_gradient_weighted_polling(
-        relations_with_chunks, max_related_chunks, min_related_chunks=1
-    )
+    # Step 4: Apply the selected chunk selection algorithm
+    selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
+
+    if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
+        num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
+
+        # Get embedding function from global config
+        embedding_func_config = text_chunks_db.embedding_func
+        if not embedding_func_config:
+            logger.warning("No embedding function found, falling back to WEIGHT method")
+            kg_chunk_pick_method = "WEIGHT"
+        else:
+            try:
+                actual_embedding_func = embedding_func_config.func
+
+                if actual_embedding_func:
+                    selected_chunk_ids = await pick_by_vector_similarity(
+                        query=query,
+                        text_chunks_storage=text_chunks_db,
+                        chunks_vdb=chunks_vdb,
+                        num_of_chunks=num_of_chunks,
+                        entity_info=relations_with_chunks,
+                        embedding_func=actual_embedding_func,
+                        query_embedding=query_embedding,
+                    )
+
+                if selected_chunk_ids == []:
+                    kg_chunk_pick_method = "WEIGHT"
+                    logger.warning(
+                        "No relation-related chunks selected by vector similarity, falling back to WEIGHT method"
+                    )
+                else:
+                    logger.info(
+                        f"Selecting {len(selected_chunk_ids)} from {total_relation_chunks} relation-related chunks by vector similarity"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Error in vector similarity sorting: {e}, falling back to WEIGHT method"
+                )
+                kg_chunk_pick_method = "WEIGHT"
+
+    if kg_chunk_pick_method == "WEIGHT":
+        # Apply linear gradient weighted polling algorithm
+        selected_chunk_ids = pick_by_weighted_polling(
+            relations_with_chunks, max_related_chunks, min_related_chunks=1
+        )
+
+        logger.info(
+            f"Selecting {len(selected_chunk_ids)} from {total_relation_chunks} relation-related chunks by weighted polling"
+        )
 
     logger.debug(
-        f"Found {len(selected_chunk_ids)} relationship-related chunks using linear gradient weighted polling"
-    )
-    logger.info(
         f"KG related chunks: {len(entity_chunks)} from entitys, {len(selected_chunk_ids)} from relations"
     )
 
     if not selected_chunk_ids:
         return []
-
-    # Step 4.5: Remove duplicates with entity_chunks before batch retrieval
-    if entity_chunks:
-        # Extract chunk IDs from entity_chunks
-        entity_chunk_ids = set()
-        for chunk in entity_chunks:
-            chunk_id = chunk.get("chunk_id")
-            if chunk_id:
-                entity_chunk_ids.add(chunk_id)
-
-        # Filter out duplicate chunk IDs
-        original_count = len(selected_chunk_ids)
-        selected_chunk_ids = [
-            chunk_id
-            for chunk_id in selected_chunk_ids
-            if chunk_id not in entity_chunk_ids
-        ]
-
-        logger.debug(
-            f"Deduplication relation-chunks with entity-chunks: {original_count} -> {len(selected_chunk_ids)} chunks "
-        )
-
-        # Early return if no chunks remain after deduplication
-        if not selected_chunk_ids:
-            return []
 
     # Step 5: Batch retrieve chunk data
     unique_chunk_ids = list(
@@ -2972,14 +3173,22 @@ async def _find_related_text_unit_from_relationships(
     )  # Remove duplicates while preserving order
     chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
 
-    # Step 6: Build result chunks with valid data
+    # Step 6: Build result chunks with valid data and update chunk tracking
     result_chunks = []
-    for chunk_id, chunk_data in zip(unique_chunk_ids, chunk_data_list):
+    for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
         if chunk_data is not None and "content" in chunk_data:
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "relationship"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
             result_chunks.append(chunk_data_copy)
+
+            # Update chunk tracking if provided
+            if chunk_tracking is not None:
+                chunk_tracking[chunk_id] = {
+                    "source": "R",
+                    "frequency": chunk_occurrence_count.get(chunk_id, 1),
+                    "order": i + 1,  # 1-based order in final relation-related results
+                }
 
     return result_chunks
 
@@ -3014,7 +3223,7 @@ async def naive_query(
         query_param.user_prompt or "",
         query_param.enable_rerank,
     )
-    cached_response, quantized, min_val, max_val = await handle_cache(
+    cached_response = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:

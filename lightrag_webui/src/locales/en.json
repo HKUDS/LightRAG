@@ -50,6 +50,8 @@
       "confirmPlaceholder": "Type yes to confirm",
       "clearCache": "Clear LLM cache",
       "confirmButton": "YES",
+      "clearing": "Clearing...",
+      "timeout": "Clear operation timed out, please try again",
       "success": "Documents cleared successfully",
       "cacheCleared": "Cache cleared successfully",
       "cacheClearFailed": "Failed to clear cache:\n{{error}}",
@@ -72,15 +74,11 @@
       "failed": "Delete Documents Failed:\n{{message}}",
       "error": "Delete Documents Failed:\n{{error}}",
       "busy": "Pipeline is busy, please try again later",
-      "notAllowed": "No permission to perform this operation",
-      "cannotDeleteAll": "Cannot delete all documents. If you need to delete all documents, please use the Clear Documents feature."
+      "notAllowed": "No permission to perform this operation"
     },
-    "deselectDocuments": {
-      "button": "Deselect",
-      "tooltip": "Deselect all selected documents",
-      "title": "Deselect Documents",
-      "description": "This will clear all selected documents ({{count}} selected)",
-      "confirmButton": "Deselect All"
+    "selectDocuments": {
+      "selectCurrentPage": "Select Current Page ({{count}})",
+      "deselectAll": "Deselect All ({{count}})"
     },
     "uploadDocuments": {
       "button": "Upload",
@@ -99,7 +97,7 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",

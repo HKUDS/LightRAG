@@ -11,6 +11,7 @@ from lightrag.utils import (
     load_json,
     logger,
     write_json,
+    get_pinyin_sort_key,
 )
 from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
@@ -34,19 +35,18 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            os.makedirs(workspace_dir, exist_ok=True)
-            self._file_name = os.path.join(
-                workspace_dir, f"kv_store_{self.namespace}.json"
-            )
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self._file_name = os.path.join(
-                working_dir, f"kv_store_{self.namespace}.json"
-            )
+            self.final_namespace = self.namespace
+            self.workspace = "_"
+            workspace_dir = working_dir
+
+        os.makedirs(workspace_dir, exist_ok=True)
+        self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
         self._data = None
         self._storage_lock = None
         self.storage_updated = None
-        self.final_namespace = f"{self.workspace}_{self.namespace}"
 
     async def initialize(self):
         """Initialize storage data"""
@@ -61,7 +61,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 async with self._storage_lock:
                     self._data.update(loaded_data)
                     logger.info(
-                        f"Process {os.getpid()} doc status load {self.final_namespace} with {len(loaded_data)} records"
+                        f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
                     )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
@@ -115,7 +115,9 @@ class JsonDocStatusStorage(DocStatusStorage):
                             data["error_msg"] = None
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
-                        logger.error(f"Missing required field for document {k}: {e}")
+                        logger.error(
+                            f"[{self.workspace}] Missing required field for document {k}: {e}"
+                        )
                         continue
         return result
 
@@ -142,7 +144,9 @@ class JsonDocStatusStorage(DocStatusStorage):
                             data["error_msg"] = None
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
-                        logger.error(f"Missing required field for document {k}: {e}")
+                        logger.error(
+                            f"[{self.workspace}] Missing required field for document {k}: {e}"
+                        )
                         continue
         return result
 
@@ -153,7 +157,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     dict(self._data) if hasattr(self._data, "_getvalue") else self._data
                 )
                 logger.debug(
-                    f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.final_namespace}"
+                    f"[{self.workspace}] Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
                 )
                 write_json(data_dict, self._file_name)
                 await clear_all_update_flags(self.final_namespace)
@@ -166,7 +170,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         if not data:
             return
-        logger.debug(f"Inserting {len(data)} records to {self.final_namespace}")
+        logger.debug(
+            f"[{self.workspace}] Inserting {len(data)} records to {self.namespace}"
+        )
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
@@ -245,13 +251,19 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Add sort key for sorting
                     if sort_field == "id":
                         doc_status._sort_key = doc_id
+                    elif sort_field == "file_path":
+                        # Use pinyin sorting for file_path field to support Chinese characters
+                        file_path_value = getattr(doc_status, sort_field, "")
+                        doc_status._sort_key = get_pinyin_sort_key(file_path_value)
                     else:
                         doc_status._sort_key = getattr(doc_status, sort_field, "")
 
                     all_docs.append((doc_id, doc_status))
 
                 except KeyError as e:
-                    logger.error(f"Error processing document {doc_id}: {e}")
+                    logger.error(
+                        f"[{self.workspace}] Error processing document {doc_id}: {e}"
+                    )
                     continue
 
         # Sort documents
@@ -330,8 +342,10 @@ class JsonDocStatusStorage(DocStatusStorage):
                 await set_all_update_flags(self.final_namespace)
 
             await self.index_done_callback()
-            logger.info(f"Process {os.getpid()} drop {self.final_namespace}")
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}"
+            )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping {self.final_namespace}: {e}")
+            logger.error(f"[{self.workspace}] Error dropping {self.namespace}: {e}")
             return {"status": "error", "message": str(e)}

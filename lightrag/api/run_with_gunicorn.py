@@ -153,7 +153,7 @@ def main():
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
-                global_args.timeout * 2
+                global_args.timeout + 30
                 if global_args.timeout is not None
                 else get_env_value(
                     "TIMEOUT", DEFAULT_TIMEOUT + 30, int, special_none=True

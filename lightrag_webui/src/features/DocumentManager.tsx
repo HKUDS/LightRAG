@@ -17,7 +17,6 @@ import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
-import DeselectDocumentsDialog from '@/components/documents/DeselectDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -33,7 +32,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -327,6 +326,52 @@ export default function DocumentManager() {
     return allDocuments;
   }, [docs, sortField, sortDirection, statusFilter, sortDocuments]);
 
+  // Calculate current page selection state (after filteredAndSortedDocs is defined)
+  const currentPageDocIds = useMemo(() => {
+    return filteredAndSortedDocs?.map(doc => doc.id) || []
+  }, [filteredAndSortedDocs])
+
+  const selectedCurrentPageCount = useMemo(() => {
+    return currentPageDocIds.filter(id => selectedDocIds.includes(id)).length
+  }, [currentPageDocIds, selectedDocIds])
+
+  const isCurrentPageFullySelected = useMemo(() => {
+    return currentPageDocIds.length > 0 && selectedCurrentPageCount === currentPageDocIds.length
+  }, [currentPageDocIds, selectedCurrentPageCount])
+
+  const hasCurrentPageSelection = useMemo(() => {
+    return selectedCurrentPageCount > 0
+  }, [selectedCurrentPageCount])
+
+  // Handle select current page
+  const handleSelectCurrentPage = useCallback(() => {
+    setSelectedDocIds(currentPageDocIds)
+  }, [currentPageDocIds])
+
+
+  // Get selection button properties
+  const getSelectionButtonProps = useCallback(() => {
+    if (!hasCurrentPageSelection) {
+      return {
+        text: t('documentPanel.selectDocuments.selectCurrentPage', { count: currentPageDocIds.length }),
+        action: handleSelectCurrentPage,
+        icon: CheckSquareIcon
+      }
+    } else if (isCurrentPageFullySelected) {
+      return {
+        text: t('documentPanel.selectDocuments.deselectAll', { count: currentPageDocIds.length }),
+        action: handleDeselectAll,
+        icon: XIcon
+      }
+    } else {
+      return {
+        text: t('documentPanel.selectDocuments.selectCurrentPage', { count: currentPageDocIds.length }),
+        action: handleSelectCurrentPage,
+        icon: CheckSquareIcon
+      }
+    }
+  }, [hasCurrentPageSelection, isCurrentPageFullySelected, currentPageDocIds.length, handleSelectCurrentPage, handleDeselectAll, t])
+
   // Calculate document counts for each status
   const documentCounts = useMemo(() => {
     if (!docs) return { all: 0 } as Record<string, number>;
@@ -424,22 +469,42 @@ export default function DocumentManager() {
     };
   }, [docs]);
 
-  // New paginated data fetching function
-  const fetchPaginatedDocuments = useCallback(async (
-    page: number,
-    pageSize: number,
-    statusFilter: StatusFilter
+  // Utility function to update component state
+  const updateComponentState = useCallback((response: any) => {
+    setPagination(response.pagination);
+    setCurrentPageDocs(response.documents);
+    setStatusCounts(response.status_counts);
+
+    // Update legacy docs state for backward compatibility
+    const legacyDocs: DocsStatusesResponse = {
+      statuses: {
+        processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processed'),
+        processing: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processing'),
+        pending: response.documents.filter((doc: DocStatusResponse) => doc.status === 'pending'),
+        failed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'failed')
+      }
+    };
+
+    setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
+  }, []);
+
+  // Intelligent refresh function: handles all boundary cases
+  const handleIntelligentRefresh = useCallback(async (
+    targetPage?: number, // Optional target page, defaults to current page
+    resetToFirst?: boolean // Whether to force reset to first page
   ) => {
     try {
       if (!isMountedRef.current) return;
 
       setIsRefreshing(true);
 
-      // Prepare request parameters
+      // Determine target page
+      const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+
       const request: DocumentsRequest = {
         status_filter: statusFilter === 'all' ? null : statusFilter,
-        page,
-        page_size: pageSize,
+        page: pageToFetch,
+        page_size: pagination.page_size,
         sort_field: sortField,
         sort_direction: sortDirection
       };
@@ -448,26 +513,34 @@ export default function DocumentManager() {
 
       if (!isMountedRef.current) return;
 
-      // Update pagination state
-      setPagination(response.pagination);
-      setCurrentPageDocs(response.documents);
-      setStatusCounts(response.status_counts);
+      // Boundary case handling: if target page has no data but total count > 0
+      if (response.documents.length === 0 && response.pagination.total_count > 0) {
+        // Calculate last page
+        const lastPage = Math.max(1, response.pagination.total_pages);
 
-      // Update legacy docs state for backward compatibility
-      const legacyDocs: DocsStatusesResponse = {
-        statuses: {
-          processed: response.documents.filter(doc => doc.status === 'processed'),
-          processing: response.documents.filter(doc => doc.status === 'processing'),
-          pending: response.documents.filter(doc => doc.status === 'pending'),
-          failed: response.documents.filter(doc => doc.status === 'failed')
+        if (pageToFetch !== lastPage) {
+          // Re-request last page
+          const lastPageRequest: DocumentsRequest = {
+            ...request,
+            page: lastPage
+          };
+
+          const lastPageResponse = await getDocumentsPaginated(lastPageRequest);
+
+          if (!isMountedRef.current) return;
+
+          // Update page state to last page
+          setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
+          updateComponentState(lastPageResponse);
+          return;
         }
-      };
-
-      if (response.pagination.total_count > 0) {
-        setDocs(legacyDocs);
-      } else {
-        setDocs(null);
       }
+
+      // Normal case: update state
+      if (pageToFetch !== pagination.page) {
+        setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
+      }
+      updateComponentState(response);
 
     } catch (err) {
       if (isMountedRef.current) {
@@ -478,7 +551,20 @@ export default function DocumentManager() {
         setIsRefreshing(false);
       }
     }
-  }, [sortField, sortDirection, t]);
+  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState]);
+
+  // New paginated data fetching function
+  const fetchPaginatedDocuments = useCallback(async (
+    page: number,
+    pageSize: number,
+    _statusFilter: StatusFilter // eslint-disable-line @typescript-eslint/no-unused-vars
+  ) => {
+    // Update pagination state
+    setPagination(prev => ({ ...prev, page, page_size: pageSize }));
+
+    // Use intelligent refresh
+    await handleIntelligentRefresh(page);
+  }, [handleIntelligentRefresh]);
 
   // Legacy fetchDocuments function for backward compatibility
   const fetchDocuments = useCallback(async () => {
@@ -532,15 +618,25 @@ export default function DocumentManager() {
       // Reset health check timer with 1 second delay to avoid race condition
       useBackendState.getState().resetHealthCheckTimerDelayed(1000);
 
-      // Schedule a health check 2 seconds after successful scan
+      // Start fast refresh with 2-second interval immediately after scan
       startPollingInterval(2000);
+
+      // Set recovery timer to restore normal polling interval after 15 seconds
+      setTimeout(() => {
+        if (isMountedRef.current && currentTab === 'documents' && health) {
+          // Restore intelligent polling interval based on document status
+          const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
+          const normalInterval = hasActiveDocuments ? 5000 : 30000;
+          startPollingInterval(normalInterval);
+        }
+      }, 15000); // Restore after 15 seconds
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
         toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
       }
     }
-  }, [t, startPollingInterval])
+  }, [t, startPollingInterval, currentTab, health, statusCounts])
 
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
@@ -623,9 +719,10 @@ export default function DocumentManager() {
     if (prevPipelineBusyRef.current !== undefined && prevPipelineBusyRef.current !== pipelineBusy) {
       // pipelineBusy state has changed, trigger immediate refresh
       if (currentTab === 'documents' && health && isMountedRef.current) {
-        handleManualRefresh();
+        // Use intelligent refresh to preserve current page
+        handleIntelligentRefresh();
 
-        // Reset polling timer after manual refresh
+        // Reset polling timer after intelligent refresh
         const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
         const pollingInterval = hasActiveDocuments ? 5000 : 30000;
         startPollingInterval(pollingInterval);
@@ -633,7 +730,7 @@ export default function DocumentManager() {
     }
     // Update the previous state
     prevPipelineBusyRef.current = pipelineBusy;
-  }, [pipelineBusy, currentTab, health, handleManualRefresh, statusCounts.processing, statusCounts.pending, startPollingInterval]);
+  }, [pipelineBusy, currentTab, health, handleIntelligentRefresh, statusCounts.processing, statusCounts.pending, startPollingInterval]);
 
   // Set up intelligent polling with dynamic interval based on document status
   useEffect(() => {
@@ -756,6 +853,11 @@ export default function DocumentManager() {
     }
   }, [showFileName, sortField]);
 
+  // Reset selection state when page, status filter, or sort changes
+  useEffect(() => {
+    setSelectedDocIds([])
+  }, [pagination.page, statusFilter, sortField, sortDirection]);
+
   // Central effect to handle all data fetching
   useEffect(() => {
     if (currentTab === 'documents') {
@@ -820,18 +922,29 @@ export default function DocumentManager() {
             {isSelectionMode && (
               <DeleteDocumentsDialog
                 selectedDocIds={selectedDocIds}
-                totalCompletedCount={documentCounts.processed || 0}
                 onDocumentsDeleted={handleDocumentsDeleted}
               />
             )}
-            {isSelectionMode ? (
-              <DeselectDocumentsDialog
-                selectedCount={selectedDocIds.length}
-                onDeselect={handleDeselectAll}
-              />
-            ) : (
+            {isSelectionMode && hasCurrentPageSelection ? (
+              (() => {
+                const buttonProps = getSelectionButtonProps();
+                const IconComponent = buttonProps.icon;
+                return (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={buttonProps.action}
+                    side="bottom"
+                    tooltip={buttonProps.text}
+                  >
+                    <IconComponent className="h-4 w-4" />
+                    {buttonProps.text}
+                  </Button>
+                );
+              })()
+            ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
-            )}
+            ) : null}
             <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
             <PipelineStatusDialog
               open={showPipelineStatus}
