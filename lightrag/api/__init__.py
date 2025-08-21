@@ -1,1 +1,1 @@
-__api_version__ = "0205"
+__api_version__ = "0206"
