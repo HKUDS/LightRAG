@@ -141,6 +141,8 @@ LightRAG's demands on the capabilities of Large Language Models (LLMs) are signi
 - **LLM Selection**:
   - It is recommended to use an LLM with at least 32 billion parameters.
   - The context length should be at least 32KB, with 64KB being recommended.
+  - It is not recommended to choose reasoning models during the document indexing stage.
+  - During the query stage, it is recommended to choose models with stronger capabilities than those used in the indexing stage to achieve better query results.
 - **Embedding Model**:
   - A high-performance Embedding model is essential for RAG.
   - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
@@ -1287,8 +1289,10 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                     ),
                 )
             )
+
             # Initialize storage (this will load existing data if available)
             await lightrag_instance.initialize_storages()
+
             # Now initialize RAGAnything with the existing LightRAG instance
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # Pass the existing LightRAG instance
@@ -1317,12 +1321,14 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 )
                 # Note: working_dir, llm_model_func, embedding_func, etc. are inherited from lightrag_instance
             )
+
             # Query the existing knowledge base
             result = await rag.query_with_multimodal(
                 "What data has been processed in this LightRAG instance?",
                 mode="hybrid"
             )
             print("Query result:", result)
+
             # Add new multimodal documents to the existing LightRAG instance
             await rag.process_document_complete(
                 file_path="path/to/new/multimodal_document.pdf",

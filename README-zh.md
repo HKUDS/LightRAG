@@ -142,6 +142,8 @@ LightRAG对大型语言模型（LLM）的能力要求远高于传统RAG，因为
 - **LLM选型**：
   - 推荐选用参数量至少为32B的LLM。
   - 上下文长度至少为32KB，推荐达到64KB。
+  - 在文档索引阶段不建议选择推理模型。
+  - 在查询阶段建议选择比索引阶段能力更强的模型，以达到更高的查询效果。
 - **Embedding模型**：
   - 高性能的Embedding模型对RAG至关重要。
   - 推荐使用主流的多语言Embedding模型，例如：BAAI/bge-m3 和 text-embedding-3-large。

@@ -357,7 +357,7 @@ API 服务器可以通过三种方式配置（优先级从高到低）：
 LightRAG 支持绑定到各种 LLM/嵌入后端：
 
 * ollama
-* openai 和 openai 兼容
+* openai (含openai 兼容)
 * azure_openai
 * lollms
 * aws_bedrock
@@ -372,7 +372,10 @@ lightrag-server --llm-binding ollama --help
 lightrag-server --embedding-binding ollama --help
 ```
 
+> 请使用openai兼容方式访问OpenRouter或vLLM部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给OpenRouter或vLLM传递额外的参数，实现推理模式的关闭或者其它个性化控制。
+
 ### 实体提取配置
+
 * ENABLE_LLM_CACHE_FOR_EXTRACT：为实体提取启用 LLM 缓存（默认：true）
 
 在测试环境中将 `ENABLE_LLM_CACHE_FOR_EXTRACT` 设置为 true 以减少 LLM 调用成本是很常见的做法。
