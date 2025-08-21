@@ -36,7 +36,6 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
             llm_instance = OpenAI(
                 model="gpt-4",
                 api_key="your-openai-key",
-                temperature=0.7,
             )
             kwargs['llm_instance'] = llm_instance
 
@@ -91,7 +90,6 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
                 model=f"openai/{settings.LLM_MODEL}",  # Format: "provider/model_name"
                 api_base=settings.LITELLM_URL,
                 api_key=settings.LITELLM_KEY,
-                temperature=0.7,
             )
             kwargs['llm_instance'] = llm_instance
 

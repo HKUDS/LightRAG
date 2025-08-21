@@ -290,6 +290,19 @@ class BaseVectorStorage(StorageNameSpace, ABC):
             ids: List of vector IDs to be deleted
         """
 
+    @abstractmethod
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        pass
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):

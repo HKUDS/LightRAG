@@ -203,13 +203,7 @@ You are a helpful assistant responding to user query about Knowledge Graph and D
 
 ---Goal---
 
-Generate a concise response based on Knowledge Base and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Knowledge Base, and incorporating general knowledge relevant to the Knowledge Base. Do not include information not provided by Knowledge Base.
-
-When handling relationships with timestamps:
-1. Each relationship has a "created_at" timestamp indicating when we acquired this knowledge
-2. When encountering conflicting relationships, consider both the semantic content and the timestamp
-3. Don't automatically prefer the most recently created relationships - use judgment based on the context
-4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
+Generate a concise response based on Knowledge Base and follow Response Rules, considering both current query and the conversation history if provided. Summarize all information in the provided Knowledge Base, and incorporating general knowledge relevant to the Knowledge Base. Do not include information not provided by Knowledge Base.
 
 ---Conversation History---
 {history}
@@ -217,51 +211,52 @@ When handling relationships with timestamps:
 ---Knowledge Graph and Document Chunks---
 {context_data}
 
----Response Rules---
-
-- Target format and length: {response_type}
-- Use markdown formatting with appropriate section headings
-- Please respond in the same language as the user's question.
+---RESPONSE GUIDELINES---
+**1. Content & Adherence:**
+- Strictly adhere to the provided context from the Knowledge Base. Do not invent, assume, or include any information not present in the source data.
+- If the answer cannot be found in the provided context, state that you do not have enough information to answer.
 - Ensure the response maintains continuity with the conversation history.
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Document Chunks (DC), and include the file path if available, in the following format: [KG/DC] file_path
-- If you don't know the answer, just say so.
-- Do not make anything up. Do not include information not provided by the Knowledge Base.
+
+**2. Formatting & Language:**
+- Format the response using markdown with appropriate section headings.
+- The response language must in the same language as the user's question.
+- Target format and length: {response_type}
+
+**3. Citations / References:**
+- At the end of the response, under a "References" section, each citation must clearly indicate its origin (KG or DC).
+- The maximum number of citations is 5, including both KG and DC.
+- Use the following formats for citations:
+  - For a Knowledge Graph Entity: `[KG] <entity_name>`
+  - For a Knowledge Graph Relationship: `[KG] <entity1_name> - <entity2_name>`
+  - For a Document Chunk: `[DC] <file_path_or_document_name>`
+
+---USER CONTEXT---
 - Additional user prompt: {user_prompt}
+
 
 Response:"""
 
 PROMPTS["keywords_extraction"] = """---Role---
-
-You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query and conversation history.
+You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
 
 ---Goal---
+Given a user query, your task is to extract two distinct types of keywords:
+1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked.
+2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
 
-Given the query and conversation history, list both high-level and low-level keywords. High-level keywords focus on overarching concepts or themes, while low-level keywords focus on specific entities, details, or concrete terms.
+---Instructions & Constraints---
+1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), or any other text before or after the JSON. It will be parsed directly by a JSON parser.
+2. **Source of Truth**: All keywords must be explicitly derived from the user query, with both high-level and low-level keyword categories required to contain content.
+3. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", you should extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
+4. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), you must return a JSON object with empty lists for both keyword types.
 
----Instructions---
-
-- Consider both the current query and relevant conversation history when extracting keywords
-- Output the keywords in JSON format, it will be parsed by a JSON parser, do not add any extra content in output
-- The JSON should have two keys:
-  - "high_level_keywords" for overarching concepts or themes
-  - "low_level_keywords" for specific entities or details
-
-######################
 ---Examples---
-######################
 {examples}
 
-######################
 ---Real Data---
-######################
-Conversation History:
-{history}
+User Query: {query}
 
-Current Query: {query}
-######################
-The `Output` should be in JSON format, with no other text before and after the JSON. Use the same language as `Current Query`.
-
-Output:
+---Output---
 """
 
 PROMPTS["keywords_extraction_examples"] = [
@@ -308,51 +303,29 @@ You are a helpful assistant responding to user query about Document Chunks provi
 
 Generate a concise response based on Document Chunks and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Document Chunks, and incorporating general knowledge relevant to the Document Chunks. Do not include information not provided by Document Chunks.
 
-When handling content with timestamps:
-1. Each piece of content has a "created_at" timestamp indicating when we acquired this knowledge
-2. When encountering conflicting information, consider both the content and the timestamp
-3. Don't automatically prefer the most recent content - use judgment based on the context
-4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
-
 ---Conversation History---
 {history}
 
 ---Document Chunks(DC)---
 {content_data}
 
----Response Rules---
-
-- Target format and length: {response_type}
-- Use markdown formatting with appropriate section headings
-- Please respond in the same language as the user's question.
+---RESPONSE GUIDELINES---
+**1. Content & Adherence:**
+- Strictly adhere to the provided context from the Knowledge Base. Do not invent, assume, or include any information not present in the source data.
+- If the answer cannot be found in the provided context, state that you do not have enough information to answer.
 - Ensure the response maintains continuity with the conversation history.
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating each source from Document Chunks(DC), and include the file path if available, in the following format: [DC] file_path
-- If you don't know the answer, just say so.
-- Do not include information not provided by the Document Chunks.
-- Addtional user prompt: {user_prompt}
+
+**2. Formatting & Language:**
+- Format the response using markdown with appropriate section headings.
+- The response language must match the user's question language.
+- Target format and length: {response_type}
+
+**3. Citations / References:**
+- At the end of the response, under a "References" section, cite a maximum of 5 most relevant sources used.
+- Use the following formats for citations: `[DC] <file_path_or_document_name>`
+
+---USER CONTEXT---
+- Additional user prompt: {user_prompt}
+
 
 Response:"""
-
-# TODO: deprecated
-PROMPTS[
-    "similarity_check"
-] = """Please analyze the similarity between these two questions:
-
-Question 1: {original_prompt}
-Question 2: {cached_prompt}
-
-Please evaluate whether these two questions are semantically similar, and whether the answer to Question 2 can be used to answer Question 1, provide a similarity score between 0 and 1 directly.
-
-Similarity score criteria:
-0: Completely unrelated or answer cannot be reused, including but not limited to:
-   - The questions have different topics
-   - The locations mentioned in the questions are different
-   - The times mentioned in the questions are different
-   - The specific individuals mentioned in the questions are different
-   - The specific events mentioned in the questions are different
-   - The background information in the questions is different
-   - The key conditions in the questions are different
-1: Identical and answer can be directly reused
-0.5: Partially related and answer needs modification to be used
-Return only a number between 0-1, without any additional content.
-"""

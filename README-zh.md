@@ -50,7 +50,8 @@
 
 ## 🎉 新闻
 
-- [X] [2025.06.05]🎯📢LightRAG现已集成RAG-Anything，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
+- [X] [2025.06.16]🎯📢我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
+- [X] [2025.06.05]🎯📢LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
 - [X] [2025.03.18]🎯📢LightRAG现已支持引文功能。
 - [X] [2025.02.05]🎯📢我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
 - [X] [2025.01.13]🎯📢我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
@@ -142,10 +143,12 @@ LightRAG对大型语言模型（LLM）的能力要求远高于传统RAG，因为
 - **LLM选型**：
   - 推荐选用参数量至少为32B的LLM。
   - 上下文长度至少为32KB，推荐达到64KB。
+  - 在文档索引阶段不建议选择推理模型。
+  - 在查询阶段建议选择比索引阶段能力更强的模型，以达到更高的查询效果。
 - **Embedding模型**：
   - 高性能的Embedding模型对RAG至关重要。
   - 推荐使用主流的多语言Embedding模型，例如：BAAI/bge-m3 和 text-embedding-3-large。
-  - **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。
+  - **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。有些存储（例如PostgreSQL）在首次建立数表的时候需要确定向量维度，因此更换Embedding模型后需要删除向量相关库表，以便让LightRAG重建新的库表。
 - **Reranker模型配置**：
   - 配置Reranker模型能够显著提升LightRAG的检索效果。
   - 启用Reranker模型后，推荐将“mix模式”设为默认查询模式。
@@ -265,7 +268,7 @@ if __name__ == "__main__":
 | **embedding_func_max_async** | `int` | 最大并发异步嵌入进程数 | `16` |
 | **llm_model_func** | `callable` | LLM生成的函数 | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
-| **summary_max_tokens** | `int` | 生成实体关系摘要时送给LLM的最大令牌数 | `32000`（默认值由环境变量MAX_TOKENS更改） |
+| **summary_max_tokens** | `int` | 生成实体关系摘要时送给LLM的最大令牌数 | `30000`（由环境变量 SUMMARY_MAX_TOKENS 设置） |
 | **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
 | **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
@@ -308,15 +311,15 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "10"))
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "20"))
     """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "10000"))
+    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "6000"))
     """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "10000"))
+    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "8000"))
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
     max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "30000"))
@@ -787,7 +790,7 @@ MongoDocStatusStorage       MongoDB
 每一种存储类型的链接配置范例可以在 `env.example` 文件中找到。链接字符串中的数据库实例是需要你预先在数据库服务器上创建好的，LightRAG 仅负责在数据库实例中创建数据表，不负责创建数据库实例。如果使用 Redis 作为存储，记得给 Redis 配置自动持久化数据规则，否则 Redis 服务重启后数据会丢失。如果使用PostgreSQL数据库，推荐使用16.6版本或以上。
 
 <details>
-<summary> <b>使用Neo4J进行存储</b> </summary>
+<summary> <b>使用Neo4J存储</b> </summary>
 
 * 对于生产级场景，您很可能想要利用企业级解决方案
 * 进行KG存储。推荐在Docker中运行Neo4J以进行无缝本地测试。
@@ -825,7 +828,7 @@ async def initialize_rag():
 </details>
 
 <details>
-<summary> <b>使用Faiss进行存储</b> </summary>
+<summary> <b>使用Faiss存储</b> </summary>
 在使用Faiss向量数据库之前必须手工安装`faiss-cpu`或`faiss-gpu`。
 
 - 安装所需依赖：
@@ -862,15 +865,36 @@ rag = LightRAG(
 </details>
 
 <details>
-<summary> <b>使用PostgreSQL进行存储</b> </summary>
+<summary> <b>使用PostgreSQL存储</b> </summary>
 
-对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
+对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式储解解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
 
-* PostgreSQL很轻量，整个二进制发行版包括所有必要的插件可以压缩到40MB：参考[Windows发布版](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0)，它在Linux/Mac上也很容易安装。
 * 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（请务必阅读概述）：https://hub.docker.com/r/shangor/postgres-for-rag
-* 如何开始？参考：[examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
-
 * Apache AGE的性能不如Neo4j。最求高性能的图数据库请使用Noe4j。
+
+</details>
+
+<details>
+<summary> <b>使用MogonDB存储</b> </summary>
+
+MongoDB为LightRAG提供了一站式的存储解决方案。MongoDB提供原生的KV存储和向量存储。LightRAG使用MogoDB的集合实现了一个简易的图存储。MongoDB 官方的向量检索功能（`$vectorSearch`）目前必须依赖其官方的云服务 MongoDB Atlas。无法在自托管的 MongoDB Community/Enterprise 版本上使用此功能。
+
+</details>
+
+<details>
+<summary> <b>使用Redis存储</b> </summary>
+
+LightRAG支持使用Reidis作为KV存储。使用Redis存储的时候需要注意进行持久化配置和内存使用量配置。以下是推荐的redis配置
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
+```
 
 </details>
 

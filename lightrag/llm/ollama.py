@@ -51,6 +51,8 @@ async def _ollama_model_if_cache(
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
+    if timeout == 0:
+        timeout = None
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
     headers = {

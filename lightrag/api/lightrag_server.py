@@ -104,8 +104,8 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
-        "openai-ollama",
         "azure_openai",
+        "aws_bedrock",
     ]:
         raise Exception("llm binding not supported")
 
@@ -114,6 +114,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
+        "aws_bedrock",
         "jina",
     ]:
         raise Exception("embedding binding not supported")
@@ -188,10 +189,12 @@ def create_app(args):
     # Initialize FastAPI
     app_kwargs = {
         "title": "LightRAG Server API",
-        "description": "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-        + "(With authentication)"
-        if api_key
-        else "",
+        "description": (
+            "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
+            + "(With authentication)"
+            if api_key
+            else ""
+        ),
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
@@ -244,12 +247,14 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
-    if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
-        from lightrag.llm.openai import openai_complete_if_cache
-        from lightrag.llm.ollama import ollama_embed
+    if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
+        from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
+    if args.embedding_binding == "ollama":
         from lightrag.llm.binding_options import OllamaEmbeddingOptions
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
+
+    llm_timeout = get_env_value("LLM_TIMEOUT", args.timeout, int)
 
     async def openai_alike_model_complete(
         prompt,
@@ -264,12 +269,10 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use OpenAI LLM options if available, otherwise fallback to global temperature
-        if args.llm_binding == "openai":
-            openai_options = OpenAILLMOptions.options_dict(args)
-            kwargs.update(openai_options)
-        else:
-            kwargs["temperature"] = args.temperature
+        # Use OpenAI LLM options if available
+        openai_options = OpenAILLMOptions.options_dict(args)
+        kwargs["timeout"] = llm_timeout
+        kwargs.update(openai_options)
 
         return await openai_complete_if_cache(
             args.llm_model,
@@ -294,12 +297,10 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use OpenAI LLM options if available, otherwise fallback to global temperature
-        if args.llm_binding == "azure_openai":
-            openai_options = OpenAILLMOptions.options_dict(args)
-            kwargs.update(openai_options)
-        else:
-            kwargs["temperature"] = args.temperature
+        # Use OpenAI LLM options
+        openai_options = OpenAILLMOptions.options_dict(args)
+        kwargs["timeout"] = llm_timeout
+        kwargs.update(openai_options)
 
         return await azure_openai_complete_if_cache(
             args.llm_model,
@@ -312,41 +313,80 @@ def create_app(args):
             **kwargs,
         )
 
+    async def bedrock_model_complete(
+        prompt,
+        system_prompt=None,
+        history_messages=None,
+        keyword_extraction=False,
+        **kwargs,
+    ) -> str:
+        keyword_extraction = kwargs.pop("keyword_extraction", None)
+        if keyword_extraction:
+            kwargs["response_format"] = GPTKeywordExtractionFormat
+        if history_messages is None:
+            history_messages = []
+
+        # Use global temperature for Bedrock
+        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
+
+        return await bedrock_complete_if_cache(
+            args.llm_model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            **kwargs,
+        )
+
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=lambda texts: lollms_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "lollms"
-        else ollama_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-            options=OllamaEmbeddingOptions.options_dict(args),
-        )
-        if args.embedding_binding == "ollama"
-        else azure_openai_embed(
-            texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "azure_openai"
-        else jina_embed(
-            texts,
-            dimensions=args.embedding_dim,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "jina"
-        else openai_embed(
-            texts,
-            model=args.embedding_model,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
+        func=lambda texts: (
+            lollms_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+            if args.embedding_binding == "lollms"
+            else (
+                ollama_embed(
+                    texts,
+                    embed_model=args.embedding_model,
+                    host=args.embedding_binding_host,
+                    api_key=args.embedding_binding_api_key,
+                    options=OllamaEmbeddingOptions.options_dict(args),
+                )
+                if args.embedding_binding == "ollama"
+                else (
+                    azure_openai_embed(
+                        texts,
+                        model=args.embedding_model,  # no host is used for openai,
+                        api_key=args.embedding_binding_api_key,
+                    )
+                    if args.embedding_binding == "azure_openai"
+                    else (
+                        bedrock_embed(
+                            texts,
+                            model=args.embedding_model,
+                        )
+                        if args.embedding_binding == "aws_bedrock"
+                        else (
+                            jina_embed(
+                                texts,
+                                dimensions=args.embedding_dim,
+                                base_url=args.embedding_binding_host,
+                                api_key=args.embedding_binding_api_key,
+                            )
+                            if args.embedding_binding == "jina"
+                            else openai_embed(
+                                texts,
+                                model=args.embedding_model,
+                                base_url=args.embedding_binding_host,
+                                api_key=args.embedding_binding_api_key,
+                            )
+                        )
+                    )
+                )
+            )
         ),
     )
 
@@ -386,28 +426,36 @@ def create_app(args):
     )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai"]:
+    if args.llm_binding in ["lollms", "ollama", "openai", "aws_bedrock"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
+            llm_model_func=(
+                lollms_model_complete
+                if args.llm_binding == "lollms"
+                else (
+                    ollama_model_complete
+                    if args.llm_binding == "ollama"
+                    else bedrock_model_complete
+                    if args.llm_binding == "aws_bedrock"
+                    else openai_alike_model_complete
+                )
+            ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": OllamaLLMOptions.options_dict(args),
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
+            llm_model_kwargs=(
+                {
+                    "host": args.llm_binding_host,
+                    "timeout": llm_timeout,
+                    "options": OllamaLLMOptions.options_dict(args),
+                    "api_key": args.llm_binding_api_key,
+                }
+                if args.llm_binding == "lollms" or args.llm_binding == "ollama"
+                else {}
+            ),
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
@@ -431,9 +479,6 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": args.timeout,
-            },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.max_tokens,
