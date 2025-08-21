@@ -60,6 +60,7 @@
 - [X] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
 - [X] [2024.11.09]🎯📢Introducing the [LightRAG Gui](https://lightrag-gui.streamlit.app), which allows you to insert, query, visualize, and download LightRAG knowledge.
 - [X] [2024.11.04]🎯📢You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage).
+- [X] [2024.11.04]🎯📢You can now [use FalkorDB for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-falkordb-for-storage).
 - [X] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
 - [X] [2024.10.20]🎯📢We've added a new feature to LightRAG: Graph Visualization.
 - [X] [2024.10.18]🎯📢We've added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
@@ -260,7 +261,7 @@ A full list of LightRAG init parameters:
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances |  |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`FalkorDBStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
@@ -839,6 +840,47 @@ see test_neo4j.py for a working example.
 </details>
 
 <details>
+<summary> <b>Using FalkorDB for Storage</b> </summary>
+
+* FalkorDB is a high-performance graph database that's Redis module compatible and supports the Cypher query language
+* Running FalkorDB in Docker is recommended for seamless local testing
+* See: https://hub.docker.com/r/falkordb/falkordb
+
+```python
+export FALKORDB_HOST="localhost"
+export FALKORDB_PORT="6379"  
+export FALKORDB_PASSWORD="password"  # optional
+export FALKORDB_USERNAME="username"  # optional
+export FALKORDB_GRAPH_NAME="lightrag_graph"  # optional, defaults to namespace
+
+# Setup logger for LightRAG
+setup_logger("lightrag", level="INFO")
+
+# When you launch the project be sure to override the default KG: NetworkX
+# by specifying graph_storage="FalkorDBStorage".
+
+# Note: Default settings use NetworkX
+# Initialize LightRAG with FalkorDB implementation.
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
+        graph_storage="FalkorDBStorage", #<-----------override KG default
+    )
+
+    # Initialize database connections
+    await rag.initialize_storages()
+    # Initialize pipeline status for document processing
+    await initialize_pipeline_status()
+
+    return rag
+```
+
+see examples/falkordb_example.py for a working example.
+
+</details>
+
+<details>
 <summary> <b>Using PostgreSQL for Storage</b> </summary>
 
 For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
@@ -930,8 +972,9 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
+- **For the FalkorDB graph database, logical data isolation is achieved through labels:** `FalkorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base`, and for FalkorDB graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `FALKORDB_WORKSPACE`.
 
 ## Edit Entities and Relations
 
