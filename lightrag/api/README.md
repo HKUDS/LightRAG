@@ -390,52 +390,9 @@ LightRAG uses 4 types of storage for different purposes:
 * GRAPH_STORAGE: entity relation graph
 * DOC_STATUS_STORAGE: document indexing status
 
-Each storage type has several implementations:
+LightRAG Server offers various storage implementations, with the default being an in-memory database that persists data to the WORKING_DIR directory. Additionally, LightRAG supports a wide range of storage solutions including PostgreSQL, MongoDB, FAISS, Milvus, Qdrant, Neo4j, Memgraph, and Redis. For detailed information on supported storage options, please refer to the storage section in the README.md file located in the root directory.
 
-* KV_STORAGE supported implementations:
-
-```
-JsonKVStorage    JsonFile (default)
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
-```
-
-* GRAPH_STORAGE supported implementations:
-
-```
-NetworkXStorage      NetworkX (default)
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
-```
-
-> Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
-
-* VECTOR_STORAGE supported implementations:
-
-```
-NanoVectorDBStorage         NanoVector (default)
-PGVectorStorage             Postgres
-MilvusVectorDBStorage       Milvus
-FaissVectorDBStorage        Faiss
-QdrantVectorDBStorage       Qdrant
-MongoVectorDBStorage        MongoDB
-```
-
-* DOC_STATUS_STORAGE: supported implementations:
-
-```
-JsonDocStatusStorage        JsonFile (default)
-PGDocStatusStorage          Postgres
-MongoDocStatusStorage       MongoDB
-```
-Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
-
-
-### How to Select Storage Implementation
-
-You can select storage implementation by environment variables. You can set the following environment variables to a specific storage implementation name before the first start of the API Server:
+You can select the storage implementation by configuring environment variables. For instance, prior to the initial launch of the API server, you can set the following environment variable to specify your desired storage implementation:
 
 ```
 LIGHTRAG_KV_STORAGE=PGKVStorage
@@ -455,16 +412,12 @@ You cannot change storage implementation selection after adding documents to Lig
 | --working-dir         | ./rag_storage | Working directory for RAG storage                                                                                               |
 | --input-dir           | ./inputs      | Directory containing input documents                                                                                            |
 | --max-async           | 4             | Maximum number of async operations                                                                                              |
-| --max-tokens          | 32768         | Maximum token size                                                                                                              |
-| --timeout             | 150           | Timeout in seconds. None for infinite timeout (not recommended)                                                                 |
 | --log-level           | INFO          | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)                                                                           |
 | --verbose             | -             | Verbose debug output (True, False)                                                                                              |
 | --key                 | None          | API key for authentication. Protects the LightRAG server against unauthorized access                                            |
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
-| --top-k               | 50            | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.                  |
-| --cosine-threshold    | 0.4           | The cosine threshold for nodes and relation retrieval, works with top-k to control the retrieval of nodes and relations.        |
 | --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
 | --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
 | --auto-scan-at-startup| -             | Scan input directory for new files and start indexing                                                                           |

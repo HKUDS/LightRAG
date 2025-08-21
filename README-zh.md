@@ -789,7 +789,7 @@ MongoDocStatusStorage       MongoDB
 每一种存储类型的链接配置范例可以在 `env.example` 文件中找到。链接字符串中的数据库实例是需要你预先在数据库服务器上创建好的，LightRAG 仅负责在数据库实例中创建数据表，不负责创建数据库实例。如果使用 Redis 作为存储，记得给 Redis 配置自动持久化数据规则，否则 Redis 服务重启后数据会丢失。如果使用PostgreSQL数据库，推荐使用16.6版本或以上。
 
 <details>
-<summary> <b>使用Neo4J进行存储</b> </summary>
+<summary> <b>使用Neo4J存储</b> </summary>
 
 * 对于生产级场景，您很可能想要利用企业级解决方案
 * 进行KG存储。推荐在Docker中运行Neo4J以进行无缝本地测试。
@@ -827,7 +827,7 @@ async def initialize_rag():
 </details>
 
 <details>
-<summary> <b>使用Faiss进行存储</b> </summary>
+<summary> <b>使用Faiss存储</b> </summary>
 在使用Faiss向量数据库之前必须手工安装`faiss-cpu`或`faiss-gpu`。
 
 - 安装所需依赖：
@@ -864,15 +864,36 @@ rag = LightRAG(
 </details>
 
 <details>
-<summary> <b>使用PostgreSQL进行存储</b> </summary>
+<summary> <b>使用PostgreSQL存储</b> </summary>
 
-对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
+对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式储解解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
 
-* PostgreSQL很轻量，整个二进制发行版包括所有必要的插件可以压缩到40MB：参考[Windows发布版](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0)，它在Linux/Mac上也很容易安装。
 * 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（请务必阅读概述）：https://hub.docker.com/r/shangor/postgres-for-rag
-* 如何开始？参考：[examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
-
 * Apache AGE的性能不如Neo4j。最求高性能的图数据库请使用Noe4j。
+
+</details>
+
+<details>
+<summary> <b>使用MogonDB存储</b> </summary>
+
+MongoDB为LightRAG提供了一站式的存储解决方案。MongoDB提供原生的KV存储和向量存储。LightRAG使用MogoDB的集合实现了一个简易的图存储。MongoDB 官方的向量检索功能（`$vectorSearch`）目前必须依赖其官方的云服务 MongoDB Atlas。无法在自托管的 MongoDB Community/Enterprise 版本上使用此功能。
+
+</details>
+
+<details>
+<summary> <b>使用Redis存储</b> </summary>
+
+LightRAG支持使用Reidis作为KV存储。使用Redis存储的时候需要注意进行持久化配置和内存使用量配置。以下是推荐的redis配置
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
+```
 
 </details>
 
