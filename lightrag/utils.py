@@ -1774,6 +1774,7 @@ async def pick_by_vector_similarity(
     num_of_chunks: int,
     entity_info: list[dict[str, Any]],
     embedding_func: callable,
+    query_embedding=None,
 ) -> list[str]:
     """
     Vector similarity-based text chunk selection algorithm.
@@ -1818,11 +1819,19 @@ async def pick_by_vector_similarity(
     all_chunk_ids = list(all_chunk_ids)
 
     try:
-        # Get query embedding
-        query_embedding = await embedding_func([query])
-        query_embedding = query_embedding[
-            0
-        ]  # Extract first embedding from batch result
+        # Use pre-computed query embedding if provided, otherwise compute it
+        if query_embedding is None:
+            query_embedding = await embedding_func([query])
+            query_embedding = query_embedding[
+                0
+            ]  # Extract first embedding from batch result
+            logger.debug(
+                "Computed query embedding for vector similarity chunk selection"
+            )
+        else:
+            logger.debug(
+                "Using pre-computed query embedding for vector similarity chunk selection"
+            )
 
         # Get chunk embeddings from vector database
         chunk_vectors = await chunks_vdb.get_vectors_by_ids(all_chunk_ids)
