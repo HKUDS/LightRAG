@@ -1978,17 +1978,50 @@ async def apply_rerank_if_enabled(
         return retrieved_docs
 
     try:
-        # Apply reranking - let rerank_model_func handle top_k internally
-        reranked_docs = await rerank_func(
+        # Extract document content for reranking
+        document_texts = []
+        for doc in retrieved_docs:
+            # Try multiple possible content fields
+            content = (
+                doc.get("content")
+                or doc.get("text")
+                or doc.get("chunk_content")
+                or doc.get("document")
+                or str(doc)
+            )
+            document_texts.append(content)
+
+        # Call the new rerank function that returns index-based results
+        rerank_results = await rerank_func(
             query=query,
-            documents=retrieved_docs,
-            top_n=top_n,
+            documents=document_texts,
+            top_n=top_n or len(retrieved_docs),
         )
-        if reranked_docs and len(reranked_docs) > 0:
-            if len(reranked_docs) > top_n:
-                reranked_docs = reranked_docs[:top_n]
-            logger.info(f"Successfully reranked: {len(retrieved_docs)} chunks")
-            return reranked_docs
+
+        # Process rerank results based on return format
+        if rerank_results and len(rerank_results) > 0:
+            # Check if results are in the new index-based format
+            if isinstance(rerank_results[0], dict) and "index" in rerank_results[0]:
+                # New format: [{"index": 0, "relevance_score": 0.85}, ...]
+                reranked_docs = []
+                for result in rerank_results:
+                    index = result["index"]
+                    relevance_score = result["relevance_score"]
+
+                    # Get original document and add rerank score
+                    if 0 <= index < len(retrieved_docs):
+                        doc = retrieved_docs[index].copy()
+                        doc["rerank_score"] = relevance_score
+                        reranked_docs.append(doc)
+
+                logger.info(
+                    f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"
+                )
+                return reranked_docs
+            else:
+                # Legacy format: assume it's already reranked documents
+                logger.info(f"Using legacy rerank format: {len(rerank_results)} chunks")
+                return rerank_results[:top_n] if top_n else rerank_results
         else:
             logger.warning("Rerank returned empty results, using original chunks")
             return retrieved_docs
@@ -2027,13 +2060,6 @@ async def process_chunks_unified(
 
     # 1. Apply reranking if enabled and query is provided
     if query_param.enable_rerank and query and unique_chunks:
-        # 保存 chunk_id 字段，因为 rerank 可能会丢失这个字段
-        chunk_ids = {}
-        for chunk in unique_chunks:
-            chunk_id = chunk.get("chunk_id")
-            if chunk_id:
-                chunk_ids[id(chunk)] = chunk_id
-
         rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
         unique_chunks = await apply_rerank_if_enabled(
             query=query,
@@ -2042,11 +2068,6 @@ async def process_chunks_unified(
             enable_rerank=query_param.enable_rerank,
             top_n=rerank_top_k,
         )
-
-        # 恢复 chunk_id 字段
-        for chunk in unique_chunks:
-            if id(chunk) in chunk_ids:
-                chunk["chunk_id"] = chunk_ids[id(chunk)]
 
     # 2. Filter by minimum rerank score if reranking is enabled
     if query_param.enable_rerank and unique_chunks:
@@ -2095,24 +2116,12 @@ async def process_chunks_unified(
 
         original_count = len(unique_chunks)
 
-        # Keep chunk_id field, cause truncate_list_by_token_size will lose it
-        chunk_ids_map = {}
-        for i, chunk in enumerate(unique_chunks):
-            chunk_id = chunk.get("chunk_id")
-            if chunk_id:
-                chunk_ids_map[i] = chunk_id
-
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
             key=lambda x: json.dumps(x, ensure_ascii=False),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
-
-        # restore chunk_id feiled
-        for i, chunk in enumerate(unique_chunks):
-            if i in chunk_ids_map:
-                chunk["chunk_id"] = chunk_ids_map[i]
 
         logger.debug(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
