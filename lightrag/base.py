@@ -22,7 +22,6 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_HISTORY_TURNS,
-    DEFAULT_ENABLE_RERANK,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_OLLAMA_MODEL_SIZE,
@@ -158,9 +157,7 @@ class QueryParam:
     If proivded, this will be use instead of the default vaulue from prompt template.
     """
 
-    enable_rerank: bool = (
-        os.getenv("ENABLE_RERANK", str(DEFAULT_ENABLE_RERANK).lower()).lower() == "true"
-    )
+    enable_rerank: bool = os.getenv("ENABLE_RERANK", "false").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """

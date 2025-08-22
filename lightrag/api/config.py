@@ -35,6 +35,7 @@ from lightrag.constants import (
     DEFAULT_EMBEDDING_BATCH_NUM,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_RERANK_BINDING,
 )
 
 # use the .env that is inside the current folder
@@ -76,9 +77,7 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: Parsed arguments
     """
 
-    parser = argparse.ArgumentParser(
-        description="LightRAG FastAPI Server with separate working and input directories"
-    )
+    parser = argparse.ArgumentParser(description="LightRAG API Server")
 
     # Server configuration
     parser.add_argument(
@@ -225,6 +224,19 @@ def parse_args() -> argparse.Namespace:
         choices=["lollms", "ollama", "openai", "azure_openai", "aws_bedrock", "jina"],
         help="Embedding binding type (default: from env or ollama)",
     )
+    parser.add_argument(
+        "--rerank-binding",
+        type=str,
+        default=get_env_value("RERANK_BINDING", DEFAULT_RERANK_BINDING),
+        choices=["cohere", "jina", "aliyun"],
+        help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
+    )
+    parser.add_argument(
+        "--enable-rerank",
+        action="store_true",
+        default=get_env_value("ENABLE_RERANK", False, bool),
+        help="Enable rerank functionality (default: from env or disalbed)",
+    )
 
     # Conditionally add binding options defined in binding_options module
     # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
@@ -337,9 +349,10 @@ def parse_args() -> argparse.Namespace:
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
 
     # Rerank model configuration
-    args.rerank_model = get_env_value("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    args.rerank_model = get_env_value("RERANK_MODEL", None)
     args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
     args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
+    # Note: rerank_binding is already set by argparse, no need to override from env
 
     # Min rerank score configuration
     args.min_rerank_score = get_env_value(
