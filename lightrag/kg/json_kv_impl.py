@@ -10,6 +10,7 @@ from lightrag.utils import (
     logger,
     write_json,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
     get_storage_lock,
@@ -154,6 +155,8 @@ class JsonKVStorage(BaseKVStorage):
         logger.debug(
             f"[{self.workspace}] Inserting {len(data)} records to {self.namespace}"
         )
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
             # Add timestamps to data based on whether key exists
             for k, v in data.items():
