@@ -62,7 +62,7 @@ class APITimeoutError(APIConnectionError):
 
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
-    
+
     def __init__(self, storage_type: str = "Storage"):
         super().__init__(
             f"{storage_type} not initialized. Please ensure proper initialization:\n"
@@ -79,7 +79,7 @@ class StorageNotInitializedError(RuntimeError):
 
 class PipelineNotInitializedError(KeyError):
     """Raised when pipeline status is accessed before initialization."""
-    
+
     def __init__(self, namespace: str = ""):
         msg = (
             f"Pipeline namespace '{namespace}' not found. "
