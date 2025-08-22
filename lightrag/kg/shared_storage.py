@@ -8,6 +8,8 @@ import time
 import logging
 from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
 
+from lightrag.exceptions import PipelineNotInitializedError
+
 
 # Define a direct print function for critical logs that must be visible in all processes
 def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
@@ -1203,6 +1205,13 @@ async def get_namespace_data(namespace: str) -> Dict[str, Any]:
 
     async with get_internal_lock():
         if namespace not in _shared_dicts:
+            # Special handling for pipeline_status namespace
+            if namespace == "pipeline_status":
+                # Check if pipeline_status should have been initialized but wasn't
+                # This helps users understand they need to call initialize_pipeline_status()
+                raise PipelineNotInitializedError(namespace)
+            
+            # For other namespaces, create them dynamically as before
             if _is_multiprocess and _manager is not None:
                 _shared_dicts[namespace] = _manager.dict()
             else:
