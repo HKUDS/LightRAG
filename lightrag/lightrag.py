@@ -525,14 +525,6 @@ class LightRAG:
             )
         )
 
-        # Init Rerank
-        if self.rerank_model_func:
-            logger.info("Rerank model initialized for improved retrieval quality")
-        else:
-            logger.warning(
-                "Rerank is enabled but no rerank_model_func provided. Reranking will be skipped."
-            )
-
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):

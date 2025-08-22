@@ -1995,7 +1995,7 @@ async def apply_rerank_if_enabled(
         rerank_results = await rerank_func(
             query=query,
             documents=document_texts,
-            top_n=top_n or len(retrieved_docs),
+            top_n=top_n,
         )
 
         # Process rerank results based on return format

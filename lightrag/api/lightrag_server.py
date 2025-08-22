@@ -11,6 +11,7 @@ import signal
 import sys
 import uvicorn
 import pipmaster as pm
+import inspect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -408,6 +409,22 @@ def create_app(args):
             logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
             raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
 
+        # Get default values from selected_rerank_func if args values are None
+        if args.rerank_model is None or args.rerank_binding_host is None:
+            sig = inspect.signature(selected_rerank_func)
+
+            # Set default model if args.rerank_model is None
+            if args.rerank_model is None and "model" in sig.parameters:
+                default_model = sig.parameters["model"].default
+                if default_model != inspect.Parameter.empty:
+                    args.rerank_model = default_model
+
+            # Set default base_url if args.rerank_binding_host is None
+            if args.rerank_binding_host is None and "base_url" in sig.parameters:
+                default_base_url = sig.parameters["base_url"].default
+                if default_base_url != inspect.Parameter.empty:
+                    args.rerank_binding_host = default_base_url
+
         async def server_rerank_func(
             query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
@@ -415,19 +432,19 @@ def create_app(args):
             return await selected_rerank_func(
                 query=query,
                 documents=documents,
+                top_n=top_n,
+                api_key=args.rerank_binding_api_key,
                 model=args.rerank_model,
                 base_url=args.rerank_binding_host,
-                api_key=args.rerank_binding_api_key,
-                top_n=top_n,
                 extra_body=extra_body,
             )
 
         rerank_model_func = server_rerank_func
         logger.info(
-            f"Rerank enabled: {args.rerank_model} using {args.rerank_binding} provider"
+            f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
         )
     else:
-        logger.info("Rerank disabled")
+        logger.info("Reranking is disabled")
 
     # Create ollama_server_infos from command line arguments
     from lightrag.api.config import OllamaServerInfos
@@ -635,7 +652,6 @@ def create_app(args):
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": args.enable_rerank,
-                    "rerank_configured": rerank_model_func is not None,
                     "rerank_binding": args.rerank_binding
                     if args.enable_rerank
                     else None,

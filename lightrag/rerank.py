@@ -32,7 +32,7 @@ async def generic_rerank_api(
     documents: List[str],
     model: str,
     base_url: str,
-    api_key: str,
+    api_key: Optional[str],
     top_n: Optional[int] = None,
     return_documents: Optional[bool] = None,
     extra_body: Optional[Dict[str, Any]] = None,
@@ -56,13 +56,12 @@ async def generic_rerank_api(
     Returns:
         List of dictionary of ["index": int, "relevance_score": float]
     """
-    if not api_key:
-        raise ValueError("API key is required")
+    if not base_url:
+        raise ValueError("Base URL is required")
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
+    headers = {"Content-Type": "application/json"}
+    if api_key is not None:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     # Build request payload based on request format
     if request_format == "aliyun":
@@ -119,7 +118,6 @@ async def generic_rerank_api(
                     error_text.strip().startswith("<!DOCTYPE html>")
                     or "text/html" in content_type
                 )
-
                 if is_html_error:
                     if response.status == 502:
                         clean_error = "Bad Gateway (502) - Rerank service temporarily unavailable. Please try again in a few minutes."
@@ -131,7 +129,6 @@ async def generic_rerank_api(
                         clean_error = f"HTTP {response.status} - Rerank service error. Please try again later."
                 else:
                     clean_error = error_text
-
                 logger.error(f"Rerank API error {response.status}: {clean_error}")
                 raise aiohttp.ClientResponseError(
                     request_info=response.request_info,
@@ -142,17 +139,25 @@ async def generic_rerank_api(
 
             response_json = await response.json()
 
-            # Handle different response formats
             if response_format == "aliyun":
                 # Aliyun format: {"output": {"results": [...]}}
-                output = response_json.get("output", {})
-                results = output.get("results", [])
+                results = response_json.get("output", {}).get("results", [])
+                if not isinstance(results, list):
+                    logger.warning(
+                        f"Expected 'output.results' to be list, got {type(results)}: {results}"
+                    )
+                    results = []
+
             elif response_format == "standard":
                 # Standard format: {"results": [...]}
                 results = response_json.get("results", [])
+                if not isinstance(results, list):
+                    logger.warning(
+                        f"Expected 'results' to be list, got {type(results)}: {results}"
+                    )
+                    results = []
             else:
                 raise ValueError(f"Unsupported response format: {response_format}")
-
             if not results:
                 logger.warning("Rerank API returned empty results")
                 return []
@@ -170,7 +175,7 @@ async def cohere_rerank(
     top_n: Optional[int] = None,
     api_key: Optional[str] = None,
     model: str = "rerank-v3.5",
-    base_url: str = "https://ai.znipower.com:5017/rerank",
+    base_url: str = "https://api.cohere.com/v2/rerank",
     extra_body: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
