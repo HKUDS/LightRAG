@@ -390,33 +390,44 @@ def create_app(args):
         ),
     )
 
-    # Configure rerank function if model and API are configured
+    # Configure rerank function based on enable_rerank parameter
     rerank_model_func = None
-    if args.rerank_binding_api_key and args.rerank_binding_host:
-        from lightrag.rerank import custom_rerank
+    if args.enable_rerank and args.rerank_binding:
+        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+
+        # Map rerank binding to corresponding function
+        rerank_functions = {
+            "cohere": cohere_rerank,
+            "jina": jina_rerank,
+            "aliyun": ali_rerank,
+        }
+
+        # Select the appropriate rerank function based on binding
+        selected_rerank_func = rerank_functions.get(args.rerank_binding)
+        if not selected_rerank_func:
+            logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
+            raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
 
         async def server_rerank_func(
-            query: str, documents: list, top_n: int = None, **kwargs
+            query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
             """Server rerank function with configuration from environment variables"""
-            return await custom_rerank(
+            return await selected_rerank_func(
                 query=query,
                 documents=documents,
                 model=args.rerank_model,
                 base_url=args.rerank_binding_host,
                 api_key=args.rerank_binding_api_key,
                 top_n=top_n,
-                **kwargs,
+                extra_body=extra_body,
             )
 
         rerank_model_func = server_rerank_func
         logger.info(
-            f"Rerank model configured: {args.rerank_model} (can be enabled per query)"
+            f"Rerank enabled: {args.rerank_model} using {args.rerank_binding} provider"
         )
     else:
-        logger.info(
-            "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
-        )
+        logger.info("Rerank disabled")
 
     # Create ollama_server_infos from command line arguments
     from lightrag.api.config import OllamaServerInfos
@@ -622,13 +633,15 @@ def create_app(args):
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
-                    # Rerank configuration (based on whether rerank model is configured)
-                    "enable_rerank": rerank_model_func is not None,
-                    "rerank_model": args.rerank_model
-                    if rerank_model_func is not None
+                    # Rerank configuration
+                    "enable_rerank": args.enable_rerank,
+                    "rerank_configured": rerank_model_func is not None,
+                    "rerank_binding": args.rerank_binding
+                    if args.enable_rerank
                     else None,
+                    "rerank_model": args.rerank_model if args.enable_rerank else None,
                     "rerank_binding_host": args.rerank_binding_host
-                    if rerank_model_func is not None
+                    if args.enable_rerank
                     else None,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
