@@ -52,7 +52,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
             <span>{t('graphPanel.statusCard.rerankerBindingHost')}:</span>
             <span>{status.configuration.rerank_binding_host || '-'}</span>
             <span>{t('graphPanel.statusCard.rerankerModel')}:</span>
-            <span>{status.configuration.rerank_model || '-'}</span>
+            <span>{(status.configuration.rerank_binding || '-')} : {(status.configuration.rerank_model || '-')}</span>
           </div>
         </div>
       )}

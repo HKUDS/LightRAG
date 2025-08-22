@@ -43,6 +43,7 @@ export type LightragStatus = {
     workspace?: string
     max_graph_nodes?: string
     enable_rerank?: boolean
+    rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
     summary_language: string

@@ -228,14 +228,8 @@ def parse_args() -> argparse.Namespace:
         "--rerank-binding",
         type=str,
         default=get_env_value("RERANK_BINDING", DEFAULT_RERANK_BINDING),
-        choices=["cohere", "jina", "aliyun"],
+        choices=["null", "cohere", "jina", "aliyun"],
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
-    )
-    parser.add_argument(
-        "--enable-rerank",
-        action="store_true",
-        default=get_env_value("ENABLE_RERANK", False, bool),
-        help="Enable rerank functionality (default: from env or disalbed)",
     )
 
     # Conditionally add binding options defined in binding_options module

@@ -393,7 +393,7 @@ def create_app(args):
 
     # Configure rerank function based on enable_rerank parameter
     rerank_model_func = None
-    if args.enable_rerank and args.rerank_binding:
+    if args.rerank_binding != "null":
         from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
 
         # Map rerank binding to corresponding function
@@ -651,13 +651,11 @@ def create_app(args):
                     "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
-                    "enable_rerank": args.enable_rerank,
-                    "rerank_binding": args.rerank_binding
-                    if args.enable_rerank
-                    else None,
-                    "rerank_model": args.rerank_model if args.enable_rerank else None,
+                    "enable_rerank": rerank_model_func is not None,
+                    "rerank_binding": args.rerank_binding,
+                    "rerank_model": args.rerank_model if rerank_model_func else None,
                     "rerank_binding_host": args.rerank_binding_host
-                    if args.enable_rerank
+                    if rerank_model_func
                     else None,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
