@@ -1,4 +1,4 @@
-name: Build Docker Image from Main
+name: Build Docker Image manually
 
 on:
   workflow_dispatch:
