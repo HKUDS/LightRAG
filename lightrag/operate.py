@@ -1727,6 +1727,9 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
 ) -> str | AsyncIterator[str]:
+    if not query:
+        return PROMPTS["fail_response"]
+
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
@@ -1763,21 +1766,16 @@ async def kg_query(
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
     # Handle empty keywords
+    if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
+        logger.warning("low_level_keywords is empty")
+    if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
+        logger.warning("high_level_keywords is empty")
     if hl_keywords == [] and ll_keywords == []:
-        logger.warning("low_level_keywords and high_level_keywords is empty")
-        return PROMPTS["fail_response"]
-    if ll_keywords == [] and query_param.mode in ["local", "hybrid"]:
-        logger.warning(
-            "low_level_keywords is empty, switching from %s mode to global mode",
-            query_param.mode,
-        )
-        query_param.mode = "global"
-    if hl_keywords == [] and query_param.mode in ["global", "hybrid"]:
-        logger.warning(
-            "high_level_keywords is empty, switching from %s mode to local mode",
-            query_param.mode,
-        )
-        query_param.mode = "local"
+        if len(query) < 50:
+            logger.warning(f"Forced low_level_keywords to origin query: {query}")
+            ll_keywords = [query]
+        else:
+            return PROMPTS["fail_response"]
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
@@ -2133,7 +2131,7 @@ async def _build_query_context(
                 query_embedding = None
 
     # Handle local and global modes
-    if query_param.mode == "local":
+    if query_param.mode == "local" and len(ll_keywords) > 0:
         local_entities, local_relations = await _get_node_data(
             ll_keywords,
             knowledge_graph_inst,
@@ -2141,7 +2139,7 @@ async def _build_query_context(
             query_param,
         )
 
-    elif query_param.mode == "global":
+    elif query_param.mode == "global" and len(hl_keywords) > 0:
         global_relations, global_entities = await _get_edge_data(
             hl_keywords,
             knowledge_graph_inst,
@@ -2150,18 +2148,20 @@ async def _build_query_context(
         )
 
     else:  # hybrid or mix mode
-        local_entities, local_relations = await _get_node_data(
-            ll_keywords,
-            knowledge_graph_inst,
-            entities_vdb,
-            query_param,
-        )
-        global_relations, global_entities = await _get_edge_data(
-            hl_keywords,
-            knowledge_graph_inst,
-            relationships_vdb,
-            query_param,
-        )
+        if len(ll_keywords) > 0:
+            local_entities, local_relations = await _get_node_data(
+                ll_keywords,
+                knowledge_graph_inst,
+                entities_vdb,
+                query_param,
+            )
+        if len(hl_keywords) > 0:
+            global_relations, global_entities = await _get_edge_data(
+                hl_keywords,
+                knowledge_graph_inst,
+                relationships_vdb,
+                query_param,
+            )
 
         # Get vector chunks first if in mix mode
         if query_param.mode == "mix" and chunks_vdb:
