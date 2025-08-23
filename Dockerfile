@@ -22,8 +22,8 @@ COPY lightrag/ ./lightrag/
 
 # Install dependencies
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN pip install --user --no-cache-dir .
-RUN pip install --user --no-cache-dir .[api]
+RUN pip install --user --no-cache-dir --use-pep517 .
+RUN pip install --user --no-cache-dir --use-pep517 .[api]
 
 # Install depndencies for default storage
 RUN pip install --user --no-cache-dir nano-vectordb networkx
@@ -45,7 +45,7 @@ COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
 
-RUN pip install ".[api]"
+RUN pip install --use-pep517 ".[api]"
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 
