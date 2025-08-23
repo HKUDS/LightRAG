@@ -179,11 +179,12 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ## Programing with LightRAG Core
 
-> If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
+> ⚠️ **If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server**. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
 ### ⚠️ Important: Initialization Requirements
 
 **LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+
 - `AttributeError: __aenter__` - if storages are not initialized
 - `KeyError: 'history_messages'` - if pipeline status is not initialized
 
@@ -596,36 +597,15 @@ if __name__ == "__main__":
 
 </details>
 
-### Conversation History Support
+### Rerank Function Injection
 
+To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
 
-LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
+* **Cohere / vLLM**: `cohere_rerank`
+* **Jina AI**: `jina_rerank`
+* **Aliyun**: `ali_rerank`
 
-<details>
-  <summary> <b> Usage Example </b></summary>
-
-```python
-# Create conversation history
-conversation_history = [
-    {"role": "user", "content": "What is the main character's attitude towards Christmas?"},
-    {"role": "assistant", "content": "At the beginning of the story, Ebenezer Scrooge has a very negative attitude towards Christmas..."},
-    {"role": "user", "content": "How does his attitude change?"}
-]
-
-# Create query parameters with conversation history
-query_param = QueryParam(
-    mode="mix",  # or any other mode: "local", "global", "hybrid"
-    conversation_history=conversation_history,  # Add the conversation history
-)
-
-# Make a query that takes into account the conversation history
-response = rag.query(
-    "What causes this change in his character?",
-    param=query_param
-)
-```
-
-</details>
+You can inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. This will enable LightRAG's query function to re-order retrieved text blocks using the injected function. For detailed usage, please refer to the `examples/rerank_example.py` file.
 
 ### User Prompt vs. Query
 
@@ -645,8 +625,6 @@ response_default = rag.query(
 )
 print(response_default)
 ```
-
-
 
 ### Insert
 

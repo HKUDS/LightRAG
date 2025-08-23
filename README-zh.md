@@ -181,7 +181,7 @@ python examples/lightrag_openai_demo.py
 
 ## 使用LightRAG Core进行编程
 
-> 如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
+> ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
 
 ### 一个简单程序
 
@@ -594,31 +594,15 @@ if __name__ == "__main__":
 
 </details>
 
-### 对话历史
+### Rerank函数注入
 
-LightRAG现在通过对话历史功能支持多轮对话。以下是使用方法：
+为了提高检索质量，可以根据更有效的相关性评分模型对文档进行重排序。`rerank.py`文件提供了三个Reranker提供商的驱动函数：
 
-```python
-# 创建对话历史
-conversation_history = [
-    {"role": "user", "content": "主角对圣诞节的态度是什么？"},
-    {"role": "assistant", "content": "在故事开始时，埃比尼泽·斯克鲁奇对圣诞节持非常消极的态度..."},
-    {"role": "user", "content": "他的态度是如何改变的？"}
-]
+*   **Cohere / vLLM**: `cohere_rerank`
+*   **Jina AI**: `jina_rerank`
+*   **Aliyun阿里云**: `ali_rerank`
 
-# 创建带有对话历史的查询参数
-query_param = QueryParam(
-    mode="mix",  # 或其他模式："local"、"global"、"hybrid"
-    conversation_history=conversation_history,  # 添加对话历史
-    history_turns=3  # 考虑最近的对话轮数
-)
-
-# 进行考虑对话历史的查询
-response = rag.query(
-    "是什么导致了他性格的这种变化？",
-    param=query_param
-)
-```
+您可以将这些函数之一注入到LightRAG对象的`rerank_model_func`属性中。这将使LightRAG的查询功能能够使用注入的函数对检索到的文本块进行重新排序。有关详细用法，请参阅`examples/rerank_example.py`文件。
 
 ### 用户提示词 vs. 查询内容
 
