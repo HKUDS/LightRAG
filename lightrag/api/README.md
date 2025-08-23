@@ -422,9 +422,43 @@ You cannot change storage implementation selection after adding documents to Lig
 | --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
 | --auto-scan-at-startup| -             | Scan input directory for new files and start indexing                                                                           |
 
-### Additional Ollama Binding Options
+### Reranking Configuration
 
-When using `--llm-binding ollama` or `--embedding-binding ollama`, additional Ollama-specific configuration options are available. To see all available Ollama binding options, add `--help` to the command line when starting the server. These additional options allow for fine-tuning of Ollama model parameters and connection settings.
+Reranking query-recalled chunks can significantly enhance retrieval quality by re-ordering documents based on an optimized relevance scoring model. LightRAG currently supports the following rerank providers:
+
+- **Cohere / vLLM**: Offers full API integration with Cohere AI's `v2/rerank` endpoint. As vLLM provides a Cohere-compatible reranker API, all reranker models deployed via vLLM are also supported.
+- **Jina AI**: Provides complete implementation compatibility with all Jina rerank models.
+- **Aliyun**: Features a custom implementation designed to support Aliyun's rerank API format.
+
+The rerank provider is configured via the `.env` file. Below is an example configuration for a rerank model deployed locally using vLLM:
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+
+```
+RERANK_BINDING=aliyun
+RERANK_MODEL=gte-rerank-v2
+RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+For comprehensive reranker configuration examples, please refer to the `env.example` file.
+
+### Enable Reranking
+
+Reranking can be enabled or disabled on a per-query basis.
+
+The `/query` and `/query/stream` API endpoints include an `enable_rerank` parameter, which is set to `true` by default, controlling whether reranking is active for the current query. To change the default value of the `enable_rerank` parameter to `false`, set the following environment variable:
+
+```
+RERANK_BY_DEFAULT=False
+```
 
 ### .env Examples
 

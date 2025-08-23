@@ -421,6 +421,44 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、aws_bedrock） |
 | auto-scan-at-startup | - | 扫描输入目录中的新文件并开始索引 |
 
+### Reranking 配置
+
+Reranking 查询召回的块可以显著提高检索质量，它通过基于优化的相关性评分模型对文档重新排序。LightRAG 目前支持以下 rerank 提供商：
+
+- **Cohere / vLLM**：提供与 Cohere AI 的 `v2/rerank` 端点的完整 API 集成。由于 vLLM 提供了与 Cohere 兼容的 reranker API，因此也支持所有通过 vLLM 部署的 reranker 模型。
+- **Jina AI**：提供与所有 Jina rerank 模型的完全实现兼容性。
+- **阿里云**：具有旨在支持阿里云 rerank API 格式的自定义实现。
+
+Rerank 提供商通过 `.env` 文件进行配置。以下是使用 vLLM 本地部署的 rerank 模型的示例配置：
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+以下是使用阿里云提供的 Reranker 服务的示例配置：
+
+```
+RERANK_BINDING=aliyun
+RERANK_MODEL=gte-rerank-v2
+RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+有关完整的 reranker 配置示例，请参阅 `env.example` 文件。
+
+### 启用 Reranking
+
+可以按查询启用或禁用 Reranking。
+
+`/query` 和 `/query/stream` API 端点包含一个 `enable_rerank` 参数，默认设置为 `true`，用于控制当前查询是否激活 reranking。要将 `enable_rerank` 参数的默认值更改为 `false`，请设置以下环境变量：
+
+```
+RERANK_BY_DEFAULT=False
+```
+
 ### .env 文件示例
 
 ```bash
