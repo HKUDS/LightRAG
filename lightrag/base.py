@@ -157,7 +157,7 @@ class QueryParam:
     If proivded, this will be use instead of the default vaulue from prompt template.
     """
 
-    enable_rerank: bool = os.getenv("ENABLE_RERANK", "false").lower() == "true"
+    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
