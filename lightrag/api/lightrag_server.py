@@ -497,7 +497,7 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={"language": args.summary_language},
+            addon_params={"language": args.summary_language, "entity_types": args.entity_types},
             ollama_server_infos=ollama_server_infos,
         )
     else:  # azure_openai
@@ -523,7 +523,7 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={"language": args.summary_language},
+            addon_params={"language": args.summary_language, "entity_types": args.entity_types},
             ollama_server_infos=ollama_server_infos,
         )
 

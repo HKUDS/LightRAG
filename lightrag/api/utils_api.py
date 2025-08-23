@@ -264,6 +264,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
     ASCIIColors.white("    ├─ Summary Language: ", end="")
     ASCIIColors.yellow(f"{args.summary_language}")
+    ASCIIColors.white("    ├─ Entity Types: ", end="")
+    ASCIIColors.yellow(f"{args.entity_types}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
     ASCIIColors.yellow(f"{args.max_parallel_insert}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")

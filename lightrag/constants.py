@@ -15,6 +15,7 @@ DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for summaries
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_SUMMARY_MAX_TOKENS = 30000  # Default maximum token size
+DEFAULT_ENTITY_TYPES = ["organization", "person", "geo", "event", "category"]
 
 # Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
