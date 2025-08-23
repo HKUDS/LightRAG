@@ -5,15 +5,21 @@ This example demonstrates how to use rerank functionality with LightRAG
 to improve retrieval quality across different query modes.
 
 Configuration Required:
-1. Set your LLM API key and base URL in llm_model_func()
-2. Set your embedding API key and base URL in embedding_func()
-3. Set your rerank API key and base URL in the rerank configuration
-4. Or use environment variables (.env file):
-   - RERANK_MODEL=your_rerank_model
-   - RERANK_BINDING_HOST=your_rerank_endpoint
-   - RERANK_BINDING_API_KEY=your_rerank_api_key
+1. Set your OpenAI LLM API key and base URL with env vars
+    LLM_MODEL
+    LLM_BINDING_HOST
+    LLM_BINDING_API_KEY
+2. Set your OpenAI embedding API key and base URL with env vars:
+    EMBEDDING_MODEL
+    EMBEDDING_DIM
+    EMBEDDING_BINDING_HOST
+    EMBEDDING_BINDING_API_KEY
+3. Set your vLLM deployed AI rerank model setting with env vars:
+    RERANK_MODEL
+    RERANK_BINDING_HOST
+    RERANK_BINDING_API_KEY
 
-Note: Rerank is now controlled per query via the 'enable_rerank' parameter (default: True)
+Note: Rerank is controlled per query via the 'enable_rerank' parameter (default: True)
 """
 
 import asyncio
@@ -21,10 +27,12 @@ import os
 import numpy as np
 
 from lightrag import LightRAG, QueryParam
-from lightrag.rerank import custom_rerank, RerankModel
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, setup_logger
 from lightrag.kg.shared_storage import initialize_pipeline_status
+
+from functools import partial
+from lightrag.rerank import cohere_rerank
 
 # Set up your working directory
 WORKING_DIR = "./test_rerank"
@@ -38,12 +46,12 @@ async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await openai_complete_if_cache(
-        "gpt-4o-mini",
+        os.getenv("LLM_MODEL"),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key="your_llm_api_key_here",
-        base_url="https://api.your-llm-provider.com/v1",
+        api_key=os.getenv("LLM_BINDING_API_KEY"),
+        base_url=os.getenv("LLM_BINDING_HOST"),
         **kwargs,
     )
 
@@ -51,23 +59,18 @@ async def llm_model_func(
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embed(
         texts,
-        model="text-embedding-3-large",
-        api_key="your_embedding_api_key_here",
-        base_url="https://api.your-embedding-provider.com/v1",
+        model=os.getenv("EMBEDDING_MODEL"),
+        api_key=os.getenv("EMBEDDING_BINDING_API_KEY"),
+        base_url=os.getenv("EMBEDDING_BINDING_HOST"),
     )
 
 
-async def my_rerank_func(query: str, documents: list, top_n: int = None, **kwargs):
-    """Custom rerank function with all settings included"""
-    return await custom_rerank(
-        query=query,
-        documents=documents,
-        model="BAAI/bge-reranker-v2-m3",
-        base_url="https://api.your-rerank-provider.com/v1/rerank",
-        api_key="your_rerank_api_key_here",
-        top_n=top_n or 10,
-        **kwargs,
-    )
+rerank_model_func = partial(
+    cohere_rerank,
+    model=os.getenv("RERANK_MODEL"),
+    api_key=os.getenv("RERANK_BINDING_API_KEY"),
+    base_url=os.getenv("RERANK_BINDING_HOST"),
+)
 
 
 async def create_rag_with_rerank():
@@ -88,42 +91,7 @@ async def create_rag_with_rerank():
             func=embedding_func,
         ),
         # Rerank Configuration - provide the rerank function
-        rerank_model_func=my_rerank_func,
-    )
-
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
-    return rag
-
-
-async def create_rag_with_rerank_model():
-    """Alternative: Create LightRAG instance using RerankModel wrapper"""
-
-    # Get embedding dimension
-    test_embedding = await embedding_func(["test"])
-    embedding_dim = test_embedding.shape[1]
-    print(f"Detected embedding dimension: {embedding_dim}")
-
-    # Method 2: Using RerankModel wrapper
-    rerank_model = RerankModel(
-        rerank_func=custom_rerank,
-        kwargs={
-            "model": "BAAI/bge-reranker-v2-m3",
-            "base_url": "https://api.your-rerank-provider.com/v1/rerank",
-            "api_key": "your_rerank_api_key_here",
-        },
-    )
-
-    rag = LightRAG(
-        working_dir=WORKING_DIR,
-        llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=embedding_dim,
-            max_token_size=8192,
-            func=embedding_func,
-        ),
-        rerank_model_func=rerank_model.rerank,
+        rerank_model_func=rerank_model_func,
     )
 
     await rag.initialize_storages()
@@ -136,7 +104,7 @@ async def test_rerank_with_different_settings():
     """
     Test rerank functionality with different enable_rerank settings
     """
-    print("🚀 Setting up LightRAG with Rerank functionality...")
+    print("\n\n🚀 Setting up LightRAG with Rerank functionality...")
 
     rag = await create_rag_with_rerank()
 
@@ -199,11 +167,11 @@ async def test_direct_rerank():
     print("=" * 40)
 
     documents = [
-        {"content": "Reranking significantly improves retrieval quality"},
-        {"content": "LightRAG supports advanced reranking capabilities"},
-        {"content": "Vector search finds semantically similar documents"},
-        {"content": "Natural language processing with modern transformers"},
-        {"content": "The quick brown fox jumps over the lazy dog"},
+        "Vector search finds semantically similar documents",
+        "LightRAG supports advanced reranking capabilities",
+        "Reranking significantly improves retrieval quality",
+        "Natural language processing with modern transformers",
+        "The quick brown fox jumps over the lazy dog",
     ]
 
     query = "rerank improve quality"
@@ -211,20 +179,20 @@ async def test_direct_rerank():
     print(f"Documents: {len(documents)}")
 
     try:
-        reranked_docs = await custom_rerank(
+        reranked_results = await rerank_model_func(
             query=query,
             documents=documents,
-            model="BAAI/bge-reranker-v2-m3",
-            base_url="https://api.your-rerank-provider.com/v1/rerank",
-            api_key="your_rerank_api_key_here",
-            top_n=3,
+            top_n=4,
         )
 
         print("\n✅ Rerank Results:")
-        for i, doc in enumerate(reranked_docs):
-            score = doc.get("rerank_score", "N/A")
-            content = doc.get("content", "")[:60]
-            print(f"  {i+1}. Score: {score:.4f} | {content}...")
+        i = 0
+        for result in reranked_results:
+            index = result["index"]
+            score = result["relevance_score"]
+            content = documents[index]
+            print(f"  {index}. Score: {score:.4f} | {content}...")
+            i += 1
 
     except Exception as e:
         print(f"❌ Rerank failed: {e}")
@@ -236,11 +204,11 @@ async def main():
     print("=" * 60)
 
     try:
-        # Test rerank with different enable_rerank settings
-        await test_rerank_with_different_settings()
-
         # Test direct rerank
         await test_direct_rerank()
+
+        # Test rerank with different enable_rerank settings
+        await test_rerank_with_different_settings()
 
         print("\n✅ Example completed successfully!")
         print("\n💡 Key Points:")
