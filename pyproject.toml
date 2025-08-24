@@ -1,102 +1,228 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lightrag-hku"
-dynamic = ["version"]
-authors = [
-    {name = "Zirui Guo"}
-]
-description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
+name = "worldclass-rag"
+version = "1.0.0"
+description = "Un módulo RAG de clase mundial para integración fácil en cualquier desarrollo"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+authors = [
+    {name = "WorldClass RAG Team", email = "team@worldclassrag.dev"}
+]
+maintainers = [
+    {name = "WorldClass RAG Team", email = "team@worldclassrag.dev"}
+]
+keywords = [
+    "rag", "retrieval-augmented-generation", "llm", "ai", "nlp", 
+    "embeddings", "vector-database", "semantic-search", "chatbot"
+]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Programming Language :: Python :: 3",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research", 
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Linguistic",
 ]
+requires-python = ">=3.9"
 dependencies = [
-    "aiohttp",
-    "configparser",
-    "dotenv",
-    "future",
-    "json-repair",
-    "nano-vectordb",
-    "networkx",
-    "numpy",
+    # Core dependencies
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "typing-extensions>=4.8.0",
+    
+    # Vector and embeddings
+    "sentence-transformers>=2.2.2",
+    "chromadb>=0.4.18",
+    "faiss-cpu>=1.7.4",
+    "numpy>=1.24.0",
+    
+    # Document processing
+    "pypdf>=3.17.0",
+    "python-docx>=1.1.0", 
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1.2",
     "pandas>=2.0.0",
-    "pipmaster",
-    "pydantic",
-    "python-dotenv",
-    "pyuca",
-    "setuptools",
-    "tenacity",
-    "tiktoken",
-    "xlsxwriter>=3.1.0",
+    "pillow>=10.0.0",
+    "pytesseract>=0.3.10",
+    
+    # Text processing
+    "spacy>=3.7.0",
+    "nltk>=3.8.1",
+    "tiktoken>=0.5.2",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    
+    # LLM integrations
+    "openai>=1.6.0",
+    "anthropic>=0.8.0",
+    "langchain-core>=0.1.0",
+    "langchain-community>=0.0.13",
+    
+    # API and web
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "httpx>=0.25.0",
+    "websockets>=12.0",
+    
+    # Graph processing  
+    "networkx>=3.2.1",
+    "neo4j>=5.15.0",
+    
+    # Monitoring and logging
+    "structlog>=23.2.0",
+    "prometheus-client>=0.19.0",
+    "opentelemetry-api>=1.21.0",
+    
+    # Security and validation
+    "cryptography>=41.0.0",
+    "pydantic[email]>=2.5.0",
+    "presidio-analyzer>=2.2.33",
+    "presidio-anonymizer>=2.2.33",
+    
+    # Utilities
+    "rich>=13.7.0",
+    "click>=8.1.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0.1",
+    "python-multipart>=0.0.6",
 ]
 
 [project.optional-dependencies]
-api = [
-    # Core dependencies
-    "aiohttp",
-    "configparser",
-    "dotenv",
-    "future",
-    "numpy",
-    "openai",
-    "pandas>=2.0.0",
-    "pipmaster",
-    "pydantic",
-    "python-dotenv",
-    "pyuca",
-    "setuptools",
-    "tenacity",
-    "tiktoken",
-    "xlsxwriter>=3.1.0",
-    # API-specific dependencies
-    "aiofiles",
-    "ascii_colors",
-    "asyncpg",
-    "distro",
-    "fastapi",
-    "httpcore",
-    "httpx",
-    "jiter",
-    "passlib[bcrypt]",
-    "psutil",
-    "PyJWT",
-    "python-jose[cryptography]",
-    "python-multipart",
-    "pytz",
-    "uvicorn",
+# Development dependencies
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.12.0",
+    "black>=23.11.0",
+    "isort>=5.12.0",
+    "flake8>=6.1.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.6.0",
 ]
 
-[project.scripts]
-lightrag-server = "lightrag.api.lightrag_server:main"
-lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
+# GPU acceleration
+gpu = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "transformers[torch]>=4.36.0",
+    "accelerate>=0.25.0",
+    "faiss-gpu>=1.7.4",
+]
+
+# Extended document processing
+extended = [
+    "unstructured[all-docs]>=0.11.0",
+    "detectron2>=0.6",
+    "layoutparser>=0.3.4",
+    "easyocr>=1.7.0",
+]
+
+# Production monitoring
+monitoring = [
+    "prometheus-client>=0.19.0",
+    "grafana-client>=3.5.0",
+    "elasticsearch>=8.11.0",
+    "logstash-logger>=0.26.1",
+]
+
+# All optional dependencies
+all = [
+    "worldclass-rag[dev,gpu,extended,monitoring]"
+]
 
 [project.urls]
-Homepage = "https://github.com/HKUDS/LightRAG"
-Documentation = "https://github.com/HKUDS/LightRAG"
-Repository = "https://github.com/HKUDS/LightRAG"
-"Bug Tracker" = "https://github.com/HKUDS/LightRAG/issues"
+Homepage = "https://github.com/worldclass-rag/worldclass-rag"
+Documentation = "https://worldclass-rag.readthedocs.io"
+Repository = "https://github.com/worldclass-rag/worldclass-rag"
+Changelog = "https://github.com/worldclass-rag/worldclass-rag/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/worldclass-rag/worldclass-rag/issues"
+
+[project.scripts]
+worldclass-rag = "worldclass_rag.cli:main"
+wrag = "worldclass_rag.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["lightrag*"]
+where = ["src"]
 
-[tool.setuptools]
-include-package-data = true
+[tool.setuptools.package-dir]
+"" = "src"
 
-[tool.setuptools.dynamic]
-version = {attr = "lightrag.__version__"}
+[tool.black]
+line-length = 88
+target-version = ['py39']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git          
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
 
-[tool.setuptools.package-data]
-lightrag = ["api/webui/**/*"]
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+include_trailing_comma = true
 
-[tool.ruff]
-target-version = "py310"
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "gpu: marks tests that require GPU",
+]
+
+[tool.coverage.run]
+source = ["src/worldclass_rag"]
+omit = [
+    "tests/*", 
+    "src/worldclass_rag/cli.py"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]
