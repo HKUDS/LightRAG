@@ -248,6 +248,7 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+        from lightrag.llm.binding_options import OpenAILLMOptions
     if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
         from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
     if args.embedding_binding == "ollama":
