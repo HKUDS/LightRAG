@@ -835,13 +835,13 @@ async def _rebuild_single_entity(
 
     if not all_entity_data:
         logger.warning(
-            f"No cached entity data found for {entity_name}, trying to rebuild from relationships"
+            f"No entity data found for `{entity_name}`, trying to rebuild from relationships"
         )
 
         # Get all edges connected to this entity
         edges = await knowledge_graph_inst.get_node_edges(entity_name)
         if not edges:
-            logger.warning(f"No relationships found for entity {entity_name}")
+            logger.warning(f"No relations attached to entity `{entity_name}`")
             return
 
         # Collect relationship data to extract entity information
@@ -954,7 +954,7 @@ async def _rebuild_single_relationship(
                     )
 
     if not all_relationship_data:
-        logger.warning(f"No cached relationship data found for {src}-{tgt}")
+        logger.warning(f"No relation data found for `{src}-{tgt}`")
         return
 
     # Merge descriptions and keywords
