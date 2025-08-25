@@ -523,7 +523,7 @@ async def _rebuild_knowledge_from_chunks(
                     )
                     rebuilt_entities_count += 1
                     status_message = (
-                        f"Entity `{entity_name}` rebuilt from {len(chunk_ids)} chunks"
+                        f"Rebuilt `{entity_name}` from {len(chunk_ids)} chunks"
                     )
                     logger.info(status_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
@@ -532,7 +532,7 @@ async def _rebuild_knowledge_from_chunks(
                             pipeline_status["history_messages"].append(status_message)
                 except Exception as e:
                     failed_entities_count += 1
-                    status_message = f"Failed to rebuild entity `{entity_name}`: {e}"
+                    status_message = f"Failed to rebuild `{entity_name}`: {e}"
                     logger.info(status_message)  # Per requirement, change to info
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -563,7 +563,7 @@ async def _rebuild_knowledge_from_chunks(
                         global_config=global_config,
                     )
                     rebuilt_relationships_count += 1
-                    status_message = f"Relationship `{src} - {tgt}` rebuilt from {len(chunk_ids)} chunks"
+                    status_message = f"Rebuilt `{src} - {tgt}` from {len(chunk_ids)} chunks"
                     logger.info(status_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -572,7 +572,7 @@ async def _rebuild_knowledge_from_chunks(
                 except Exception as e:
                     failed_relationships_count += 1
                     status_message = (
-                        f"Failed to rebuild relationship `{src} - {tgt}`: {e}"
+                        f"Failed to rebuild `{src} - {tgt}`: {e}"
                     )
                     logger.info(status_message)  # Per requirement, change to info
                     if pipeline_status is not None and pipeline_status_lock is not None:
