@@ -2057,6 +2057,7 @@ async def _get_vector_context(
 
         results = await chunks_vdb.query(query, top_k=search_top_k, ids=query_param.ids)
         if not results:
+            logger.info(f"Naive query: 0 chunks (chunk_top_k: {search_top_k})")
             return []
 
         valid_chunks = []
