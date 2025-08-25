@@ -37,6 +37,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_ENTITY_TYPES
 )
 from lightrag.utils import get_env_value
 
@@ -333,7 +334,8 @@ class LightRAG:
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
-            "language": get_env_value("SUMMARY_LANGUAGE", "English", str)
+            "language": get_env_value("SUMMARY_LANGUAGE", "English", str),
+            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
         }
     )
 
