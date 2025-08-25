@@ -690,15 +690,6 @@ async def _rebuild_single_entity(
         # Update entity in vector database
         entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
 
-        # Delete old vector record first
-        try:
-            await entities_vdb.delete([entity_vdb_id])
-        except Exception as e:
-            logger.debug(
-                f"Could not delete old entity vector record {entity_vdb_id}: {e}"
-            )
-
-        # Insert new vector record
         entity_content = f"{entity_name}\n{final_description}"
         await entities_vdb.upsert(
             {
