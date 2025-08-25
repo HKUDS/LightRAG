@@ -2499,15 +2499,15 @@ async def _build_query_context(
         kg_context_tokens = len(tokenizer.encode(kg_context))
 
         # Calculate actual system prompt overhead dynamically
-        # 1. Calculate conversation history tokens
+        # 1. Converstion history not included in context length calculation
         history_context = ""
-        if query_param.conversation_history:
-            history_context = get_conversation_turns(
-                query_param.conversation_history, query_param.history_turns
-            )
-        history_tokens = (
-            len(tokenizer.encode(history_context)) if history_context else 0
-        )
+        # if query_param.conversation_history:
+        #     history_context = get_conversation_turns(
+        #         query_param.conversation_history, query_param.history_turns
+        #     )
+        # history_tokens = (
+        #     len(tokenizer.encode(history_context)) if history_context else 0
+        # )
 
         # 2. Calculate system prompt template tokens (excluding context_data)
         user_prompt = query_param.user_prompt if query_param.user_prompt else ""
@@ -2542,7 +2542,7 @@ async def _build_query_context(
         available_chunk_tokens = max_total_tokens - used_tokens
 
         logger.debug(
-            f"Token allocation - Total: {max_total_tokens}, History: {history_tokens}, SysPrompt: {sys_prompt_overhead}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+            f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
         )
 
         # Apply token truncation to chunks using the dynamic limit
