@@ -2464,6 +2464,7 @@ async def _build_query_context(
 
     # Apply token processing to merged chunks
     text_units_context = []
+    truncated_chunks = []
     if merged_chunks:
         # Calculate dynamic token limit for text chunks
         entities_str = json.dumps(entities_context, ensure_ascii=False)
