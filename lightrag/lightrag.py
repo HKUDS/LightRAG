@@ -422,13 +422,15 @@ class LightRAG:
         if self.ollama_server_infos is None:
             self.ollama_server_infos = OllamaServerInfos()
 
-
         # Validate config
         if self.force_llm_summary_on_merge < 3:
             logger.warning(
                 f"force_llm_summary_on_merge should be at least 3, got {self.force_llm_summary_on_merge}"
             )
-        if self.summary_max_tokens * self.force_llm_summary_on_merge > self.summary_context_size:
+        if (
+            self.summary_max_tokens * self.force_llm_summary_on_merge
+            > self.summary_context_size
+        ):
             logger.warning(
                 f"summary_context_size must be at least summary_max_tokens * force_llm_summary_on_merge, got {self.summary_context_size}"
             )
