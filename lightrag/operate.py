@@ -2180,6 +2180,8 @@ async def _build_query_context(
                         "frequency": 1,  # Vector chunks always have frequency 1
                         "order": i + 1,  # 1-based order in vector search results
                     }
+                else:
+                    logger.warning(f"Vector chunk missing chunk_id: {chunk}")
 
     # Use round-robin merge to combine local and global data fairly
     final_entities = []
