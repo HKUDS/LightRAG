@@ -124,10 +124,11 @@ async def _handle_entity_relation_summary(
     """Handle entity relation description summary using map-reduce approach.
 
     This function summarizes a list of descriptions using a map-reduce strategy:
-    1. If total tokens <= summary_max_tokens, summarize directly
-    2. Otherwise, split descriptions into chunks that fit within token limits
-    3. Summarize each chunk, then recursively process the summaries
-    4. Continue until we get a final summary within token limits or num of descriptions is less than force_llm_summary_on_merge
+    1. If total tokens < summary_context_size and len(description_list) < force_llm_summary_on_merge, no need to summarize
+    2. If total tokens < summary_max_tokens, summarize with LLM directly
+    3. Otherwise, split descriptions into chunks that fit within token limits
+    4. Summarize each chunk, then recursively process the summaries
+    5. Continue until we get a final summary within token limits or num of descriptions is less than force_llm_summary_on_merge
 
     Args:
         entity_or_relation_name: Name of the entity or relation being summarized
@@ -148,6 +149,7 @@ async def _handle_entity_relation_summary(
 
     # Get configuration
     tokenizer: Tokenizer = global_config["tokenizer"]
+    summary_context_size = global_config["summary_context_size"]
     summary_max_tokens = global_config["summary_max_tokens"]
 
     current_list = description_list[:]  # Copy the list to avoid modifying original
@@ -158,11 +160,11 @@ async def _handle_entity_relation_summary(
         total_tokens = sum(len(tokenizer.encode(desc)) for desc in current_list)
 
         # If total length is within limits, perform final summarization
-        if (
-            total_tokens <= summary_max_tokens
-            or len(current_list) < force_llm_summary_on_merge
-        ):
-            if len(current_list) < force_llm_summary_on_merge:
+        if total_tokens <= summary_context_size:
+            if (
+                len(current_list) < force_llm_summary_on_merge
+                and total_tokens < summary_max_tokens
+            ):
                 # Already the final result
                 final_description = seperator.join(current_list)
                 return final_description if final_description else ""
@@ -184,9 +186,9 @@ async def _handle_entity_relation_summary(
             desc_tokens = len(tokenizer.encode(desc))
 
             # If adding current description would exceed limit, finalize current chunk
-            if current_tokens + desc_tokens > summary_max_tokens and current_chunk:
+            if current_tokens + desc_tokens > summary_context_size and current_chunk:
                 chunks.append(current_chunk)
-                current_chunk = [desc]
+                current_chunk = [desc]  # Intial chunk for next group
                 current_tokens = desc_tokens
             else:
                 current_chunk.append(desc)

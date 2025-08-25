@@ -34,6 +34,7 @@ from lightrag.constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
@@ -285,6 +286,11 @@ class LightRAG:
     summary_max_tokens: int = field(
         default=int(os.getenv("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
     )
+    """Maximum tokens allowed for entity/relation description."""
+
+    summary_context_size: int = field(
+        default=int(os.getenv("SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE))
+    )
     """Maximum number of tokens allowed per LLM response."""
 
     llm_model_max_async: int = field(
@@ -415,6 +421,21 @@ class LightRAG:
         # Initialize ollama_server_infos if not provided
         if self.ollama_server_infos is None:
             self.ollama_server_infos = OllamaServerInfos()
+
+
+        # Validate config
+        if self.force_llm_summary_on_merge < 3:
+            logger.warning(
+                f"force_llm_summary_on_merge should be at least 3, got {self.force_llm_summary_on_merge}"
+            )
+        if self.summary_max_tokens * self.force_llm_summary_on_merge > self.summary_context_size:
+            logger.warning(
+                f"summary_context_size must be at least summary_max_tokens * force_llm_summary_on_merge, got {self.summary_context_size}"
+            )
+        if self.summary_context_size > self.max_total_tokens:
+            logger.warning(
+                f"summary_context_size must be less than max_total_tokens, got {self.summary_context_size}"
+            )
 
         # Fix global_config now
         global_config = asdict(self)

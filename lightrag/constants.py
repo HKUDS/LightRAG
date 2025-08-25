@@ -12,9 +12,11 @@ DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for summaries
-DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
 DEFAULT_MAX_GLEANING = 1
-DEFAULT_SUMMARY_MAX_TOKENS = 30000  # Default maximum token size
+
+DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
+DEFAULT_SUMMARY_MAX_TOKENS = 500  # Max token size for entity/relation summary
+DEFAULT_SUMMARY_CONTEXT_SIZE = 10000  # Default maximum token size
 
 # Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
