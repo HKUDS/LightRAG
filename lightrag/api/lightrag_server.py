@@ -2,7 +2,7 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException
 import asyncio
 import os
 import logging
@@ -248,6 +248,7 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+        from lightrag.llm.binding_options import OpenAILLMOptions
     if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
         from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
     if args.embedding_binding == "ollama":
@@ -471,7 +472,8 @@ def create_app(args):
             ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            summary_max_tokens=args.max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            summary_context_size=args.summary_context_size,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs=(
@@ -509,7 +511,8 @@ def create_app(args):
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            summary_max_tokens=args.max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            summary_context_size=args.summary_context_size,
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
@@ -596,9 +599,7 @@ def create_app(args):
             }
         username = form_data.username
         if auth_handler.accounts.get(username) != form_data.password:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
-            )
+            raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login
         user_token = auth_handler.create_token(
@@ -641,7 +642,8 @@ def create_app(args):
                     "embedding_binding": args.embedding_binding,
                     "embedding_binding_host": args.embedding_binding_host,
                     "embedding_model": args.embedding_model,
-                    "max_tokens": args.max_tokens,
+                    "summary_max_tokens": args.summary_max_tokens,
+                    "summary_context_size": args.summary_context_size,
                     "kv_storage": args.kv_storage,
                     "doc_status_storage": args.doc_status_storage,
                     "graph_storage": args.graph_storage,
