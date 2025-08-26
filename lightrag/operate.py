@@ -114,6 +114,7 @@ def chunking_by_token_size(
 
 
 async def _handle_entity_relation_summary(
+    description_type: str,
     entity_or_relation_name: str,
     description_list: list[str],
     force_llm_summary_on_merge: int,
@@ -172,6 +173,7 @@ async def _handle_entity_relation_summary(
             else:
                 # Final summarization of remaining descriptions - LLM will be used
                 final_summary = await _summarize_descriptions(
+                    description_type,
                     entity_or_relation_name,
                     current_list,
                     global_config,
@@ -213,7 +215,11 @@ async def _handle_entity_relation_summary(
             else:
                 # Multiple descriptions need LLM summarization
                 summary = await _summarize_descriptions(
-                    entity_or_relation_name, chunk, global_config, llm_response_cache
+                    description_type,
+                    entity_or_relation_name,
+                    chunk,
+                    global_config,
+                    llm_response_cache,
                 )
                 new_summaries.append(summary)
                 llm_was_used = True  # Mark that LLM was used in reduce phase
@@ -223,7 +229,8 @@ async def _handle_entity_relation_summary(
 
 
 async def _summarize_descriptions(
-    entity_or_relation_name: str,
+    description_type: str,
+    description_name: str,
     description_list: list[str],
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
@@ -247,18 +254,22 @@ async def _summarize_descriptions(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
     )
 
+    summary_length_recommended = global_config["summary_length_recommended"]
+
     prompt_template = PROMPTS["summarize_entity_descriptions"]
 
     # Prepare context for the prompt
     context_base = dict(
-        entity_name=entity_or_relation_name,
-        description_list="\n".join(description_list),
+        description_type=description_type,
+        description_name=description_name,
+        description_list="\n\n".join(description_list),
+        summary_length=summary_length_recommended,
         language=language,
     )
     use_prompt = prompt_template.format(**context_base)
 
     logger.debug(
-        f"Summarizing {len(description_list)} descriptions for: {entity_or_relation_name}"
+        f"Summarizing {len(description_list)} descriptions for: {description_name}"
     )
 
     # Use LLM function with cache (higher priority for summary generation)
@@ -563,7 +574,9 @@ async def _rebuild_knowledge_from_chunks(
                         global_config=global_config,
                     )
                     rebuilt_relationships_count += 1
-                    status_message = f"Rebuilt `{src} - {tgt}` from {len(chunk_ids)} chunks"
+                    status_message = (
+                        f"Rebuilt `{src} - {tgt}` from {len(chunk_ids)} chunks"
+                    )
                     logger.info(status_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -571,9 +584,7 @@ async def _rebuild_knowledge_from_chunks(
                             pipeline_status["history_messages"].append(status_message)
                 except Exception as e:
                     failed_relationships_count += 1
-                    status_message = (
-                        f"Failed to rebuild `{src} - {tgt}`: {e}"
-                    )
+                    status_message = f"Failed to rebuild `{src} - {tgt}`: {e}"
                     logger.info(status_message)  # Per requirement, change to info
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -873,6 +884,7 @@ async def _rebuild_single_entity(
         if description_list:
             force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
             final_description, _ = await _handle_entity_relation_summary(
+                "Entity",
                 entity_name,
                 description_list,
                 force_llm_summary_on_merge,
@@ -915,6 +927,7 @@ async def _rebuild_single_entity(
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
     if description_list:
         final_description, _ = await _handle_entity_relation_summary(
+            "Entity",
             entity_name,
             description_list,
             force_llm_summary_on_merge,
@@ -996,6 +1009,7 @@ async def _rebuild_single_relationship(
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
     if description_list:
         final_description, _ = await _handle_entity_relation_summary(
+            "Relation",
             f"{src}-{tgt}",
             description_list,
             force_llm_summary_on_merge,
@@ -1100,6 +1114,7 @@ async def _merge_nodes_then_upsert(
     if num_fragment > 0:
         # Get summary and LLM usage status
         description, llm_was_used = await _handle_entity_relation_summary(
+            "Entity",
             entity_name,
             description_list,
             force_llm_summary_on_merge,
@@ -1218,6 +1233,7 @@ async def _merge_edges_then_upsert(
     if num_fragment > 0:
         # Get summary and LLM usage status
         description, llm_was_used = await _handle_entity_relation_summary(
+            "Relation",
             f"({src_id}, {tgt_id})",
             description_list,
             force_llm_summary_on_merge,
@@ -1595,7 +1611,7 @@ async def merge_nodes_and_edges(
             )
             # Don't raise exception to avoid affecting main flow
 
-    log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} added entities, {len(processed_edges)} relations"
+    log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} extra entities, {len(processed_edges)} relations"
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message

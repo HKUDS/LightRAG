@@ -133,20 +133,26 @@ Output:
 #############################""",
 ]
 
-PROMPTS[
-    "summarize_entity_descriptions"
-] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
-Given one or two entities, and a list of descriptions, all related to the same entity or group of entities.
-Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
-If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
-Make sure it is written in third person, and include the entity names so we the have full context.
-Use {language} as output language.
+PROMPTS["summarize_entity_descriptions"] = """---Role---
+You are a Knowledge Graph Specialist responsible for data curation and synthesis.
 
-#######
+---Task---
+Your task is to synthesize a list of descriptions of a given entity or relation into a single, comprehensive, and cohesive summary.
+
+---Instructions---
+1. **Comprehensiveness:** The summary must integrate key information from all provided descriptions. Do not omit important facts.
+2. **Consistency:** If the descriptions contain contradictions, you must resolve them to produce a logically consistent summary. If a contradiction cannot be resolved, phrase the information neutrally.
+3. **Context:** The summary must explicitly mention the name of the entity or relation for full context.
+4. **Style:** The output must be written from an objective, third-person perspective.
+5. **Conciseness:** Be concise and avoid redundancy. The summary's length must not exceed {summary_length} tokens.
+6. **Language:** The entire output must be written in {language}.
+
 ---Data---
-Entities: {entity_name}
-Description List: {description_list}
-#######
+{description_type} Name: {description_name}
+Description List:
+{description_list}
+
+---Output---
 Output:
 """
 

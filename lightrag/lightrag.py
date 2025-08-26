@@ -35,6 +35,7 @@ from lightrag.constants import (
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
@@ -293,6 +294,13 @@ class LightRAG:
     )
     """Maximum number of tokens allowed per LLM response."""
 
+    summary_length_recommended: int = field(
+        default=int(
+            os.getenv("SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED)
+        )
+    )
+    """Recommended length of LLM summary output."""
+
     llm_model_max_async: int = field(
         default=int(os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC))
     )
@@ -435,8 +443,12 @@ class LightRAG:
                 f"summary_context_size must be at least summary_max_tokens * force_llm_summary_on_merge, got {self.summary_context_size}"
             )
         if self.summary_context_size > self.max_total_tokens:
-            logger.warning(
+            logger.error(
                 f"summary_context_size must be less than max_total_tokens, got {self.summary_context_size}"
+            )
+        if self.summary_length_recommended > self.summary_max_tokens:
+            logger.warning(
+                f"summary_length_recommended should less than max_total_tokens, got {self.summary_length_recommended}"
             )
 
         # Fix global_config now
