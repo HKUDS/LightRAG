@@ -66,13 +66,27 @@ class FalkorDBStorage(BaseGraphStorage):
         return workspace if workspace else "base"
 
     async def initialize(self):
-        HOST = os.environ.get("FALKORDB_HOST", config.get("falkordb", "host", fallback="localhost"))
-        PORT = int(os.environ.get("FALKORDB_PORT", config.get("falkordb", "port", fallback=6379)))
-        PASSWORD = os.environ.get("FALKORDB_PASSWORD", config.get("falkordb", "password", fallback=None))
-        USERNAME = os.environ.get("FALKORDB_USERNAME", config.get("falkordb", "username", fallback=None))
+        HOST = os.environ.get(
+            "FALKORDB_HOST", config.get("falkordb", "host", fallback="localhost")
+        )
+        PORT = int(
+            os.environ.get(
+                "FALKORDB_PORT", config.get("falkordb", "port", fallback=6379)
+            )
+        )
+        PASSWORD = os.environ.get(
+            "FALKORDB_PASSWORD", config.get("falkordb", "password", fallback=None)
+        )
+        USERNAME = os.environ.get(
+            "FALKORDB_USERNAME", config.get("falkordb", "username", fallback=None)
+        )
         GRAPH_NAME = os.environ.get(
-            "FALKORDB_GRAPH_NAME", 
-            config.get("falkordb", "graph_name", fallback=re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace))
+            "FALKORDB_GRAPH_NAME",
+            config.get(
+                "falkordb",
+                "graph_name",
+                fallback=re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace),
+            ),
         )
 
         try:
@@ -83,25 +97,29 @@ class FalkorDBStorage(BaseGraphStorage):
                 password=PASSWORD,
                 username=USERNAME,
             )
-            
+
             # Select the graph (creates if doesn't exist)
             self._graph = self._db.select_graph(GRAPH_NAME)
-            
+
             # Test connection with a simple query
             await self._run_query("RETURN 1")
-            
+
             # Create index for workspace nodes on entity_id if it doesn't exist
             workspace_label = self._get_workspace_label()
             try:
-                index_query = f"CREATE INDEX FOR (n:`{workspace_label}`) ON (n.entity_id)"
+                index_query = (
+                    f"CREATE INDEX FOR (n:`{workspace_label}`) ON (n.entity_id)"
+                )
                 await self._run_query(index_query)
-                logger.info(f"Created index for {workspace_label} nodes on entity_id in FalkorDB")
+                logger.info(
+                    f"Created index for {workspace_label} nodes on entity_id in FalkorDB"
+                )
             except Exception as e:
                 # Index may already exist, which is not an error
                 logger.debug(f"Index creation may have failed or already exists: {e}")
-            
+
             logger.info(f"Connected to FalkorDB at {HOST}:{PORT}, graph: {GRAPH_NAME}")
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to FalkorDB at {HOST}:{PORT}: {e}")
             raise
@@ -124,8 +142,7 @@ class FalkorDBStorage(BaseGraphStorage):
         """Run a query asynchronously using thread pool"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            self._executor, 
-            lambda: self._graph.query(query, params or {})
+            self._executor, lambda: self._graph.query(query, params or {})
         )
 
     async def index_done_callback(self) -> None:
@@ -176,10 +193,13 @@ class FalkorDBStorage(BaseGraphStorage):
                 f"MATCH (a:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(b:`{workspace_label}` {{entity_id: $target_entity_id}}) "
                 "RETURN COUNT(r) > 0 AS edgeExists"
             )
-            result = await self._run_query(query, {
-                "source_entity_id": source_node_id,
-                "target_entity_id": target_node_id,
-            })
+            result = await self._run_query(
+                query,
+                {
+                    "source_entity_id": source_node_id,
+                    "target_entity_id": target_node_id,
+                },
+            )
             return result.result_set[0][0] if result.result_set else False
         except Exception as e:
             logger.error(
@@ -205,7 +225,7 @@ class FalkorDBStorage(BaseGraphStorage):
         try:
             query = f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN n"
             result = await self._run_query(query, {"entity_id": node_id})
-            
+
             if result.result_set and len(result.result_set) > 0:
                 node = result.result_set[0][0]  # Get the first node
                 # Convert FalkorDB node to dictionary
@@ -234,14 +254,14 @@ class FalkorDBStorage(BaseGraphStorage):
         """
         result = await self._run_query(query, {"node_ids": node_ids})
         nodes = {}
-        
+
         if result.result_set and len(result.result_set) > 0:
             for record in result.result_set:
                 entity_id = record[0]
                 node = record[1]
                 node_dict = {key: value for key, value in node.properties.items()}
                 nodes[entity_id] = node_dict
-        
+
         return nodes
 
     async def node_degree(self, node_id: str) -> int:
@@ -267,7 +287,7 @@ class FalkorDBStorage(BaseGraphStorage):
                 RETURN COUNT(r) AS degree
             """
             result = await self._run_query(query, {"entity_id": node_id})
-            
+
             if result.result_set and len(result.result_set) > 0:
                 degree = result.result_set[0][0]
                 return degree
@@ -298,7 +318,7 @@ class FalkorDBStorage(BaseGraphStorage):
         """
         result = await self._run_query(query, {"node_ids": node_ids})
         degrees = {}
-        
+
         if result.result_set and len(result.result_set) > 0:
             for record in result.result_set:
                 entity_id = record[0]
@@ -380,14 +400,17 @@ class FalkorDBStorage(BaseGraphStorage):
             MATCH (start:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(end:`{workspace_label}` {{entity_id: $target_entity_id}})
             RETURN properties(r) as edge_properties
             """
-            result = await self._run_query(query, {
-                "source_entity_id": source_node_id,
-                "target_entity_id": target_node_id,
-            })
-            
+            result = await self._run_query(
+                query,
+                {
+                    "source_entity_id": source_node_id,
+                    "target_entity_id": target_node_id,
+                },
+            )
+
             if result.result_set and len(result.result_set) > 0:
                 edge_result = result.result_set[0][0]  # Get properties dict
-                
+
                 # Ensure required keys exist with defaults
                 required_keys = {
                     "weight": 1.0,
@@ -404,7 +427,7 @@ class FalkorDBStorage(BaseGraphStorage):
                         )
 
                 return edge_result
-            
+
             # Return None when no edge found
             return None
 
@@ -426,7 +449,7 @@ class FalkorDBStorage(BaseGraphStorage):
         Returns:
             A dictionary mapping (src, tgt) tuples to their edge properties.
         """
-         
+
         workspace_label = self._get_workspace_label()
         query = f"""
         UNWIND $pairs AS pair
@@ -435,14 +458,14 @@ class FalkorDBStorage(BaseGraphStorage):
         """
         result = await self._run_query(query, {"pairs": pairs})
         edges_dict = {}
-        
+
         if result.result_set and len(result.result_set) > 0:
             for record in result.result_set:
                 if record and len(record) >= 3:
                     src = record[0]
                     tgt = record[1]
                     edge_props = record[2] if record[2] else {}
-                    
+
                     edge_result = {}
                     for key, default in {
                         "weight": 1.0,
@@ -451,9 +474,9 @@ class FalkorDBStorage(BaseGraphStorage):
                         "keywords": None,
                     }.items():
                         edge_result[key] = edge_props.get(key, default)
-                    
+
                     edges_dict[(src, tgt)] = edge_result
-        
+
         # Add default properties for pairs not found
         for pair_dict in pairs:
             src = pair_dict["src"]
@@ -465,7 +488,7 @@ class FalkorDBStorage(BaseGraphStorage):
                     "description": None,
                     "keywords": None,
                 }
-        
+
         return edges_dict
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -574,9 +597,11 @@ class FalkorDBStorage(BaseGraphStorage):
         WHERE n.source_id IS NOT NULL AND chunk_id IN split(n.source_id, $sep)
         RETURN DISTINCT n
         """
-        result = await self._run_query(query, {"chunk_ids": chunk_ids, "sep": GRAPH_FIELD_SEP})
+        result = await self._run_query(
+            query, {"chunk_ids": chunk_ids, "sep": GRAPH_FIELD_SEP}
+        )
         nodes = []
-        
+
         if result.result_set:
             for record in result.result_set:
                 node = record[0]
@@ -584,7 +609,7 @@ class FalkorDBStorage(BaseGraphStorage):
                 # Add node id (entity_id) to the dictionary for easier access
                 node_dict["id"] = node_dict.get("entity_id")
                 nodes.append(node_dict)
-        
+
         return nodes
 
     async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
@@ -595,16 +620,18 @@ class FalkorDBStorage(BaseGraphStorage):
         WHERE r.source_id IS NOT NULL AND chunk_id IN split(r.source_id, $sep)
         RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
         """
-        result = await self._run_query(query, {"chunk_ids": chunk_ids, "sep": GRAPH_FIELD_SEP})
+        result = await self._run_query(
+            query, {"chunk_ids": chunk_ids, "sep": GRAPH_FIELD_SEP}
+        )
         edges = []
-        
+
         if result.result_set:
             for record in result.result_set:
                 edge_properties = record[2]
                 edge_properties["source"] = record[0]
                 edge_properties["target"] = record[1]
                 edges.append(edge_properties)
-        
+
         return edges
 
     @retry(
@@ -624,7 +651,9 @@ class FalkorDBStorage(BaseGraphStorage):
         properties = node_data
         entity_type = properties["entity_type"]
         if "entity_id" not in properties:
-            raise ValueError("FalkorDB: node properties must contain an 'entity_id' field")
+            raise ValueError(
+                "FalkorDB: node properties must contain an 'entity_id' field"
+            )
 
         try:
             query = f"""
@@ -632,7 +661,9 @@ class FalkorDBStorage(BaseGraphStorage):
             SET n += $properties
             SET n:`{entity_type}`
             """
-            await self._run_query(query, {"entity_id": node_id, "properties": properties})
+            await self._run_query(
+                query, {"entity_id": node_id, "properties": properties}
+            )
         except Exception as e:
             logger.error(f"Error during upsert: {str(e)}")
             raise
@@ -669,11 +700,14 @@ class FalkorDBStorage(BaseGraphStorage):
             SET r += $properties
             RETURN r, source, target
             """
-            await self._run_query(query, {
-                "source_entity_id": source_node_id,
-                "target_entity_id": target_node_id,
-                "properties": edge_properties,
-            })
+            await self._run_query(
+                query,
+                {
+                    "source_entity_id": source_node_id,
+                    "target_entity_id": target_node_id,
+                    "properties": edge_properties,
+                },
+            )
         except Exception as e:
             logger.error(f"Error during edge upsert: {str(e)}")
             raise
@@ -768,7 +802,7 @@ class FalkorDBStorage(BaseGraphStorage):
                         # Get start and end node IDs
                         start_node_id = str(rel.src_node)
                         end_node_id = str(rel.dest_node)
-                        
+
                         result.edges.append(
                             KnowledgeGraphEdge(
                                 id=edge_id,
@@ -806,11 +840,11 @@ class FalkorDBStorage(BaseGraphStorage):
         """
         result = await self._run_query(query)
         labels = []
-        
+
         if result.result_set:
             for record in result.result_set:
                 labels.append(record[0])
-        
+
         return labels
 
     @retry(
@@ -868,10 +902,9 @@ class FalkorDBStorage(BaseGraphStorage):
                 MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(target:`{workspace_label}` {{entity_id: $target_entity_id}})
                 DELETE r
                 """
-                await self._run_query(query, {
-                    "source_entity_id": source, 
-                    "target_entity_id": target
-                })
+                await self._run_query(
+                    query, {"source_entity_id": source, "target_entity_id": target}
+                )
                 logger.debug(f"Deleted edge from '{source}' to '{target}'")
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
@@ -890,7 +923,7 @@ class FalkorDBStorage(BaseGraphStorage):
         """
         result = await self._run_query(query)
         nodes = []
-        
+
         if result.result_set:
             for record in result.result_set:
                 node = record[0]
@@ -898,7 +931,7 @@ class FalkorDBStorage(BaseGraphStorage):
                 # Add node id (entity_id) to the dictionary for easier access
                 node_dict["id"] = node_dict.get("entity_id")
                 nodes.append(node_dict)
-        
+
         return nodes
 
     async def get_all_edges(self) -> list[dict]:
@@ -914,14 +947,14 @@ class FalkorDBStorage(BaseGraphStorage):
         """
         result = await self._run_query(query)
         edges = []
-        
+
         if result.result_set:
             for record in result.result_set:
                 edge_properties = record[2]
                 edge_properties["source"] = record[0]
                 edge_properties["target"] = record[1]
                 edges.append(edge_properties)
-        
+
         return edges
 
     async def drop(self) -> dict[str, str]:
@@ -948,7 +981,5 @@ class FalkorDBStorage(BaseGraphStorage):
                 "message": f"workspace '{workspace_label}' data dropped",
             }
         except Exception as e:
-            logger.error(
-                f"Error dropping FalkorDB workspace '{workspace_label}': {e}"
-            )
+            logger.error(f"Error dropping FalkorDB workspace '{workspace_label}': {e}")
             return {"status": "error", "message": str(e)}

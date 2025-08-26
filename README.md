@@ -849,7 +849,7 @@ see test_neo4j.py for a working example.
 
 ```python
 export FALKORDB_HOST="localhost"
-export FALKORDB_PORT="6379"  
+export FALKORDB_PORT="6379"
 export FALKORDB_PASSWORD="password"  # optional
 export FALKORDB_USERNAME="username"  # optional
 export FALKORDB_GRAPH_NAME="lightrag_graph"  # optional, defaults to namespace
