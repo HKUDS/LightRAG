@@ -435,20 +435,13 @@ class LightRAG:
             logger.warning(
                 f"force_llm_summary_on_merge should be at least 3, got {self.force_llm_summary_on_merge}"
             )
-        if (
-            self.summary_max_tokens * self.force_llm_summary_on_merge
-            > self.summary_context_size
-        ):
-            logger.warning(
-                f"summary_context_size must be at least summary_max_tokens * force_llm_summary_on_merge, got {self.summary_context_size}"
-            )
         if self.summary_context_size > self.max_total_tokens:
-            logger.error(
-                f"summary_context_size must be less than max_total_tokens, got {self.summary_context_size}"
+            logger.warning(
+                f"summary_context_size({self.summary_context_size}) should no greater than max_total_tokens({self.max_total_tokens})"
             )
         if self.summary_length_recommended > self.summary_max_tokens:
             logger.warning(
-                f"summary_length_recommended should less than max_total_tokens, got {self.summary_length_recommended}"
+                f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
         # Fix global_config now

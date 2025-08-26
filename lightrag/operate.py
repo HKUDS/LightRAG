@@ -162,15 +162,19 @@ async def _handle_entity_relation_summary(
         total_tokens = sum(len(tokenizer.encode(desc)) for desc in current_list)
 
         # If total length is within limits, perform final summarization
-        if total_tokens <= summary_context_size:
+        if total_tokens <= summary_context_size or len(current_list) <= 2:
             if (
                 len(current_list) < force_llm_summary_on_merge
                 and total_tokens < summary_max_tokens
             ):
-                # Already the final result - no LLM needed
+                # no LLM needed, just join the descriptions
                 final_description = seperator.join(current_list)
                 return final_description if final_description else "", llm_was_used
             else:
+                if total_tokens > summary_context_size and len(current_list) <= 2:
+                    logger.warning(
+                        f"Summarizing {entity_or_relation_name}: Oversize descpriton found"
+                    )
                 # Final summarization of remaining descriptions - LLM will be used
                 final_summary = await _summarize_descriptions(
                     description_type,
@@ -182,18 +186,31 @@ async def _handle_entity_relation_summary(
                 return final_summary, True  # LLM was used for final summarization
 
         # Need to split into chunks - Map phase
+        # Ensure each chunk has minimum 2 descriptions to guarantee progress
         chunks = []
         current_chunk = []
         current_tokens = 0
 
-        for desc in current_list:
+        # Currently least 3 descriptions in current_list
+        for i, desc in enumerate(current_list):
             desc_tokens = len(tokenizer.encode(desc))
 
             # If adding current description would exceed limit, finalize current chunk
             if current_tokens + desc_tokens > summary_context_size and current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = [desc]  # Initial chunk for next group
-                current_tokens = desc_tokens
+                # Ensure we have at least 2 descriptions in the chunk (when possible)
+                if len(current_chunk) == 1:
+                    # Force add one more description to ensure minimum 2 per chunk
+                    current_chunk.append(desc)
+                    chunks.append(current_chunk)
+                    logger.warning(
+                        f"Summarizing {entity_or_relation_name}: Oversize descpriton found"
+                    )
+                    current_chunk = []  # next group is empty
+                    current_tokens = 0
+                else:  # curren_chunk is ready for summary in reduce phase
+                    chunks.append(current_chunk)
+                    current_chunk = [desc]  # leave it for next group
+                    current_tokens = desc_tokens
             else:
                 current_chunk.append(desc)
                 current_tokens += desc_tokens
@@ -203,10 +220,10 @@ async def _handle_entity_relation_summary(
             chunks.append(current_chunk)
 
         logger.info(
-            f"Summarizing {entity_or_relation_name}: split {len(current_list)} descriptions into {len(chunks)} groups"
+            f"   Summarizing {entity_or_relation_name}: Map {len(current_list)} descriptions into {len(chunks)} groups"
         )
 
-        # Reduce phase: summarize each chunk
+        # Reduce phase: summarize each group from chunks
         new_summaries = []
         for chunk in chunks:
             if len(chunk) == 1:
@@ -258,11 +275,22 @@ async def _summarize_descriptions(
 
     prompt_template = PROMPTS["summarize_entity_descriptions"]
 
+    # Join descriptions and apply token-based truncation if necessary
+    joined_descriptions = "\n\n".join(description_list)
+    tokenizer = global_config["tokenizer"]
+    summary_context_size = global_config["summary_context_size"]
+
+    # Token-based truncation to ensure input fits within limits
+    tokens = tokenizer.encode(joined_descriptions)
+    if len(tokens) > summary_context_size:
+        truncated_tokens = tokens[:summary_context_size]
+        joined_descriptions = tokenizer.decode(truncated_tokens)
+
     # Prepare context for the prompt
     context_base = dict(
         description_type=description_type,
         description_name=description_name,
-        description_list="\n\n".join(description_list),
+        description_list=joined_descriptions,
         summary_length=summary_length_recommended,
         language=language,
     )
