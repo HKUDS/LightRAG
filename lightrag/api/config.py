@@ -30,6 +30,8 @@ from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_EMBEDDING_BATCH_NUM,
@@ -119,10 +121,26 @@ def parse_args() -> argparse.Namespace:
         help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
-        "--max-tokens",
+        "--summary-max-tokens",
         type=int,
         default=get_env_value("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
-        help=f"Maximum token size (default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+        help=f"Maximum token size for entity/relation summary(default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+    )
+    parser.add_argument(
+        "--summary-context-size",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_CONTEXT_SIZE})",
+    )
+    parser.add_argument(
+        "--summary-length-recommended",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration

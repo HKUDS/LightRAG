@@ -40,22 +40,19 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 
 5. When finished, output {completion_delimiter}
 
-######################
 ---Examples---
-######################
 {examples}
 
-#############################
 ---Real Data---
-######################
 Entity_types: [{entity_types}]
 Text:
 {input_text}
-######################
+
+---Output---
 Output:"""
 
 PROMPTS["entity_extraction_examples"] = [
-    """Example 1:
+    """------Example 1------
 
 Entity_types: [person, technology, mission, organization, location]
 Text:
@@ -81,8 +78,9 @@ Output:
 ("relationship"{tuple_delimiter}"Jordan"{tuple_delimiter}"Cruz"{tuple_delimiter}"Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."{tuple_delimiter}"ideological conflict, rebellion"{tuple_delimiter}5){record_delimiter}
 ("relationship"{tuple_delimiter}"Taylor"{tuple_delimiter}"The Device"{tuple_delimiter}"Taylor shows reverence towards the device, indicating its importance and potential impact."{tuple_delimiter}"reverence, technological significance"{tuple_delimiter}9){record_delimiter}
 ("content_keywords"{tuple_delimiter}"power dynamics, ideological conflict, discovery, rebellion"){completion_delimiter}
-#############################""",
-    """Example 2:
+
+""",
+    """------Example 2------
 
 Entity_types: [company, index, commodity, market_trend, economic_policy, biological]
 Text:
@@ -109,8 +107,9 @@ Output:
 ("relationship"{tuple_delimiter}"Gold Futures"{tuple_delimiter}"Market Selloff"{tuple_delimiter}"Gold prices rose as investors sought safe-haven assets during the market selloff."{tuple_delimiter}"market reaction, safe-haven investment"{tuple_delimiter}10){record_delimiter}
 ("relationship"{tuple_delimiter}"Federal Reserve Policy Announcement"{tuple_delimiter}"Market Selloff"{tuple_delimiter}"Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff."{tuple_delimiter}"interest rate impact, financial regulation"{tuple_delimiter}7){record_delimiter}
 ("content_keywords"{tuple_delimiter}"market downturn, investor sentiment, commodities, Federal Reserve, stock performance"){completion_delimiter}
-#############################""",
-    """Example 3:
+
+""",
+    """------Example 3------
 
 Entity_types: [economic_policy, athlete, event, location, record, organization, equipment]
 Text:
@@ -130,23 +129,29 @@ Output:
 ("relationship"{tuple_delimiter}"Noah Carter"{tuple_delimiter}"Carbon-Fiber Spikes"{tuple_delimiter}"Noah Carter used carbon-fiber spikes to enhance performance during the race."{tuple_delimiter}"athletic equipment, performance boost"{tuple_delimiter}7){record_delimiter}
 ("relationship"{tuple_delimiter}"World Athletics Federation"{tuple_delimiter}"100m Sprint Record"{tuple_delimiter}"The World Athletics Federation is responsible for validating and recognizing new sprint records."{tuple_delimiter}"sports regulation, record certification"{tuple_delimiter}9){record_delimiter}
 ("content_keywords"{tuple_delimiter}"athletics, sprinting, record-breaking, sports technology, competition"){completion_delimiter}
-#############################""",
+
+""",
 ]
 
-PROMPTS[
-    "summarize_entity_descriptions"
-] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
-Given one or two entities, and a list of descriptions, all related to the same entity or group of entities.
-Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
-If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
-Make sure it is written in third person, and include the entity names so we the have full context.
-Use {language} as output language.
+PROMPTS["summarize_entity_descriptions"] = """---Role---
+You are a Knowledge Graph Specialist responsible for data curation and synthesis.
 
-#######
+---Task---
+Your task is to synthesize a list of descriptions of a given entity or relation into a single, comprehensive, and cohesive summary.
+
+---Instructions---
+1. **Comprehensiveness:** The summary must integrate key information from all provided descriptions. Do not omit important facts.
+2. **Context:** The summary must explicitly mention the name of the entity or relation for full context.
+3. **Style:** The output must be written from an objective, third-person perspective.
+4. **Length:** Maintain depth and completeness while ensuring the summary's length not exceed {summary_length} tokens.
+5. **Language:** The entire output must be written in {language}.
+
 ---Data---
-Entities: {entity_name}
-Description List: {description_list}
-#######
+{description_type} Name: {description_name}
+Description List:
+{description_list}
+
+---Output---
 Output:
 """
 
@@ -188,8 +193,7 @@ PROMPTS["entity_if_loop_extraction"] = """
 It appears some entities may have still been missed.
 
 ---Output---
-
-Answer ONLY by `YES` OR `NO` if there are still entities that need to be added.
+Output:
 """.strip()
 
 PROMPTS["fail_response"] = (
@@ -211,7 +215,7 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 ---Knowledge Graph and Document Chunks---
 {context_data}
 
----RESPONSE GUIDELINES---
+---Response Guidelines---
 **1. Content & Adherence:**
 - Strictly adhere to the provided context from the Knowledge Base. Do not invent, assume, or include any information not present in the source data.
 - If the answer cannot be found in the provided context, state that you do not have enough information to answer.
@@ -233,8 +237,8 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 ---USER CONTEXT---
 - Additional user prompt: {user_prompt}
 
-
-Response:"""
+---Response---
+Output:"""
 
 PROMPTS["keywords_extraction"] = """---Role---
 You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
@@ -257,7 +261,7 @@ Given a user query, your task is to extract two distinct types of keywords:
 User Query: {query}
 
 ---Output---
-"""
+Output:"""
 
 PROMPTS["keywords_extraction_examples"] = [
     """Example 1:
@@ -327,5 +331,5 @@ Generate a concise response based on Document Chunks and follow Response Rules, 
 ---USER CONTEXT---
 - Additional user prompt: {user_prompt}
 
-
-Response:"""
+---Response---
+Output:"""
