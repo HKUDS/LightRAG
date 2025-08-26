@@ -280,6 +280,30 @@ class MongoDocStatusStorage(DocStatusStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
+    def _prepare_doc_status_data(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """Normalize and migrate a raw Mongo document to DocProcessingStatus-compatible dict."""
+        # Make a copy of the data to avoid modifying the original
+        data = doc.copy()
+        # Remove deprecated content field if it exists
+        data.pop("content", None)
+        # Remove MongoDB _id field if it exists
+        data.pop("_id", None)
+        # If file_path is not in data, use document id as file path
+        if "file_path" not in data:
+            data["file_path"] = "no-file-path"
+        # Ensure new fields exist with default values
+        if "metadata" not in data:
+            data["metadata"] = {}
+        if "error_msg" not in data:
+            data["error_msg"] = None
+        # Backward compatibility: migrate legacy 'error' field to 'error_msg'
+        if "error" in data:
+            if "error_msg" not in data or data["error_msg"] in (None, ""):
+                data["error_msg"] = data.pop("error")
+            else:
+                data.pop("error", None)
+        return data
+
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
             namespace=namespace,
@@ -389,20 +413,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         processed_result = {}
         for doc in result:
             try:
-                # Make a copy of the data to avoid modifying the original
-                data = doc.copy()
-                # Remove deprecated content field if it exists
-                data.pop("content", None)
-                # Remove MongoDB _id field if it exists
-                data.pop("_id", None)
-                # If file_path is not in data, use document id as file path
-                if "file_path" not in data:
-                    data["file_path"] = "no-file-path"
-                # Ensure new fields exist with default values
-                if "metadata" not in data:
-                    data["metadata"] = {}
-                if "error_msg" not in data:
-                    data["error_msg"] = None
+                data = self._prepare_doc_status_data(doc)
                 processed_result[doc["_id"]] = DocProcessingStatus(**data)
             except KeyError as e:
                 logger.error(
@@ -420,20 +431,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         processed_result = {}
         for doc in result:
             try:
-                # Make a copy of the data to avoid modifying the original
-                data = doc.copy()
-                # Remove deprecated content field if it exists
-                data.pop("content", None)
-                # Remove MongoDB _id field if it exists
-                data.pop("_id", None)
-                # If file_path is not in data, use document id as file path
-                if "file_path" not in data:
-                    data["file_path"] = "no-file-path"
-                # Ensure new fields exist with default values
-                if "metadata" not in data:
-                    data["metadata"] = {}
-                if "error_msg" not in data:
-                    data["error_msg"] = None
+                data = self._prepare_doc_status_data(doc)
                 processed_result[doc["_id"]] = DocProcessingStatus(**data)
             except KeyError as e:
                 logger.error(
@@ -661,20 +659,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             try:
                 doc_id = doc["_id"]
 
-                # Make a copy of the data to avoid modifying the original
-                data = doc.copy()
-                # Remove deprecated content field if it exists
-                data.pop("content", None)
-                # Remove MongoDB _id field if it exists
-                data.pop("_id", None)
-                # If file_path is not in data, use document id as file path
-                if "file_path" not in data:
-                    data["file_path"] = "no-file-path"
-                # Ensure new fields exist with default values
-                if "metadata" not in data:
-                    data["metadata"] = {}
-                if "error_msg" not in data:
-                    data["error_msg"] = None
+                data = self._prepare_doc_status_data(doc)
 
                 doc_status = DocProcessingStatus(**data)
                 documents.append((doc_id, doc_status))
