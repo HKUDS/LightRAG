@@ -117,7 +117,6 @@ async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,
     description_list: list[str],
-    force_llm_summary_on_merge: int,
     seperator: str,
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
@@ -152,6 +151,7 @@ async def _handle_entity_relation_summary(
     tokenizer: Tokenizer = global_config["tokenizer"]
     summary_context_size = global_config["summary_context_size"]
     summary_max_tokens = global_config["summary_max_tokens"]
+    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
     current_list = description_list[:]  # Copy the list to avoid modifying original
     llm_was_used = False  # Track whether LLM was used during the entire process
@@ -880,14 +880,12 @@ async def _rebuild_single_entity(
         # deduplicate descriptions
         description_list = list(dict.fromkeys(relationship_descriptions))
 
-        # Generate description from relationships or fallback to current
+        # Generate final description from relationships or fallback to current
         if description_list:
-            force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
             final_description, _ = await _handle_entity_relation_summary(
                 "Entity",
                 entity_name,
                 description_list,
-                force_llm_summary_on_merge,
                 GRAPH_FIELD_SEP,
                 global_config,
                 llm_response_cache=llm_response_cache,
@@ -923,14 +921,12 @@ async def _rebuild_single_entity(
         else current_entity.get("entity_type", "UNKNOWN")
     )
 
-    # Generate final description and update storage
-    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+    # Generate final description from entities or fallback to current
     if description_list:
         final_description, _ = await _handle_entity_relation_summary(
             "Entity",
             entity_name,
             description_list,
-            force_llm_summary_on_merge,
             GRAPH_FIELD_SEP,
             global_config,
             llm_response_cache=llm_response_cache,
@@ -1005,14 +1001,12 @@ async def _rebuild_single_relationship(
 
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
 
-    # Use summary if description has too many fragments
-    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+    # Generate final description from relations or fallback to current
     if description_list:
         final_description, _ = await _handle_entity_relation_summary(
             "Relation",
             f"{src}-{tgt}",
             description_list,
-            force_llm_summary_on_merge,
             GRAPH_FIELD_SEP,
             global_config,
             llm_response_cache=llm_response_cache,
@@ -1096,6 +1090,7 @@ async def _merge_nodes_then_upsert(
         reverse=True,
     )[0][0]  # Get the entity type with the highest count
 
+    # merge and deduplicate description
     description_list = list(
         dict.fromkeys(
             already_description
@@ -1103,7 +1098,6 @@ async def _merge_nodes_then_upsert(
         )
     )
 
-    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
     num_fragment = len(description_list)
     already_fragment = len(already_description)
     deduplicated_num = already_fragment + len(nodes_data) - num_fragment
@@ -1117,7 +1111,6 @@ async def _merge_nodes_then_upsert(
             "Entity",
             entity_name,
             description_list,
-            force_llm_summary_on_merge,
             GRAPH_FIELD_SEP,
             global_config,
             llm_response_cache,
@@ -1222,7 +1215,6 @@ async def _merge_edges_then_upsert(
         )
     )
 
-    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
     num_fragment = len(description_list)
     already_fragment = len(already_description)
     deduplicated_num = already_fragment + len(edges_data) - num_fragment
@@ -1236,7 +1228,6 @@ async def _merge_edges_then_upsert(
             "Relation",
             f"({src_id}, {tgt_id})",
             description_list,
-            force_llm_summary_on_merge,
             GRAPH_FIELD_SEP,
             global_config,
             llm_response_cache,
