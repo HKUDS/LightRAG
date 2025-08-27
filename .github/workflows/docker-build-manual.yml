@@ -47,7 +47,6 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ steps.get_tag.outputs.tag }}
-            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -65,5 +64,4 @@ jobs:
           echo "Docker image built and pushed successfully!"
           echo "Image tags:"
           echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
-          echo "  - ghcr.io/${{ github.repository }}:latest"
           echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"
