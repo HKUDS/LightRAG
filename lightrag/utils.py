@@ -1577,7 +1577,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
 
     This function handles:
-    - Surrogate characters (the main cause of the encoding error)
+    - Surrogate characters (the main cause of encoding errors)
     - Other invalid Unicode sequences
     - Control characters that might cause issues
     - Whitespace trimming
@@ -1588,6 +1588,9 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
 
     Returns:
         Sanitized text that can be safely encoded as UTF-8
+
+    Raises:
+        ValueError: When text contains uncleanable encoding issues that cannot be safely processed
     """
     if not isinstance(text, str):
         return str(text)
@@ -1624,7 +1627,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
             else:
                 sanitized += char
 
-        # Additional cleanup: remove null bytes  and other control characters that might cause issues
+        # Additional cleanup: remove null bytes and other control characters that might cause issues
         # (but preserve common whitespace like \t, \n, \r)
         sanitized = re.sub(
             r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
@@ -1636,34 +1639,21 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         return sanitized
 
     except UnicodeEncodeError as e:
-        logger.warning(
-            f"Text sanitization: UnicodeEncodeError encountered, applying aggressive cleaning: {str(e)[:100]}"
-        )
-
-        # Aggressive fallback: encode with error handling
-        try:
-            # Use 'replace' error handling to substitute problematic characters
-            safe_bytes = text.encode("utf-8", errors="replace")
-            sanitized = safe_bytes.decode("utf-8")
-
-            # Additional cleanup
-            sanitized = re.sub(
-                r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
-            )
-
-            return sanitized
-
-        except Exception as fallback_error:
-            logger.error(
-                f"Text sanitization: Aggressive fallback failed: {str(fallback_error)}"
-            )
-            # Last resort: return a safe placeholder
-            return f"[TEXT_ENCODING_ERROR: {len(text)} characters]"
+        # Critical change: Don't return placeholder, raise exception for caller to handle
+        error_msg = f"Text contains uncleanable UTF-8 encoding issues: {str(e)[:100]}"
+        logger.error(f"Text sanitization failed: {error_msg}")
+        raise ValueError(error_msg) from e
 
     except Exception as e:
         logger.error(f"Text sanitization: Unexpected error: {str(e)}")
-        # Return original text if no encoding issues detected
-        return text
+        # For other exceptions, if no encoding issues detected, return original text
+        try:
+            text.encode("utf-8")
+            return text
+        except UnicodeEncodeError:
+            raise ValueError(
+                f"Text sanitization failed with unexpected error: {str(e)}"
+            ) from e
 
 
 def check_storage_env_vars(storage_name: str) -> None:
