@@ -270,7 +270,7 @@ async def _summarize_descriptions(
     use_llm_func = partial(use_llm_func, _priority=8)
 
     language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
+        "language", DEFAULT_SUMMARY_LANGUAGE]
     )
 
     summary_length_recommended = global_config["summary_length_recommended"]
@@ -2115,7 +2115,7 @@ async def extract_keywords_only(
     else:
         examples = "\n".join(PROMPTS["keywords_extraction_examples"])
     language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
+        "language", DEFAULT_SUMMARY_LANGUAGE
     )
 
     # 3. Process conversation history
