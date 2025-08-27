@@ -38,6 +38,7 @@ from lightrag.constants import (
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RERANK_BINDING,
+    DEFAULT_ENTITY_TYPES,
 )
 
 # use the .env that is inside the current folder
@@ -351,6 +352,7 @@ def parse_args() -> argparse.Namespace:
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
+    args.entity_types = get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
