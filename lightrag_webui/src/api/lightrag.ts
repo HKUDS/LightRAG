@@ -35,7 +35,6 @@ export type LightragStatus = {
     embedding_binding: string
     embedding_binding_host: string
     embedding_model: string
-    max_tokens: number
     kv_storage: string
     doc_status_storage: string
     graph_storage: string
