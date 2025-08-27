@@ -29,8 +29,6 @@ DEFAULT_ENTITY_TYPES = [
     "geo",
     "event",
     "category",
-    "Equipment",
-    "Location",
 ]
 
 # Separator for graph fields
