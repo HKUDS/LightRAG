@@ -38,7 +38,7 @@ from lightrag.constants import (
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RERANK_BINDING,
-    DEFAULT_ENTITY_TYPES
+    DEFAULT_ENTITY_TYPES,
 )
 
 # use the .env that is inside the current folder
