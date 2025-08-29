@@ -2234,6 +2234,7 @@ async def _get_vector_context(
     query: str,
     chunks_vdb: BaseVectorStorage,
     query_param: QueryParam,
+    query_embedding: list[float] = None,
 ) -> list[dict]:
     """
     Retrieve text chunks from the vector database without reranking or truncation.
@@ -2245,6 +2246,7 @@ async def _get_vector_context(
         query: The query string to search for
         chunks_vdb: Vector database containing document chunks
         query_param: Query parameters including chunk_top_k and ids
+        query_embedding: Optional pre-computed query embedding to avoid redundant embedding calls
 
     Returns:
         List of text chunks with metadata
@@ -2253,7 +2255,9 @@ async def _get_vector_context(
         # Use chunk_top_k if specified, otherwise fall back to top_k
         search_top_k = query_param.chunk_top_k or query_param.top_k
 
-        results = await chunks_vdb.query(query, top_k=search_top_k)
+        results = await chunks_vdb.query(
+            query, top_k=search_top_k, query_embedding=query_embedding
+        )
         if not results:
             logger.info(f"Naive query: 0 chunks (chunk_top_k: {search_top_k})")
             return []
@@ -2291,6 +2295,10 @@ async def _build_query_context(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
 ):
+    if not query:
+        logger.warning("Query is empty, skipping context building")
+        return ""
+
     logger.info(f"Process {os.getpid()} building query context...")
 
     # Collect chunks from different sources separately
@@ -2309,12 +2317,12 @@ async def _build_query_context(
     # Track chunk sources and metadata for final logging
     chunk_tracking = {}  # chunk_id -> {source, frequency, order}
 
-    # Pre-compute query embedding if vector similarity method is used
+    # Pre-compute query embedding once for all vector operations
     kg_chunk_pick_method = text_chunks_db.global_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
     )
     query_embedding = None
-    if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
+    if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
         embedding_func_config = text_chunks_db.embedding_func
         if embedding_func_config and embedding_func_config.func:
             try:
@@ -2322,9 +2330,7 @@ async def _build_query_context(
                 query_embedding = query_embedding[
                     0
                 ]  # Extract first embedding from batch result
-                logger.debug(
-                    "Pre-computed query embedding for vector similarity chunk selection"
-                )
+                logger.debug("Pre-computed query embedding for all vector operations")
             except Exception as e:
                 logger.warning(f"Failed to pre-compute query embedding: {e}")
                 query_embedding = None
@@ -2368,6 +2374,7 @@ async def _build_query_context(
                 query,
                 chunks_vdb,
                 query_param,
+                query_embedding,
             )
             # Track vector chunks with source metadata
             for i, chunk in enumerate(vector_chunks):
@@ -3429,7 +3436,7 @@ async def naive_query(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
 
-    chunks = await _get_vector_context(query, chunks_vdb, query_param)
+    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
         return PROMPTS["fail_response"]

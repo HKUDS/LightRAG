@@ -2004,11 +2004,17 @@ class PGVectorStorage(BaseVectorStorage):
             await self.db.execute(upsert_sql, data)
 
     #################### query method ###############
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
-        embeddings = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-        embedding = embeddings[0]
+    async def query(
+        self, query: str, top_k: int, query_embedding: list[float] = None
+    ) -> list[dict[str, Any]]:
+        if query_embedding is not None:
+            embedding = query_embedding
+        else:
+            embeddings = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            embedding = embeddings[0]
+
         embedding_string = ",".join(map(str, embedding))
 
         sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
