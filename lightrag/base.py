@@ -142,10 +142,6 @@ class QueryParam:
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
-    # TODO: TODO: Deprecated - ID-based filtering only applies to chunks, not entities or relations, and implemented only in PostgreSQL storage
-    ids: list[str] | None = None
-    """List of doc ids to filter the results."""
-
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
     If provided, this will be used instead of the global model function.
@@ -216,9 +212,16 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """Query the vector storage and retrieve top_k results."""
+        """Query the vector storage and retrieve top_k results.
+
+        Args:
+            query: The query string to search for
+            top_k: Number of top results to return
+            query_embedding: Optional pre-computed embedding for the query.
+                           If provided, skips embedding computation for better performance.
+        """
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

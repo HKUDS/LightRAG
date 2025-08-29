@@ -200,14 +200,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         return results
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        embedding = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
+        if query_embedding is not None:
+            embedding = query_embedding
+        else:
+            embedding_result = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            embedding = embedding_result[0]
+
         results = self._client.search(
             collection_name=self.final_namespace,
-            query_vector=embedding[0],
+            query_vector=embedding,
             limit=top_k,
             with_payload=True,
             score_threshold=self.cosine_better_than_threshold,

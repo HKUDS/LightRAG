@@ -1810,16 +1810,22 @@ class MongoVectorDBStorage(BaseVectorStorage):
         return list_data
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
-        # Generate the embedding
-        embedding = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-
-        # Convert numpy array to a list to ensure compatibility with MongoDB
-        query_vector = embedding[0].tolist()
+        if query_embedding is not None:
+            # Convert numpy array to list if needed for MongoDB compatibility
+            if hasattr(query_embedding, "tolist"):
+                query_vector = query_embedding.tolist()
+            else:
+                query_vector = list(query_embedding)
+        else:
+            # Generate the embedding
+            embedding = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            # Convert numpy array to a list to ensure compatibility with MongoDB
+            query_vector = embedding[0].tolist()
 
         # Define the aggregation pipeline with the converted query vector
         pipeline = [
