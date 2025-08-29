@@ -64,8 +64,12 @@ DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
-# gunicorn worker timeout(as default LLM request timeout if LLM_TIMEOUT is not set)
-DEFAULT_TIMEOUT = 150
+# Gunicorn worker timeout
+DEFAULT_TIMEOUT = 210
+
+# Default llm and embedding timeout
+DEFAULT_LLM_TIMEOUT = 180
+DEFAULT_EMBEDDING_TIMEOUT = 30
 
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB

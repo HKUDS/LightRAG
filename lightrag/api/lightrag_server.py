@@ -39,6 +39,8 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -256,7 +258,10 @@ def create_app(args):
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
 
-    llm_timeout = get_env_value("LLM_TIMEOUT", args.timeout, int)
+    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
+    embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
 
     async def openai_alike_model_complete(
         prompt,
@@ -487,6 +492,8 @@ def create_app(args):
                 else {}
             ),
             embedding_func=embedding_func,
+            default_llm_timeout=llm_timeout,
+            default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
@@ -517,6 +524,8 @@ def create_app(args):
             summary_max_tokens=args.summary_max_tokens,
             summary_context_size=args.summary_context_size,
             embedding_func=embedding_func,
+            default_llm_timeout=llm_timeout,
+            default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
