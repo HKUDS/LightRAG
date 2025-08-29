@@ -41,6 +41,8 @@ from lightrag.constants import (
     DEFAULT_MAX_GRAPH_NODES,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.utils import get_env_value
 
@@ -277,6 +279,10 @@ class LightRAG:
     - use_llm_check: If True, validates cached embeddings using an LLM.
     """
 
+    default_embedding_timeout: int = field(
+        default=int(os.getenv("EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT))
+    )
+
     # LLM Configuration
     # ---
 
@@ -310,6 +316,10 @@ class LightRAG:
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
+
+    default_llm_timeout: int = field(
+        default=int(os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT))
+    )
 
     # Rerank Configuration
     # ---
@@ -457,7 +467,8 @@ class LightRAG:
 
         # Init Embedding
         self.embedding_func = priority_limit_async_func_call(
-            self.embedding_func_max_async
+            self.embedding_func_max_async,
+            llm_timeout=self.default_embedding_timeout,
         )(self.embedding_func)
 
         # Initialize all storages
@@ -550,7 +561,11 @@ class LightRAG:
         # Directly use llm_response_cache, don't create a new object
         hashing_kv = self.llm_response_cache
 
-        self.llm_model_func = priority_limit_async_func_call(self.llm_model_max_async)(
+        # Get timeout from LLM model kwargs for dynamic timeout calculation
+        self.llm_model_func = priority_limit_async_func_call(
+            self.llm_model_max_async,
+            llm_timeout=self.default_llm_timeout,
+        )(
             partial(
                 self.llm_model_func,  # type: ignore
                 hashing_kv=hashing_kv,
