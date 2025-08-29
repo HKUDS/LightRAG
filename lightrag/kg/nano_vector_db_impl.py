@@ -136,9 +136,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] embedding is not 1-1 with data, {len(embeddings)} != {len(list_data)}"
             )
 
-    async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
-    ) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         # Execute embedding outside of lock to avoid improve cocurrent
         embedding = await self.embedding_func(
             [query], _priority=5

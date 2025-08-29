@@ -2253,7 +2253,7 @@ async def _get_vector_context(
         # Use chunk_top_k if specified, otherwise fall back to top_k
         search_top_k = query_param.chunk_top_k or query_param.top_k
 
-        results = await chunks_vdb.query(query, top_k=search_top_k, ids=query_param.ids)
+        results = await chunks_vdb.query(query, top_k=search_top_k)
         if not results:
             logger.info(f"Naive query: 0 chunks (chunk_top_k: {search_top_k})")
             return []
@@ -2830,9 +2830,7 @@ async def _get_node_data(
         f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
     )
 
-    results = await entities_vdb.query(
-        query, top_k=query_param.top_k, ids=query_param.ids
-    )
+    results = await entities_vdb.query(query, top_k=query_param.top_k)
 
     if not len(results):
         return [], []
@@ -3108,9 +3106,7 @@ async def _get_edge_data(
         f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
     )
 
-    results = await relationships_vdb.query(
-        keywords, top_k=query_param.top_k, ids=query_param.ids
-    )
+    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
         return [], []

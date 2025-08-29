@@ -1046,9 +1046,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         return results
 
-    async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
-    ) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         # Ensure collection is loaded before querying
         self._ensure_collection_loaded()
 
