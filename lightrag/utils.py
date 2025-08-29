@@ -27,17 +27,31 @@ from lightrag.constants import (
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
 
+# Initialize logger with basic configuration
+logger = logging.getLogger("lightrag")
+logger.propagate = False  # prevent log message send to root logger
+logger.setLevel(logging.INFO)
+
+# Add console handler if no handlers exist
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(levelname)s: %(message)s")
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+# Set httpx logging level to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Global import for pypinyin with startup-time logging
 try:
     import pypinyin
 
     _PYPINYIN_AVAILABLE = True
-    logger = logging.getLogger("lightrag")
-    logger.info("pypinyin loaded successfully for Chinese pinyin sorting")
+    # logger.info("pypinyin loaded successfully for Chinese pinyin sorting")
 except ImportError:
     pypinyin = None
     _PYPINYIN_AVAILABLE = False
-    logger = logging.getLogger("lightrag")
     logger.warning(
         "pypinyin is not installed. Chinese pinyin sorting will use simple string sorting."
     )
@@ -120,15 +134,6 @@ def set_verbose_debug(enabled: bool):
 
 
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
-
-# Initialize logger
-logger = logging.getLogger("lightrag")
-logger.propagate = False  # prevent log message send to root loggger
-# Let the main application configure the handlers
-logger.setLevel(logging.INFO)
-
-# Set httpx logging level to WARNING
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class LightragPathFilter(logging.Filter):
@@ -626,9 +631,9 @@ def priority_limit_async_func_call(
                 # Log dynamic timeout configuration
                 timeout_info = []
                 if llm_timeout is not None:
-                    timeout_info.append(f"LLM: {llm_timeout}s")
+                    timeout_info.append(f"Func: {llm_timeout}s")
                 if max_execution_timeout is not None:
-                    timeout_info.append(f"Execution: {max_execution_timeout}s")
+                    timeout_info.append(f"Worker: {max_execution_timeout}s")
                 if max_task_duration is not None:
                     timeout_info.append(f"Health Check: {max_task_duration}s")
 
@@ -636,7 +641,7 @@ def priority_limit_async_func_call(
                     f" (Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
                 )
                 logger.info(
-                    f"limit_async: {workers_needed} new workers initialized with dynamic timeout handling{timeout_str}"
+                    f"limit_async: {workers_needed} new workers initialized {timeout_str}"
                 )
 
         async def shutdown():
@@ -1661,7 +1666,14 @@ async def use_llm_func_with_cache(
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        res: str = await use_llm_func(safe_input_text, **kwargs)
+        try:
+            res: str = await use_llm_func(safe_input_text, **kwargs)
+        except Exception as e:
+            # Add [LLM func] prefix to error message
+            error_msg = f"[LLM func] {str(e)}"
+            # Re-raise with the same exception type but modified message
+            raise type(e)(error_msg) from e
+
         res = remove_think_tags(res)
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
@@ -1689,8 +1701,14 @@ async def use_llm_func_with_cache(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    logger.info(f"Call LLM function with query text length: {len(safe_input_text)}")
-    res = await use_llm_func(safe_input_text, **kwargs)
+    try:
+        res = await use_llm_func(safe_input_text, **kwargs)
+    except Exception as e:
+        # Add [LLM func] prefix to error message
+        error_msg = f"[LLM func] {str(e)}"
+        # Re-raise with the same exception type but modified message
+        raise type(e)(error_msg) from e
+
     return remove_think_tags(res)
 
 
