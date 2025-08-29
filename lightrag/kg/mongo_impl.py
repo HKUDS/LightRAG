@@ -1814,7 +1814,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
     ) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
         if query_embedding is not None:
-            query_vector = query_embedding
+            # Convert numpy array to list if needed for MongoDB compatibility
+            if hasattr(query_embedding, "tolist"):
+                query_vector = query_embedding.tolist()
+            else:
+                query_vector = list(query_embedding)
         else:
             # Generate the embedding
             embedding = await self.embedding_func(
