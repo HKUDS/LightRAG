@@ -788,9 +788,9 @@ class PostgreSQLDB:
                 WHERE table_name = $1 AND column_name = $2
                 """
                 params = {
-                        "table_name": migration["table"].lower(),
-                        "column_name": migration["column"],
-                    }
+                    "table_name": migration["table"].lower(),
+                    "column_name": migration["column"],
+                }
                 column_info = await self.query(
                     check_column_sql,
                     list(params.values()),
@@ -1036,9 +1036,7 @@ class PostgreSQLDB:
                 AND table_schema = 'public'
                 """
                 params = {"table_name": table_name.lower()}
-                table_exists = await self.query(
-                    check_table_sql, list(params.values())
-                )
+                table_exists = await self.query(check_table_sql, list(params.values()))
 
                 if not table_exists:
                     logger.info(f"Creating table {table_name}")
@@ -3175,7 +3173,6 @@ class PGGraphStorage(BaseGraphStorage):
             return result[node_id]
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-
         result = await self.edge_degrees_batch(edges=[(src_id, tgt_id)])
         if result and (src_id, tgt_id) in result:
             return result[(src_id, tgt_id)]
