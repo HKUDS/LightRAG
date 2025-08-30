@@ -35,7 +35,6 @@ export type LightragStatus = {
     embedding_binding: string
     embedding_binding_host: string
     embedding_model: string
-    max_tokens: number
     kv_storage: string
     doc_status_storage: string
     graph_storage: string
@@ -43,6 +42,7 @@ export type LightragStatus = {
     workspace?: string
     max_graph_nodes?: string
     enable_rerank?: boolean
+    rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
     summary_language: string

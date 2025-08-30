@@ -2006,14 +2006,18 @@ class PGVectorStorage(BaseVectorStorage):
 
     #################### query method ###############
     async def query(
-        self, query: str, top_k: int
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        embeddings = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-        embedding = embeddings[0]
+        if query_embedding is not None:
+            embedding = query_embedding
+        else:
+            embeddings = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            embedding = embeddings[0]
+
         embedding_string = ",".join(map(str, embedding))
-        # Use parameterized document IDs (None means search across all documents)
+
         sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
         params = {
             "workspace": self.workspace,
@@ -4562,31 +4566,34 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-                SELECT r.source_id as src_id, r.target_id as tgt_id,
-                       EXTRACT(EPOCH FROM r.create_time)::BIGINT as created_at
-                FROM LIGHTRAG_VDB_RELATION r
-                WHERE r.workspace = $1
-                  AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
-                LIMIT $3
+                     SELECT r.source_id AS src_id,
+                            r.target_id AS tgt_id,
+                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
+                     FROM LIGHTRAG_VDB_RELATION r
+                     WHERE r.workspace = $1
+                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                     LIMIT $3;
                      """,
     "entities": """
                 SELECT e.entity_name,
-                       EXTRACT(EPOCH FROM e.create_time)::BIGINT as created_at
+                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM LIGHTRAG_VDB_ENTITY e
                 WHERE e.workspace = $1
                   AND e.content_vector <=> '[{embedding_string}]'::vector < $2
                 ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
-                LIMIT $3
+                LIMIT $3;
                 """,
     "chunks": """
-                SELECT c.id, c.content, c.file_path,
-                       EXTRACT(EPOCH FROM c.create_time)::BIGINT as c.created_at
-                FROM LIGHTRAG_VDB_CHUNKS c
-                WHERE c.workspace = $1
-                  AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
-                LIMIT $3
+              SELECT c.id,
+                     c.content,
+                     c.file_path,
+                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
+              FROM LIGHTRAG_VDB_CHUNKS c
+              WHERE c.workspace = $1
+                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+              LIMIT $3;
               """,
     # DROP tables
     "drop_specifiy_table_workspace": """

@@ -2,7 +2,7 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException
 import asyncio
 import os
 import logging
@@ -11,6 +11,7 @@ import signal
 import sys
 import uvicorn
 import pipmaster as pm
+import inspect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -38,6 +39,8 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -247,12 +250,18 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+        from lightrag.llm.binding_options import OpenAILLMOptions
     if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
         from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
     if args.embedding_binding == "ollama":
         from lightrag.llm.binding_options import OllamaEmbeddingOptions
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
+
+    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
+    embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
 
     async def openai_alike_model_complete(
         prompt,
@@ -267,12 +276,10 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use OpenAI LLM options if available, otherwise fallback to global temperature
-        if args.llm_binding == "openai":
-            openai_options = OpenAILLMOptions.options_dict(args)
-            kwargs.update(openai_options)
-        else:
-            kwargs["temperature"] = args.temperature
+        # Use OpenAI LLM options if available
+        openai_options = OpenAILLMOptions.options_dict(args)
+        kwargs["timeout"] = llm_timeout
+        kwargs.update(openai_options)
 
         return await openai_complete_if_cache(
             args.llm_model,
@@ -297,12 +304,10 @@ def create_app(args):
         if history_messages is None:
             history_messages = []
 
-        # Use OpenAI LLM options if available, otherwise fallback to global temperature
-        if args.llm_binding == "azure_openai":
-            openai_options = OpenAILLMOptions.options_dict(args)
-            kwargs.update(openai_options)
-        else:
-            kwargs["temperature"] = args.temperature
+        # Use OpenAI LLM options
+        openai_options = OpenAILLMOptions.options_dict(args)
+        kwargs["timeout"] = llm_timeout
+        kwargs.update(openai_options)
 
         return await azure_openai_complete_if_cache(
             args.llm_model,
@@ -329,7 +334,7 @@ def create_app(args):
             history_messages = []
 
         # Use global temperature for Bedrock
-        kwargs["temperature"] = args.temperature
+        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
 
         return await bedrock_complete_if_cache(
             args.llm_model,
@@ -392,33 +397,60 @@ def create_app(args):
         ),
     )
 
-    # Configure rerank function if model and API are configured
+    # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
-    if args.rerank_binding_api_key and args.rerank_binding_host:
-        from lightrag.rerank import custom_rerank
+    if args.rerank_binding != "null":
+        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+
+        # Map rerank binding to corresponding function
+        rerank_functions = {
+            "cohere": cohere_rerank,
+            "jina": jina_rerank,
+            "aliyun": ali_rerank,
+        }
+
+        # Select the appropriate rerank function based on binding
+        selected_rerank_func = rerank_functions.get(args.rerank_binding)
+        if not selected_rerank_func:
+            logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
+            raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
+
+        # Get default values from selected_rerank_func if args values are None
+        if args.rerank_model is None or args.rerank_binding_host is None:
+            sig = inspect.signature(selected_rerank_func)
+
+            # Set default model if args.rerank_model is None
+            if args.rerank_model is None and "model" in sig.parameters:
+                default_model = sig.parameters["model"].default
+                if default_model != inspect.Parameter.empty:
+                    args.rerank_model = default_model
+
+            # Set default base_url if args.rerank_binding_host is None
+            if args.rerank_binding_host is None and "base_url" in sig.parameters:
+                default_base_url = sig.parameters["base_url"].default
+                if default_base_url != inspect.Parameter.empty:
+                    args.rerank_binding_host = default_base_url
 
         async def server_rerank_func(
-            query: str, documents: list, top_n: int = None, **kwargs
+            query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
             """Server rerank function with configuration from environment variables"""
-            return await custom_rerank(
+            return await selected_rerank_func(
                 query=query,
                 documents=documents,
+                top_n=top_n,
+                api_key=args.rerank_binding_api_key,
                 model=args.rerank_model,
                 base_url=args.rerank_binding_host,
-                api_key=args.rerank_binding_api_key,
-                top_n=top_n,
-                **kwargs,
+                extra_body=extra_body,
             )
 
         rerank_model_func = server_rerank_func
         logger.info(
-            f"Rerank model configured: {args.rerank_model} (can be enabled per query)"
+            f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
         )
     else:
-        logger.info(
-            "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
-        )
+        logger.info("Reranking is disabled")
 
     # Create ollama_server_infos from command line arguments
     from lightrag.api.config import OllamaServerInfos
@@ -445,13 +477,14 @@ def create_app(args):
             ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            summary_max_tokens=args.max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            summary_context_size=args.summary_context_size,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs=(
                 {
                     "host": args.llm_binding_host,
-                    "timeout": args.timeout,
+                    "timeout": llm_timeout,
                     "options": OllamaLLMOptions.options_dict(args),
                     "api_key": args.llm_binding_api_key,
                 }
@@ -459,6 +492,8 @@ def create_app(args):
                 else {}
             ),
             embedding_func=embedding_func,
+            default_llm_timeout=llm_timeout,
+            default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
@@ -471,7 +506,10 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={"language": args.summary_language},
+            addon_params={
+                "language": args.summary_language,
+                "entity_types": args.entity_types,
+            },
             ollama_server_infos=ollama_server_infos,
         )
     else:  # azure_openai
@@ -481,13 +519,13 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": args.timeout,
-            },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            summary_max_tokens=args.max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            summary_context_size=args.summary_context_size,
             embedding_func=embedding_func,
+            default_llm_timeout=llm_timeout,
+            default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
@@ -500,7 +538,10 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={"language": args.summary_language},
+            addon_params={
+                "language": args.summary_language,
+                "entity_types": args.entity_types,
+            },
             ollama_server_infos=ollama_server_infos,
         )
 
@@ -573,9 +614,7 @@ def create_app(args):
             }
         username = form_data.username
         if auth_handler.accounts.get(username) != form_data.password:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
-            )
+            raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login
         user_token = auth_handler.create_token(
@@ -618,7 +657,8 @@ def create_app(args):
                     "embedding_binding": args.embedding_binding,
                     "embedding_binding_host": args.embedding_binding_host,
                     "embedding_model": args.embedding_model,
-                    "max_tokens": args.max_tokens,
+                    "summary_max_tokens": args.summary_max_tokens,
+                    "summary_context_size": args.summary_context_size,
                     "kv_storage": args.kv_storage,
                     "doc_status_storage": args.doc_status_storage,
                     "graph_storage": args.graph_storage,
@@ -627,13 +667,12 @@ def create_app(args):
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
-                    # Rerank configuration (based on whether rerank model is configured)
+                    # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
-                    "rerank_model": args.rerank_model
-                    if rerank_model_func is not None
-                    else None,
+                    "rerank_binding": args.rerank_binding,
+                    "rerank_model": args.rerank_model if rerank_model_func else None,
                     "rerank_binding_host": args.rerank_binding_host
-                    if rerank_model_func is not None
+                    if rerank_model_func
                     else None,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,

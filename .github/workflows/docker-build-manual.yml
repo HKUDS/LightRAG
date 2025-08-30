@@ -1,8 +1,6 @@
-name: Build Docker Image on Release
+name: Build Docker Image manually
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -15,6 +13,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for tags
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          # Get the latest tag, fallback to commit SHA if no tags exist
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="sha-$(git rev-parse --short HEAD)"
+            echo "No tags found, using commit SHA: $LATEST_TAG"
+          else
+            echo "Latest tag found: $LATEST_TAG"
+          fi
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "image_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -32,8 +46,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.get_tag.outputs.tag }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -45,3 +58,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Output image details
+        run: |
+          echo "Docker image built and pushed successfully!"
+          echo "Image tags:"
+          echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
+          echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"

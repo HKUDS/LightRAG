@@ -183,7 +183,7 @@ export default function DocumentManager() {
   const setDocumentsPageSize = useSettingsStore.use.setDocumentsPageSize()
 
   // New pagination state
-  const [, setCurrentPageDocs] = useState<DocStatusResponse[]>([])
+  const [currentPageDocs, setCurrentPageDocs] = useState<DocStatusResponse[]>([])
   const [pagination, setPagination] = useState<PaginationInfo>({
     page: 1,
     page_size: documentsPageSize,
@@ -292,6 +292,16 @@ export default function DocumentManager() {
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
 
   const filteredAndSortedDocs = useMemo(() => {
+    // Use currentPageDocs directly if available (from paginated API)
+    // This preserves the backend's sort order and prevents status grouping
+    if (currentPageDocs && currentPageDocs.length > 0) {
+      return currentPageDocs.map(doc => ({
+        ...doc,
+        status: doc.status as DocStatus
+      })) as DocStatusWithStatus[];
+    }
+
+    // Fallback to legacy docs structure for backward compatibility
     if (!docs) return null;
 
     // Create a flat array of documents with status information
@@ -324,7 +334,7 @@ export default function DocumentManager() {
     }
 
     return allDocuments;
-  }, [docs, sortField, sortDirection, statusFilter, sortDocuments]);
+  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments]);
 
   // Calculate current page selection state (after filteredAndSortedDocs is defined)
   const currentPageDocIds = useMemo(() => {
@@ -469,22 +479,42 @@ export default function DocumentManager() {
     };
   }, [docs]);
 
-  // New paginated data fetching function
-  const fetchPaginatedDocuments = useCallback(async (
-    page: number,
-    pageSize: number,
-    statusFilter: StatusFilter
+  // Utility function to update component state
+  const updateComponentState = useCallback((response: any) => {
+    setPagination(response.pagination);
+    setCurrentPageDocs(response.documents);
+    setStatusCounts(response.status_counts);
+
+    // Update legacy docs state for backward compatibility
+    const legacyDocs: DocsStatusesResponse = {
+      statuses: {
+        processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processed'),
+        processing: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processing'),
+        pending: response.documents.filter((doc: DocStatusResponse) => doc.status === 'pending'),
+        failed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'failed')
+      }
+    };
+
+    setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
+  }, []);
+
+  // Intelligent refresh function: handles all boundary cases
+  const handleIntelligentRefresh = useCallback(async (
+    targetPage?: number, // Optional target page, defaults to current page
+    resetToFirst?: boolean // Whether to force reset to first page
   ) => {
     try {
       if (!isMountedRef.current) return;
 
       setIsRefreshing(true);
 
-      // Prepare request parameters
+      // Determine target page
+      const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+
       const request: DocumentsRequest = {
         status_filter: statusFilter === 'all' ? null : statusFilter,
-        page,
-        page_size: pageSize,
+        page: pageToFetch,
+        page_size: pagination.page_size,
         sort_field: sortField,
         sort_direction: sortDirection
       };
@@ -493,26 +523,34 @@ export default function DocumentManager() {
 
       if (!isMountedRef.current) return;
 
-      // Update pagination state
-      setPagination(response.pagination);
-      setCurrentPageDocs(response.documents);
-      setStatusCounts(response.status_counts);
+      // Boundary case handling: if target page has no data but total count > 0
+      if (response.documents.length === 0 && response.pagination.total_count > 0) {
+        // Calculate last page
+        const lastPage = Math.max(1, response.pagination.total_pages);
 
-      // Update legacy docs state for backward compatibility
-      const legacyDocs: DocsStatusesResponse = {
-        statuses: {
-          processed: response.documents.filter(doc => doc.status === 'processed'),
-          processing: response.documents.filter(doc => doc.status === 'processing'),
-          pending: response.documents.filter(doc => doc.status === 'pending'),
-          failed: response.documents.filter(doc => doc.status === 'failed')
+        if (pageToFetch !== lastPage) {
+          // Re-request last page
+          const lastPageRequest: DocumentsRequest = {
+            ...request,
+            page: lastPage
+          };
+
+          const lastPageResponse = await getDocumentsPaginated(lastPageRequest);
+
+          if (!isMountedRef.current) return;
+
+          // Update page state to last page
+          setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
+          updateComponentState(lastPageResponse);
+          return;
         }
-      };
-
-      if (response.pagination.total_count > 0) {
-        setDocs(legacyDocs);
-      } else {
-        setDocs(null);
       }
+
+      // Normal case: update state
+      if (pageToFetch !== pagination.page) {
+        setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
+      }
+      updateComponentState(response);
 
     } catch (err) {
       if (isMountedRef.current) {
@@ -523,7 +561,20 @@ export default function DocumentManager() {
         setIsRefreshing(false);
       }
     }
-  }, [sortField, sortDirection, t]);
+  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState]);
+
+  // New paginated data fetching function
+  const fetchPaginatedDocuments = useCallback(async (
+    page: number,
+    pageSize: number,
+    _statusFilter: StatusFilter // eslint-disable-line @typescript-eslint/no-unused-vars
+  ) => {
+    // Update pagination state
+    setPagination(prev => ({ ...prev, page, page_size: pageSize }));
+
+    // Use intelligent refresh
+    await handleIntelligentRefresh(page);
+  }, [handleIntelligentRefresh]);
 
   // Legacy fetchDocuments function for backward compatibility
   const fetchDocuments = useCallback(async () => {
@@ -678,9 +729,10 @@ export default function DocumentManager() {
     if (prevPipelineBusyRef.current !== undefined && prevPipelineBusyRef.current !== pipelineBusy) {
       // pipelineBusy state has changed, trigger immediate refresh
       if (currentTab === 'documents' && health && isMountedRef.current) {
-        handleManualRefresh();
+        // Use intelligent refresh to preserve current page
+        handleIntelligentRefresh();
 
-        // Reset polling timer after manual refresh
+        // Reset polling timer after intelligent refresh
         const hasActiveDocuments = (statusCounts.processing || 0) > 0 || (statusCounts.pending || 0) > 0;
         const pollingInterval = hasActiveDocuments ? 5000 : 30000;
         startPollingInterval(pollingInterval);
@@ -688,7 +740,7 @@ export default function DocumentManager() {
     }
     // Update the previous state
     prevPipelineBusyRef.current = pipelineBusy;
-  }, [pipelineBusy, currentTab, health, handleManualRefresh, statusCounts.processing, statusCounts.pending, startPollingInterval]);
+  }, [pipelineBusy, currentTab, health, handleIntelligentRefresh, statusCounts.processing, statusCounts.pending, startPollingInterval]);
 
   // Set up intelligent polling with dynamic interval based on document status
   useEffect(() => {
