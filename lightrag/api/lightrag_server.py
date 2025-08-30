@@ -344,51 +344,58 @@ def create_app(args):
             **kwargs,
         )
 
+    embedding_binding = args.embedding_binding
+    embedding_model = args.embedding_model
+    embedding_host = args.embedding_binding_host
+    embedding_api_key = args.embedding_binding_api_key
+    embedding_dim_val = args.embedding_dim
+    ollama_options_val = OllamaEmbeddingOptions.options_dict(args)
+
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
         func=lambda texts: (
             lollms_embed(
                 texts,
-                embed_model=args.embedding_model,
-                host=args.embedding_binding_host,
-                api_key=args.embedding_binding_api_key,
+                embed_model=embedding_model,
+                host=embedding_host,
+                api_key=embedding_api_key,
             )
-            if args.embedding_binding == "lollms"
+            if embedding_binding == "lollms"
             else (
                 ollama_embed(
                     texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                    api_key=args.embedding_binding_api_key,
-                    options=OllamaEmbeddingOptions.options_dict(args),
+                    embed_model=embedding_model,
+                    host=embedding_host,
+                    api_key=embedding_api_key,
+                    options=ollama_options_val,
                 )
-                if args.embedding_binding == "ollama"
+                if embedding_binding == "ollama"
                 else (
                     azure_openai_embed(
                         texts,
-                        model=args.embedding_model,  # no host is used for openai,
-                        api_key=args.embedding_binding_api_key,
+                        model=embedding_model,  # no host is used for openai,
+                        api_key=embedding_api_key,
                     )
-                    if args.embedding_binding == "azure_openai"
+                    if embedding_binding == "azure_openai"
                     else (
                         bedrock_embed(
                             texts,
-                            model=args.embedding_model,
+                            model=embedding_model,
                         )
-                        if args.embedding_binding == "aws_bedrock"
+                        if embedding_binding == "aws_bedrock"
                         else (
                             jina_embed(
                                 texts,
-                                dimensions=args.embedding_dim,
-                                base_url=args.embedding_binding_host,
-                                api_key=args.embedding_binding_api_key,
+                                dimensions=embedding_dim_val,
+                                base_url=embedding_host,
+                                api_key=embedding_api_key,
                             )
-                            if args.embedding_binding == "jina"
+                            if embedding_binding == "jina"
                             else openai_embed(
                                 texts,
-                                model=args.embedding_model,
-                                base_url=args.embedding_binding_host,
-                                api_key=args.embedding_binding_api_key,
+                                model=embedding_model,
+                                base_url=embedding_host,
+                                api_key=embedding_api_key,
                             )
                         )
                     )
