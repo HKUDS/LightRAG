@@ -237,6 +237,7 @@ def create_app(args):
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
+
     if args.llm_binding == "lollms" or args.embedding_binding == "lollms":
         from lightrag.llm.lollms import lollms_model_complete, lollms_embed
     if args.llm_binding == "ollama" or args.embedding_binding == "ollama":
@@ -253,8 +254,6 @@ def create_app(args):
         from lightrag.llm.binding_options import OpenAILLMOptions
     if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
         from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
-    if args.embedding_binding == "ollama":
-        from lightrag.llm.binding_options import OllamaEmbeddingOptions
     if args.embedding_binding == "jina":
         from lightrag.llm.jina import jina_embed
 
@@ -344,56 +343,86 @@ def create_app(args):
             **kwargs,
         )
 
+    def create_embedding_function(binding, model, host, api_key, dimensions, args):
+        """
+        Create embedding function with args object for dynamic option generation.
+
+        This approach completely avoids closure issues by capturing configuration
+        values as function parameters rather than through variable references.
+        The args object is used only for dynamic option generation when needed.
+
+        Args:
+            binding: The embedding provider binding (lollms, ollama, etc.)
+            model: The embedding model name
+            host: The host URL for the embedding service
+            api_key: API key for authentication
+            dimensions: Embedding dimensions
+            args: Arguments object for dynamic option generation (only used when needed)
+
+        Returns:
+            Async function that performs embedding based on the specified provider
+        """
+
+        async def embedding_function(texts):
+            """Embedding function with captured configuration parameters"""
+            if binding == "lollms":
+                return await lollms_embed(
+                    texts,
+                    embed_model=model,
+                    host=host,
+                    api_key=api_key,
+                )
+            elif binding == "ollama":
+                # Only import and generate ollama_options when actually needed
+                from lightrag.llm.binding_options import OllamaEmbeddingOptions
+
+                ollama_options = OllamaEmbeddingOptions.options_dict(args)
+                return await ollama_embed(
+                    texts,
+                    embed_model=model,
+                    host=host,
+                    api_key=api_key,
+                    options=ollama_options,
+                )
+            elif binding == "azure_openai":
+                return await azure_openai_embed(
+                    texts,
+                    model=model,
+                    api_key=api_key,
+                )
+            elif binding == "aws_bedrock":
+                return await bedrock_embed(
+                    texts,
+                    model=model,
+                )
+            elif binding == "jina":
+                return await jina_embed(
+                    texts,
+                    dimensions=dimensions,
+                    base_url=host,
+                    api_key=api_key,
+                )
+            else:
+                # Default to OpenAI-compatible embedding
+                return await openai_embed(
+                    texts,
+                    model=model,
+                    base_url=host,
+                    api_key=api_key,
+                )
+
+        return embedding_function
+
+    # Create embedding function with current configuration
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=lambda texts: (
-            lollms_embed(
-                texts,
-                embed_model=args.embedding_model,
-                host=args.embedding_binding_host,
-                api_key=args.embedding_binding_api_key,
-            )
-            if args.embedding_binding == "lollms"
-            else (
-                ollama_embed(
-                    texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                    api_key=args.embedding_binding_api_key,
-                    options=OllamaEmbeddingOptions.options_dict(args),
-                )
-                if args.embedding_binding == "ollama"
-                else (
-                    azure_openai_embed(
-                        texts,
-                        model=args.embedding_model,  # no host is used for openai,
-                        api_key=args.embedding_binding_api_key,
-                    )
-                    if args.embedding_binding == "azure_openai"
-                    else (
-                        bedrock_embed(
-                            texts,
-                            model=args.embedding_model,
-                        )
-                        if args.embedding_binding == "aws_bedrock"
-                        else (
-                            jina_embed(
-                                texts,
-                                dimensions=args.embedding_dim,
-                                base_url=args.embedding_binding_host,
-                                api_key=args.embedding_binding_api_key,
-                            )
-                            if args.embedding_binding == "jina"
-                            else openai_embed(
-                                texts,
-                                model=args.embedding_model,
-                                base_url=args.embedding_binding_host,
-                                api_key=args.embedding_binding_api_key,
-                            )
-                        )
-                    )
-                )
-            )
+        func=create_embedding_function(
+            binding=args.embedding_binding,
+            model=args.embedding_model,
+            host=args.embedding_binding_host,
+            api_key=args.embedding_binding_api_key,
+            dimensions=args.embedding_dim,
+            args=args,  # Pass args object for dynamic option generation
         ),
     )
 
