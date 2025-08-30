@@ -245,22 +245,34 @@ export function AsyncSelect<T>({
                 </CommandEmpty>
               ))}
             <CommandGroup>
-              {options.map((option) => (
-                <CommandItem
-                  key={getOptionValue(option)}
-                  value={getOptionValue(option)}
-                  onSelect={handleSelect}
-                  className="truncate"
-                >
-                  {renderOption(option)}
-                  <Check
-                    className={cn(
-                      'ml-auto h-3 w-3',
-                      selectedValue === getOptionValue(option) ? 'opacity-100' : 'opacity-0'
-                    )}
-                  />
-                </CommandItem>
-              ))}
+              {options.map((option, index) => {
+                const optionValue = getOptionValue(option);
+                // Use index as a safe value that won't be trimmed by cmdk
+                const safeValue = `option-${index}-${optionValue.length}`;
+
+                return (
+                  <CommandItem
+                    key={optionValue}
+                    value={safeValue}
+                    onSelect={(selectedSafeValue) => {
+                      // Extract the original value from the safe value
+                      const selectedIndex = parseInt(selectedSafeValue.split('-')[1]);
+                      const originalValue = getOptionValue(options[selectedIndex]);
+                      console.log(`CommandItem onSelect: safeValue='${selectedSafeValue}', originalValue='${originalValue}' (length: ${originalValue.length})`);
+                      handleSelect(originalValue);
+                    }}
+                    className="truncate"
+                  >
+                    {renderOption(option)}
+                    <Check
+                      className={cn(
+                        'ml-auto h-3 w-3',
+                        selectedValue === optionValue ? 'opacity-100' : 'opacity-0'
+                      )}
+                    />
+                  </CommandItem>
+                );
+              })}
             </CommandGroup>
           </CommandList>
         </Command>

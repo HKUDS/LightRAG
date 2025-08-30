@@ -140,9 +140,9 @@ const GraphLabels = () => {
         searchInputClassName="max-h-8"
         triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
         fetcher={fetchData}
-        renderOption={(item) => <div>{item}</div>}
+        renderOption={(item) => <div style={{ whiteSpace: 'pre' }}>{item}</div>}
         getOptionValue={(item) => item}
-        getDisplayValue={(item) => <div>{item}</div>}
+        getDisplayValue={(item) => <div style={{ whiteSpace: 'pre' }}>{item}</div>}
         notFound={<div className="py-6 text-center text-sm">No labels found</div>}
         label={t('graphPanel.graphLabels.label')}
         placeholder={t('graphPanel.graphLabels.placeholder')}
