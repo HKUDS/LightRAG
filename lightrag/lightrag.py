@@ -469,6 +469,7 @@ class LightRAG:
         self.embedding_func = priority_limit_async_func_call(
             self.embedding_func_max_async,
             llm_timeout=self.default_embedding_timeout,
+            queue_name="Embedding func:",
         )(self.embedding_func)
 
         # Initialize all storages
@@ -565,6 +566,7 @@ class LightRAG:
         self.llm_model_func = priority_limit_async_func_call(
             self.llm_model_max_async,
             llm_timeout=self.default_llm_timeout,
+            queue_name="LLM func:",
         )(
             partial(
                 self.llm_model_func,  # type: ignore
