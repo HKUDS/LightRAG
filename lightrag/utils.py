@@ -1594,8 +1594,11 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think> tags from the text"""
-    return re.sub(r"^(<think>.*?</think>|<think>)", "", text, flags=re.DOTALL).strip()
+    """Remove <think>...</think> tags from the text
+    Remove  orphon ...</think> tags from the text also"""
+    return re.sub(
+        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
+    ).strip()
 
 
 async def use_llm_func_with_cache(
@@ -1678,13 +1681,7 @@ async def use_llm_func_with_cache(
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        try:
-            res: str = await use_llm_func(safe_input_text, **kwargs)
-        except Exception as e:
-            # Add [LLM func] prefix to error message
-            error_msg = f"[LLM func] {str(e)}"
-            # Re-raise with the same exception type but modified message
-            raise type(e)(error_msg) from e
+        res: str = await use_llm_func(safe_input_text, **kwargs)
 
         res = remove_think_tags(res)
 
