@@ -314,8 +314,8 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 4 or '"entity"' not in record_attributes[0]:
-        if len(record_attributes) > 1 and '"entity"' in record_attributes[0]:
+    if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
+        if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
                 f"Entity extraction failed in {chunk_key}: expecting 4 fields but got {len(record_attributes)}"
             )
@@ -381,10 +381,10 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 6 or '"relationship"' not in record_attributes[0]:
-        if len(record_attributes) > 1 and '"relationship"' in record_attributes[0]:
+    if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
+        if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"Relation extraction failed in {chunk_key}: expecting 6 fields but got {len(record_attributes)}"
+                f"Relation extraction failed in {chunk_key}: expecting 5 fields but got {len(record_attributes)}"
             )
             logger.warning(f"Relation extracted: {record_attributes[1]}")
         return None
@@ -416,14 +416,14 @@ async def _handle_single_relationship_extraction(
             )
             return None
 
-        # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_and_normalize_extracted_text(record_attributes[3])
-
         # Process keywords with same cleaning pipeline
         edge_keywords = sanitize_and_normalize_extracted_text(
-            record_attributes[4], remove_inner_quotes=True
+            record_attributes[3], remove_inner_quotes=True
         )
         edge_keywords = edge_keywords.replace("，", ",")
+
+        # Process relationship description with same cleaning pipeline
+        edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
 
         edge_source_id = chunk_key
         weight = (
@@ -1686,13 +1686,8 @@ async def extract_entities(
     entity_types = global_config["addon_params"].get(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
-    example_number = global_config["addon_params"].get("example_number", None)
-    if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
-        examples = "\n".join(
-            PROMPTS["entity_extraction_examples"][: int(example_number)]
-        )
-    else:
-        examples = "\n".join(PROMPTS["entity_extraction_examples"])
+
+    examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
@@ -2137,13 +2132,8 @@ async def extract_keywords_only(
             )
 
     # 2. Build the examples
-    example_number = global_config["addon_params"].get("example_number", None)
-    if example_number and example_number < len(PROMPTS["keywords_extraction_examples"]):
-        examples = "\n".join(
-            PROMPTS["keywords_extraction_examples"][: int(example_number)]
-        )
-    else:
-        examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 3. Process conversation history

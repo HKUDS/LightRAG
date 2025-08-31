@@ -24,11 +24,14 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
-    "organization",
-    "person",
-    "geo",
-    "event",
-    "category",
+    "Organization",
+    "Person",
+    "Equiment",
+    "Product",
+    "Technology",
+    "Location",
+    "Event",
+    "Category",
 ]
 
 # Separator for graph fields
