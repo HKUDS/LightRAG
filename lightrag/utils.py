@@ -82,6 +82,27 @@ def get_env_value(
 
     if value_type is bool:
         return value.lower() in ("true", "1", "yes", "t", "on")
+
+    # Handle list type with JSON parsing
+    if value_type is list:
+        try:
+            import json
+
+            parsed_value = json.loads(value)
+            # Ensure the parsed value is actually a list
+            if isinstance(parsed_value, list):
+                return parsed_value
+            else:
+                logger.warning(
+                    f"Environment variable {env_key} is not a valid JSON list, using default"
+                )
+                return default
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                f"Failed to parse {env_key} as JSON list: {e}, using default"
+            )
+            return default
+
     try:
         return value_type(value)
     except (ValueError, TypeError):
