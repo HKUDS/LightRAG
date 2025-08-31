@@ -384,9 +384,9 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 6 or '"relationship"' not in record_attributes[0]:
         if len(record_attributes) > 1 and '"relationship"' in record_attributes[0]:
             logger.warning(
-                f"Relationship extraction failed in {chunk_key}: expecting 6 fields but got {len(record_attributes)}"
+                f"Relation extraction failed in {chunk_key}: expecting 6 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Relationship extracted: {record_attributes[1]}")
+            logger.warning(f"Relation extracted: {record_attributes[1]}")
         return None
 
     try:
