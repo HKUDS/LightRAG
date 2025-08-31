@@ -822,6 +822,13 @@ async def _parse_extraction_result(
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
+    # Preventive fix: when tuple_delimiter is <|>, fix LLM output instability issues
+    if context_base["tuple_delimiter"] == "<|>":
+        # 1. Convert <||> to <|>
+        extraction_result = extraction_result.replace("<||>", "<|>")
+        # 2. Convert < | > to <|>
+        extraction_result = extraction_result.replace("< | >", "<|>")
+
     # Parse the extraction result using the same logic as in extract_entities
     records = split_string_by_multi_markers(
         extraction_result,
@@ -1728,6 +1735,13 @@ async def extract_entities(
         """
         maybe_nodes = defaultdict(list)
         maybe_edges = defaultdict(list)
+
+        # Preventive fix: when tuple_delimiter is <|>, fix LLM output instability issues
+        if context_base["tuple_delimiter"] == "<|>":
+            # 1. Convert <||> to <|>
+            result = result.replace("<||>", "<|>")
+            # 2. Convert < | > to <|>
+            result = result.replace("< | >", "<|>")
 
         records = split_string_by_multi_markers(
             result,
