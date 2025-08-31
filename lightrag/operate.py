@@ -2814,6 +2814,7 @@ async def kg_search(
         knowledge_graph_inst,
         entities_vdb,
         relationships_vdb,
+        text_chunks_db,
         query_param,
         chunks_vdb,
     )
@@ -3118,6 +3119,7 @@ async def _build_query_context(
         knowledge_graph_inst,
         entities_vdb,
         relationships_vdb,
+        text_chunks_db,
         query_param,
         chunks_vdb,
     )

@@ -78,6 +78,7 @@ from .operate import (
     extract_entities,
     merge_nodes_and_edges,
     kg_query,
+    kg_search,
     naive_query,
     _rebuild_knowledge_from_chunks,
 )
@@ -2102,6 +2103,55 @@ class LightRAG:
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
+        await self._query_done()
+        return response
+
+    def search(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Synchronous search API: returns structured retrieval results without LLM generation.
+
+        Args:
+            query: Query text.
+            param: Query parameters (reuse the same QueryParam as query/aquery).
+
+        Returns:
+            dict[str, Any]: {"entities": [...], "relationships": [...], "chunks": [...], "metadata": {...}}
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.asearch(query, param))
+
+    async def asearch(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Asynchronous search API: calls kg_search and returns retrieval-only results
+        (entities, relationships, and merged chunks).
+
+        Args:
+            query: Query text.
+            param: Query parameters (reuse the same QueryParam as query/aquery).
+
+        Returns:
+            dict[str, Any]: Structured search result
+        """
+        global_config = asdict(self)
+        response = await kg_search(
+            query.strip(),
+            self.chunk_entity_relation_graph,
+            self.entities_vdb,
+            self.relationships_vdb,
+            self.text_chunks,
+            param,
+            global_config,
+            hashing_kv=self.llm_response_cache,
+            chunks_vdb=self.chunks_vdb,
+        )
         await self._query_done()
         return response
 
