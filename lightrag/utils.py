@@ -82,6 +82,27 @@ def get_env_value(
 
     if value_type is bool:
         return value.lower() in ("true", "1", "yes", "t", "on")
+
+    # Handle list type with JSON parsing
+    if value_type is list:
+        try:
+            import json
+
+            parsed_value = json.loads(value)
+            # Ensure the parsed value is actually a list
+            if isinstance(parsed_value, list):
+                return parsed_value
+            else:
+                logger.warning(
+                    f"Environment variable {env_key} is not a valid JSON list, using default"
+                )
+                return default
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                f"Failed to parse {env_key} as JSON list: {e}, using default"
+            )
+            return default
+
     try:
         return value_type(value)
     except (ValueError, TypeError):
@@ -374,6 +395,7 @@ def priority_limit_async_func_call(
     max_task_duration: float = None,
     max_queue_size: int = 1000,
     cleanup_timeout: float = 2.0,
+    queue_name: str = "limit_async",
 ):
     """
     Enhanced priority-limited asynchronous function call decorator with robust timeout handling
@@ -391,6 +413,7 @@ def priority_limit_async_func_call(
         max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
+        queue_name: Optional queue name for logging identification (defaults to "limit_async")
 
     Returns:
         Decorator function
@@ -482,7 +505,7 @@ def priority_limit_async_func_call(
                         except asyncio.TimeoutError:
                             # Worker-level timeout (max_execution_timeout exceeded)
                             logger.warning(
-                                f"limit_async: Worker timeout for task {task_id} after {max_execution_timeout}s"
+                                f"{queue_name}: Worker timeout for task {task_id} after {max_execution_timeout}s"
                             )
                             if not task_state.future.done():
                                 task_state.future.set_exception(
@@ -495,12 +518,12 @@ def priority_limit_async_func_call(
                             if not task_state.future.done():
                                 task_state.future.cancel()
                             logger.debug(
-                                f"limit_async: Task {task_id} cancelled during execution"
+                                f"{queue_name}: Task {task_id} cancelled during execution"
                             )
                         except Exception as e:
                             # Function execution error
                             logger.error(
-                                f"limit_async: Error in decorated function for task {task_id}: {str(e)}"
+                                f"{queue_name}: Error in decorated function for task {task_id}: {str(e)}"
                             )
                             if not task_state.future.done():
                                 task_state.future.set_exception(e)
@@ -512,10 +535,12 @@ def priority_limit_async_func_call(
 
                     except Exception as e:
                         # Critical error in worker loop
-                        logger.error(f"limit_async: Critical error in worker: {str(e)}")
+                        logger.error(
+                            f"{queue_name}: Critical error in worker: {str(e)}"
+                        )
                         await asyncio.sleep(0.1)
             finally:
-                logger.debug("limit_async: Worker exiting")
+                logger.debug(f"{queue_name}: Worker exiting")
 
         async def enhanced_health_check():
             """Enhanced health check with stuck task detection and recovery"""
@@ -549,7 +574,7 @@ def priority_limit_async_func_call(
                         # Force cleanup of stuck tasks
                         for task_id, execution_duration in stuck_tasks:
                             logger.warning(
-                                f"limit_async: Detected stuck task {task_id} (execution time: {execution_duration:.1f}s), forcing cleanup"
+                                f"{queue_name}: Detected stuck task {task_id} (execution time: {execution_duration:.1f}s), forcing cleanup"
                             )
                             async with task_states_lock:
                                 if task_id in task_states:
@@ -572,7 +597,7 @@ def priority_limit_async_func_call(
 
                     if workers_needed > 0:
                         logger.info(
-                            f"limit_async: Creating {workers_needed} new workers"
+                            f"{queue_name}: Creating {workers_needed} new workers"
                         )
                         new_tasks = set()
                         for _ in range(workers_needed):
@@ -582,9 +607,9 @@ def priority_limit_async_func_call(
                         tasks.update(new_tasks)
 
             except Exception as e:
-                logger.error(f"limit_async: Error in enhanced health check: {str(e)}")
+                logger.error(f"{queue_name}: Error in enhanced health check: {str(e)}")
             finally:
-                logger.debug("limit_async: Enhanced health check task exiting")
+                logger.debug(f"{queue_name}: Enhanced health check task exiting")
                 initialized = False
 
         async def ensure_workers():
@@ -601,7 +626,7 @@ def priority_limit_async_func_call(
                 if reinit_count > 0:
                     reinit_count += 1
                     logger.warning(
-                        f"limit_async: Reinitializing system (count: {reinit_count})"
+                        f"{queue_name}: Reinitializing system (count: {reinit_count})"
                     )
                 else:
                     reinit_count = 1
@@ -614,7 +639,7 @@ def priority_limit_async_func_call(
                 active_tasks_count = len(tasks)
                 if active_tasks_count > 0 and reinit_count > 1:
                     logger.warning(
-                        f"limit_async: {active_tasks_count} tasks still running during reinitialization"
+                        f"{queue_name}: {active_tasks_count} tasks still running during reinitialization"
                     )
 
                 # Create worker tasks
@@ -641,12 +666,12 @@ def priority_limit_async_func_call(
                     f" (Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
                 )
                 logger.info(
-                    f"limit_async: {workers_needed} new workers initialized {timeout_str}"
+                    f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
                 )
 
         async def shutdown():
             """Gracefully shut down all workers and cleanup resources"""
-            logger.info("limit_async: Shutting down priority queue workers")
+            logger.info(f"{queue_name}: Shutting down priority queue workers")
 
             shutdown_event.set()
 
@@ -667,7 +692,7 @@ def priority_limit_async_func_call(
                 await asyncio.wait_for(queue.join(), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "limit_async: Timeout waiting for queue to empty during shutdown"
+                    f"{queue_name}: Timeout waiting for queue to empty during shutdown"
                 )
 
             # Cancel worker tasks
@@ -687,7 +712,7 @@ def priority_limit_async_func_call(
                 except asyncio.CancelledError:
                     pass
 
-            logger.info("limit_async: Priority queue workers shutdown complete")
+            logger.info(f"{queue_name}: Priority queue workers shutdown complete")
 
         @wraps(func)
         async def wait_func(
@@ -750,7 +775,7 @@ def priority_limit_async_func_call(
                         )
                 except asyncio.TimeoutError:
                     raise QueueFullError(
-                        f"Queue full, timeout after {_queue_timeout} seconds"
+                        f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
                     )
                 except Exception as e:
                     # Clean up on queue error
@@ -785,14 +810,14 @@ def priority_limit_async_func_call(
                         await asyncio.sleep(0.1)
 
                     raise TimeoutError(
-                        f"limit_async: User timeout after {_timeout} seconds"
+                        f"{queue_name}: User timeout after {_timeout} seconds"
                     )
                 except WorkerTimeoutError as e:
                     # This is Worker-level timeout, directly propagate exception information
-                    raise TimeoutError(f"limit_async: {str(e)}")
+                    raise TimeoutError(f"{queue_name}: {str(e)}")
                 except HealthCheckTimeoutError as e:
                     # This is Health Check-level timeout, directly propagate exception information
-                    raise TimeoutError(f"limit_async: {str(e)}")
+                    raise TimeoutError(f"{queue_name}: {str(e)}")
 
             finally:
                 # Ensure cleanup
@@ -929,19 +954,6 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     content = content if content is not None else ""
     results = re.split("|".join(re.escape(marker) for marker in markers), content)
     return [r.strip() for r in results if r.strip()]
-
-
-# Refer the utils functions of the official GraphRAG implementation:
-# https://github.com/microsoft/graphrag
-def clean_str(input: Any) -> str:
-    """Clean an input string by removing HTML escapes, control characters, and other unwanted characters."""
-    # If we get non-string input, just give it back
-    if not isinstance(input, str):
-        return input
-
-    result = html.unescape(input.strip())
-    # https://stackoverflow.com/questions/4324790/removing-control-characters-from-a-string-in-python
-    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", result)
 
 
 def is_float_regex(value: str) -> bool:
@@ -1728,28 +1740,77 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
-def normalize_extracted_info(name: str, is_entity=False) -> str:
+def sanitize_and_normalize_extracted_text(
+    input_text: str, remove_inner_quotes=False
+) -> str:
+    """Santitize and normalize extracted text
+    Args:
+        input_text: text string to be processed
+        is_name: whether the input text is a entity or relation name
+
+    Returns:
+        Santitized and normalized text string
+    """
+    safe_input_text = sanitize_text_for_encoding(input_text)
+    if safe_input_text:
+        normalized_text = normalize_extracted_info(
+            safe_input_text, remove_inner_quotes=remove_inner_quotes
+        )
+        return normalized_text
+    return ""
+
+
+def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     """Normalize entity/relation names and description with the following rules:
-    1. Remove spaces between Chinese characters
-    2. Remove spaces between Chinese characters and English letters/numbers
-    3. Preserve spaces within English text and numbers
-    4. Replace Chinese parentheses with English parentheses
-    5. Replace Chinese dash with English dash
-    6. Remove English quotation marks from the beginning and end of the text
-    7. Remove English quotation marks in and around chinese
-    8. Remove Chinese quotation marks
+    1. Clean HTML tags (paragraph and line break tags)
+    2. Convert Chinese symbols to English symbols
+    3. Remove spaces between Chinese characters
+    4. Remove spaces between Chinese characters and English letters/numbers
+    5. Preserve spaces within English text and numbers
+    6. Replace Chinese parentheses with English parentheses
+    7. Replace Chinese dash with English dash
+    8. Remove English quotation marks from the beginning and end of the text
+    9. Remove English quotation marks in and around chinese
+    10. Remove Chinese quotation marks
+    11. Filter out short numeric-only text (length < 3 and only digits/dots)
 
     Args:
         name: Entity name to normalize
+        is_entity: Whether this is an entity name (affects quote handling)
 
     Returns:
         Normalized entity name
     """
+    # 1. Clean HTML tags - remove paragraph and line break tags
+    name = re.sub(r"</p\s*>|<p\s*>|<p/>", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*>|<br/>", "", name, flags=re.IGNORECASE)
+
+    # 2. Convert Chinese symbols to English symbols
+    # Chinese full-width letters to half-width (A-Z, a-z)
+    name = name.translate(
+        str.maketrans(
+            "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        )
+    )
+
+    # Chinese full-width numbers to half-width
+    name = name.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+    # Chinese full-width symbols to half-width
+    name = name.replace("－", "-")  # Chinese minus
+    name = name.replace("＋", "+")  # Chinese plus
+    name = name.replace("／", "/")  # Chinese slash
+    name = name.replace("＊", "*")  # Chinese asterisk
+
     # Replace Chinese parentheses with English parentheses
     name = name.replace("（", "(").replace("）", ")")
 
-    # Replace Chinese dash with English dash
+    # Replace Chinese dash with English dash (additional patterns)
     name = name.replace("—", "-").replace("－", "-")
+
+    # Chinese full-width space to regular space (after other replacements)
+    name = name.replace("　", " ")
 
     # Use regex to remove spaces between Chinese characters
     # Regex explanation:
@@ -1766,18 +1827,56 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
         r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
     )
 
-    # Remove English quotation marks from the beginning and end
-    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
-        name = name[1:-1]
-    if len(name) >= 2 and name.startswith("'") and name.endswith("'"):
-        name = name[1:-1]
+    # Remove outer quotes
+    if len(name) >= 2:
+        # Handle double quotes
+        if name.startswith('"') and name.endswith('"'):
+            inner_content = name[1:-1]
+            if '"' not in inner_content:  # No double quotes inside
+                name = inner_content
 
-    if is_entity:
+        # Handle single quotes
+        if name.startswith("'") and name.endswith("'"):
+            inner_content = name[1:-1]
+            if "'" not in inner_content:  # No single quotes inside
+                name = inner_content
+
+        # Handle Chinese-style double quotes
+        if name.startswith("“") and name.endswith("”"):
+            inner_content = name[1:-1]
+            if "“" not in inner_content and "”" not in inner_content:
+                name = inner_content
+        if name.startswith("‘") and name.endswith("’"):
+            inner_content = name[1:-1]
+            if "‘" not in inner_content and "’" not in inner_content:
+                name = inner_content
+
+    if remove_inner_quotes:
         # remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+
+    # Remove spaces from the beginning and end of the text
+    name = name.strip()
+
+    # Filter out pure numeric content with length < 3
+    if len(name) < 3 and re.match(r"^[0-9]+$", name):
+        return ""
+
+    def should_filter_by_dots(text):
+        """
+        Check if the string consists only of dots and digits, with at least one dot
+        Filter cases include: 1.2.3, 12.3, .123, 123., 12.3., .1.23 etc.
+        """
+        return all(c.isdigit() or c == "." for c in text) and "." in text
+
+    if len(name) < 6 and should_filter_by_dots(name):
+        # Filter out mixed numeric and dot content with length < 6
+        return ""
+        # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
+        return ""
 
     return name
 
@@ -1789,6 +1888,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     - Surrogate characters (the main cause of encoding errors)
     - Other invalid Unicode sequences
     - Control characters that might cause issues
+    - Unescape HTML escapes
+    - Remove control characters
     - Whitespace trimming
 
     Args:
@@ -1801,9 +1902,6 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     Raises:
         ValueError: When text contains uncleanable encoding issues that cannot be safely processed
     """
-    if not isinstance(text, str):
-        return str(text)
-
     if not text:
         return text
 
@@ -1845,7 +1943,13 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         # Test final encoding to ensure it's safe
         sanitized.encode("utf-8")
 
-        return sanitized
+        # Unescape HTML escapes
+        sanitized = html.unescape(sanitized)
+
+        # Remove control characters
+        sanitized = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", sanitized)
+
+        return sanitized.strip()
 
     except UnicodeEncodeError as e:
         # Critical change: Don't return placeholder, raise exception for caller to handle

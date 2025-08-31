@@ -11,11 +11,10 @@ from collections import Counter, defaultdict
 
 from .utils import (
     logger,
-    clean_str,
     compute_mdhash_id,
     Tokenizer,
     is_float_regex,
-    normalize_extracted_info,
+    sanitize_and_normalize_extracted_text,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -31,7 +30,6 @@ from .utils import (
     pick_by_vector_similarity,
     process_chunks_unified,
     build_file_path,
-    sanitize_text_for_encoding,
 )
 from .base import (
     BaseGraphStorage,
@@ -316,18 +314,18 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 4 or '"entity"' not in record_attributes[0]:
+    if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
+        if len(record_attributes) > 1 and "entity" in record_attributes[0]:
+            logger.warning(
+                f"Entity extraction failed in {chunk_key}: expecting 4 fields but got {len(record_attributes)}"
+            )
+            logger.warning(f"Entity extracted: {record_attributes[1]}")
         return None
 
     try:
-        # Step 1: Strict UTF-8 encoding sanitization (fail-fast approach)
-        entity_name = sanitize_text_for_encoding(record_attributes[1])
-
-        # Step 2: HTML and control character cleaning
-        entity_name = clean_str(entity_name).strip()
-
-        # Step 3: Business logic normalization
-        entity_name = normalize_extracted_info(entity_name, is_entity=True)
+        entity_name = sanitize_and_normalize_extracted_text(
+            record_attributes[1], remove_inner_quotes=True
+        )
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -337,18 +335,20 @@ async def _handle_single_entity_extraction(
             return None
 
         # Process entity type with same cleaning pipeline
-        entity_type = sanitize_text_for_encoding(record_attributes[2])
-        entity_type = clean_str(entity_type).strip('"')
-        if not entity_type.strip() or entity_type.startswith('("'):
+        entity_type = sanitize_and_normalize_extracted_text(
+            record_attributes[2], remove_inner_quotes=True
+        )
+
+        if not entity_type.strip() or any(
+            char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+        ):
             logger.warning(
                 f"Entity extraction error: invalid entity type in: {record_attributes}"
             )
             return None
 
         # Process entity description with same cleaning pipeline
-        entity_description = sanitize_text_for_encoding(record_attributes[3])
-        entity_description = clean_str(entity_description)
-        entity_description = normalize_extracted_info(entity_description)
+        entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
 
         if not entity_description.strip():
             logger.warning(
@@ -381,31 +381,30 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or '"relationship"' not in record_attributes[0]:
+    if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
+        if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
+            logger.warning(
+                f"Relation extraction failed in {chunk_key}: expecting 5 fields but got {len(record_attributes)}"
+            )
+            logger.warning(f"Relation extracted: {record_attributes[1]}")
         return None
 
     try:
-        # Process source and target entities with strict cleaning pipeline
-        # Step 1: Strict UTF-8 encoding sanitization (fail-fast approach)
-        source = sanitize_text_for_encoding(record_attributes[1])
-        # Step 2: HTML and control character cleaning
-        source = clean_str(source)
-        # Step 3: Business logic normalization
-        source = normalize_extracted_info(source, is_entity=True)
-
-        # Same pipeline for target entity
-        target = sanitize_text_for_encoding(record_attributes[2])
-        target = clean_str(target)
-        target = normalize_extracted_info(target, is_entity=True)
+        source = sanitize_and_normalize_extracted_text(
+            record_attributes[1], remove_inner_quotes=True
+        )
+        target = sanitize_and_normalize_extracted_text(
+            record_attributes[2], remove_inner_quotes=True
+        )
 
         # Validate entity names after all cleaning steps
-        if not source or not source.strip():
+        if not source:
             logger.warning(
                 f"Relationship extraction error: source entity became empty after cleaning. Original: '{record_attributes[1]}'"
             )
             return None
 
-        if not target or not target.strip():
+        if not target:
             logger.warning(
                 f"Relationship extraction error: target entity became empty after cleaning. Original: '{record_attributes[2]}'"
             )
@@ -417,16 +416,14 @@ async def _handle_single_relationship_extraction(
             )
             return None
 
-        # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_text_for_encoding(record_attributes[3])
-        edge_description = clean_str(edge_description)
-        edge_description = normalize_extracted_info(edge_description)
-
         # Process keywords with same cleaning pipeline
-        edge_keywords = sanitize_text_for_encoding(record_attributes[4])
-        edge_keywords = clean_str(edge_keywords)
-        edge_keywords = normalize_extracted_info(edge_keywords, is_entity=True)
+        edge_keywords = sanitize_and_normalize_extracted_text(
+            record_attributes[3], remove_inner_quotes=True
+        )
         edge_keywords = edge_keywords.replace("，", ",")
+
+        # Process relationship description with same cleaning pipeline
+        edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
 
         edge_source_id = chunk_key
         weight = (
@@ -446,12 +443,12 @@ async def _handle_single_relationship_extraction(
         )
 
     except ValueError as e:
-        logger.error(
+        logger.warning(
             f"Relationship extraction failed due to encoding issues in chunk {chunk_key}: {e}"
         )
         return None
     except Exception as e:
-        logger.error(
+        logger.warning(
             f"Relationship extraction failed with unexpected error in chunk {chunk_key}: {e}"
         )
         return None
@@ -1689,13 +1686,8 @@ async def extract_entities(
     entity_types = global_config["addon_params"].get(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
-    example_number = global_config["addon_params"].get("example_number", None)
-    if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
-        examples = "\n".join(
-            PROMPTS["entity_extraction_examples"][: int(example_number)]
-        )
-    else:
-        examples = "\n".join(PROMPTS["entity_extraction_examples"])
+
+    examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
@@ -2140,13 +2132,8 @@ async def extract_keywords_only(
             )
 
     # 2. Build the examples
-    example_number = global_config["addon_params"].get("example_number", None)
-    if example_number and example_number < len(PROMPTS["keywords_extraction_examples"]):
-        examples = "\n".join(
-            PROMPTS["keywords_extraction_examples"][: int(example_number)]
-        )
-    else:
-        examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 3. Process conversation history
