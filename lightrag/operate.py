@@ -319,7 +319,7 @@ async def _handle_single_entity_extraction(
 
     try:
         entity_name = sanitize_and_normalize_extracted_text(
-            record_attributes[1], is_entity=True
+            record_attributes[1], remove_inner_quotes=True
         )
 
         # Validate entity name after all cleaning steps
@@ -330,9 +330,13 @@ async def _handle_single_entity_extraction(
             return None
 
         # Process entity type with same cleaning pipeline
-        entity_type = sanitize_and_normalize_extracted_text(record_attributes[2])
+        entity_type = sanitize_and_normalize_extracted_text(
+            record_attributes[2], remove_inner_quotes=True
+        )
 
-        if not entity_type.strip() or entity_type.startswith('("'):
+        if not entity_type.strip() or any(
+            char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+        ):
             logger.warning(
                 f"Entity extraction error: invalid entity type in: {record_attributes}"
             )
@@ -376,8 +380,12 @@ async def _handle_single_relationship_extraction(
         return None
 
     try:
-        source = sanitize_and_normalize_extracted_text(record_attributes[1])
-        target = sanitize_and_normalize_extracted_text(record_attributes[2])
+        source = sanitize_and_normalize_extracted_text(
+            record_attributes[1], remove_inner_quotes=True
+        )
+        target = sanitize_and_normalize_extracted_text(
+            record_attributes[2], remove_inner_quotes=True
+        )
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -402,7 +410,9 @@ async def _handle_single_relationship_extraction(
         edge_description = sanitize_and_normalize_extracted_text(record_attributes[3])
 
         # Process keywords with same cleaning pipeline
-        edge_keywords = sanitize_and_normalize_extracted_text(record_attributes[4])
+        edge_keywords = sanitize_and_normalize_extracted_text(
+            record_attributes[4], remove_inner_quotes=True
+        )
         edge_keywords = edge_keywords.replace("，", ",")
 
         edge_source_id = chunk_key

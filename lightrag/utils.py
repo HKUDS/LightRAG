@@ -1715,7 +1715,9 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
-def sanitize_and_normalize_extracted_text(input_text: str, is_name=False) -> str:
+def sanitize_and_normalize_extracted_text(
+    input_text: str, remove_inner_quotes=False
+) -> str:
     """Santitize and normalize extracted text
     Args:
         input_text: text string to be processed
@@ -1725,32 +1727,65 @@ def sanitize_and_normalize_extracted_text(input_text: str, is_name=False) -> str
         Santitized and normalized text string
     """
     safe_input_text = sanitize_text_for_encoding(input_text)
-    normalized_text = normalize_extracted_info(safe_input_text, is_name)
-    return normalized_text
+    if safe_input_text:
+        normalized_text = normalize_extracted_info(
+            safe_input_text, remove_inner_quotes=remove_inner_quotes
+        )
+        return normalized_text
+    return ""
 
 
-def normalize_extracted_info(name: str, is_entity=False) -> str:
+def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     """Normalize entity/relation names and description with the following rules:
-    1. Remove spaces between Chinese characters
-    2. Remove spaces between Chinese characters and English letters/numbers
-    3. Preserve spaces within English text and numbers
-    4. Replace Chinese parentheses with English parentheses
-    5. Replace Chinese dash with English dash
-    6. Remove English quotation marks from the beginning and end of the text
-    7. Remove English quotation marks in and around chinese
-    8. Remove Chinese quotation marks
+    1. Clean HTML tags (paragraph and line break tags)
+    2. Convert Chinese symbols to English symbols
+    3. Remove spaces between Chinese characters
+    4. Remove spaces between Chinese characters and English letters/numbers
+    5. Preserve spaces within English text and numbers
+    6. Replace Chinese parentheses with English parentheses
+    7. Replace Chinese dash with English dash
+    8. Remove English quotation marks from the beginning and end of the text
+    9. Remove English quotation marks in and around chinese
+    10. Remove Chinese quotation marks
+    11. Filter out short numeric-only text (length < 3 and only digits/dots)
 
     Args:
         name: Entity name to normalize
+        is_entity: Whether this is an entity name (affects quote handling)
 
     Returns:
         Normalized entity name
     """
+    # 1. Clean HTML tags - remove paragraph and line break tags
+    name = re.sub(r"</p\s*>|<p\s*>|<p/>", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*>|<br/>", "", name, flags=re.IGNORECASE)
+
+    # 2. Convert Chinese symbols to English symbols
+    # Chinese full-width letters to half-width (A-Z, a-z)
+    name = name.translate(
+        str.maketrans(
+            "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        )
+    )
+
+    # Chinese full-width numbers to half-width
+    name = name.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+    # Chinese full-width symbols to half-width
+    name = name.replace("－", "-")  # Chinese minus
+    name = name.replace("＋", "+")  # Chinese plus
+    name = name.replace("／", "/")  # Chinese slash
+    name = name.replace("＊", "*")  # Chinese asterisk
+
     # Replace Chinese parentheses with English parentheses
     name = name.replace("（", "(").replace("）", ")")
 
-    # Replace Chinese dash with English dash
+    # Replace Chinese dash with English dash (additional patterns)
     name = name.replace("—", "-").replace("－", "-")
+
+    # Chinese full-width space to regular space (after other replacements)
+    name = name.replace("　", " ")
 
     # Use regex to remove spaces between Chinese characters
     # Regex explanation:
@@ -1767,18 +1802,56 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
         r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
     )
 
-    # Remove English quotation marks from the beginning and end
-    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
-        name = name[1:-1]
-    if len(name) >= 2 and name.startswith("'") and name.endswith("'"):
-        name = name[1:-1]
+    # Remove outer quotes
+    if len(name) >= 2:
+        # Handle double quotes
+        if name.startswith('"') and name.endswith('"'):
+            inner_content = name[1:-1]
+            if '"' not in inner_content:  # No double quotes inside
+                name = inner_content
 
-    if is_entity:
+        # Handle single quotes
+        if name.startswith("'") and name.endswith("'"):
+            inner_content = name[1:-1]
+            if "'" not in inner_content:  # No single quotes inside
+                name = inner_content
+
+        # Handle Chinese-style double quotes
+        if name.startswith("“") and name.endswith("”"):
+            inner_content = name[1:-1]
+            if "“" not in inner_content and "”" not in inner_content:
+                name = inner_content
+        if name.startswith("‘") and name.endswith("’"):
+            inner_content = name[1:-1]
+            if "‘" not in inner_content and "’" not in inner_content:
+                name = inner_content
+
+    if remove_inner_quotes:
         # remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+
+    # Remove spaces from the beginning and end of the text
+    name = name.strip()
+
+    # Filter out pure numeric content with length < 3
+    if len(name) < 3 and re.match(r"^[0-9]+$", name):
+        return ""
+
+    def should_filter_by_dots(text):
+        """
+        Check if the string consists only of dots and digits, with at least one dot
+        Filter cases include: 1.2.3, 12.3, .123, 123., 12.3., .1.23 etc.
+        """
+        return all(c.isdigit() or c == "." for c in text) and "." in text
+
+    if len(name) < 6 and should_filter_by_dots(name):
+        # Filter out mixed numeric and dot content with length < 6
+        return ""
+        # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
+        return ""
 
     return name
 
