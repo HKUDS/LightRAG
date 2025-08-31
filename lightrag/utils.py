@@ -931,19 +931,6 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     return [r.strip() for r in results if r.strip()]
 
 
-# Refer the utils functions of the official GraphRAG implementation:
-# https://github.com/microsoft/graphrag
-def clean_str(input: Any) -> str:
-    """Clean an input string by removing HTML escapes, control characters, and other unwanted characters."""
-    # If we get non-string input, just give it back
-    if not isinstance(input, str):
-        return input
-
-    result = html.unescape(input.strip())
-    # https://stackoverflow.com/questions/4324790/removing-control-characters-from-a-string-in-python
-    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", result)
-
-
 def is_float_regex(value: str) -> bool:
     return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
 
@@ -1728,6 +1715,20 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
+def sanitize_and_normalize_extracted_text(input_text: str, is_name=False) -> str:
+    """Santitize and normalize extracted text
+    Args:
+        input_text: text string to be processed
+        is_name: whether the input text is a entity or relation name
+
+    Returns:
+        Santitized and normalized text string
+    """
+    safe_input_text = sanitize_text_for_encoding(input_text)
+    normalized_text = normalize_extracted_info(safe_input_text, is_name)
+    return normalized_text
+
+
 def normalize_extracted_info(name: str, is_entity=False) -> str:
     """Normalize entity/relation names and description with the following rules:
     1. Remove spaces between Chinese characters
@@ -1789,6 +1790,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     - Surrogate characters (the main cause of encoding errors)
     - Other invalid Unicode sequences
     - Control characters that might cause issues
+    - Unescape HTML escapes
+    - Remove control characters
     - Whitespace trimming
 
     Args:
@@ -1801,9 +1804,6 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     Raises:
         ValueError: When text contains uncleanable encoding issues that cannot be safely processed
     """
-    if not isinstance(text, str):
-        return str(text)
-
     if not text:
         return text
 
@@ -1845,7 +1845,13 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         # Test final encoding to ensure it's safe
         sanitized.encode("utf-8")
 
-        return sanitized
+        # Unescape HTML escapes
+        sanitized = html.unescape(sanitized)
+
+        # Remove control characters
+        sanitized = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", sanitized)
+
+        return sanitized.strip()
 
     except UnicodeEncodeError as e:
         # Critical change: Don't return placeholder, raise exception for caller to handle

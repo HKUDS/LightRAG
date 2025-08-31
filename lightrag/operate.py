@@ -11,11 +11,10 @@ from collections import Counter, defaultdict
 
 from .utils import (
     logger,
-    clean_str,
     compute_mdhash_id,
     Tokenizer,
     is_float_regex,
-    normalize_extracted_info,
+    sanitize_and_normalize_extracted_text,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -31,7 +30,6 @@ from .utils import (
     pick_by_vector_similarity,
     process_chunks_unified,
     build_file_path,
-    sanitize_text_for_encoding,
 )
 from .base import (
     BaseGraphStorage,
@@ -320,14 +318,9 @@ async def _handle_single_entity_extraction(
         return None
 
     try:
-        # Step 1: Strict UTF-8 encoding sanitization (fail-fast approach)
-        entity_name = sanitize_text_for_encoding(record_attributes[1])
-
-        # Step 2: HTML and control character cleaning
-        entity_name = clean_str(entity_name).strip()
-
-        # Step 3: Business logic normalization
-        entity_name = normalize_extracted_info(entity_name, is_entity=True)
+        entity_name = sanitize_and_normalize_extracted_text(
+            record_attributes[1], is_entity=True
+        )
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -337,8 +330,8 @@ async def _handle_single_entity_extraction(
             return None
 
         # Process entity type with same cleaning pipeline
-        entity_type = sanitize_text_for_encoding(record_attributes[2])
-        entity_type = clean_str(entity_type).strip('"')
+        entity_type = sanitize_and_normalize_extracted_text(record_attributes[2])
+
         if not entity_type.strip() or entity_type.startswith('("'):
             logger.warning(
                 f"Entity extraction error: invalid entity type in: {record_attributes}"
@@ -346,9 +339,7 @@ async def _handle_single_entity_extraction(
             return None
 
         # Process entity description with same cleaning pipeline
-        entity_description = sanitize_text_for_encoding(record_attributes[3])
-        entity_description = clean_str(entity_description)
-        entity_description = normalize_extracted_info(entity_description)
+        entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
 
         if not entity_description.strip():
             logger.warning(
@@ -385,27 +376,17 @@ async def _handle_single_relationship_extraction(
         return None
 
     try:
-        # Process source and target entities with strict cleaning pipeline
-        # Step 1: Strict UTF-8 encoding sanitization (fail-fast approach)
-        source = sanitize_text_for_encoding(record_attributes[1])
-        # Step 2: HTML and control character cleaning
-        source = clean_str(source)
-        # Step 3: Business logic normalization
-        source = normalize_extracted_info(source, is_entity=True)
-
-        # Same pipeline for target entity
-        target = sanitize_text_for_encoding(record_attributes[2])
-        target = clean_str(target)
-        target = normalize_extracted_info(target, is_entity=True)
+        source = sanitize_and_normalize_extracted_text(record_attributes[1])
+        target = sanitize_and_normalize_extracted_text(record_attributes[2])
 
         # Validate entity names after all cleaning steps
-        if not source or not source.strip():
+        if not source:
             logger.warning(
                 f"Relationship extraction error: source entity became empty after cleaning. Original: '{record_attributes[1]}'"
             )
             return None
 
-        if not target or not target.strip():
+        if not target:
             logger.warning(
                 f"Relationship extraction error: target entity became empty after cleaning. Original: '{record_attributes[2]}'"
             )
@@ -418,14 +399,10 @@ async def _handle_single_relationship_extraction(
             return None
 
         # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_text_for_encoding(record_attributes[3])
-        edge_description = clean_str(edge_description)
-        edge_description = normalize_extracted_info(edge_description)
+        edge_description = sanitize_and_normalize_extracted_text(record_attributes[3])
 
         # Process keywords with same cleaning pipeline
-        edge_keywords = sanitize_text_for_encoding(record_attributes[4])
-        edge_keywords = clean_str(edge_keywords)
-        edge_keywords = normalize_extracted_info(edge_keywords, is_entity=True)
+        edge_keywords = sanitize_and_normalize_extracted_text(record_attributes[4])
         edge_keywords = edge_keywords.replace("，", ",")
 
         edge_source_id = chunk_key
