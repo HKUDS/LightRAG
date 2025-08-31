@@ -33,7 +33,7 @@ For each pair of related entities, extract the following information:
 4. Format each relationship as:
 ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
 
-5. Use `{tuple_delimiter}` as feild delimiter, and use `{record_delimiter}` as the list delimiter.
+5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the list delimiter. Ensure no spaces are added around the delimiters.
 
 6. When finished, output `{completion_delimiter}`
 
@@ -208,7 +208,7 @@ For each pair of related entities, extract the following information:
 4. Format each relationship as:
 ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
 
-5. Use `{tuple_delimiter}` as feild delimiter, and use `{record_delimiter}` as the list delimiter.
+5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the list delimiter. Ensure no spaces are added around the delimiters.
 
 6. When finished, output `{completion_delimiter}`
 
