@@ -315,6 +315,11 @@ async def _handle_single_entity_extraction(
     file_path: str = "unknown_source",
 ):
     if len(record_attributes) < 4 or '"entity"' not in record_attributes[0]:
+        if len(record_attributes) > 1 and '"entity"' in record_attributes[0]:
+            logger.warning(
+                f"Entity extraction failed in {chunk_key}: expecting 4 fields but got {len(record_attributes)}"
+            )
+            logger.warning(f"Entity extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -376,7 +381,12 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or '"relationship"' not in record_attributes[0]:
+    if len(record_attributes) < 6 or '"relationship"' not in record_attributes[0]:
+        if len(record_attributes) > 1 and '"relationship"' in record_attributes[0]:
+            logger.warning(
+                f"Relationship extraction failed in {chunk_key}: expecting 6 fields but got {len(record_attributes)}"
+            )
+            logger.warning(f"Relationship extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -433,12 +443,12 @@ async def _handle_single_relationship_extraction(
         )
 
     except ValueError as e:
-        logger.error(
+        logger.warning(
             f"Relationship extraction failed due to encoding issues in chunk {chunk_key}: {e}"
         )
         return None
     except Exception as e:
-        logger.error(
+        logger.warning(
             f"Relationship extraction failed with unexpected error in chunk {chunk_key}: {e}"
         )
         return None
