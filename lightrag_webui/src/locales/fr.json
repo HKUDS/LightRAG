@@ -126,6 +126,7 @@
         "id": "ID",
         "fileName": "Nom du fichier",
         "summary": "Résumé",
+        "handler": "Gestionnaire",
         "status": "Statut",
         "length": "Longueur",
         "chunks": "Fragments",
@@ -138,7 +139,9 @@
         "all": "Tous",
         "completed": "Terminé",
         "processing": "En traitement",
+        "handling": "Extraction",
         "pending": "En attente",
+        "ready": "Prêt",
         "failed": "Échoué"
       },
       "errors": {
@@ -410,5 +413,30 @@
     "prevPage": "Page précédente",
     "nextPage": "Page suivante",
     "lastPage": "Dernière page"
+  },
+  "schemeManager": {
+    "button": "Schémas de traitement de documents",
+    "title": "Gestionnaire de schémas",
+    "description": "Créer de nouveaux schémas et configurer les options",
+    "schemeList": "Liste des schémas",
+    "schemeConfig": "Configuration du schéma",
+    "inputPlaceholder": "Entrer le nom du schéma",
+    "deleteTooltip": "Supprimer le schéma",
+    "emptySchemes": "Aucun schéma disponible",
+    "selectSchemePrompt": "Veuillez d'abord sélectionner ou créer un schéma",
+    "processingFramework": "Framework de traitement",
+    "extractionTool": "Outil d'extraction",
+    "errors": {
+      "loadFailed": "Échec du chargement des schémas",
+      "nameEmpty": "Le nom du schéma ne peut pas être vide",
+      "nameExists": "Le nom du schéma existe déjà",
+      "addFailed": "Échec de l'ajout du schéma",
+      "deleteFailed": "Échec de la suppression du schéma"
+    },
+    "upload": {
+      "noSchemeSelected": "Aucun schéma de traitement sélectionné, veuillez d'abord sélectionner un schéma de traitement de documents !",
+      "currentScheme": "Schéma actuel : ",
+      "noSchemeMessage": "Aucun schéma de traitement sélectionné, veuillez d'abord en ajouter et en sélectionner un"
+    }
   }
 }

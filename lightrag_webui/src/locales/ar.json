@@ -126,6 +126,7 @@
         "id": "المعرف",
         "fileName": "اسم الملف",
         "summary": "الملخص",
+        "handler": "المعالج",
         "status": "الحالة",
         "length": "الطول",
         "chunks": "الأجزاء",
@@ -138,7 +139,9 @@
         "all": "الكل",
         "completed": "مكتمل",
         "processing": "قيد المعالجة",
+        "handling": "استخراج",
         "pending": "معلق",
+        "ready": "جاهز",
         "failed": "فشل"
       },
       "errors": {
@@ -410,5 +413,30 @@
     "prevPage": "الصفحة السابقة",
     "nextPage": "الصفحة التالية",
     "lastPage": "الصفحة الأخيرة"
+  },
+  "schemeManager": {
+    "button": "مخططات معالجة المستندات",
+    "title": "مدير المخططات",
+    "description": "إنشاء مخططات جديدة وتكوين الخيارات",
+    "schemeList": "قائمة المخططات",
+    "schemeConfig": "تكوين المخطط",
+    "inputPlaceholder": "أدخل اسم المخطط",
+    "deleteTooltip": "حذف المخطط",
+    "emptySchemes": "لا توجد مخططات متاحة",
+    "selectSchemePrompt": "يرجى تحديد أو إنشاء مخطط أولاً",
+    "processingFramework": "إطار المعالجة",
+    "extractionTool": "أداة الاستخراج",
+    "errors": {
+      "loadFailed": "فشل تحميل المخططات",
+      "nameEmpty": "لا يمكن أن يكون اسم المخطط فارغًا",
+      "nameExists": "اسم المخطط موجود بالفعل",
+      "addFailed": "فشل إضافة المخطط",
+      "deleteFailed": "فشل حذف المخطط"
+    },
+    "upload": {
+      "noSchemeSelected": "لم يتم تحديد مخطط معالجة، يرجى تحديد مخطط معالجة المستندات أولاً!",
+      "currentScheme": "المخطط الحالي: ",
+      "noSchemeMessage": "لم يتم تحديد مخطط معالجة، يرجى إضافة وتحديد واحد أولاً"
+    }
   }
 }

@@ -126,6 +126,7 @@
         "id": "ID",
         "fileName": "File Name",
         "summary": "Summary",
+        "handler": "Handler",
         "status": "Status",
         "length": "Length",
         "chunks": "Chunks",
@@ -138,7 +139,9 @@
         "all": "All",
         "completed": "Completed",
         "processing": "Processing",
+        "handling": "Handling",
         "pending": "Pending",
+        "ready": "Ready",
         "failed": "Failed"
       },
       "errors": {
@@ -410,5 +413,30 @@
     "prevPage": "Previous Page",
     "nextPage": "Next Page",
     "lastPage": "Last Page"
+  },
+  "schemeManager": {
+    "button": "Document Processing Schemes",
+    "title": "Scheme Manager",
+    "description": "Create new schemes and configure options",
+    "schemeList": "Scheme List",
+    "schemeConfig": "Scheme Configuration",
+    "inputPlaceholder": "Enter scheme name",
+    "deleteTooltip": "Delete scheme",
+    "emptySchemes": "No schemes available",
+    "selectSchemePrompt": "Please select or create a scheme first",
+    "processingFramework": "Processing Framework",
+    "extractionTool": "Extraction Tool",
+    "errors": {
+      "loadFailed": "Failed to load schemes",
+      "nameEmpty": "Scheme name cannot be empty",
+      "nameExists": "Scheme name already exists",
+      "addFailed": "Failed to add scheme",
+      "deleteFailed": "Failed to delete scheme"
+    },
+    "upload": {
+      "noSchemeSelected": "No processing scheme selected, please select a document processing scheme first!",
+      "currentScheme": "Current scheme: ",
+      "noSchemeMessage": "No processing scheme selected, please add and select one"
+    }
   }
 }

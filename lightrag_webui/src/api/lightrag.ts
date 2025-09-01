@@ -158,7 +158,7 @@ export type DeleteDocResponse = {
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
+export type DocStatus = 'pending' | 'processing' | 'processed' | 'ready' | 'handling' | 'failed'
 
 export type DocStatusResponse = {
   id: string
@@ -172,6 +172,7 @@ export type DocStatusResponse = {
   error_msg?: string
   metadata?: Record<string, any>
   file_path: string
+  scheme_name: string
 }
 
 export type DocsStatusesResponse = {
@@ -249,6 +250,23 @@ export type LoginResponse = {
   webui_description?: string
 }
 
+export type Scheme = {
+  id: number;
+  name: string;
+  config: {
+    framework: 'lightrag' | 'raganything';
+    extractor?: 'mineru' | 'docling' | undefined; // Optional extractor field
+  };
+};
+
+type AddSchemeParams = Omit<Scheme, 'id'>;
+
+export type SchemesResponse = {
+  status: string;
+  message: string;
+  data: Scheme[];
+};
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -302,6 +320,32 @@ axiosInstance.interceptors.response.use(
 )
 
 // API methods
+export const getSchemes = async (): Promise<SchemesResponse> => {
+  const response = await axiosInstance.get('/documents/schemes');
+  return response.data;
+};
+
+export const saveSchemes = async (schemes: Scheme[]): Promise<{ message: string }> => {
+  const response = await axiosInstance.post('/documents/schemes', schemes);
+  return response.data;
+};
+
+export const addScheme = async (scheme: AddSchemeParams): Promise<Scheme> => {
+  try {
+    const response = await axiosInstance.post('/documents/schemes/add', scheme);
+    // 验证响应数据是否符合 Scheme 类型（可选，取决于 axios 的配置）
+    return response.data;
+  } catch (error) {
+    console.error('Failed to add scheme:', error);
+    throw error; // 重新抛出错误，由调用方处理
+  }
+};
+
+export const deleteScheme = async (schemeId: number): Promise<{ message: string }> => {
+  const response = await axiosInstance.delete(`/documents/schemes/${schemeId}`);
+  return response.data;
+};
+
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
@@ -335,8 +379,10 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   return response.data
 }
 
-export const scanNewDocuments = async (): Promise<ScanResponse> => {
-  const response = await axiosInstance.post('/documents/scan')
+export const scanNewDocuments = async (framework?: string): Promise<ScanResponse> => {
+  const response = await axiosInstance.post('/documents/scan', {
+    framework
+  })
   return response.data
 }
 
@@ -547,11 +593,12 @@ export const insertTexts = async (texts: string[]): Promise<DocActionResponse> =
 
 export const uploadDocument = async (
   file: File,
+  schemeId: number | '',
   onUploadProgress?: (percentCompleted: number) => void
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
-
+  formData.append('schemeId', schemeId.toString())
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
@@ -570,11 +617,12 @@ export const uploadDocument = async (
 
 export const batchUploadDocuments = async (
   files: File[],
+  schemeId: number | '',
   onUploadProgress?: (fileName: string, percentCompleted: number) => void
 ): Promise<DocActionResponse[]> => {
   return await Promise.all(
     files.map(async (file) => {
-      return await uploadDocument(file, (percentCompleted) => {
+      return await uploadDocument(file, schemeId, (percentCompleted) => {
         onUploadProgress?.(file.name, percentCompleted)
       })
     })
