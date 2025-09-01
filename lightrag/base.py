@@ -709,7 +709,7 @@ class DocProcessingStatus:
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
-    multimodal_content: list[dict[str, any]] | None = None
+    multimodal_content: list[dict[str, Any]] | None = None
     """raganything: multimodal_content"""
     multimodal_processed: bool | None = None
     """raganything: multimodal_processed"""

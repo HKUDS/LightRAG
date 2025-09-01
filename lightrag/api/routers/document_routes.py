@@ -454,7 +454,7 @@ class DocStatusResponse(BaseModel):
     scheme_name: str = Field(
         default=None, description="Name of the processing scheme used for this document"
     )
-    multimodal_content: Optional[list[dict[str, any]]] = Field(
+    multimodal_content: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Multimodal content of the document"
     )
 
@@ -870,7 +870,7 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, scheme_name: str = None
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1250,7 +1250,7 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content, file_paths=file_path.name, track_id=track_id, scheme_name=scheme_name
                 )
 
                 logger.info(
@@ -1334,7 +1334,7 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None, scheme_name: str = None):
     """Index a file with track_id
 
     Args:
@@ -1344,7 +1344,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, scheme_name
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1355,7 +1355,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
 
 
 async def pipeline_index_files(
-    rag: LightRAG, file_paths: List[Path], track_id: str = None
+    rag: LightRAG, file_paths: List[Path], track_id: str = None, scheme_name: str = None
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1376,7 +1376,7 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, _ = await pipeline_enqueue_file(rag, file_path, track_id, scheme_name)
             if success:
                 enqueued = True
 
@@ -1404,7 +1404,7 @@ async def pipeline_index_files_raganything(
             Defaults to None.
 
     Note:
-        - Uses RAGAnything's process_document_complete_with_multimodal_content method for each file
+        - Uses RAGAnything's process_document_complete_lightrag_api method for each file
         - Supports multimodal content processing (images, tables, equations)
         - Files are processed with "auto" parse method and "modelscope" source
         - Output is saved to "./output" directory
@@ -1422,11 +1422,10 @@ async def pipeline_index_files_raganything(
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
             success = (
-                await rag_anything.process_document_complete_with_multimodal_content(
+                await rag_anything.process_document_complete_lightrag_api(
                     file_path=str(file_path),
                     output_dir="./output",
                     parse_method="auto",
-                    source="modelscope",
                     scheme_name=scheme_name,
                 )
             )
@@ -2089,11 +2088,10 @@ def create_document_routes(
                 )
             else:
                 background_tasks.add_task(
-                    rag_anything.process_document_complete_with_multimodal_content,
+                    rag_anything.process_document_complete_lightrag_api,
                     file_path=str(file_path),
                     output_dir="./output",
                     parse_method="auto",
-                    source="modelscope",
                     scheme_name=current_framework,
                 )
 
