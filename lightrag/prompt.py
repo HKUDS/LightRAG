@@ -6,15 +6,16 @@ PROMPTS: dict[str, Any] = {}
 
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
+
+# TODO: Deprecated, reserved for compatible with legacy LLM cache
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
-PROMPTS["entity_extraction"] = """---Goal---
+PROMPTS["entity_extraction"] = """---Task---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
-Use {language} as output language.
 
----Steps---
+---Instructions---
 1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
 - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
 - entity_type: One of the following types: [{entity_types}]. If the entity doesn't clearly fit any category, classify it as "Other".
@@ -33,11 +34,9 @@ For each pair of related entities, extract the following information:
 4. Format each relationship as:
 ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
 
-5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the list delimiter. Ensure no spaces are added around the delimiters.
+5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the entity or relation list delimiter.
 
-6. When finished, output `{completion_delimiter}`
-
-7. Return identified entities and relationships in {language}.
+6. Return identified entities and relationships in {language}.
 
 ---Quality Guidelines---
 - Only extract entities that are clearly defined and meaningful in the context
@@ -85,7 +84,6 @@ Output:
 (relationship{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.){record_delimiter}
 (relationship{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.){record_delimiter}
 (relationship{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.){record_delimiter}
-{completion_delimiter}
 
 """,
     """------Example 2------
@@ -115,7 +113,6 @@ Output:
 (relationship{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.){record_delimiter}
 (relationship{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.){record_delimiter}
 (relationship{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.){record_delimiter}
-{completion_delimiter}
 
 """,
     """------Example 3------
@@ -137,7 +134,6 @@ Output:
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.){record_delimiter}
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.){record_delimiter}
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.){record_delimiter}
-{completion_delimiter}
 
 """,
     """------Example 4------
@@ -146,7 +142,6 @@ Entity_types: [organization,person,equiment,product,technology,location,event,ca
 Text:
 ```
 在北京举行的人工智能大会上，腾讯公司的首席技术官张伟发布了最新的大语言模型"腾讯智言"，该模型在自然语言处理方面取得了重大突破。
-
 ```
 
 Output:
@@ -160,7 +155,6 @@ Output:
 (relationship{tuple_delimiter}张伟{tuple_delimiter}腾讯公司{tuple_delimiter}雇佣关系, 高管职位{tuple_delimiter}张伟担任腾讯公司的首席技术官。){record_delimiter}
 (relationship{tuple_delimiter}张伟{tuple_delimiter}腾讯智言{tuple_delimiter}产品发布, 技术展示{tuple_delimiter}张伟在大会上发布了腾讯智言大语言模型。){record_delimiter}
 (relationship{tuple_delimiter}腾讯智言{tuple_delimiter}自然语言处理技术{tuple_delimiter}技术应用, 突破创新{tuple_delimiter}腾讯智言在自然语言处理技术方面取得了重大突破。){record_delimiter}
-{completion_delimiter}
 
 """,
 ]
@@ -188,9 +182,10 @@ Description List:
 Output:"""
 
 PROMPTS["entity_continue_extraction"] = """
-MANY entities and relationships were missed in the last extraction. Please find only the missing entities and relationships from previous text. Do not include entities and relations that have been previously extracted. :\n
+---Task---
+MANY entities and relationships were missed in the last extraction. Please find only the missing entities and relationships from previous text.
 
----Remember Steps---
+---Instructions---
 1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
 - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
 - entity_type: One of the following types: [{entity_types}]. If the entity doesn't clearly fit any category, classify it as "Other".
@@ -209,11 +204,16 @@ For each pair of related entities, extract the following information:
 4. Format each relationship as:
 ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
 
-5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the list delimiter. Ensure no spaces are added around the delimiters.
+5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the entity or relation list delimiter.
 
-6. When finished, output `{completion_delimiter}`
+6. Return identified entities and relationships in {language}.
 
-7. Return identified entities and relationships in {language}.
+---Quality Guidelines---
+- Only extract entities that are clearly defined and meaningful in the context
+- Do not include entities and relations that have been previously extracted
+- Avoid over-interpretation; stick to what is explicitly stated in the text
+- Include specific numerical data in entity name when relevant
+- Ensure entity names are consistent throughout the extraction
 
 ---Output---
 Output:
