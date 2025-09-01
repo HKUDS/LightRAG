@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from re import A
 import traceback
 import asyncio
 import configparser
@@ -930,9 +929,7 @@ class LightRAG:
 
         return track_id
 
-
     def move_file_to_enqueue(self, file_path):
-
         try:
             enqueued_dir = file_path.parent / "__enqueued__"
             enqueued_dir.mkdir(exist_ok=True)
@@ -955,8 +952,9 @@ class LightRAG:
             )
             # Don't affect the main function's success status
 
-
-    def get_unique_filename_in_enqueued(self, target_dir: Path, original_name: str) -> str:
+    def get_unique_filename_in_enqueued(
+        self, target_dir: Path, original_name: str
+    ) -> str:
         from pathlib import Path
         import time
 

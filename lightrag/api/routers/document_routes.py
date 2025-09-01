@@ -1250,7 +1250,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id, scheme_name=scheme_name
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    scheme_name=scheme_name,
                 )
 
                 logger.info(
@@ -1334,7 +1337,9 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None, scheme_name: str = None):
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, track_id: str = None, scheme_name: str = None
+):
     """Index a file with track_id
 
     Args:
@@ -1376,7 +1381,9 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id, scheme_name)
+            success, _ = await pipeline_enqueue_file(
+                rag, file_path, track_id, scheme_name
+            )
             if success:
                 enqueued = True
 
@@ -1421,13 +1428,11 @@ async def pipeline_index_files_raganything(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success = (
-                await rag_anything.process_document_complete_lightrag_api(
-                    file_path=str(file_path),
-                    output_dir="./output",
-                    parse_method="auto",
-                    scheme_name=scheme_name,
-                )
+            success = await rag_anything.process_document_complete_lightrag_api(
+                file_path=str(file_path),
+                output_dir="./output",
+                parse_method="auto",
+                scheme_name=scheme_name,
             )
             if success:
                 pass
