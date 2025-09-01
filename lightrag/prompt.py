@@ -174,9 +174,10 @@ Your task is to synthesize a list of descriptions of a given entity or relation 
 ---Instructions---
 1. **Comprehensiveness:** The summary must integrate key information from all provided descriptions. Do not omit important facts.
 2. **Context:** The summary must explicitly mention the name of the entity or relation for full context.
-3. **Style:** The output must be written from an objective, third-person perspective.
-4. **Length:** Maintain depth and completeness while ensuring the summary's length not exceed {summary_length} tokens.
-5. **Language:** The entire output must be written in {language}.
+3. **Conflict:** In case of conflicting or inconsistent descriptions, determine if they originate from multiple, distinct entities or relationships that share the same name. If so, summarize each entity or relationship separately and then consolidate all summaries.
+4. **Style:** The output must be written from an objective, third-person perspective.
+5. **Length:** Maintain depth and completeness while ensuring the summary's length not exceed {summary_length} tokens.
+6. **Language:** The entire output must be written in {language}.
 
 ---Data---
 {description_type} Name: {description_name}
