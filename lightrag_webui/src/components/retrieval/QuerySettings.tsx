@@ -3,6 +3,7 @@ import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
+import LabelSelector from '@/components/ui/LabelSelector'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
@@ -33,7 +34,9 @@ export default function QuerySettings() {
     chunk_top_k: 20,
     max_entity_tokens: 6000,
     max_relation_tokens: 8000,
-    max_total_tokens: 30000
+    max_total_tokens: 30000,
+    labels: [] as string[],
+    label_match_all: false
   }), [])
 
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
@@ -463,6 +466,48 @@ export default function QuerySettings() {
                   checked={querySettings.stream}
                   onCheckedChange={(checked) => handleChange('stream', checked)}
                 />
+              </div>
+
+              {/* Label Filtering Section */}
+              <div className="col-span-2 mt-4 pt-4 border-t border-border">
+                <div className="space-y-3">
+                  <div>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <label className="text-sm font-medium cursor-help">
+                            Label Filtering
+                          </label>
+                        </TooltipTrigger>
+                        <TooltipContent side="left">
+                          <p>Filter search results by document labels</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                  
+                  <LabelSelector
+                    selectedLabels={querySettings.labels || []}
+                    onLabelsChange={(labels) => handleChange('labels', labels)}
+                    placeholder="Filter by labels..."
+                    showMatchAllOption={true}
+                    matchAll={querySettings.label_match_all || false}
+                    onMatchAllChange={(matchAll) => handleChange('label_match_all', matchAll)}
+                  />
+                  
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('labels', [])
+                        handleChange('label_match_all', false)
+                      }}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Clear labels
+                    </button>
+                  </div>
+                </div>
               </div>
             </>
 

@@ -5,6 +5,7 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
+import hashlib
 import shutil
 import traceback
 import pipmaster as pm
@@ -16,6 +17,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
@@ -147,6 +149,10 @@ class InsertTextRequest(BaseModel):
         description="The text to insert",
     )
     file_source: str = Field(default=None, min_length=0, description="File Source")
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="List of labels to assign to this document"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -181,6 +187,10 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: list[str] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="List of labels to assign to all documents"
     )
 
     @field_validator("texts", mode="after")
@@ -1243,20 +1253,40 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
-    """Index a file with track_id
+async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None, labels: List[str] = None):
+    """Index a file with track_id and labels
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        labels: Optional list of labels to assign to the document
     """
     try:
-        success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
-        )
-        if success:
-            await rag.apipeline_process_enqueue_documents()
+        if labels:
+            # Read file content and process with labels
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Use insert_with_labels for labeled documents
+            doc_id = hashlib.md5(content.encode()).hexdigest()
+            
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                rag.insert_with_labels,
+                content,
+                labels,
+                [doc_id],
+                [str(file_path)]
+            )
+        else:
+            success, returned_track_id = await pipeline_enqueue_file(
+                rag, file_path, track_id
+            )
+            if success:
+                await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
         logger.error(f"Error indexing file {file_path.name}: {str(e)}")
@@ -1302,14 +1332,16 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    labels: List[str] = None,
 ):
-    """Index a list of texts with track_id
+    """Index a list of texts with track_id and labels
 
     Args:
         rag: LightRAG instance
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        labels: Optional list of labels to assign to documents
     """
     if not texts:
         return
@@ -1319,10 +1351,27 @@ async def pipeline_index_texts(
                 file_sources.append("unknown_source")
                 for _ in range(len(file_sources), len(texts))
             ]
-    await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
-    )
-    await rag.apipeline_process_enqueue_documents()
+    
+    # Use insert_with_labels if labels are provided, otherwise use regular pipeline
+    if labels:
+        # Generate ids if not provided
+        ids = [hashlib.md5(text.encode()).hexdigest() for text in texts]
+        # Use the sync version in an executor to avoid blocking
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, 
+            rag.insert_with_labels,
+            texts,
+            labels,
+            ids,
+            file_sources
+        )
+    else:
+        await rag.apipeline_enqueue_documents(
+            input=texts, file_paths=file_sources, track_id=track_id
+        )
+        await rag.apipeline_process_enqueue_documents()
 
 
 async def run_scanning_process(
@@ -1588,7 +1637,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks, 
+        file: UploadFile = File(...),
+        labels: List[str] = Form(default=[])
     ):
         """
         Upload a file to the input directory and index it.
@@ -1633,7 +1684,7 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id, labels)
 
             return InsertResponse(
                 status="success",
@@ -1678,6 +1729,7 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                labels=request.labels,
             )
 
             return InsertResponse(
@@ -1724,6 +1776,7 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                labels=request.labels,
             )
 
             return InsertResponse(
