@@ -24,6 +24,26 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type LabelType = {
+  name: string
+  description: string
+  color: string
+  created_at: string
+  document_count: number
+}
+
+export type LabelCreateType = {
+  name: string
+  description: string
+  color: string
+}
+
+export type LabelStatisticsType = {
+  total_labels: number
+  total_labeled_documents: number
+  labels_with_counts: Record<string, number>
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -134,6 +154,10 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** List of labels to filter documents by. Empty list means no label filtering. */
+  labels?: string[]
+  /** If True, documents must have ALL specified labels. If False, documents need ANY of the labels. */
+  label_match_all?: boolean
 }
 
 export type QueryResponse = {
@@ -535,22 +559,30 @@ export const queryTextStream = async (
   }
 };
 
-export const insertText = async (text: string): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/text', { text })
+export const insertText = async (text: string, labels?: string[]): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/text', { text, labels })
   return response.data
 }
 
-export const insertTexts = async (texts: string[]): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/texts', { texts })
+export const insertTexts = async (texts: string[], labels?: string[]): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/texts', { texts, labels })
   return response.data
 }
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  labels?: string[]
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  
+  // Add labels if provided
+  if (labels && labels.length > 0) {
+    labels.forEach(label => {
+      formData.append('labels', label)
+    })
+  }
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
@@ -758,5 +790,63 @@ export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<
  */
 export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
   const response = await axiosInstance.get('/documents/status_counts')
+  return response.data
+}
+
+// Label Management API Functions
+
+/**
+ * Get all available labels
+ * @returns Promise with all labels
+ */
+export const getAllLabels = async (): Promise<Record<string, LabelType>> => {
+  const response = await axiosInstance.get('/api/labels/')
+  return response.data
+}
+
+/**
+ * Create a new label
+ * @param labelData The label data to create
+ * @returns Promise with created label
+ */
+export const createLabel = async (labelData: LabelCreateType): Promise<LabelType> => {
+  const response = await axiosInstance.post('/api/labels/', labelData)
+  return response.data
+}
+
+/**
+ * Delete a label
+ * @param labelName The name of the label to delete
+ */
+export const deleteLabel = async (labelName: string): Promise<void> => {
+  await axiosInstance.delete(`/api/labels/${encodeURIComponent(labelName)}`)
+}
+
+/**
+ * Get label statistics
+ * @returns Promise with label statistics
+ */
+export const getLabelStatistics = async (): Promise<LabelStatisticsType> => {
+  const response = await axiosInstance.get('/api/labels/statistics')
+  return response.data
+}
+
+/**
+ * Get documents with a specific label
+ * @param labelName The label name
+ * @returns Promise with document IDs
+ */
+export const getDocumentsByLabel = async (labelName: string): Promise<{label_name: string, document_ids: string[]}> => {
+  const response = await axiosInstance.get(`/api/labels/documents/${encodeURIComponent(labelName)}`)
+  return response.data
+}
+
+/**
+ * Get labels for a specific document
+ * @param docId The document ID
+ * @returns Promise with document labels
+ */
+export const getDocumentLabels = async (docId: string): Promise<{doc_id: string, labels: string[]}> => {
+  const response = await axiosInstance.get(`/api/labels/document/${encodeURIComponent(docId)}`)
   return response.data
 }

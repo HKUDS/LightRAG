@@ -97,6 +97,7 @@ from .utils import (
     logger,
 )
 from .types import KnowledgeGraph
+from .label_manager import LabelManager
 from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
@@ -575,6 +576,9 @@ class LightRAG:
             )
         )
 
+        # Initialize LabelManager
+        self.label_manager = LabelManager(self.working_dir)
+
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
@@ -868,6 +872,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        labels: str | list[str] | None = None,
     ) -> str:
         """Sync Insert documents with checkpoint support
 
@@ -880,6 +885,7 @@ class LightRAG:
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            labels: single string or list of labels to assign to the documents
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -893,6 +899,7 @@ class LightRAG:
                 ids,
                 file_paths,
                 track_id,
+                labels,
             )
         )
 
@@ -904,6 +911,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        labels: str | list[str] | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -916,6 +924,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            labels: single string or list of labels to assign to the documents
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -929,7 +938,53 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
+        # Process labels if provided
+        if labels:
+            await self._process_document_labels(input, ids, file_paths, labels, track_id)
+
         return track_id
+
+    async def _process_document_labels(
+        self,
+        input: str | list[str],
+        ids: str | list[str] | None,
+        file_paths: str | list[str] | None,
+        labels: str | list[str],
+        track_id: str,
+    ):
+        """Process and assign labels to documents"""
+        try:
+            # Normalize inputs to lists
+            inputs = input if isinstance(input, list) else [input]
+            
+            # Generate doc_ids if not provided
+            if ids is None:
+                doc_ids = [compute_mdhash_id(text) for text in inputs]
+            else:
+                doc_ids = ids if isinstance(ids, list) else [ids]
+            
+            # Normalize file_paths to list
+            if file_paths is None:
+                file_paths_list = [""] * len(inputs)
+            else:
+                file_paths_list = file_paths if isinstance(file_paths, list) else [file_paths]
+            
+            # Normalize labels to list
+            labels_list = labels if isinstance(labels, list) else [labels]
+            
+            # Assign labels to each document
+            for i, doc_id in enumerate(doc_ids):
+                file_path = file_paths_list[i] if i < len(file_paths_list) else ""
+                success = await self.label_manager.assign_labels_to_document(
+                    doc_id, labels_list, file_path
+                )
+                if success:
+                    logger.info(f"Assigned labels {labels_list} to document {doc_id}")
+                else:
+                    logger.warning(f"Failed to assign labels to document {doc_id}")
+                    
+        except Exception as e:
+            logger.error(f"Error processing document labels for track_id {track_id}: {e}")
 
     # TODO: deprecated, use insert instead
     def insert_custom_chunks(
@@ -2065,6 +2120,10 @@ class LightRAG:
         # If a custom model is provided in param, temporarily update global config
         global_config = asdict(self)
 
+        # Apply label filtering if specified
+        if param.labels:
+            await self._apply_label_filtering(param)
+
         if param.mode in ["local", "global", "hybrid", "mix"]:
             response = await kg_query(
                 query.strip(),
@@ -2107,6 +2166,109 @@ class LightRAG:
 
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
+
+    async def _apply_label_filtering(self, param: QueryParam):
+        """Apply label-based filtering to query parameters"""
+        try:
+            if not param.labels:
+                return
+            
+            logger.info(f"Applying label filtering for labels: {param.labels}")
+            
+            # Get all document IDs that match the specified labels
+            all_doc_ids = set()
+            
+            if param.label_match_all:
+                # Find documents that have ALL specified labels
+                for i, label in enumerate(param.labels):
+                    doc_ids_for_label = self.label_manager.get_documents_by_label(label)
+                    if i == 0:
+                        all_doc_ids = doc_ids_for_label
+                    else:
+                        all_doc_ids = all_doc_ids.intersection(doc_ids_for_label)
+            else:
+                # Find documents that have ANY of the specified labels
+                for label in param.labels:
+                    doc_ids_for_label = self.label_manager.get_documents_by_label(label)
+                    all_doc_ids = all_doc_ids.union(doc_ids_for_label)
+            
+            if all_doc_ids:
+                logger.info(f"Found {len(all_doc_ids)} documents matching label criteria")
+                # Store the filtered document IDs in the query param
+                # This will be used by the operate functions to filter results
+                param.filtered_doc_ids = all_doc_ids
+            else:
+                logger.warning(f"No documents found with labels: {param.labels}")
+                param.filtered_doc_ids = set()
+                
+        except Exception as e:
+            logger.error(f"Error applying label filtering: {e}")
+            param.filtered_doc_ids = set()
+
+    # Label management convenience methods
+    async def create_label(self, name: str, description: str = "", color: str = "#0066cc") -> bool:
+        """Create a new document label"""
+        return await self.label_manager.create_label(name, description, color)
+    
+    async def assign_labels_to_document(self, doc_id: str, labels: list[str], file_path: str = "") -> bool:
+        """Assign labels to a document"""
+        return await self.label_manager.assign_labels_to_document(doc_id, labels, file_path)
+    
+    def get_documents_by_label(self, label_name: str) -> set[str]:
+        """Get all document IDs with a specific label"""
+        return self.label_manager.get_documents_by_label(label_name)
+    
+    def get_document_labels(self, doc_id: str) -> set[str]:
+        """Get all labels for a specific document"""
+        return self.label_manager.get_document_labels(doc_id)
+    
+    def get_all_labels(self) -> dict:
+        """Get all available labels with their metadata"""
+        return self.label_manager.get_all_labels()
+    
+    def get_label_statistics(self) -> dict:
+        """Get statistics about labels and documents"""
+        return self.label_manager.get_label_statistics()
+    
+    async def delete_label(self, label_name: str) -> bool:
+        """Delete a label and remove it from all documents"""
+        return await self.label_manager.delete_label(label_name)
+
+    def insert_with_labels(
+        self,
+        input: str | list[str],
+        labels: str | list[str],
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+        ids: str | list[str] | None = None,
+        file_paths: str | list[str] | None = None,
+    ) -> str:
+        """Convenience method to insert documents with labels"""
+        return self.insert(
+            input=input,
+            split_by_character=split_by_character,
+            split_by_character_only=split_by_character_only,
+            ids=ids,
+            file_paths=file_paths,
+            labels=labels
+        )
+    
+    def query_with_labels(
+        self,
+        query: str,
+        labels: list[str],
+        label_match_all: bool = False,
+        mode: str = "hybrid",
+        **kwargs
+    ) -> str:
+        """Convenience method to query with label filtering"""
+        param = QueryParam(
+            mode=mode,
+            labels=labels,
+            label_match_all=label_match_all,
+            **kwargs
+        )
+        return self.query(query, param)
 
     async def aclear_cache(self) -> None:
         """Clear all cache data from the LLM response cache storage.

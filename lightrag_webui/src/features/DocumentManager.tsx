@@ -17,6 +17,7 @@ import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import LabelManagementDialog from '@/components/documents/LabelManagementDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -32,7 +33,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, TagIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -169,6 +170,7 @@ export default function DocumentManager() {
   }, []);
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
+  const [showLabelManagement, setShowLabelManagement] = useState(false)
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
@@ -956,9 +958,21 @@ export default function DocumentManager() {
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
             <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowLabelManagement(true)}
+            >
+              <TagIcon className="h-4 w-4 mr-2" />
+              Labels
+            </Button>
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}
+            />
+            <LabelManagementDialog
+              open={showLabelManagement}
+              onOpenChange={setShowLabelManagement}
             />
           </div>
         </div>
