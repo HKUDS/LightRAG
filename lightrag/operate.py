@@ -347,6 +347,9 @@ async def _handle_single_entity_extraction(
             )
             return None
 
+        # Captitalize first letter of entity_type
+        entity_type = entity_type.title()
+
         # Process entity description with same cleaning pipeline
         entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
 
