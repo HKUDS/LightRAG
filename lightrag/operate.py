@@ -59,6 +59,40 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=".env", override=False)
 
 
+def _filter_chunks_by_doc_ids(chunk_data_list: list, unique_chunk_ids: list, filtered_doc_ids: set) -> tuple:
+    """Filter chunks based on document IDs from label filtering
+    
+    Args:
+        chunk_data_list: List of chunk data retrieved from storage
+        unique_chunk_ids: List of chunk IDs corresponding to chunk_data_list
+        filtered_doc_ids: Set of document IDs that match label criteria
+    
+    Returns:
+        Tuple of (filtered_chunk_data_list, filtered_chunk_ids)
+    """
+    if not filtered_doc_ids:
+        # No filtering needed if no filtered_doc_ids set
+        return chunk_data_list, unique_chunk_ids
+    
+    filtered_chunks = []
+    filtered_ids = []
+    
+    for chunk_id, chunk_data in zip(unique_chunk_ids, chunk_data_list):
+        if chunk_data is not None and "source_id" in chunk_data:
+            # Check if this chunk belongs to any of the filtered documents
+            chunk_doc_id = chunk_data["source_id"]
+            if chunk_doc_id in filtered_doc_ids:
+                logger.debug(f"Keeping KV chunk {chunk_id} with source_id: {chunk_doc_id} (matches filter)")
+                filtered_chunks.append(chunk_data)
+                filtered_ids.append(chunk_id)
+            else:
+                logger.debug(f"Filtering out KV chunk {chunk_id} with source_id: {chunk_doc_id}, not in filtered_doc_ids: {list(filtered_doc_ids)[:5]}...")
+        else:
+            logger.warning(f"Chunk {chunk_id} missing source_id field, cannot filter by labels")
+    
+    logger.info(f"Label filtering: {len(chunk_data_list)} -> {len(filtered_chunks)} chunks")
+    return filtered_chunks, filtered_ids
+
 def chunking_by_token_size(
     tokenizer: Tokenizer,
     content: str,
@@ -2273,10 +2307,28 @@ async def _get_vector_context(
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
                 }
+                
+                # Apply label filtering if specified
+                if hasattr(query_param, 'filtered_doc_ids') and hasattr(query_param, 'labels') and query_param.labels:
+                    # If no documents match the labels, filtered_doc_ids will be empty - filter out all chunks
+                    if not query_param.filtered_doc_ids:
+                        logger.debug(f"Filtering out chunk - no documents match labels: {query_param.labels}")
+                        continue
+                    
+                    chunk_doc_id = result.get("full_doc_id")
+                    if chunk_doc_id:
+                        if chunk_doc_id not in query_param.filtered_doc_ids:
+                            logger.debug(f"Filtering out chunk with full_doc_id: {chunk_doc_id}, not in filtered_doc_ids: {list(query_param.filtered_doc_ids)[:5]}...")
+                            continue  # Skip this chunk if it doesn't match label filter
+                        else:
+                            logger.debug(f"Keeping chunk with full_doc_id: {chunk_doc_id} (matches filter)")
+                    else:
+                        logger.warning(f"Chunk missing full_doc_id field, cannot filter by labels")
+                
                 valid_chunks.append(chunk_with_metadata)
 
         logger.info(
-            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k: {search_top_k})"
+            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k: {search_top_k}) - after label filtering"
         )
         return valid_chunks
 
@@ -3083,6 +3135,17 @@ async def _find_related_text_unit_from_entities(
         dict.fromkeys(selected_chunk_ids)
     )  # Remove duplicates while preserving order
     chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
+    
+    # Apply label filtering if specified
+    if hasattr(query_param, 'filtered_doc_ids') and hasattr(query_param, 'labels') and query_param.labels:
+        # If no documents match the labels, return empty result
+        if not query_param.filtered_doc_ids:
+            logger.debug(f"No documents match labels: {query_param.labels} - returning empty chunks from entities")
+            return []
+        
+        chunk_data_list, unique_chunk_ids = _filter_chunks_by_doc_ids(
+            chunk_data_list, unique_chunk_ids, query_param.filtered_doc_ids
+        )
 
     # Step 6: Build result chunks with valid data and update chunk tracking
     result_chunks = []
@@ -3378,6 +3441,17 @@ async def _find_related_text_unit_from_relations(
         dict.fromkeys(selected_chunk_ids)
     )  # Remove duplicates while preserving order
     chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
+    
+    # Apply label filtering if specified
+    if hasattr(query_param, 'filtered_doc_ids') and hasattr(query_param, 'labels') and query_param.labels:
+        # If no documents match the labels, return empty result
+        if not query_param.filtered_doc_ids:
+            logger.debug(f"No documents match labels: {query_param.labels} - returning empty chunks from relations")
+            return []
+        
+        chunk_data_list, unique_chunk_ids = _filter_chunks_by_doc_ids(
+            chunk_data_list, unique_chunk_ids, query_param.filtered_doc_ids
+        )
 
     # Step 6: Build result chunks with valid data and update chunk tracking
     result_chunks = []
