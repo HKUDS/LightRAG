@@ -26,7 +26,7 @@ DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 DEFAULT_ENTITY_TYPES = [
     "Organization",
     "Person",
-    "Equiment",
+    "Equipment",
     "Product",
     "Technology",
     "Location",
