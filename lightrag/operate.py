@@ -822,23 +822,39 @@ async def _parse_extraction_result(
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
-    # Preventive fix: when tuple_delimiter is <|>, fix LLM output instability issues
-    if context_base["tuple_delimiter"] == "<|>":
-        # 1. Convert <||> to <|>
-        extraction_result = extraction_result.replace("<||>", "<|>")
-        # 2. Convert < | > to <|>
-        extraction_result = extraction_result.replace("< | >", "<|>")
+    # Standardize Chinese brackets around record_delimiter to English brackets
+    record_delimiter = context_base["record_delimiter"]
+    bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
+    extraction_result = re.sub(bracket_pattern, ")\\1(", extraction_result)
 
     # Parse the extraction result using the same logic as in extract_entities
     records = split_string_by_multi_markers(
         extraction_result,
         [context_base["record_delimiter"], context_base["completion_delimiter"]],
     )
+
     for record in records:
-        record = re.search(r"\((.*)\)", record, re.DOTALL)
+        # Remove outer brackets
+        record = record.strip()
+        if record.startswith("(") or record.startswith("（"):
+            record = record[1:]
+        if record.endswith(")") or record.endswith("）"):
+            record = record[:-1]
+
+        record = record.strip()
         if record is None:
             continue
-        record = record.group(1)
+
+        if context_base["tuple_delimiter"] == "<|>":
+            # fix entity<| with entity<|>
+            record = re.sub(r"^entity<\|(?!>)", r"entity<|>", record)
+            # fix relationship<| with relationship<|>
+            record = re.sub(r"^relationship<\|(?!>)", r"relationship<|>", record)
+            # fix <||> with <|>
+            record = record.replace("<||>", "<|>")
+            # fix  < | > with <|>
+            record = record.replace("< | >", "<|>")
+
         record_attributes = split_string_by_multi_markers(
             record, [context_base["tuple_delimiter"]]
         )
@@ -1736,12 +1752,10 @@ async def extract_entities(
         maybe_nodes = defaultdict(list)
         maybe_edges = defaultdict(list)
 
-        # Preventive fix: when tuple_delimiter is <|>, fix LLM output instability issues
-        if context_base["tuple_delimiter"] == "<|>":
-            # 1. Convert <||> to <|>
-            result = result.replace("<||>", "<|>")
-            # 2. Convert < | > to <|>
-            result = result.replace("< | >", "<|>")
+        # Standardize Chinese brackets around record_delimiter to English brackets
+        record_delimiter = context_base["record_delimiter"]
+        bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
+        result = re.sub(bracket_pattern, ")\\1(", result)
 
         records = split_string_by_multi_markers(
             result,
@@ -1749,10 +1763,27 @@ async def extract_entities(
         )
 
         for record in records:
-            record = re.search(r"\((.*)\)", record, re.DOTALL)
+            # Remove outer brackets (support English and Chinese brackets)
+            record = record.strip()
+            if record.startswith("(") or record.startswith("（"):
+                record = record[1:]
+            if record.endswith(")") or record.endswith("）"):
+                record = record[:-1]
+
+            record = record.strip()
             if record is None:
                 continue
-            record = record.group(1)
+
+            if context_base["tuple_delimiter"] == "<|>":
+                # fix entity<| with entity<|>
+                record = re.sub(r"^entity<\|(?!>)", r"entity<|>", record)
+                # fix relationship<| with relationship<|>
+                record = re.sub(r"^relationship<\|(?!>)", r"relationship<|>", record)
+                # fix <||> with <|>
+                record = record.replace("<||>", "<|>")
+                # fix  < | > with <|>
+                record = record.replace("< | >", "<|>")
+
             record_attributes = split_string_by_multi_markers(
                 record, [context_base["tuple_delimiter"]]
             )
