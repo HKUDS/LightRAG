@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { FileRejection } from 'react-dropzone'
 import Button from '@/components/ui/Button'
+import LabelSelector from '@/components/ui/LabelSelector'
 import {
   Dialog,
   DialogContent,
@@ -27,6 +28,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([])
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -101,7 +103,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
                 ...pre,
                 [file.name]: percentCompleted
               }))
-            })
+            }, selectedLabels)
 
             if (result.status === 'duplicated') {
               uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
@@ -204,16 +206,30 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             {t('documentPanel.uploadDocuments.description')}
           </DialogDescription>
         </DialogHeader>
-        <FileUploader
-          maxFileCount={Infinity}
-          maxSize={200 * 1024 * 1024}
-          description={t('documentPanel.uploadDocuments.fileTypes')}
-          onUpload={handleDocumentsUpload}
-          onReject={handleRejectedFiles}
-          progresses={progresses}
-          fileErrors={fileErrors}
-          disabled={isUploading}
-        />
+        <div className="space-y-4">
+          <FileUploader
+            maxFileCount={Infinity}
+            maxSize={200 * 1024 * 1024}
+            description={t('documentPanel.uploadDocuments.fileTypes')}
+            onUpload={handleDocumentsUpload}
+            onReject={handleRejectedFiles}
+            progresses={progresses}
+            fileErrors={fileErrors}
+            disabled={isUploading}
+          />
+          
+          <div>
+            <label className="block text-sm font-medium mb-2">
+              Assign Labels (Optional)
+            </label>
+            <LabelSelector
+              selectedLabels={selectedLabels}
+              onLabelsChange={setSelectedLabels}
+              placeholder="Add labels to uploaded documents..."
+              disabled={isUploading}
+            />
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   )

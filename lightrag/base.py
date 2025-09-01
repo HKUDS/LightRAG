@@ -158,6 +158,15 @@ class QueryParam:
     Default is True to enable reranking when rerank model is available.
     """
 
+    labels: list[str] = field(default_factory=list)
+    """List of labels to filter documents by. Empty list means no label filtering."""
+
+    label_match_all: bool = False
+    """If True, documents must have ALL specified labels. If False, documents need ANY of the labels."""
+
+    filtered_doc_ids: set[str] = field(default_factory=set)
+    """Internal field storing document IDs that match label criteria. Set by _apply_label_filtering."""
+
 
 @dataclass
 class StorageNameSpace(ABC):

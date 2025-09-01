@@ -98,6 +98,16 @@ class QueryRequest(BaseModel):
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
     )
 
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="List of labels to filter documents by. Empty list means no label filtering.",
+    )
+
+    label_match_all: Optional[bool] = Field(
+        default=False,
+        description="If True, documents must have ALL specified labels. If False, documents need ANY of the labels.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:

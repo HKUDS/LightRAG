@@ -5,6 +5,7 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
+import hashlib
 import shutil
 import traceback
 import pipmaster as pm
@@ -16,6 +17,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
@@ -147,6 +149,10 @@ class InsertTextRequest(BaseModel):
         description="The text to insert",
     )
     file_source: str = Field(default=None, min_length=0, description="File Source")
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="List of labels to assign to this document"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -181,6 +187,10 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: list[str] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="List of labels to assign to all documents"
     )
 
     @field_validator("texts", mode="after")
@@ -372,21 +382,20 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+    labels: List[str] = Field(
+        default_factory=list, description="List of labels assigned to this document"
+    )
+
+
+class AssignLabelsRequest(BaseModel):
+    doc_ids: List[str] = Field(description="List of document IDs to assign labels to")
+    label_names: List[str] = Field(description="List of label names to assign")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "id": "doc_123456",
-                "content_summary": "Research paper on machine learning",
-                "content_length": 15240,
-                "status": "PROCESSED",
-                "created_at": "2025-03-31T12:34:56",
-                "updated_at": "2025-03-31T12:35:30",
-                "track_id": "upload_20250729_170612_abc123",
-                "chunks_count": 12,
-                "error": None,
-                "metadata": {"author": "John Doe", "year": 2025},
-                "file_path": "research_paper.pdf",
+                "doc_ids": ["doc_123456", "doc_789123"],
+                "label_names": ["Research", "Machine Learning"]
             }
         }
 
@@ -1243,20 +1252,40 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
-    """Index a file with track_id
+async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None, labels: List[str] = None):
+    """Index a file with track_id and labels
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        labels: Optional list of labels to assign to the document
     """
     try:
-        success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
-        )
-        if success:
-            await rag.apipeline_process_enqueue_documents()
+        if labels:
+            # Read file content and process with labels
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Use insert_with_labels for labeled documents
+            doc_id = hashlib.md5(content.encode()).hexdigest()
+            
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                rag.insert_with_labels,
+                content,
+                labels,
+                [doc_id],
+                [str(file_path)]
+            )
+        else:
+            success, returned_track_id = await pipeline_enqueue_file(
+                rag, file_path, track_id
+            )
+            if success:
+                await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
         logger.error(f"Error indexing file {file_path.name}: {str(e)}")
@@ -1302,14 +1331,16 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    labels: List[str] = None,
 ):
-    """Index a list of texts with track_id
+    """Index a list of texts with track_id and labels
 
     Args:
         rag: LightRAG instance
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        labels: Optional list of labels to assign to documents
     """
     if not texts:
         return
@@ -1319,10 +1350,27 @@ async def pipeline_index_texts(
                 file_sources.append("unknown_source")
                 for _ in range(len(file_sources), len(texts))
             ]
-    await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
-    )
-    await rag.apipeline_process_enqueue_documents()
+    
+    # Use insert_with_labels if labels are provided, otherwise use regular pipeline
+    if labels:
+        # Generate ids if not provided
+        ids = [hashlib.md5(text.encode()).hexdigest() for text in texts]
+        # Use the sync version in an executor to avoid blocking
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, 
+            rag.insert_with_labels,
+            texts,
+            labels,
+            ids,
+            file_sources
+        )
+    else:
+        await rag.apipeline_enqueue_documents(
+            input=texts, file_paths=file_sources, track_id=track_id
+        )
+        await rag.apipeline_process_enqueue_documents()
 
 
 async def run_scanning_process(
@@ -1588,7 +1636,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks, 
+        file: UploadFile = File(...),
+        labels: List[str] = Form(default=[])
     ):
         """
         Upload a file to the input directory and index it.
@@ -1633,7 +1683,7 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id, labels)
 
             return InsertResponse(
                 status="success",
@@ -1678,6 +1728,7 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                labels=request.labels,
             )
 
             return InsertResponse(
@@ -1724,6 +1775,7 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                labels=request.labels,
             )
 
             return InsertResponse(
@@ -2368,6 +2420,9 @@ def create_document_routes(
             # Convert documents to response format
             doc_responses = []
             for doc_id, doc in documents_with_ids:
+                # Get labels for this document
+                document_labels = list(rag.get_document_labels(doc_id))
+                
                 doc_responses.append(
                     DocStatusResponse(
                         id=doc_id,
@@ -2381,6 +2436,7 @@ def create_document_routes(
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=doc.file_path,
+                        labels=document_labels,
                     )
                 )
 
@@ -2406,6 +2462,56 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting paginated documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/assign_labels",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def assign_labels_to_documents(
+        request: AssignLabelsRequest,
+    ) -> Dict[str, Any]:
+        """
+        Assign labels to existing documents.
+
+        This endpoint allows assigning one or more labels to one or more existing documents.
+        
+        Args:
+            request: AssignLabelsRequest containing doc_ids and label_names
+            
+        Returns:
+            Dict containing success status and results for each document
+            
+        Raises:
+            HTTPException: If an error occurs during label assignment (500)
+        """
+        try:
+            results = {}
+            
+            # Assign labels to each document
+            for doc_id in request.doc_ids:
+                try:
+                    success = await rag.assign_labels_to_document(doc_id, request.label_names)
+                    results[doc_id] = {
+                        "success": success,
+                        "labels_assigned": request.label_names if success else []
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to assign labels to document {doc_id}: {str(e)}")
+                    results[doc_id] = {
+                        "success": False,
+                        "error": str(e),
+                        "labels_assigned": []
+                    }
+            
+            return {
+                "message": "Label assignment completed",
+                "results": results
+            }
+            
+        except Exception as e:
+            logger.error(f"Error assigning labels to documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
