@@ -131,7 +131,7 @@
         "chunks": "Chunks",
         "created": "Created",
         "updated": "Updated",
-        "metadata": "Metadata",
+        "labels": "Labels",
         "select": "Select"
       },
       "status": {

@@ -382,21 +382,20 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+    labels: List[str] = Field(
+        default_factory=list, description="List of labels assigned to this document"
+    )
+
+
+class AssignLabelsRequest(BaseModel):
+    doc_ids: List[str] = Field(description="List of document IDs to assign labels to")
+    label_names: List[str] = Field(description="List of label names to assign")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "id": "doc_123456",
-                "content_summary": "Research paper on machine learning",
-                "content_length": 15240,
-                "status": "PROCESSED",
-                "created_at": "2025-03-31T12:34:56",
-                "updated_at": "2025-03-31T12:35:30",
-                "track_id": "upload_20250729_170612_abc123",
-                "chunks_count": 12,
-                "error": None,
-                "metadata": {"author": "John Doe", "year": 2025},
-                "file_path": "research_paper.pdf",
+                "doc_ids": ["doc_123456", "doc_789123"],
+                "label_names": ["Research", "Machine Learning"]
             }
         }
 
@@ -2421,6 +2420,9 @@ def create_document_routes(
             # Convert documents to response format
             doc_responses = []
             for doc_id, doc in documents_with_ids:
+                # Get labels for this document
+                document_labels = list(rag.get_document_labels(doc_id))
+                
                 doc_responses.append(
                     DocStatusResponse(
                         id=doc_id,
@@ -2434,6 +2436,7 @@ def create_document_routes(
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=doc.file_path,
+                        labels=document_labels,
                     )
                 )
 
@@ -2459,6 +2462,56 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting paginated documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/assign_labels",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def assign_labels_to_documents(
+        request: AssignLabelsRequest,
+    ) -> Dict[str, Any]:
+        """
+        Assign labels to existing documents.
+
+        This endpoint allows assigning one or more labels to one or more existing documents.
+        
+        Args:
+            request: AssignLabelsRequest containing doc_ids and label_names
+            
+        Returns:
+            Dict containing success status and results for each document
+            
+        Raises:
+            HTTPException: If an error occurs during label assignment (500)
+        """
+        try:
+            results = {}
+            
+            # Assign labels to each document
+            for doc_id in request.doc_ids:
+                try:
+                    success = await rag.assign_labels_to_document(doc_id, request.label_names)
+                    results[doc_id] = {
+                        "success": success,
+                        "labels_assigned": request.label_names if success else []
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to assign labels to document {doc_id}: {str(e)}")
+                    results[doc_id] = {
+                        "success": False,
+                        "error": str(e),
+                        "labels_assigned": []
+                    }
+            
+            return {
+                "message": "Label assignment completed",
+                "results": results
+            }
+            
+        except Exception as e:
+            logger.error(f"Error assigning labels to documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

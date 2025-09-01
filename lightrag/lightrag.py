@@ -1032,6 +1032,7 @@ class LightRAG:
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text,
                     "full_doc_id": doc_key,
+                    "source_id": doc_key,  # Add source_id to match full_doc_id
                     "tokens": tokens,
                     "chunk_order_index": index,
                     "file_path": file_path,
@@ -1572,6 +1573,7 @@ class LightRAG:
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
                                     "full_doc_id": doc_id,
+                                    "source_id": doc_id,  # Add source_id to match full_doc_id
                                     "file_path": file_path,  # Add file path to each chunk
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
                                 }
@@ -2123,6 +2125,11 @@ class LightRAG:
         # Apply label filtering if specified
         if param.labels:
             await self._apply_label_filtering(param)
+            
+            # If no documents match the labels, return early with no information message
+            if not param.filtered_doc_ids:
+                logger.info(f"No documents match labels {param.labels}, returning no information message")
+                return "I do not have enough information in the provided context to answer your question."
 
         if param.mode in ["local", "global", "hybrid", "mix"]:
             response = await kg_query(
@@ -2194,6 +2201,7 @@ class LightRAG:
             
             if all_doc_ids:
                 logger.info(f"Found {len(all_doc_ids)} documents matching label criteria")
+                logger.debug(f"Filtered document IDs: {list(all_doc_ids)[:10]}...")  # Show first 10 IDs
                 # Store the filtered document IDs in the query param
                 # This will be used by the operate functions to filter results
                 param.filtered_doc_ids = all_doc_ids
@@ -2205,14 +2213,109 @@ class LightRAG:
             logger.error(f"Error applying label filtering: {e}")
             param.filtered_doc_ids = set()
 
+    async def _fix_chunks_for_document(self, doc_id: str):
+        """Fix existing chunks by updating their source_id field for proper label filtering"""
+        try:
+            logger.info(f"Fixing chunks for document {doc_id}")
+            
+            # Find all chunks that belong to this document by searching vector storage
+            # Vector storage has the correct full_doc_id mapping
+            chunks_to_fix = []
+            
+            # Get all vector chunks and find ones belonging to this document
+            if hasattr(self.chunks_vdb, 'get_all_data'):
+                # If the vector DB has a method to get all data
+                try:
+                    all_vector_data = await self.chunks_vdb.get_all_data()
+                    for chunk_entry in all_vector_data:
+                        if isinstance(chunk_entry, dict) and chunk_entry.get('full_doc_id') == doc_id:
+                            chunk_id = chunk_entry.get('__id__') or chunk_entry.get('id')
+                            if chunk_id:
+                                chunks_to_fix.append(chunk_id)
+                except Exception as e:
+                    logger.warning(f"Could not get all vector data: {e}")
+            
+            # Alternative approach: get all chunk keys and check each one
+            if not chunks_to_fix:
+                try:
+                    all_chunk_keys = await self.text_chunks.get_all_keys()
+                    logger.info(f"Checking {len(all_chunk_keys)} chunks for document {doc_id}")
+                    
+                    # Check chunks in batches
+                    batch_size = 50
+                    for i in range(0, len(all_chunk_keys), batch_size):
+                        batch_keys = list(all_chunk_keys)[i:i+batch_size]
+                        batch_chunks = await self.text_chunks.get_by_ids(batch_keys)
+                        
+                        for chunk_id, chunk_data in zip(batch_keys, batch_chunks):
+                            if chunk_data is not None:
+                                # Try to find this chunk in vector storage to get the correct doc_id
+                                try:
+                                    # Query vector storage for this specific chunk content
+                                    vector_results = await self.chunks_vdb.query(
+                                        chunk_data.get('content', '')[:100], top_k=1
+                                    )
+                                    if vector_results and len(vector_results) > 0:
+                                        result = vector_results[0]
+                                        if result.get('full_doc_id') == doc_id:
+                                            chunks_to_fix.append(chunk_id)
+                                except Exception as e:
+                                    logger.debug(f"Error checking chunk {chunk_id}: {e}")
+                                    continue
+                        
+                        # Log progress
+                        if (i // batch_size + 1) % 5 == 0:
+                            logger.info(f"Processed {min(i+batch_size, len(all_chunk_keys))}/{len(all_chunk_keys)} chunks")
+                            
+                except Exception as e:
+                    logger.error(f"Error finding chunks for document {doc_id}: {e}")
+                    return
+            
+            # Now update the chunks with proper source_id
+            if chunks_to_fix:
+                logger.info(f"Found {len(chunks_to_fix)} chunks to fix for document {doc_id}")
+                
+                # Get the chunk data
+                chunks_data = await self.text_chunks.get_by_ids(chunks_to_fix)
+                
+                # Update each chunk with the correct source_id
+                updated_chunks = {}
+                for chunk_id, chunk_data in zip(chunks_to_fix, chunks_data):
+                    if chunk_data is not None:
+                        # Add or update the source_id field
+                        chunk_data['source_id'] = doc_id
+                        updated_chunks[chunk_id] = chunk_data
+                
+                # Save the updated chunks back to storage
+                if updated_chunks:
+                    await self.text_chunks.upsert(updated_chunks)
+                    logger.info(f"Updated {len(updated_chunks)} chunks with source_id = {doc_id}")
+            else:
+                logger.warning(f"No chunks found for document {doc_id}")
+                
+        except Exception as e:
+            logger.error(f"Error fixing chunks for document {doc_id}: {e}")
+
     # Label management convenience methods
     async def create_label(self, name: str, description: str = "", color: str = "#0066cc") -> bool:
         """Create a new document label"""
         return await self.label_manager.create_label(name, description, color)
     
     async def assign_labels_to_document(self, doc_id: str, labels: list[str], file_path: str = "") -> bool:
-        """Assign labels to a document"""
-        return await self.label_manager.assign_labels_to_document(doc_id, labels, file_path)
+        """Assign labels to a document and fix existing chunks"""
+        try:
+            # First assign the labels
+            success = await self.label_manager.assign_labels_to_document(doc_id, labels, file_path)
+            
+            if success:
+                # Fix existing chunks for this document by updating their source_id
+                await self._fix_chunks_for_document(doc_id)
+                logger.info(f"Assigned labels {labels} to document {doc_id} and fixed associated chunks")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error assigning labels to document {doc_id}: {e}")
+            return False
     
     def get_documents_by_label(self, label_name: str) -> set[str]:
         """Get all document IDs with a specific label"""

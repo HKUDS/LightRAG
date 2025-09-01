@@ -196,6 +196,7 @@ export type DocStatusResponse = {
   error_msg?: string
   metadata?: Record<string, any>
   file_path: string
+  labels: string[]
 }
 
 export type DocsStatusesResponse = {
@@ -576,7 +577,7 @@ export const uploadDocument = async (
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
-  
+
   // Add labels if provided
   if (labels && labels.length > 0) {
     labels.forEach(label => {
@@ -848,5 +849,13 @@ export const getDocumentsByLabel = async (labelName: string): Promise<{label_nam
  */
 export const getDocumentLabels = async (docId: string): Promise<{doc_id: string, labels: string[]}> => {
   const response = await axiosInstance.get(`/api/labels/document/${encodeURIComponent(docId)}`)
+  return response.data
+}
+
+export const assignLabelsToDocuments = async (requestData: {
+  doc_ids: string[]
+  label_names: string[]
+}): Promise<{ message: string; results: Record<string, any> }> => {
+  const response = await axiosInstance.post('/documents/assign_labels', requestData)
   return response.data
 }

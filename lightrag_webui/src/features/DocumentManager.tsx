@@ -14,10 +14,12 @@ import {
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
+import Badge from '@/components/ui/Badge'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import LabelManagementDialog from '@/components/documents/LabelManagementDialog'
+import AssignLabelsDialog from '@/components/documents/AssignLabelsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
@@ -171,6 +173,7 @@ export default function DocumentManager() {
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const [showLabelManagement, setShowLabelManagement] = useState(false)
+  const [isAssignLabelsDialogOpen, setIsAssignLabelsDialogOpen] = useState(false)
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
@@ -932,10 +935,21 @@ export default function DocumentManager() {
 
           <div className="flex gap-2">
             {isSelectionMode && (
-              <DeleteDocumentsDialog
-                selectedDocIds={selectedDocIds}
-                onDocumentsDeleted={handleDocumentsDeleted}
-              />
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIsAssignLabelsDialogOpen(true)}
+                  className="gap-2"
+                >
+                  <TagIcon className="h-4 w-4" />
+                  Assign Labels ({selectedDocIds.length})
+                </Button>
+                <DeleteDocumentsDialog
+                  selectedDocIds={selectedDocIds}
+                  onDocumentsDeleted={handleDocumentsDeleted}
+                />
+              </>
             )}
             {isSelectionMode && hasCurrentPageSelection ? (
               (() => {
@@ -973,6 +987,12 @@ export default function DocumentManager() {
             <LabelManagementDialog
               open={showLabelManagement}
               onOpenChange={setShowLabelManagement}
+            />
+            <AssignLabelsDialog
+              open={isAssignLabelsDialogOpen}
+              onOpenChange={setIsAssignLabelsDialogOpen}
+              selectedDocIds={selectedDocIds}
+              onLabelsAssigned={fetchDocuments}
             />
           </div>
         </div>
@@ -1139,6 +1159,7 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.labels')}</TableHead>
                         <TableHead className="w-16 text-center">
                           {t('documentPanel.documentManager.columns.select')}
                         </TableHead>
@@ -1207,6 +1228,19 @@ export default function DocumentManager() {
                           </TableCell>
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="max-w-xs">
+                            {doc.labels && doc.labels.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {doc.labels.map((label) => (
+                                  <Badge key={label} variant="secondary" className="text-xs">
+                                    {label}
+                                  </Badge>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400 italic">No labels</span>
+                            )}
                           </TableCell>
                           <TableCell className="text-center">
                             <Checkbox
