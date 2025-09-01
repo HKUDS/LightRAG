@@ -244,6 +244,7 @@ def create_app(args):
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
         from lightrag.llm.binding_options import OpenAILLMOptions
     if args.llm_binding == "azure_openai" or args.embedding_binding == "azure_openai":
+        from lightrag.llm.binding_options import OpenAILLMOptions
         from lightrag.llm.azure_openai import (
             azure_openai_complete_if_cache,
             azure_openai_embed,
