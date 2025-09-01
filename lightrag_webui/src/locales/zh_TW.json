@@ -187,7 +187,9 @@
       "unknown": "未知",
       "object": "物品",
       "group": "群組",
-      "technology": "技術"
+      "technology": "技術",
+      "product": "產品",
+      "other": "其他"
     },
     "sideBar": {
       "settings": {
