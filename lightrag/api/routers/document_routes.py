@@ -1499,15 +1499,15 @@ async def run_scanning_process(
         if new_files:
             # Process all files at once with track_id
             if is_pipeline_busy:
-                    logger.info(
-                        "Pipe is currently busy, skipping processing to avoid conflicts..."
-                    )
-                    return
+                logger.info(
+                    "Pipe is currently busy, skipping processing to avoid conflicts..."
+                )
+                return
             if is_pipeline_scan_busy:
-                    logger.info(
-                        "Pipe is currently busy, skipping processing to avoid conflicts..."
-                    )
-                    return
+                logger.info(
+                    "Pipe is currently busy, skipping processing to avoid conflicts..."
+                )
+                return
             if scheme_name == "lightrag":
                 await pipeline_index_files(
                     rag, new_files, track_id, scheme_name=scheme_name
