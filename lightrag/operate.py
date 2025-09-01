@@ -835,7 +835,7 @@ async def _parse_extraction_result(
         [context_base["record_delimiter"], context_base["completion_delimiter"]],
     )
     for record in records:
-        record = re.search(r"\((.*)\)", record)
+        record = re.search(r"\((.*?)\)", record)
         if record is None:
             continue
         record = record.group(1)
@@ -1749,7 +1749,7 @@ async def extract_entities(
         )
 
         for record in records:
-            record = re.search(r"\((.*)\)", record)
+            record = re.search(r"\((.*?)\)", record)
             if record is None:
                 continue
             record = record.group(1)
