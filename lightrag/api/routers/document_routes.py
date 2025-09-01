@@ -1490,8 +1490,24 @@ async def run_scanning_process(
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")
 
+        from lightrag.kg.shared_storage import get_namespace_data
+
+        pipeline_status = await get_namespace_data("pipeline_status")
+        is_pipeline_scan_busy = pipeline_status.get("scan_disabled", False)
+        is_pipeline_busy = pipeline_status.get("busy", False)
+
         if new_files:
             # Process all files at once with track_id
+            if is_pipeline_busy:
+                    logger.info(
+                        "Pipe is currently busy, skipping processing to avoid conflicts..."
+                    )
+                    return
+            if is_pipeline_scan_busy:
+                    logger.info(
+                        "Pipe is currently busy, skipping processing to avoid conflicts..."
+                    )
+                    return
             if scheme_name == "lightrag":
                 await pipeline_index_files(
                     rag, new_files, track_id, scheme_name=scheme_name
@@ -1500,39 +1516,12 @@ async def run_scanning_process(
                     f"Scanning process completed with lightrag: {total_files} files Processed."
                 )
             elif scheme_name == "raganything":
-                from lightrag.kg.shared_storage import get_namespace_data
-
-                try:
-                    pipeline_status = await get_namespace_data("pipeline_status")
-                    is_pipeline_scan_busy = pipeline_status.get("scan_disabled", False)
-                    is_pipeline_busy = pipeline_status.get("busy", False)
-
-                    if is_pipeline_busy:
-                        logger.info(
-                            "Pipe is currently busy, skipping raganything processing to avoid conflicts..."
-                        )
-                        return
-                    if is_pipeline_scan_busy:
-                        logger.info(
-                            "Pipe is currently busy, skipping raganything processing to avoid conflicts..."
-                        )
-                    else:
-                        await pipeline_index_files_raganything(
-                            rag_anything, new_files, track_id, scheme_name=scheme_name
-                        )
-                        logger.info(
-                            f"Scanning proces completed with raganything: {total_files} files Processed."
-                        )
-                except Exception as e:
-                    logger.debug(
-                        f"Could not check pipeline status, proceeding with processing: {e}"
-                    )
-                    await pipeline_index_files_raganything(
-                        rag_anything, new_files, track_id, scheme_name=scheme_name
-                    )
-                    logger.info(
-                        f"Scanning process completed with raganything: {total_files} files Processed."
-                    )
+                await pipeline_index_files_raganything(
+                    rag_anything, new_files, track_id, scheme_name=scheme_name
+                )
+                logger.info(
+                    f"Scanning process completed with raganything: {total_files} files Processed."
+                )
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
