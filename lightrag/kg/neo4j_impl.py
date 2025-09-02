@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from dataclasses import dataclass
 from typing import final
 import configparser
@@ -422,6 +423,24 @@ class Neo4JStorage(BaseGraphStorage):
                     f"[{self.workspace}] Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
                 )
                 await result.consume()  # Ensure results are consumed even on error
+                raise
+
+    async def get_nodes_by_metadata_filter(self, query: str) -> list[str]:
+        """Get nodes by filtering query, return nodes id"""
+
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            try:
+                query = f"MATCH (n:`{workspace_label}`) {query}"
+                result = await session.run(query)
+                debug_results = [record async for record in result]
+                debug_ids = [r["entity_id"] for r in debug_results]
+                await result.consume()
+                return debug_ids
+            except Exception as e:
+                logger.error(f"[{self.workspace}] Error getting node for: {str(e)}")
                 raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
@@ -962,7 +981,11 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+    async def upsert_node(
+        self,
+        node_id: str,
+        node_data: dict[str, str],
+    ) -> None:
         """
         Upsert a node in the Neo4j database.
 
@@ -971,8 +994,25 @@ class Neo4JStorage(BaseGraphStorage):
             node_data: Dictionary of node properties
         """
         workspace_label = self._get_workspace_label()
-        properties = node_data
-        entity_type = properties["entity_type"]
+        properties = node_data.copy()
+
+        metadata = properties.pop("metadata", None)
+        for key, value in metadata.items():
+            neo4j_key = key
+
+            # Handle complex data types by converting them to strings
+            if isinstance(value, (dict, list)):
+                try:
+                    properties[neo4j_key] = json.dumps(value)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to serialize metadata field {key} for node {node_id}: {e}"
+                    )
+                    properties[neo4j_key] = str(value)
+            else:
+                properties[neo4j_key] = value
+
+        entity_type = properties.get("entity_type", "Unknown")
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
 
@@ -992,7 +1032,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 await session.execute_write(execute_upsert)
         except Exception as e:
-            logger.error(f"[{self.workspace}] Error during upsert: {str(e)}")
+            logger.error(f"[{self.workspace}] Error during node upsert: {str(e)}")
             raise
 
     @retry(
@@ -1026,12 +1066,23 @@ class Neo4JStorage(BaseGraphStorage):
         Raises:
             ValueError: If either source or target node does not exist or is not unique
         """
+        edge_properties = edge_data
+        workspace_label = self._get_workspace_label()
+
+        # Extract metadata if present and handle it properly
+        metadata = edge_properties.pop("metadata", None)
+        if metadata and isinstance(metadata, dict):
+            # Serialize metadata to JSON string
+            try:
+                edge_properties["metadata"] = json.dumps(metadata)
+            except Exception as e:
+                logger.warning(f"Failed to serialize metadata: {e}")
+                edge_properties["metadata"] = str(metadata)
+
         try:
-            edge_properties = edge_data
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
-                    workspace_label = self._get_workspace_label()
                     query = f"""
                     MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
                     WITH source

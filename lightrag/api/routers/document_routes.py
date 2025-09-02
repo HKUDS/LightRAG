@@ -11,11 +11,13 @@ import pipmaster as pm
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
+import json
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
@@ -833,7 +835,7 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, metadata: dict | None = None
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -841,6 +843,7 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        metadata: Optional metadata to associate with the document
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1212,8 +1215,12 @@ async def pipeline_enqueue_file(
                 return False, track_id
 
             try:
+                # Pass metadata to apipeline_enqueue_documents
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    metadata=metadata,
                 )
 
                 logger.info(
@@ -1695,19 +1702,21 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        metadata: Optional[str] = Form(None),
     ):
         """
-        Upload a file to the input directory and index it.
+        Upload a file to the input directory and index it with optional metadata.
 
         This API endpoint accepts a file through an HTTP POST request, checks if the
         uploaded file is of a supported type, saves it in the specified input directory,
         indexes it for retrieval, and returns a success status with relevant details.
-
+        Metadata can be provided to associate custom data with the uploaded document.
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
-
+            metadata (dict, optional): Custom metadata to associate with the document.
         Returns:
             InsertResponse: A response object containing the upload status and a message.
                 status can be "success", "duplicated", or error is thrown.
@@ -1750,9 +1759,30 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            # Parse metadata if provided
+            parsed_metadata = None
+            if metadata:
+                try:
+                    parsed_metadata = json.loads(metadata)
+                    if not isinstance(parsed_metadata, dict):
+                        raise ValueError(
+                            "Metadata must be a valid JSON dictionary string."
+                        )
+                except json.JSONDecodeError:
+                    raise HTTPException(
+                        status_code=400, detail="Metadata must be a valid JSON string."
+                    )
+                except ValueError as ve:
+                    raise HTTPException(status_code=400, detail=str(ve))
 
+            # Add to background tasks with metadata
+            background_tasks.add_task(
+                pipeline_index_file_with_metadata,
+                rag,
+                file_path,
+                track_id,
+                parsed_metadata,
+            )
             return InsertResponse(
                 status="success",
                 message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
@@ -1763,6 +1793,35 @@ def create_document_routes(
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+
+    # New function to handle metadata during indexing
+    async def pipeline_index_file_with_metadata(
+        rag: LightRAG, file_path: Path, track_id: str, metadata: dict | None
+    ) -> tuple[bool, str]:
+        """
+        Index a file with metadata by leveraging the existing pipeline.
+        Args:
+            rag: LightRAG instance
+            file_path: Path to the file to index
+            track_id: Tracking ID for the document
+            metadata: Optional metadata dictionary to associate with the document
+        Returns:
+            tuple[bool, str]: Success status and track ID
+        """
+        # Use the existing pipeline to enqueue the file
+        success, returned_track_id = await pipeline_enqueue_file(
+            rag, file_path, track_id
+        )
+
+        if success:
+            logger.info(f"Successfully enqueued file with metadata: {metadata}")
+        else:
+            logger.error("Failed to enqueue file with metadata")
+
+        # Trigger the pipeline processing
+        await rag.apipeline_process_enqueue_documents(metadata=metadata)
+
+        return success, returned_track_id
 
     @router.post(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]

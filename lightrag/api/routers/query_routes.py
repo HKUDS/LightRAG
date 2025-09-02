@@ -22,6 +22,11 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
+    metadata_filter: dict[str, str] | None = Field(
+        default=None,
+        description="Optional dictionary of metadata key-value pairs to filter nodes",
+    )
+
     mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
         default="mix",
         description="Query mode",
@@ -168,6 +173,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         try:
             param = request.to_query_params(False)
+
+            # Inject metadata_filter into param if present
+            if request.metadata_filter:
+                setattr(param, "metadata_filter", request.metadata_filter)
+
             response = await rag.aquery(request.query, param=param)
 
             # Get reference list if requested
