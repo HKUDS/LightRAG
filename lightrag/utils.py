@@ -63,14 +63,14 @@ async def safe_vdb_operation_with_exception(
     entity_name: str = "",
     max_retries: int = 3,
     retry_delay: float = 0.2,
-    logger_func: Optional[Callable] = None
+    logger_func: Optional[Callable] = None,
 ) -> None:
     """
     Safely execute vector database operations with retry mechanism and exception handling.
-    
+
     This function ensures that VDB operations are executed with proper error handling
     and retry logic. If all retries fail, it raises an exception to maintain data consistency.
-    
+
     Args:
         operation: The async operation to execute
         operation_name: Operation name for logging purposes
@@ -78,30 +78,27 @@ async def safe_vdb_operation_with_exception(
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries in seconds
         logger_func: Logger function to use for error messages
-    
+
     Raises:
         Exception: When operation fails after all retry attempts
     """
     log_func = logger_func or logger.warning
-    last_exception = None
-    
+
     for attempt in range(max_retries):
         try:
             await operation()
             return  # Success, return immediately
         except Exception as e:
-            last_exception = e
-            if attempt == max_retries - 1:
+            if attempt >= max_retries - 1:
                 error_msg = f"VDB {operation_name} failed for {entity_name} after {max_retries} attempts: {e}"
                 log_func(error_msg)
                 raise Exception(error_msg) from e
             else:
-                log_func(f"VDB {operation_name} attempt {attempt + 1} failed for {entity_name}: {e}, retrying...")
+                log_func(
+                    f"VDB {operation_name} attempt {attempt + 1} failed for {entity_name}: {e}, retrying..."
+                )
                 if retry_delay > 0:
                     await asyncio.sleep(retry_delay)
-    
-    # This line should theoretically never be reached, but included for safety
-    raise Exception(f"Max retries exceeded for {operation_name}") from last_exception
 
 
 def get_env_value(
