@@ -1764,7 +1764,6 @@ async def extract_entities(
     )
 
     continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
-    if_loop_prompt = PROMPTS["entity_if_loop_extraction"]
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -1815,7 +1814,7 @@ async def extract_entities(
         )
 
         # Process additional gleaning results
-        for now_glean_index in range(entity_extract_max_gleaning):
+        if entity_extract_max_gleaning > 0:
             glean_result = await use_llm_func_with_cache(
                 continue_prompt,
                 use_llm_func,
@@ -1851,21 +1850,6 @@ async def extract_entities(
                 ):  # Only accetp edges with new name in gleaning stage
                     maybe_edges[edge_key] = []  # Explicitly create the list
                     maybe_edges[edge_key].extend(edges)
-
-            if now_glean_index == entity_extract_max_gleaning - 1:
-                break
-
-            if_loop_result: str = await use_llm_func_with_cache(
-                if_loop_prompt,
-                use_llm_func,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-                cache_keys_collector=cache_keys_collector,
-            )
-            if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
-            if if_loop_result != "yes":
-                break
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
