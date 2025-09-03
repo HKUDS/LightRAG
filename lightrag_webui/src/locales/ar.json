@@ -187,7 +187,10 @@
       "unknown": "غير معروف",
       "object": "مصنوع",
       "group": "مجموعة",
-      "technology": "العلوم"
+      "technology": "العلوم",
+      "product": "منتج",
+      "document": "وثيقة",
+      "other": "أخرى"
     },
     "sideBar": {
       "settings": {

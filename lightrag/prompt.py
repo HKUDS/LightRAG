@@ -10,45 +10,37 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
-PROMPTS["entity_extraction"] = """---Goal---
-Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
-Use {language} as output language.
+PROMPTS["entity_extraction"] = """---Task---
+Given a text document and a list of entity types, identify all entities of those types and all relationships among the identified entities.
 
----Steps---
+---Instructions---
 1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
-- entity_name: Name of the entity, use same language as input text. If English, capitalized the name
-- entity_type: One of the following types: [{entity_types}]. If the entity doesn't clearly fit any category, classify it as "Other".
-- entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text. Do not add external knowledge.
-
-2. Format each entity as:
-("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
-
+  - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
+  - entity_type: Categorize the entity using the provided `Entity_types` list. If a suitable category cannot be determined, classify it as "Other".
+  - entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text. To ensure clarity and precision, all descriptions must replace pronouns and referential terms (e.g., "this document," "our company," "I," "you," "he/she") with the specific nouns they represent.
+2. Format each entity as: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 3. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are directly and clearly related based on the text. Unsubstantiated relationships must be excluded from the output.
 For each pair of related entities, extract the following information:
-- source_entity: name of the source entity, as identified in step 1
-- target_entity: name of the target entity, as identified in step 1
-- relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
-- relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection
-
-4. Format each relationship as:
-("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
-
-5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the list delimiter. Ensure no spaces are added around the delimiters.
-
-6. When finished, output `{completion_delimiter}`
-
-7. Return identified entities and relationships in {language}.
+  - source_entity: name of the source entity, as identified in step 1
+  - target_entity: name of the target entity, as identified in step 1
+  - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
+  - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection
+4. Format each relationship as: ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
+5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the entity or relation list delimiter.
+6. Return identified entities and relationships in {language}.
+7. Output `{completion_delimiter}` when all the entities and relationships are extracted.
 
 ---Quality Guidelines---
 - Only extract entities that are clearly defined and meaningful in the context
 - Avoid over-interpretation; stick to what is explicitly stated in the text
+- For all output content, explicitly name the subject or object rather than using pronouns
 - Include specific numerical data in entity name when relevant
 - Ensure entity names are consistent throughout the extraction
 
 ---Examples---
 {examples}
 
----Real Data---
+---Input---
 Entity_types: [{entity_types}]
 Text:
 ```
@@ -56,13 +48,13 @@ Text:
 ```
 
 ---Output---
-Output:
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """------Example 1------
+    """[Example 1]
 
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+---Input---
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
@@ -74,7 +66,7 @@ The underlying dismissal earlier seemed to falter, replaced by a glimpse of relu
 It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
-Output:
+---Output---
 (entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.){record_delimiter}
 (entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.){record_delimiter}
 (entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.){record_delimiter}
@@ -88,9 +80,10 @@ Output:
 {completion_delimiter}
 
 """,
-    """------Example 2------
+    """[Example 2]
 
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+---Input---
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 Stock markets faced a sharp downturn today as tech giants saw significant declines, with the Global Tech Index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
@@ -102,7 +95,7 @@ Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1
 Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
 ```
 
-Output:
+---Output---
 (entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.){record_delimiter}
 (entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.){record_delimiter}
 (entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.){record_delimiter}
@@ -118,15 +111,16 @@ Output:
 {completion_delimiter}
 
 """,
-    """------Example 3------
+    """[Example 3]
 
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+---Input---
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
 ```
 
-Output:
+---Output---
 (entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.){record_delimiter}
 (entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.){record_delimiter}
 (entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.){record_delimiter}
@@ -140,16 +134,16 @@ Output:
 {completion_delimiter}
 
 """,
-    """------Example 4------
+    """[Example 4]
 
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+---Input---
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 在北京举行的人工智能大会上，腾讯公司的首席技术官张伟发布了最新的大语言模型"腾讯智言"，该模型在自然语言处理方面取得了重大突破。
-
 ```
 
-Output:
+---Output---
 (entity{tuple_delimiter}人工智能大会{tuple_delimiter}event{tuple_delimiter}人工智能大会是在北京举行的技术会议，专注于人工智能领域的最新发展。){record_delimiter}
 (entity{tuple_delimiter}北京{tuple_delimiter}location{tuple_delimiter}北京是人工智能大会的举办城市。){record_delimiter}
 (entity{tuple_delimiter}腾讯公司{tuple_delimiter}organization{tuple_delimiter}腾讯公司是参与人工智能大会的科技企业，发布了新的语言模型产品。){record_delimiter}
@@ -185,48 +179,29 @@ Description List:
 {description_list}
 
 ---Output---
-Output:"""
-
-PROMPTS["entity_continue_extraction"] = """
-MANY entities and relationships were missed in the last extraction. Please find only the missing entities and relationships from previous text. Do not include entities and relations that have been previously extracted. :\n
-
----Remember Steps---
-1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
-- entity_name: Name of the entity, use same language as input text. If English, capitalized the name
-- entity_type: One of the following types: [{entity_types}]. If the entity doesn't clearly fit any category, classify it as "Other".
-- entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text. Do not add external knowledge.
-
-2. Format each entity as:
-("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
-
-3. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are directly and clearly related based on the text. Unsubstantiated relationships must be excluded from the output.
-For each pair of related entities, extract the following information:
-- source_entity: name of the source entity, as identified in step 1
-- target_entity: name of the target entity, as identified in step 1
-- relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
-- relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection
-
-4. Format each relationship as:
-("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
-
-5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the list delimiter. Ensure no spaces are added around the delimiters.
-
-6. When finished, output `{completion_delimiter}`
-
-7. Return identified entities and relationships in {language}.
-
----Output---
-Output:
 """
 
+PROMPTS["entity_continue_extraction"] = """---Task---
+Identify any missed entities or relationships in the last extraction task.
+
+---Instructions---
+1. Output the entities and realtionships in the same format as previous extraction task.
+2. Do not include entities and relations that have been previously extracted.
+3. If the entity doesn't clearly fit in any of`Entity_types` provided, classify it as "Other".
+4. Return identified entities and relationships in {language}.
+5. Output `{completion_delimiter}` when all the entities and relationships are extracted.
+
+---Output---
+"""
+
+# TODO: Deprecated
 PROMPTS["entity_if_loop_extraction"] = """
 ---Goal---'
 
-It appears some entities may have still been missed.
+Check if it appears some entities may have still been missed. Output "Yes" if so, otherwise "No".
 
 ---Output---
-Output:
-""".strip()
+Output:"""
 
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
@@ -270,7 +245,7 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
 - Additional user prompt: {user_prompt}
 
 ---Response---
-Output:"""
+"""
 
 PROMPTS["keywords_extraction"] = """---Role---
 You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
