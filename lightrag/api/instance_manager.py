@@ -1,33 +1,21 @@
 """
 LightRAG FastAPI Server
 """
-
+from __future__ import annotations
 from fastapi import FastAPI, Depends, HTTPException
 import asyncio
+from dataclasses import dataclass
 import os
-import logging
-import logging.config
-import signal
-import sys
-import uvicorn
-import pipmaster as pm
 import inspect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
-import configparser
-from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from lightrag.api.utils_api import (
-    get_combined_auth_dependency,
-    display_splash_screen,
-    check_env_file,
-)
+from lightrag.api.utils_api import get_combined_auth_dependency
 from .config import (
     global_args,
-    update_uvicorn_mode_config,
     get_default_host,
 )
 from lightrag.utils import get_env_value
@@ -36,16 +24,12 @@ from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
-    DEFAULT_LOG_BACKUP_COUNT,
-    DEFAULT_LOG_FILENAME,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
-    run_scanning_process,
 )
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
@@ -54,7 +38,6 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_pipeline_status_lock,
     initialize_pipeline_status,
     cleanup_keyed_lock,
     finalize_share_data,
@@ -62,49 +45,120 @@ from lightrag.kg.shared_storage import (
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
-from .instance_manager import create_multi_workspace_app, InstanceManager
-
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
-
-# Initialize config parser
-config = configparser.ConfigParser()
-config.read("config.ini")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
 
+from cachetools import LRUCache
+import hashlib, base64, unicodedata
+from typing import Any
 
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown"""
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFC", s).strip()
 
-    def signal_handler(sig, frame):
-        print(f"\n\nReceived signal {sig}, shutting down gracefully...")
-        print(f"Process ID: {os.getpid()}")
+def make_workspace_key(user_id: str, workspace: str, *, length: int = 26) -> str:
+    a = _norm(user_id).encode("utf-8")
+    b = _norm(workspace).encode("utf-8")
+    payload = len(a).to_bytes(4, "big") + a + b"|" + len(b).to_bytes(4, "big") + b
+    digest = hashlib.sha256(payload).digest()
+    b32 = base64.b32encode(digest).decode("ascii").rstrip("=")
+    return b32[:length]
 
-        # Release shared resources
-        finalize_share_data()
+@dataclass
+class InstanceBundle:
+    rag: LightRAG
+    doc_manager: DocumentManager
 
-        # Exit with success status
-        sys.exit(0)
+class InstanceManager:
+    """
+    Multi-user, multi-workspace LightRAG instance manager.
+    - LRU capped via cachetools
+    - Async-safe creation
+    - Proper cleanup on eviction and shutdown
+    """
 
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
+    def __init__(
+            self,
+            max_instances: int = 100,
+            root_dir: str = "./rag_storage",
+            input_dir: str = "./input",
+            **lightrag_kwargs: Any,
+    ):
+        self._cache: LRUCache[str, InstanceBundle] = LRUCache(maxsize=max_instances)
+        self._root = Path(root_dir)
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._input_dir = Path(input_dir)
+        self._input_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = asyncio.Lock()
+        self._lightrag_kwargs = lightrag_kwargs
+    
+    async def get_instance(self, user_id: str, workspace: str) -> tuple[LightRAG, DocumentManager]:
+        key = make_workspace_key(user_id, workspace)
 
+        bundle = self._cache.get(key)
+        if bundle is not None:
+            return bundle.rag, bundle.doc_manager
+        
+        new_bundle = await self._create_bundle(user_id, workspace)
 
-def create_app(args):
-    # Setup logging
+        async with self._lock:
+            existing = self._cache.get(key)
+            if existing is not None:
+                await self._finalize_safely(new_bundle)
+                return existing.rag, existing.doc_manager
+            
+            self._evict_one_if_needed()
+            self._cache[key] = new_bundle
+            return new_bundle.rag, new_bundle.doc_manager
+    
+    async def _create_bundle(self, user_id: str, workspace: str) -> InstanceBundle:
+        working_dir = self._root / _norm(user_id)
+        working_dir.mkdir(parents=True, exist_ok=True)
+
+        rag = LightRAG(
+            working_dir=str(working_dir),
+            workspace=_norm(workspace),
+            **self._lightrag_kwargs,
+        )
+        await rag.initialize_storages()
+        await initialize_pipeline_status()
+
+        doc_manager = DocumentManager(
+            input_dir = str(self._input_dir),
+            workspace = _norm(workspace)
+        )
+
+        return InstanceBundle(rag=rag, doc_manager=doc_manager)
+    
+    def _evict_one_if_needed(self) -> None:
+        if len(self._cache) >= self._cache.maxsize:
+            _, victim = self._cache.popitem()
+            asyncio.create_task(self._finalize_safely(victim))
+
+    async def _finalize_safely(self, bundle: InstanceBundle) -> None:
+        try:
+            await bundle.rag.finalize_storages()
+        except Exception:
+            pass
+    
+    async def aclose(self) -> None:
+        # Close everything gracefully on shutdown
+        async with self._lock:
+            items = list(self._cache.items())
+            self._cache.clear()
+        await asyncio.gather(*(self._finalize_safely(b) for _, b in items))
+
+def create_multi_workspace_app(args):
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
 
-    # Verify that bindings are correctly setup
     if args.llm_binding not in [
         "lollms",
         "ollama",
@@ -113,7 +167,7 @@ def create_app(args):
         "aws_bedrock",
     ]:
         raise Exception("llm binding not supported")
-
+    
     if args.embedding_binding not in [
         "lollms",
         "ollama",
@@ -144,101 +198,6 @@ def create_app(args):
 
     # Check if API key is provided either through env var or args
     api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
-
-    # Initialize document manager with workspace support for data isolation
-    doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        """Lifespan context manager for startup and shutdown events"""
-        # Store background tasks
-        app.state.background_tasks = set()
-
-        try:
-            # Initialize database connections
-            await rag.initialize_storages()
-            await initialize_pipeline_status()
-
-            # Data migration regardless of storage implementation
-            await rag.check_and_migrate_data()
-
-            pipeline_status = await get_namespace_data("pipeline_status")
-
-            should_start_autoscan = False
-            async with get_pipeline_status_lock():
-                # Auto scan documents if enabled
-                if args.auto_scan_at_startup:
-                    if not pipeline_status.get("autoscanned", False):
-                        pipeline_status["autoscanned"] = True
-                        should_start_autoscan = True
-
-            # Only run auto scan when no other process started it first
-            if should_start_autoscan:
-                # Create background task
-                task = asyncio.create_task(run_scanning_process(rag, doc_manager))
-                app.state.background_tasks.add(task)
-                task.add_done_callback(app.state.background_tasks.discard)
-                logger.info(f"Process {os.getpid()} auto scan task started at startup.")
-
-            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
-
-            yield
-
-        finally:
-            # Clean up database connections
-            await rag.finalize_storages()
-
-            # Clean up shared data
-            finalize_share_data()
-
-    # Initialize FastAPI
-    app_kwargs = {
-        "title": "LightRAG Server API",
-        "description": (
-            "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-            + "(With authentication)"
-            if api_key
-            else ""
-        ),
-        "version": __api_version__,
-        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
-        "docs_url": "/docs",  # Explicitly set docs URL
-        "redoc_url": "/redoc",  # Explicitly set redoc URL
-        "lifespan": lifespan,
-    }
-
-    # Configure Swagger UI parameters
-    # Enable persistAuthorization and tryItOutEnabled for better user experience
-    app_kwargs["swagger_ui_parameters"] = {
-        "persistAuthorization": True,
-        "tryItOutEnabled": True,
-    }
-
-    app = FastAPI(**app_kwargs)
-
-    def get_cors_origins():
-        """Get allowed origins from global_args
-        Returns a list of allowed origins, defaults to ["*"] if not set
-        """
-        origins_str = global_args.cors_origins
-        if origins_str == "*":
-            return ["*"]
-        return [origin.strip() for origin in origins_str.split(",")]
-
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=get_cors_origins(),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Create combined auth dependency for all endpoints
-    combined_auth = get_combined_auth_dependency(api_key)
-
-    # Create working directory if it doesn't exist
-    Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     def create_llm_model_func(binding: str):
         """
@@ -507,66 +466,119 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # Initialize RAG with unified configuration
-    try:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            summary_max_tokens=args.summary_max_tokens,
-            summary_context_size=args.summary_context_size,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=create_llm_model_kwargs(
-                args.llm_binding, args, llm_timeout
-            ),
-            embedding_func=embedding_func,
-            default_llm_timeout=llm_timeout,
-            default_embedding_timeout=embedding_timeout,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            rerank_model_func=rerank_model_func,
-            max_parallel_insert=args.max_parallel_insert,
-            max_graph_nodes=args.max_graph_nodes,
-            addon_params={
-                "language": args.summary_language,
-                "entity_types": args.entity_types,
-            },
-            ollama_server_infos=ollama_server_infos,
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize LightRAG: {e}")
-        raise
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Lifespan context manager for startup and shutdown events"""
+
+        try:
+            # Instance Manager for multi-workspace and multi-user lightrag-server
+            app.state.instance_manager = InstanceManager(
+                max_instances=100,
+                root_dir="rag_storage",
+                input_dir="input",
+                llm_model_func=create_llm_model_func(args.llm_binding),
+                llm_model_name=args.llm_model,
+                llm_model_max_async=args.max_async,
+                summary_max_tokens=args.summary_max_tokens,
+                summary_context_size=args.summary_context_size,
+                chunk_token_size=int(args.chunk_size),
+                chunk_overlap_token_size=int(args.chunk_overlap_size),
+                llm_model_kwargs=create_llm_model_kwargs(
+                    args.llm_binding, args, llm_timeout
+                ),
+                embedding_func=embedding_func,
+                default_llm_timeout=llm_timeout,
+                default_embedding_timeout=embedding_timeout,
+                kv_storage=args.kv_storage,
+                graph_storage=args.graph_storage,
+                vector_storage=args.vector_storage,
+                doc_status_storage=args.doc_status_storage,
+                vector_db_storage_cls_kwargs={
+                    "cosine_better_than_threshold": args.cosine_threshold
+                },
+                enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+                enable_llm_cache=args.enable_llm_cache,
+                rerank_model_func=rerank_model_func,
+                max_parallel_insert=args.max_parallel_insert,
+                max_graph_nodes=args.max_graph_nodes,
+                addon_params={
+                    "language": args.summary_language,
+                    "entity_types": args.entity_types,
+                },
+                ollama_server_infos=ollama_server_infos,
+            )
+        
+            yield
+
+        finally:
+            # Clean up database connections for all open instances
+            await app.state.instance_manager.aclose()
+
+            # Clean up shared data
+            finalize_share_data()
+
+    # Initialize FastAPI
+    app_kwargs = {
+        "title": "EDUMind Server API",
+        "description": (
+            "Providing API for LightRAG core and EDUMind app"
+            + "(With authentication)"
+            if api_key
+            else ""
+        ),
+        "version": __api_version__,
+        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
+        "docs_url": "/docs",  # Explicitly set docs URL
+        "redoc_url": "/redoc",  # Explicitly set redoc URL
+        "lifespan": lifespan,
+    }
+
+    # Configure Swagger UI parameters
+    # Enable persistAuthorization and tryItOutEnabled for better user experience
+    app_kwargs["swagger_ui_parameters"] = {
+        "persistAuthorization": True,
+        "tryItOutEnabled": True,
+    }
+
+    app = FastAPI(**app_kwargs)
+
+    def get_cors_origins():
+        """Get allowed origins from global_args
+        Returns a list of allowed origins, defaults to ["*"] if not set
+        """
+        origins_str = global_args.cors_origins
+        if origins_str == "*":
+            return ["*"]
+        return [origin.strip() for origin in origins_str.split(",")]
+    
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Create combined auth dependency for all endpoints
+    combined_auth = get_combined_auth_dependency(api_key)
+
+    # Create working directory if it doesn't exist
+    Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     # Add routes
-    app.include_router(
-        create_document_routes(
-            rag,
-            doc_manager,
-            api_key,
-        )
-    )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_document_routes(api_key))
+    app.include_router(create_query_routes(api_key, args.top_k))
+    app.include_router(create_graph_routes(api_key))
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
-    app.include_router(ollama_api.router, prefix="/api")
+    # ollama_api = OllamaAPI(top_k=args.top_k, api_key=api_key)
+    # app.include_router(ollama_api.router, prefix="/api")
 
     @app.get("/")
     async def redirect_to_webui():
         """Redirect root path to /webui"""
         return RedirectResponse(url="/webui")
-
+    
     @app.get("/auth-status")
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
@@ -738,162 +750,5 @@ def create_app(args):
     )
 
     return app
+        
 
-
-def get_application(args=None):
-    """Factory function for creating the FastAPI application"""
-    if args is None:
-        args = global_args
-    return create_multi_workspace_app(args)
-
-
-def configure_logging():
-    """Configure logging for uvicorn startup"""
-
-    # Reset any existing handlers to ensure clean configuration
-    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
-        logger = logging.getLogger(logger_name)
-        logger.handlers = []
-        logger.filters = []
-
-    # Get log directory path from environment variable
-    log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
-
-    print(f"\nLightRAG log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
-
-    # Get log file max size and backup count from environment variables
-    log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
-    log_backup_count = get_env_value("LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, int)
-
-    logging.config.dictConfig(
-        {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "formatters": {
-                "default": {
-                    "format": "%(levelname)s: %(message)s",
-                },
-                "detailed": {
-                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                },
-            },
-            "handlers": {
-                "console": {
-                    "formatter": "default",
-                    "class": "logging.StreamHandler",
-                    "stream": "ext://sys.stderr",
-                },
-                "file": {
-                    "formatter": "detailed",
-                    "class": "logging.handlers.RotatingFileHandler",
-                    "filename": log_file_path,
-                    "maxBytes": log_max_bytes,
-                    "backupCount": log_backup_count,
-                    "encoding": "utf-8",
-                },
-            },
-            "loggers": {
-                # Configure all uvicorn related loggers
-                "uvicorn": {
-                    "handlers": ["console", "file"],
-                    "level": "INFO",
-                    "propagate": False,
-                },
-                "uvicorn.access": {
-                    "handlers": ["console", "file"],
-                    "level": "INFO",
-                    "propagate": False,
-                    "filters": ["path_filter"],
-                },
-                "uvicorn.error": {
-                    "handlers": ["console", "file"],
-                    "level": "INFO",
-                    "propagate": False,
-                },
-                "lightrag": {
-                    "handlers": ["console", "file"],
-                    "level": "INFO",
-                    "propagate": False,
-                    "filters": ["path_filter"],
-                },
-            },
-            "filters": {
-                "path_filter": {
-                    "()": "lightrag.utils.LightragPathFilter",
-                },
-            },
-        }
-    )
-
-
-def check_and_install_dependencies():
-    """Check and install required dependencies"""
-    required_packages = [
-        "uvicorn",
-        "tiktoken",
-        "fastapi",
-        # Add other required packages here
-    ]
-
-    for package in required_packages:
-        if not pm.is_installed(package):
-            print(f"Installing {package}...")
-            pm.install(package)
-            print(f"{package} installed successfully")
-
-
-def main():
-    # Check if running under Gunicorn
-    if "GUNICORN_CMD_ARGS" in os.environ:
-        # If started with Gunicorn, return directly as Gunicorn will call get_application
-        print("Running under Gunicorn - worker management handled by Gunicorn")
-        return
-
-    # Check .env file
-    if not check_env_file():
-        sys.exit(1)
-
-    # Check and install dependencies
-    check_and_install_dependencies()
-
-    from multiprocessing import freeze_support
-
-    freeze_support()
-
-    # Configure logging before parsing args
-    configure_logging()
-    update_uvicorn_mode_config()
-    display_splash_screen(global_args)
-
-    # Setup signal handlers for graceful shutdown
-    setup_signal_handlers()
-
-    # Create application instance directly instead of using factory function
-    app = create_multi_workspace_app(global_args)
-
-    # Start Uvicorn in single process mode
-    uvicorn_config = {
-        "app": app,  # Pass application instance directly instead of string path
-        "host": global_args.host,
-        "port": global_args.port,
-        "log_config": None,  # Disable default config
-    }
-
-    if global_args.ssl:
-        uvicorn_config.update(
-            {
-                "ssl_certfile": global_args.ssl_certfile,
-                "ssl_keyfile": global_args.ssl_keyfile,
-            }
-        )
-
-    print(
-        f"Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}"
-    )
-    uvicorn.run(**uvicorn_config)
-
-
-if __name__ == "__main__":
-    main()
