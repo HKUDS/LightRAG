@@ -54,7 +54,7 @@ PROMPTS["entity_extraction_examples"] = [
     """[Example 1]
 
 ---Input---
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
@@ -83,7 +83,7 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
     """[Example 2]
 
 ---Input---
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 Stock markets faced a sharp downturn today as tech giants saw significant declines, with the Global Tech Index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
@@ -114,7 +114,7 @@ Financial experts are closely watching the Federal Reserve's next move, as specu
     """[Example 3]
 
 ---Input---
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
@@ -137,7 +137,7 @@ At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint 
     """[Example 4]
 
 ---Input---
-Entity_types: [organization,person,equiment,product,technology,location,event,category]
+Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 在北京举行的人工智能大会上，腾讯公司的首席技术官张伟发布了最新的大语言模型"腾讯智言"，该模型在自然语言处理方面取得了重大突破。
