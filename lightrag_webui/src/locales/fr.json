@@ -189,6 +189,7 @@
       "group": "Groupe",
       "technology": "Technologie",
       "product": "Produit",
+      "document": "Document",
       "other": "Autre"
     },
     "sideBar": {
