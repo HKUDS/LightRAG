@@ -26,7 +26,7 @@ jobs:
           TAG=$(git describe --tags --abbrev=0)
           echo "Found tag: $TAG"
           echo "Extracted version: $TAG"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$TAG" >> $GITHUB_OUTPUT
 
       - name: Update version in __init__.py
         run: |
