@@ -52,9 +52,6 @@ jobs:
     permissions:
       id-token: write
 
-    environment:
-      name: pypi
-
     steps:
       - name: Retrieve release distributions
         uses: actions/download-artifact@v4
