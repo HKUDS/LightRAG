@@ -56,8 +56,7 @@ Identify any missed entities or relationships in the last extraction task.
 1. Output the entities and realtionships in the same format as previous extraction task.
 2. Do not include entities and relations that have been previously extracted.
 3. If the entity doesn't clearly fit in any of`Entity_types` provided, classify it as "Other".
-4. Return identified entities and relationships in {language}.
-5. Output `{completion_delimiter}` when all the entities and relationships are extracted.
+4. Ensure the output language is {language}.
 
 ---Output---
 """
