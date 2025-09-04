@@ -2,270 +2,199 @@ from __future__ import annotations
 
 import os
 import aiohttp
-from typing import Callable, Any, List, Dict, Optional
-from pydantic import BaseModel, Field
-
+from typing import Any, List, Dict, Optional
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 from .utils import logger
 
+from dotenv import load_dotenv
 
-class RerankModel(BaseModel):
-    """
-    Wrapper for rerank functions that can be used with LightRAG.
-
-    Example usage:
-    ```python
-    from lightrag.rerank import RerankModel, jina_rerank
-
-    # Create rerank model
-    rerank_model = RerankModel(
-        rerank_func=jina_rerank,
-        kwargs={
-            "model": "BAAI/bge-reranker-v2-m3",
-            "api_key": "your_api_key_here",
-            "base_url": "https://api.jina.ai/v1/rerank"
-        }
-    )
-
-    # Use in LightRAG
-    rag = LightRAG(
-        rerank_model_func=rerank_model.rerank,
-        # ... other configurations
-    )
-
-    # Query with rerank enabled (default)
-    result = await rag.aquery(
-        "your query",
-        param=QueryParam(enable_rerank=True)
-    )
-    ```
-
-    Or define a custom function directly:
-    ```python
-    async def my_rerank_func(query: str, documents: list, top_n: int = None, **kwargs):
-        return await jina_rerank(
-            query=query,
-            documents=documents,
-            model="BAAI/bge-reranker-v2-m3",
-            api_key="your_api_key_here",
-            top_n=top_n or 10,
-            **kwargs
-        )
-
-    rag = LightRAG(
-        rerank_model_func=my_rerank_func,
-        # ... other configurations
-    )
-
-    # Control rerank per query
-    result = await rag.aquery(
-        "your query",
-        param=QueryParam(enable_rerank=True)  # Enable rerank for this query
-    )
-    ```
-    """
-
-    rerank_func: Callable[[Any], List[Dict]]
-    kwargs: Dict[str, Any] = Field(default_factory=dict)
-
-    async def rerank(
-        self,
-        query: str,
-        documents: List[Dict[str, Any]],
-        top_n: Optional[int] = None,
-        **extra_kwargs,
-    ) -> List[Dict[str, Any]]:
-        """Rerank documents using the configured model function."""
-        # Merge extra kwargs with model kwargs
-        kwargs = {**self.kwargs, **extra_kwargs}
-        return await self.rerank_func(
-            query=query, documents=documents, top_n=top_n, **kwargs
-        )
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
-class MultiRerankModel(BaseModel):
-    """Multiple rerank models for different modes/scenarios."""
-
-    # Primary rerank model (used if mode-specific models are not defined)
-    rerank_model: Optional[RerankModel] = None
-
-    # Mode-specific rerank models
-    entity_rerank_model: Optional[RerankModel] = None
-    relation_rerank_model: Optional[RerankModel] = None
-    chunk_rerank_model: Optional[RerankModel] = None
-
-    async def rerank(
-        self,
-        query: str,
-        documents: List[Dict[str, Any]],
-        mode: str = "default",
-        top_n: Optional[int] = None,
-        **kwargs,
-    ) -> List[Dict[str, Any]]:
-        """Rerank using the appropriate model based on mode."""
-
-        # Select model based on mode
-        if mode == "entity" and self.entity_rerank_model:
-            model = self.entity_rerank_model
-        elif mode == "relation" and self.relation_rerank_model:
-            model = self.relation_rerank_model
-        elif mode == "chunk" and self.chunk_rerank_model:
-            model = self.chunk_rerank_model
-        elif self.rerank_model:
-            model = self.rerank_model
-        else:
-            logger.warning(f"No rerank model available for mode: {mode}")
-            return documents
-
-        return await model.rerank(query, documents, top_n, **kwargs)
-
-
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    retry=(
+        retry_if_exception_type(aiohttp.ClientError)
+        | retry_if_exception_type(aiohttp.ClientResponseError)
+    ),
+)
 async def generic_rerank_api(
     query: str,
-    documents: List[Dict[str, Any]],
+    documents: List[str],
     model: str,
     base_url: str,
-    api_key: str,
+    api_key: Optional[str],
     top_n: Optional[int] = None,
-    **kwargs,
+    return_documents: Optional[bool] = None,
+    extra_body: Optional[Dict[str, Any]] = None,
+    response_format: str = "standard",  # "standard" (Jina/Cohere) or "aliyun"
+    request_format: str = "standard",  # "standard" (Jina/Cohere) or "aliyun"
 ) -> List[Dict[str, Any]]:
     """
-    Generic rerank function that works with Jina/Cohere compatible APIs.
+    Generic rerank API call for Jina/Cohere/Aliyun models.
 
     Args:
         query: The search query
-        documents: List of documents to rerank
-        model: Model identifier
+        documents: List of strings to rerank
+        model: Model name to use
         base_url: API endpoint URL
-        api_key: API authentication key
+        api_key: API key for authentication
         top_n: Number of top results to return
-        **kwargs: Additional API-specific parameters
+        return_documents: Whether to return document text (Jina only)
+        extra_body: Additional body parameters
+        response_format: Response format type ("standard" for Jina/Cohere, "aliyun" for Aliyun)
 
     Returns:
-        List of reranked documents with relevance scores
+        List of dictionary of ["index": int, "relevance_score": float]
     """
-    if not api_key:
-        logger.warning("No API key provided for rerank service")
-        return documents
+    if not base_url:
+        raise ValueError("Base URL is required")
 
-    if not documents:
-        return documents
+    headers = {"Content-Type": "application/json"}
+    if api_key is not None:
+        headers["Authorization"] = f"Bearer {api_key}"
 
-    # Prepare documents for reranking - handle both text and dict formats
-    prepared_docs = []
-    for doc in documents:
-        if isinstance(doc, dict):
-            # Use 'content' field if available, otherwise use 'text' or convert to string
-            text = doc.get("content") or doc.get("text") or str(doc)
-        else:
-            text = str(doc)
-        prepared_docs.append(text)
+    # Build request payload based on request format
+    if request_format == "aliyun":
+        # Aliyun format: nested input/parameters structure
+        payload = {
+            "model": model,
+            "input": {
+                "query": query,
+                "documents": documents,
+            },
+            "parameters": {},
+        }
 
-    # Prepare request
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        # Add optional parameters to parameters object
+        if top_n is not None:
+            payload["parameters"]["top_n"] = top_n
 
-    data = {"model": model, "query": query, "documents": prepared_docs, **kwargs}
+        if return_documents is not None:
+            payload["parameters"]["return_documents"] = return_documents
 
-    if top_n is not None:
-        data["top_n"] = min(top_n, len(prepared_docs))
+        # Add extra parameters to parameters object
+        if extra_body:
+            payload["parameters"].update(extra_body)
+    else:
+        # Standard format for Jina/Cohere
+        payload = {
+            "model": model,
+            "query": query,
+            "documents": documents,
+        }
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(base_url, headers=headers, json=data) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Rerank API error {response.status}: {error_text}")
-                    return documents
+        # Add optional parameters
+        if top_n is not None:
+            payload["top_n"] = top_n
 
-                result = await response.json()
+        # Only Jina API supports return_documents parameter
+        if return_documents is not None:
+            payload["return_documents"] = return_documents
 
-                # Extract reranked results
-                if "results" in result:
-                    # Standard format: results contain index and relevance_score
-                    reranked_docs = []
-                    for item in result["results"]:
-                        if "index" in item:
-                            doc_idx = item["index"]
-                            if 0 <= doc_idx < len(documents):
-                                reranked_doc = documents[doc_idx].copy()
-                                if "relevance_score" in item:
-                                    reranked_doc["rerank_score"] = item[
-                                        "relevance_score"
-                                    ]
-                                reranked_docs.append(reranked_doc)
-                    return reranked_docs
-                else:
-                    logger.warning("Unexpected rerank API response format")
-                    return documents
+        # Add extra parameters
+        if extra_body:
+            payload.update(extra_body)
 
-    except Exception as e:
-        logger.error(f"Error during reranking: {e}")
-        return documents
-
-
-async def jina_rerank(
-    query: str,
-    documents: List[Dict[str, Any]],
-    model: str = "BAAI/bge-reranker-v2-m3",
-    top_n: Optional[int] = None,
-    base_url: str = "https://api.jina.ai/v1/rerank",
-    api_key: Optional[str] = None,
-    **kwargs,
-) -> List[Dict[str, Any]]:
-    """
-    Rerank documents using Jina AI API.
-
-    Args:
-        query: The search query
-        documents: List of documents to rerank
-        model: Jina rerank model name
-        top_n: Number of top results to return
-        base_url: Jina API endpoint
-        api_key: Jina API key
-        **kwargs: Additional parameters
-
-    Returns:
-        List of reranked documents with relevance scores
-    """
-    if api_key is None:
-        api_key = os.getenv("JINA_API_KEY") or os.getenv("RERANK_API_KEY")
-
-    return await generic_rerank_api(
-        query=query,
-        documents=documents,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-        top_n=top_n,
-        **kwargs,
+    logger.debug(
+        f"Rerank request: {len(documents)} documents, model: {model}, format: {response_format}"
     )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(base_url, headers=headers, json=payload) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                content_type = response.headers.get("content-type", "").lower()
+                is_html_error = (
+                    error_text.strip().startswith("<!DOCTYPE html>")
+                    or "text/html" in content_type
+                )
+                if is_html_error:
+                    if response.status == 502:
+                        clean_error = "Bad Gateway (502) - Rerank service temporarily unavailable. Please try again in a few minutes."
+                    elif response.status == 503:
+                        clean_error = "Service Unavailable (503) - Rerank service is temporarily overloaded. Please try again later."
+                    elif response.status == 504:
+                        clean_error = "Gateway Timeout (504) - Rerank service request timed out. Please try again."
+                    else:
+                        clean_error = f"HTTP {response.status} - Rerank service error. Please try again later."
+                else:
+                    clean_error = error_text
+                logger.error(f"Rerank API error {response.status}: {clean_error}")
+                raise aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=response.status,
+                    message=f"Rerank API error: {clean_error}",
+                )
+
+            response_json = await response.json()
+
+            if response_format == "aliyun":
+                # Aliyun format: {"output": {"results": [...]}}
+                results = response_json.get("output", {}).get("results", [])
+                if not isinstance(results, list):
+                    logger.warning(
+                        f"Expected 'output.results' to be list, got {type(results)}: {results}"
+                    )
+                    results = []
+
+            elif response_format == "standard":
+                # Standard format: {"results": [...]}
+                results = response_json.get("results", [])
+                if not isinstance(results, list):
+                    logger.warning(
+                        f"Expected 'results' to be list, got {type(results)}: {results}"
+                    )
+                    results = []
+            else:
+                raise ValueError(f"Unsupported response format: {response_format}")
+            if not results:
+                logger.warning("Rerank API returned empty results")
+                return []
+
+            # Standardize return format
+            return [
+                {"index": result["index"], "relevance_score": result["relevance_score"]}
+                for result in results
+            ]
 
 
 async def cohere_rerank(
     query: str,
-    documents: List[Dict[str, Any]],
-    model: str = "rerank-english-v2.0",
+    documents: List[str],
     top_n: Optional[int] = None,
-    base_url: str = "https://api.cohere.ai/v1/rerank",
     api_key: Optional[str] = None,
-    **kwargs,
+    model: str = "rerank-v3.5",
+    base_url: str = "https://api.cohere.com/v2/rerank",
+    extra_body: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Rerank documents using Cohere API.
 
     Args:
         query: The search query
-        documents: List of documents to rerank
-        model: Cohere rerank model name
+        documents: List of strings to rerank
         top_n: Number of top results to return
-        base_url: Cohere API endpoint
-        api_key: Cohere API key
-        **kwargs: Additional parameters
+        api_key: API key
+        model: rerank model name
+        base_url: API endpoint
+        extra_body: Additional body for http request(reserved for extra params)
 
     Returns:
-        List of reranked documents with relevance scores
+        List of dictionary of ["index": int, "relevance_score": float]
     """
     if api_key is None:
-        api_key = os.getenv("COHERE_API_KEY") or os.getenv("RERANK_API_KEY")
+        api_key = os.getenv("COHERE_API_KEY") or os.getenv("RERANK_BINDING_API_KEY")
 
     return await generic_rerank_api(
         query=query,
@@ -274,24 +203,39 @@ async def cohere_rerank(
         base_url=base_url,
         api_key=api_key,
         top_n=top_n,
-        **kwargs,
+        return_documents=None,  # Cohere doesn't support this parameter
+        extra_body=extra_body,
+        response_format="standard",
     )
 
 
-# Convenience function for custom API endpoints
-async def custom_rerank(
+async def jina_rerank(
     query: str,
-    documents: List[Dict[str, Any]],
-    model: str,
-    base_url: str,
-    api_key: str,
+    documents: List[str],
     top_n: Optional[int] = None,
-    **kwargs,
+    api_key: Optional[str] = None,
+    model: str = "jina-reranker-v2-base-multilingual",
+    base_url: str = "https://api.jina.ai/v1/rerank",
+    extra_body: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Rerank documents using a custom API endpoint.
-    This is useful for self-hosted or custom rerank services.
+    Rerank documents using Jina AI API.
+
+    Args:
+        query: The search query
+        documents: List of strings to rerank
+        top_n: Number of top results to return
+        api_key: API key
+        model: rerank model name
+        base_url: API endpoint
+        extra_body: Additional body for http request(reserved for extra params)
+
+    Returns:
+        List of dictionary of ["index": int, "relevance_score": float]
     """
+    if api_key is None:
+        api_key = os.getenv("JINA_API_KEY") or os.getenv("RERANK_BINDING_API_KEY")
+
     return await generic_rerank_api(
         query=query,
         documents=documents,
@@ -299,26 +243,112 @@ async def custom_rerank(
         base_url=base_url,
         api_key=api_key,
         top_n=top_n,
-        **kwargs,
+        return_documents=False,
+        extra_body=extra_body,
+        response_format="standard",
     )
 
 
+async def ali_rerank(
+    query: str,
+    documents: List[str],
+    top_n: Optional[int] = None,
+    api_key: Optional[str] = None,
+    model: str = "gte-rerank-v2",
+    base_url: str = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+    extra_body: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using Aliyun DashScope API.
+
+    Args:
+        query: The search query
+        documents: List of strings to rerank
+        top_n: Number of top results to return
+        api_key: Aliyun API key
+        model: rerank model name
+        base_url: API endpoint
+        extra_body: Additional body for http request(reserved for extra params)
+
+    Returns:
+        List of dictionary of ["index": int, "relevance_score": float]
+    """
+    if api_key is None:
+        api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("RERANK_BINDING_API_KEY")
+
+    return await generic_rerank_api(
+        query=query,
+        documents=documents,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        top_n=top_n,
+        return_documents=False,  # Aliyun doesn't need this parameter
+        extra_body=extra_body,
+        response_format="aliyun",
+        request_format="aliyun",
+    )
+
+
+"""Please run this test as a module:
+python -m lightrag.rerank
+"""
 if __name__ == "__main__":
     import asyncio
 
     async def main():
-        # Example usage
+        # Example usage - documents should be strings, not dictionaries
         docs = [
-            {"content": "The capital of France is Paris."},
-            {"content": "Tokyo is the capital of Japan."},
-            {"content": "London is the capital of England."},
+            "The capital of France is Paris.",
+            "Tokyo is the capital of Japan.",
+            "London is the capital of England.",
         ]
 
         query = "What is the capital of France?"
 
-        result = await jina_rerank(
-            query=query, documents=docs, top_n=2, api_key="your-api-key-here"
-        )
-        print(result)
+        # Test Jina rerank
+        try:
+            print("=== Jina Rerank ===")
+            result = await jina_rerank(
+                query=query,
+                documents=docs,
+                top_n=2,
+            )
+            print("Results:")
+            for item in result:
+                print(f"Index: {item['index']}, Score: {item['relevance_score']:.4f}")
+                print(f"Document: {docs[item['index']]}")
+        except Exception as e:
+            print(f"Jina Error: {e}")
+
+        # Test Cohere rerank
+        try:
+            print("\n=== Cohere Rerank ===")
+            result = await cohere_rerank(
+                query=query,
+                documents=docs,
+                top_n=2,
+            )
+            print("Results:")
+            for item in result:
+                print(f"Index: {item['index']}, Score: {item['relevance_score']:.4f}")
+                print(f"Document: {docs[item['index']]}")
+        except Exception as e:
+            print(f"Cohere Error: {e}")
+
+        # Test Aliyun rerank
+        try:
+            print("\n=== Aliyun Rerank ===")
+            result = await ali_rerank(
+                query=query,
+                documents=docs,
+                top_n=2,
+            )
+            print("Results:")
+            for item in result:
+                print(f"Index: {item['index']}, Score: {item['relevance_score']:.4f}")
+                print(f"Document: {docs[item['index']]}")
+        except Exception as e:
+            print(f"Aliyun Error: {e}")
 
     asyncio.run(main())

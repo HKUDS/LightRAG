@@ -2005,18 +2005,21 @@ class PGVectorStorage(BaseVectorStorage):
 
     #################### query method ###############
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        embeddings = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-        embedding = embeddings[0]
+        if query_embedding is not None:
+            embedding = query_embedding
+        else:
+            embeddings = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            embedding = embeddings[0]
+
         embedding_string = ",".join(map(str, embedding))
-        # Use parameterized document IDs (None means search across all documents)
+
         sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
         params = {
             "workspace": self.workspace,
-            "doc_ids": ids,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
         }
@@ -4582,85 +4585,34 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-                     WITH relevant_chunks AS (SELECT id as chunk_id
-                                              FROM LIGHTRAG_VDB_CHUNKS
-                                              WHERE $2
-                         :: varchar [] IS NULL OR full_doc_id = ANY ($2:: varchar [])
-                         )
-                        , rc AS (
-                     SELECT array_agg(chunk_id) AS chunk_arr
-                     FROM relevant_chunks
-                         ), cand AS (
-                     SELECT
-                         r.id, r.source_id AS src_id, r.target_id AS tgt_id, r.chunk_ids, r.create_time, r.content_vector <=> '[{embedding_string}]'::vector AS dist
+                     SELECT r.source_id AS src_id,
+                            r.target_id AS tgt_id,
+                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
                      FROM LIGHTRAG_VDB_RELATION r
                      WHERE r.workspace = $1
+                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
                      ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
-                         LIMIT ($4 * 50)
-                         )
-                     SELECT c.src_id,
-                            c.tgt_id,
-                            EXTRACT(EPOCH FROM c.create_time) ::BIGINT AS created_at
-                     FROM cand c
-                              JOIN rc ON TRUE
-                     WHERE c.dist < $3
-                       AND c.chunk_ids && (rc.chunk_arr::varchar[])
-                     ORDER BY c.dist, c.id
-                         LIMIT $4;
+                     LIMIT $3;
                      """,
     "entities": """
-                WITH relevant_chunks AS (SELECT id as chunk_id
-                                         FROM LIGHTRAG_VDB_CHUNKS
-                                         WHERE $2
-                    :: varchar [] IS NULL OR full_doc_id = ANY ($2:: varchar [])
-                    )
-                   , rc AS (
-                SELECT array_agg(chunk_id) AS chunk_arr
-                FROM relevant_chunks
-                    ), cand AS (
-                SELECT
-                    e.id, e.entity_name, e.chunk_ids, e.create_time, e.content_vector <=> '[{embedding_string}]'::vector AS dist
+                SELECT e.entity_name,
+                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM LIGHTRAG_VDB_ENTITY e
                 WHERE e.workspace = $1
+                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
                 ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
-                    LIMIT ($4 * 50)
-                    )
-                SELECT c.entity_name,
-                       EXTRACT(EPOCH FROM c.create_time) ::BIGINT AS created_at
-                FROM cand c
-                         JOIN rc ON TRUE
-                WHERE c.dist < $3
-                  AND c.chunk_ids && (rc.chunk_arr::varchar[])
-                ORDER BY c.dist, c.id
-                    LIMIT $4;
+                LIMIT $3;
                 """,
     "chunks": """
-              WITH relevant_chunks AS (SELECT id as chunk_id
-                                       FROM LIGHTRAG_VDB_CHUNKS
-                                       WHERE $2
-                  :: varchar [] IS NULL OR full_doc_id = ANY ($2:: varchar [])
-                  )
-                 , rc AS (
-              SELECT array_agg(chunk_id) AS chunk_arr
-              FROM relevant_chunks
-                  ), cand AS (
-              SELECT
-                  id, content, file_path, create_time, content_vector <=> '[{embedding_string}]'::vector AS dist
-              FROM LIGHTRAG_VDB_CHUNKS
-              WHERE workspace = $1
-              ORDER BY content_vector <=> '[{embedding_string}]'::vector
-                  LIMIT ($4 * 50)
-                  )
               SELECT c.id,
                      c.content,
                      c.file_path,
-                     EXTRACT(EPOCH FROM c.create_time) ::BIGINT AS created_at
-              FROM cand c
-                       JOIN rc ON TRUE
-              WHERE c.dist < $3
-                AND c.id = ANY (rc.chunk_arr)
-              ORDER BY c.dist, c.id
-                  LIMIT $4;
+                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
+              FROM LIGHTRAG_VDB_CHUNKS c
+              WHERE c.workspace = $1
+                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+              LIMIT $3;
               """,
     # DROP tables
     "drop_specifiy_table_workspace": """

@@ -66,6 +66,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             Dict[str, List[str]]: Knowledge graph for label
         """
         try:
+            # Log the label parameter to check for leading spaces
+            logger.debug(
+                f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {repr(label)})"
+            )
+
             return await rag.get_knowledge_graph(
                 node_label=label,
                 max_depth=max_depth,

@@ -149,17 +149,19 @@ async def openai_complete_if_cache(
     if not VERBOSE_DEBUG and logger.level == logging.DEBUG:
         logging.getLogger("openai").setLevel(logging.INFO)
 
+    # Remove special kwargs that shouldn't be passed to OpenAI
+    kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
+
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
     # Create the OpenAI client
     openai_async_client = create_openai_async_client(
-        api_key=api_key, base_url=base_url, client_configs=client_configs
+        api_key=api_key,
+        base_url=base_url,
+        client_configs=client_configs,
     )
-
-    # Remove special kwargs that shouldn't be passed to OpenAI
-    kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
 
     # Prepare messages
     messages: list[dict[str, Any]] = []

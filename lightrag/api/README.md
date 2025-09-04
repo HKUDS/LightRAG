@@ -360,7 +360,7 @@ Most of the configurations come with default settings; check out the details in 
 LightRAG supports binding to various LLM/Embedding backends:
 
 * ollama
-* openai & openai compatible
+* openai (including openai compatible)
 * azure_openai
 * lollms
 * aws_bedrock
@@ -373,6 +373,8 @@ lightrag-server --llm-binding openai --help
 lightrag-server --llm-binding ollama --help
 lightrag-server --embedding-binding ollama --help
 ```
+
+> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM. You can pass additional parameters to OpenRouter or vLLM through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
 ### Entity Extraction Configuration
 * ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
@@ -388,52 +390,9 @@ LightRAG uses 4 types of storage for different purposes:
 * GRAPH_STORAGE: entity relation graph
 * DOC_STATUS_STORAGE: document indexing status
 
-Each storage type has several implementations:
+LightRAG Server offers various storage implementations, with the default being an in-memory database that persists data to the WORKING_DIR directory. Additionally, LightRAG supports a wide range of storage solutions including PostgreSQL, MongoDB, FAISS, Milvus, Qdrant, Neo4j, Memgraph, and Redis. For detailed information on supported storage options, please refer to the storage section in the README.md file located in the root directory.
 
-* KV_STORAGE supported implementations:
-
-```
-JsonKVStorage    JsonFile (default)
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
-```
-
-* GRAPH_STORAGE supported implementations:
-
-```
-NetworkXStorage      NetworkX (default)
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
-```
-
-> Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
-
-* VECTOR_STORAGE supported implementations:
-
-```
-NanoVectorDBStorage         NanoVector (default)
-PGVectorStorage             Postgres
-MilvusVectorDBStorage       Milvus
-FaissVectorDBStorage        Faiss
-QdrantVectorDBStorage       Qdrant
-MongoVectorDBStorage        MongoDB
-```
-
-* DOC_STATUS_STORAGE: supported implementations:
-
-```
-JsonDocStatusStorage        JsonFile (default)
-PGDocStatusStorage          Postgres
-MongoDocStatusStorage       MongoDB
-```
-Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
-
-
-### How to Select Storage Implementation
-
-You can select storage implementation by environment variables. You can set the following environment variables to a specific storage implementation name before the first start of the API Server:
+You can select the storage implementation by configuring environment variables. For instance, prior to the initial launch of the API server, you can set the following environment variable to specify your desired storage implementation:
 
 ```
 LIGHTRAG_KV_STORAGE=PGKVStorage
@@ -453,23 +412,53 @@ You cannot change storage implementation selection after adding documents to Lig
 | --working-dir         | ./rag_storage | Working directory for RAG storage                                                                                               |
 | --input-dir           | ./inputs      | Directory containing input documents                                                                                            |
 | --max-async           | 4             | Maximum number of async operations                                                                                              |
-| --max-tokens          | 32768         | Maximum token size                                                                                                              |
-| --timeout             | 150           | Timeout in seconds. None for infinite timeout (not recommended)                                                                 |
 | --log-level           | INFO          | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)                                                                           |
 | --verbose             | -             | Verbose debug output (True, False)                                                                                              |
 | --key                 | None          | API key for authentication. Protects the LightRAG server against unauthorized access                                            |
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
-| --top-k               | 50            | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.                  |
-| --cosine-threshold    | 0.4           | The cosine threshold for nodes and relation retrieval, works with top-k to control the retrieval of nodes and relations.        |
 | --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
 | --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
 | --auto-scan-at-startup| -             | Scan input directory for new files and start indexing                                                                           |
 
-### Additional Ollama Binding Options
+### Reranking Configuration
 
-When using `--llm-binding ollama` or `--embedding-binding ollama`, additional Ollama-specific configuration options are available. To see all available Ollama binding options, add `--help` to the command line when starting the server. These additional options allow for fine-tuning of Ollama model parameters and connection settings.
+Reranking query-recalled chunks can significantly enhance retrieval quality by re-ordering documents based on an optimized relevance scoring model. LightRAG currently supports the following rerank providers:
+
+- **Cohere / vLLM**: Offers full API integration with Cohere AI's `v2/rerank` endpoint. As vLLM provides a Cohere-compatible reranker API, all reranker models deployed via vLLM are also supported.
+- **Jina AI**: Provides complete implementation compatibility with all Jina rerank models.
+- **Aliyun**: Features a custom implementation designed to support Aliyun's rerank API format.
+
+The rerank provider is configured via the `.env` file. Below is an example configuration for a rerank model deployed locally using vLLM:
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+
+```
+RERANK_BINDING=aliyun
+RERANK_MODEL=gte-rerank-v2
+RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+For comprehensive reranker configuration examples, please refer to the `env.example` file.
+
+### Enable Reranking
+
+Reranking can be enabled or disabled on a per-query basis.
+
+The `/query` and `/query/stream` API endpoints include an `enable_rerank` parameter, which is set to `true` by default, controlling whether reranking is active for the current query. To change the default value of the `enable_rerank` parameter to `false`, set the following environment variable:
+
+```
+RERANK_BY_DEFAULT=False
+```
 
 ### .env Examples
 
@@ -485,7 +474,7 @@ SUMMARY_LANGUAGE=Chinese
 MAX_PARALLEL_INSERT=2
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
-TIMEOUT=200
+TIMEOUT=150
 MAX_ASYNC=4
 
 LLM_BINDING=openai
