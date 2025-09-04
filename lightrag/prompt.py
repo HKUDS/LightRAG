@@ -16,22 +16,21 @@ Given a text document and a list of entity types, identify all entities of those
 ---Instructions---
 1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
   - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
-  - entity_type: Categorize the entity using the provided `Entity_types` list. If a suitable category cannot be determined, classify it as "Other".
+  - entity_type: Categorize the entity using the provided `Entity_types` list. If a suitable category cannot be determined, classify it as `Other`.
   - entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text. To ensure clarity and precision, all descriptions must replace pronouns and referential terms (e.g., "this document," "our company," "I," "you," "he/she") with the specific nouns they represent.
-2. Format each entity as: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
-3. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are directly and clearly related based on the text. Unsubstantiated relationships must be excluded from the output.
-For each pair of related entities, extract the following information:
-  - source_entity: name of the source entity, as identified in step 1
-  - target_entity: name of the target entity, as identified in step 1
+2. Format each entity as: (entity{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+3. From the entities identified, identify all pairs of (source_entity, target_entity) that are directly and clearly related, and extract the following information:
+  - source_entity: name of the source entity
+  - target_entity: name of the target entity
   - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
   - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection
-4. Format each relationship as: ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
+4. Format each relationship as: (relationship{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
 5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the entity or relation list delimiter.
 6. Return identified entities and relationships in {language}.
 7. Output `{completion_delimiter}` when all the entities and relationships are extracted.
 
 ---Quality Guidelines---
-- Only extract entities that are clearly defined and meaningful in the context
+- Only extract entities and relationships that are clearly defined and meaningful in the context
 - Avoid over-interpretation; stick to what is explicitly stated in the text
 - For all output content, explicitly name the subject or object rather than using pronouns
 - Include specific numerical data in entity name when relevant
