@@ -142,7 +142,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
     // Register the events
     registerEvents(events)
-  }, [registerEvents, enableEdgeEvents])
+  }, [registerEvents, enableEdgeEvents, sigma])
 
   /**
    * When edge size settings change, recalculate edge sizes and refresh the sigma instance
