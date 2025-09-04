@@ -5,7 +5,6 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 import json
 import uuid
-
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
@@ -464,7 +463,7 @@ class DocStatusResponse(BaseModel):
                 "id": "doc_123456",
                 "content_summary": "Research paper on machine learning",
                 "scheme_name": "lightrag",
-                "multimodal_content": None,
+                "multimodal_content": [],
                 "content_length": 15240,
                 "status": "PROCESSED",
                 "created_at": "2025-03-31T12:34:56",
@@ -499,7 +498,7 @@ class DocsStatusesResponse(BaseModel):
                             "id": "doc_123",
                             "content_summary": "Pending document",
                             "scheme_name": "lightrag",
-                            "multimodal_content": None,
+                            "multimodal_content": [],
                             "content_length": 5000,
                             "status": "PENDING",
                             "created_at": "2025-03-31T10:00:00",
@@ -516,7 +515,7 @@ class DocsStatusesResponse(BaseModel):
                             "id": "doc_456",
                             "content_summary": "Processed document",
                             "scheme_name": "lightrag",
-                            "multimodal_content": None,
+                            "multimodal_content": [],
                             "content_length": 8000,
                             "status": "PROCESSED",
                             "created_at": "2025-03-31T09:00:00",
@@ -878,6 +877,8 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1346,6 +1347,8 @@ async def pipeline_index_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
@@ -1368,6 +1371,8 @@ async def pipeline_index_files(
         rag: LightRAG instance
         file_paths: Paths to the files to index
         track_id: Optional tracking ID to pass to all files
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None
     """
     if not file_paths:
         return
@@ -1482,8 +1487,11 @@ async def run_scanning_process(
 
     Args:
         rag: LightRAG instance
+        rag_anythingL: RAGAnything instance
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None 
     """
     try:
         new_files = doc_manager.scan_directory_for_new_files()
@@ -2017,7 +2025,7 @@ def create_document_routes(
 
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
-            file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            file (UploadFile): The file to be uploaded. It must have an allowed extension
             schemeId (str): ID of the processing scheme to use for this file. The scheme
                 determines whether to use LightRAG or RAGAnything framework for processing.
 
@@ -2544,6 +2552,7 @@ def create_document_routes(
                         DocStatusResponse(
                             id=doc_id,
                             content_summary=doc_status.content_summary,
+                            multimodal_content=doc_status.multimodal_content,
                             content_length=doc_status.content_length,
                             status=doc_status.status,
                             created_at=format_datetime(doc_status.created_at),

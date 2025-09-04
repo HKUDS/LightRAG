@@ -543,6 +543,9 @@ def create_app(args):
             },
             ollama_server_infos=ollama_server_infos,
         )
+    except Exception as e:
+        logger.error(f"Failed to initialize LightRAG: {e}")
+        raise
 
     # Initialize RAGAnything with comprehensive error handling
     rag_anything = None
@@ -648,33 +651,33 @@ def create_app(args):
         RAGManager.set_rag(rag_anything)
         raganything_enabled = True
         logger.info(
-            "✅ The RAGAnything feature has been successfully enabled, supporting multimodal document processing functionality"
+            "The RAGAnything feature has been successfully enabled, supporting multimodal document processing functionality"
         )
 
     except ImportError as e:
         raganything_error_message = (
             f"RAGAnything dependency package not installed: {str(e)}"
         )
-        logger.warning(f"⚠️  {raganything_error_message}")
+        logger.warning(f"{raganything_error_message}")
         logger.info(
-            "💡 Please run 'pip install raganything' to install dependency packages to enable multimodal document processing functionality"
+            "Please run 'pip install raganything' to install dependency packages to enable multimodal document processing functionality"
         )
     except ValueError as e:
         raganything_error_message = f"RAGAnything configuration error: {str(e)}"
-        logger.warning(f"⚠️  {raganything_error_message}")
+        logger.warning(f"{raganything_error_message}")
         logger.info(
-            "💡 Please check if the environment variables LLM-BINDING_API_KEY and LLM-BINDING_HOST are set correctly"
+            "Please check if the environment variables LLM-BINDING_API_KEY and LLM-BINDING_HOST are set correctly"
         )
     except Exception as e:
         raganything_error_message = f"RAGAnything initialization failed: {str(e)}"
-        logger.error(f"❌ {raganything_error_message}")
+        logger.error(f" {raganything_error_message}")
         logger.info(
-            "💡 The system will run in basic mode and only support standard document processing functions"
+            "The system will run in basic mode and only support standard document processing functions"
         )
 
     if not raganything_enabled:
         logger.info(
-            "🔄 The system has been downgraded to basic mode, but LightRAG core functions are still available"
+            "The system has been downgraded to basic mode, but LightRAG core functions are still available"
         )
 
     # Add routes

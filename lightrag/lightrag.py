@@ -881,6 +881,8 @@ class LightRAG:
 
         Args:
             input: Single document string or list of document strings
+            multimodal_content (list[dict[str, Any]] | list[list[dict[str, Any]]] | None, optional):
+                Multimodal content (images, tables, equations) associated with documents
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             chunk_token_size, it will be split again by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
@@ -888,6 +890,7 @@ class LightRAG:
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            scheme_name (str | None, optional): Scheme name for categorizing documents
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -896,8 +899,8 @@ class LightRAG:
         return loop.run_until_complete(
             self.ainsert(
                 input,
-                split_by_character,
                 multimodal_content,
+                split_by_character,
                 split_by_character_only,
                 ids,
                 file_paths,
@@ -963,12 +966,13 @@ class LightRAG:
                 self.move_file_to_enqueue(current_file_path)
             else:
                 continue
-
+        
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
 
         return track_id
+
 
     def move_file_to_enqueue(self, file_path):
         try:
@@ -1093,7 +1097,9 @@ class LightRAG:
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
-        multimodal_content: list[dict[str, Any]] | None = None,
+        multimodal_content: list[dict[str, Any]]
+        | list[list[dict[str, Any]]]
+        | None = None,
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
@@ -1192,8 +1198,8 @@ class LightRAG:
                 "file_path": content_data[
                     "file_path"
                 ],  # Store file path in document status
-                "track_id": track_id,
-                "scheme_name": scheme_name,  # Store track_id in document status
+                "track_id": track_id,  # Store track_id in document status
+                "scheme_name": scheme_name,
             }
             for id_, content_data in contents.items()
         }
