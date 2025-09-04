@@ -1896,6 +1896,12 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             if "‘" not in inner_content and "’" not in inner_content:
                 name = inner_content
 
+        # Handle Chinese-style book title mark
+        if name.startswith("《") and name.endswith("》"):
+            inner_content = name[1:-1]
+            if "《" not in inner_content and "》" not in inner_content:
+                name = inner_content
+
     if remove_inner_quotes:
         # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
