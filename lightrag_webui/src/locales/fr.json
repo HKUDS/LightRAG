@@ -190,7 +190,10 @@
       "unknown": "Inconnu",
       "object": "Objet",
       "group": "Groupe",
-      "technology": "Technologie"
+      "technology": "Technologie",
+      "product": "Produit",
+      "document": "Document",
+      "other": "Autre"
     },
     "sideBar": {
       "settings": {
