@@ -993,7 +993,7 @@ class LightRAG:
 
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_entity_relation_graph(inserting_chunks),
+                self._process_extract_entities(inserting_chunks),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
@@ -1582,7 +1582,7 @@ class LightRAG:
 
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(
+                                self._process_extract_entities(
                                     chunks, pipeline_status, pipeline_status_lock
                                 )
                             )
@@ -1792,7 +1792,7 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(
+    async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
         try:
