@@ -2588,3 +2588,45 @@ def get_pinyin_sort_key(text: str) -> str:
     else:
         # pypinyin not available, use simple string sorting
         return text.lower()
+
+
+def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exception:
+    """
+    Safely create a prefixed exception that adapts to all error types.
+
+    Args:
+        original_exception: The original exception.
+        prefix: The prefix to add.
+
+    Returns:
+        A new exception with the prefix, maintaining the original exception type if possible.
+    """
+    try:
+        # Method 1: Try to reconstruct using original arguments.
+        if hasattr(original_exception, "args") and original_exception.args:
+            args = list(original_exception.args)
+            # Find the first string argument and prefix it. This is safer for
+            # exceptions like OSError where the first arg is an integer (errno).
+            found_str = False
+            for i, arg in enumerate(args):
+                if isinstance(arg, str):
+                    args[i] = f"{prefix}: {arg}"
+                    found_str = True
+                    break
+
+            # If no string argument is found, prefix the first argument's string representation.
+            if not found_str:
+                args[0] = f"{prefix}: {args[0]}"
+
+            return type(original_exception)(*args)
+        else:
+            # Method 2: If no args, try single parameter construction.
+            return type(original_exception)(f"{prefix}: {str(original_exception)}")
+    except (TypeError, ValueError, AttributeError) as construct_error:
+        # Method 3: If reconstruction fails, wrap it in a RuntimeError.
+        # This is the safest fallback, as attempting to create the same type
+        # with a single string can fail if the constructor requires multiple arguments.
+        return RuntimeError(
+            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
+            f"(Original exception could not be reconstructed: {construct_error})"
+        )
