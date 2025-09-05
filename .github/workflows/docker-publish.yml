@@ -16,7 +16,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for tags
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -28,6 +29,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Debug git info
+        run: |
+          echo "Git status:"
+          git status
+          echo "Available tags:"
+          git tag -l
+          echo "Latest tags:"
+          git tag -l --sort=-version:refname | head -5
+          echo "Describe attempt:"
+          git describe --tags --abbrev=0 || echo "Describe failed"
+          
       - name: Get latest tag
         id: get_tag
         run: |
