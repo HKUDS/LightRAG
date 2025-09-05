@@ -412,7 +412,7 @@ export default function DocumentManager() {
     processing: 0,
     handling: 0,
     pending: 0,
-    ready: 0,
+    ready: 0, 
     failed: 0
   })
 

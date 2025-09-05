@@ -170,7 +170,7 @@ const SchemeManagerDialog = () => {
 
         <div className="flex h-[500px] gap-4">
           {/* 左侧：方案列表 */}
-          <div className="w-1/3 rounded-lg border p-4 bg-gray-50 flex flex-col">
+          <div className="w-1/3 rounded-lg border p-4 bg-gray-50 flex flex-col dark:bg-zinc-800 dark:text-zinc-100">
             <h3 className="mb-4 font-semibold">{t('schemeManager.schemeList')}</h3>
 
             {/* 创建新方案输入框 */}
@@ -201,7 +201,7 @@ const SchemeManagerDialog = () => {
             )}
 
             {/* 方案列表 */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto border rounded-md p-1 bg-white">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto border rounded-md p-1 dark:bg-zinc-800 dark:text-zinc-100">
               {schemes.length === 0 ? (
                 <p className="text-gray-500 text-center py-4">{t('schemeManager.emptySchemes')}</p>
               ) : (
@@ -237,7 +237,7 @@ const SchemeManagerDialog = () => {
           </div>
 
           {/* 右侧：方案配置 */}
-          <div className="flex-1 rounded-lg border p-4 bg-gray-50">
+          <div className="flex-1 rounded-lg border p-4 bg-gray-50 dark:bg-zinc-800 dark:text-zinc-100">
             <h3 className="mb-4 font-semibold">{t('schemeManager.schemeConfig')}</h3>
 
             {selectedScheme ? (
@@ -247,7 +247,7 @@ const SchemeManagerDialog = () => {
                   <select
                     value={selectedScheme.config?.framework || "lightrag"}
                     onChange={(e) => handleConfigChange({ framework: e.target.value as 'lightrag' | 'raganything' })}
-                    className="w-full px-3 py-1.5 border rounded-md focus:outline-none"
+                    className="w-full px-3 py-1.5 border rounded-md focus:outline-none dark:bg-zinc-800 dark:text-zinc-100"
                   >
                     <option value="lightrag">LightRAG</option>
                     <option value="raganything">RAGAnything</option>
@@ -260,7 +260,7 @@ const SchemeManagerDialog = () => {
                     <select
                       value={selectedScheme.config?.extractor || "mineru"}
                       onChange={(e) => handleConfigChange({ extractor: e.target.value as 'mineru' | 'docling' })}
-                      className="w-full px-3 py-1.5 border rounded-md focus:outline-none"
+                      className="w-full px-3 py-1.5 border rounded-md focus:outline-none dark:bg-zinc-800 dark:text-zinc-100"
                     >
                       <option value="mineru">Mineru</option>
                       <option value="docling">DocLing</option>
@@ -274,7 +274,7 @@ const SchemeManagerDialog = () => {
                     <select
                       value={selectedScheme.config?.modelSource || "huggingface"}
                       onChange={(e) => handleConfigChange({ modelSource: e.target.value as 'huggingface' | 'modelscope' | 'local' })}
-                      className="w-full px-3 py-1.5 border rounded-md focus:outline-none"
+                      className="w-full px-3 py-1.5 border rounded-md focus:outline-none dark:bg-zinc-800 dark:text-zinc-100"
                     >
                       <option value="huggingface">huggingface</option>
                       <option value="modelscope">modelscope</option>

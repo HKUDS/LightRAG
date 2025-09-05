@@ -64,7 +64,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         toast.error(t('schemeManager.upload.noSchemeSelected'));
         return;
       }
-
+      
       setIsUploading(true)
       let hasSuccessfulUpload = false
 
