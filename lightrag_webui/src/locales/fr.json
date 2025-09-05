@@ -147,7 +147,8 @@
       "errors": {
         "loadFailed": "Échec du chargement des documents\n{{error}}",
         "scanFailed": "Échec de la numérisation des documents\n{{error}}",
-        "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}"
+        "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}",
+        "missingSchemeId": "Schéma de traitement manquant, veuillez sélectionner un schéma de traitement"
       },
       "fileNameLabel": "Nom du fichier",
       "showButton": "Afficher",
@@ -429,6 +430,7 @@
     "selectSchemePrompt": "Veuillez d'abord sélectionner ou créer un schéma",
     "processingFramework": "Framework de traitement",
     "extractionTool": "Outil d'extraction",
+    "modelSource": "Source du modèle",
     "errors": {
       "loadFailed": "Échec du chargement des schémas",
       "nameEmpty": "Le nom du schéma ne peut pas être vide",

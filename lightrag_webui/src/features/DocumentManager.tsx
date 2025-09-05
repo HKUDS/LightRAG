@@ -636,9 +636,9 @@ export default function DocumentManager() {
         return;
       }
 
-      const framework = selectedScheme.config?.framework;
+      const schemeConfig = selectedScheme.config
 
-      const { status, message, track_id: _track_id } = await scanNewDocuments(framework); // eslint-disable-line @typescript-eslint/no-unused-vars
+      const { status, message, track_id: _track_id } = await scanNewDocuments(schemeConfig); // eslint-disable-line @typescript-eslint/no-unused-vars
 
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
@@ -664,7 +664,7 @@ export default function DocumentManager() {
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
+        toast.error(t('documentPanel.documentManager.errors.scanFiled', { error: errorMessage(err) }));
       }
     }
   }, [t, startPollingInterval, currentTab, health, statusCounts, selectedScheme])

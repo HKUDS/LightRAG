@@ -256,6 +256,7 @@ export type Scheme = {
   config: {
     framework: 'lightrag' | 'raganything';
     extractor?: 'mineru' | 'docling' | undefined; // Optional extractor field
+    modelSource?: 'huggingface' | 'modelscope' | 'local' | undefined; // Optional model source field
   };
 };
 
@@ -379,9 +380,9 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   return response.data
 }
 
-export const scanNewDocuments = async (framework?: string): Promise<ScanResponse> => {
+export const scanNewDocuments = async (schemeConfig: any): Promise<ScanResponse> => {
   const response = await axiosInstance.post('/documents/scan', {
-    framework
+    schemeConfig
   })
   return response.data
 }

@@ -147,7 +147,8 @@
       "errors": {
         "loadFailed": "Failed to load documents\n{{error}}",
         "scanFailed": "Failed to scan documents\n{{error}}",
-        "scanProgressFailed": "Failed to get scan progress\n{{error}}"
+        "scanProgressFailed": "Failed to get scan progress\n{{error}}",
+        "missingSchemeId": "Lack of solution, please select a solution"
       },
       "fileNameLabel": "File Name",
       "showButton": "Show",
@@ -429,6 +430,7 @@
     "selectSchemePrompt": "Please select or create a scheme first",
     "processingFramework": "Processing Framework",
     "extractionTool": "Extraction Tool",
+    "modelSource": "Model Source",
     "errors": {
       "loadFailed": "Failed to load schemes",
       "nameEmpty": "Scheme name cannot be empty",

@@ -147,7 +147,8 @@
       "errors": {
         "loadFailed": "فشل تحميل المستندات\n{{error}}",
         "scanFailed": "فشل مسح المستندات\n{{error}}",
-        "scanProgressFailed": "فشل الحصول على تقدم المسح\n{{error}}"
+        "scanProgressFailed": "فشل الحصول على تقدم المسح\n{{error}}",
+        "missingSchemeId": "الحل هو في عداد المفقودين ، حدد الحل"
       },
       "fileNameLabel": "اسم الملف",
       "showButton": "عرض",
@@ -429,6 +430,7 @@
     "selectSchemePrompt": "يرجى تحديد أو إنشاء مخطط أولاً",
     "processingFramework": "إطار المعالجة",
     "extractionTool": "أداة الاستخراج",
+    "modelSource": "مصدر النموذج",
     "errors": {
       "loadFailed": "فشل تحميل المخططات",
       "nameEmpty": "لا يمكن أن يكون اسم المخطط فارغًا",

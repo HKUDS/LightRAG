@@ -24,6 +24,7 @@ import { useTranslation } from 'react-i18next';
 interface SchemeConfig {
   framework: 'lightrag' | 'raganything';
   extractor?: 'mineru' | 'docling';
+  modelSource?: 'huggingface' | 'modelscope' | 'local';
 }
 
 const SchemeManagerDialog = () => {
@@ -95,7 +96,7 @@ const SchemeManagerDialog = () => {
     try {
       const newScheme = await addScheme({
         name: trimmedName,
-        config: { framework: 'lightrag', extractor: undefined },
+        config: { framework: 'lightrag', extractor: undefined, modelSource: undefined },
       });
 
       // 更新方案列表
@@ -136,6 +137,7 @@ const SchemeManagerDialog = () => {
         ...updates,
         framework: updates.framework ?? selectedScheme.config?.framework ?? 'lightrag',
         extractor: updates.extractor || selectedScheme.config?.extractor || (updates.framework === 'raganything' ? 'mineru' : undefined),
+        modelSource: updates.modelSource || selectedScheme.config?.modelSource || (updates.extractor === 'mineru' ? 'huggingface' : undefined),
       },
     };
 
@@ -262,6 +264,21 @@ const SchemeManagerDialog = () => {
                     >
                       <option value="mineru">Mineru</option>
                       <option value="docling">DocLing</option>
+                    </select>
+                  </div>
+                )}
+
+                {selectedScheme.config?.extractor === "mineru" && (
+                  <div>
+                    <label className="block text-sm mb-1">{t('schemeManager.modelSource')}</label>
+                    <select
+                      value={selectedScheme.config?.modelSource || "huggingface"}
+                      onChange={(e) => handleConfigChange({ modelSource: e.target.value as 'huggingface' | 'modelscope' | 'local' })}
+                      className="w-full px-3 py-1.5 border rounded-md focus:outline-none"
+                    >
+                      <option value="huggingface">huggingface</option>
+                      <option value="modelscope">modelscope</option>
+                      <option value="local">local</option>
                     </select>
                   </div>
                 )}

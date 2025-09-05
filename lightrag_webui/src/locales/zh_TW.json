@@ -147,7 +147,8 @@
       "errors": {
         "loadFailed": "載入文件失敗\n{{error}}",
         "scanFailed": "掃描文件失敗\n{{error}}",
-        "scanProgressFailed": "取得掃描進度失敗\n{{error}}"
+        "scanProgressFailed": "取得掃描進度失敗\n{{error}}",
+        "missingSchemeId": "缺少處理方案，請選擇處理方案"
       },
       "fileNameLabel": "檔案名稱",
       "showButton": "顯示",
@@ -429,6 +430,7 @@
     "selectSchemePrompt": "請先選擇或建立一個方案",
     "processingFramework": "處理框架",
     "extractionTool": "提取工具",
+    "modelSource": "模型源",
     "errors": {
       "loadFailed": "載入方案失敗",
       "nameEmpty": "方案名稱不能為空",
