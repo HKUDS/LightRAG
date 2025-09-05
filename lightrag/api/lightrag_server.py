@@ -25,6 +25,7 @@ from lightrag.api.utils_api import (
     display_splash_screen,
     check_env_file,
 )
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from .config import (
     global_args,
     update_uvicorn_mode_config,
@@ -645,7 +646,7 @@ def create_app(args):
             embedding_func=raganything_embedding_func,
         )
 
-        logger.info("Check the download status of the RAGANything parser...")
+        logger.info("Check the download status of the RAGAnything parser...")
         rag_anything.verify_parser_installation_once()
 
         RAGManager.set_rag(rag_anything)

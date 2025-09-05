@@ -111,17 +111,6 @@ def sanitize_filename(filename: str, input_dir: Path) -> str:
     return clean_name
 
 
-class ScanRequest(BaseModel):
-    """Request model for document scanning operations.
-
-    Attributes:
-        framework (str | None): Processing framework to use for scanning.
-            Can be "lightrag" or "raganything". If None, uses default framework.
-    """
-
-    framework: str | None = None
-
-
 class SchemeConfig(BaseModel):
     """Configuration model for processing schemes.
 
@@ -135,10 +124,16 @@ class SchemeConfig(BaseModel):
             - "mineru": MinerU parser for comprehensive document parsing
             - "docling": Docling parser for office document processing
             - "": Default/automatic extractor selection
+        modelSource (Literal["huggingface", "modelscope", "local", ""]): The model source used by Mineru.
+            - "huggingface": Using pre-trained models from the Hugging Face model library
+            - "modelscope": using model resources on ModelScope platform
+            - "local": Use custom models deployed locally
+            - "":Maintain the default model source configuration of the system (usually huggingface)
     """
 
     framework: Literal["lightrag", "raganything"]
     extractor: Literal["mineru", "docling", ""] = ""  # 默认值
+    modelSource: Literal["huggingface", "modelscope", "local", ""] = ""
 
 
 class Scheme(BaseModel):
@@ -183,6 +178,12 @@ class SchemesResponse(BaseModel):
     status: str = Field(..., description="Operation status")
     message: Optional[str] = Field(None, description="Additional message")
     data: Optional[List[Dict[str, Any]]] = Field(None, description="List of schemes")
+
+
+class ScanRequest(BaseModel):
+    """Request model for document scanning operations.
+    """
+    schemeConfig: SchemeConfig = Field(..., description="Scanning scheme configuration")
 
 
 class ScanResponse(BaseModel):
@@ -1403,8 +1404,9 @@ async def pipeline_index_files(
 async def pipeline_index_files_raganything(
     rag_anything: RAGAnything,
     file_paths: List[Path],
-    track_id: str = None,
     scheme_name: str = None,
+    parser: str = None,
+    source: str = None
 ):
     """Index multiple files using RAGAnything framework for multimodal processing.
 
@@ -1413,6 +1415,10 @@ async def pipeline_index_files_raganything(
         file_paths (List[Path]): List of file paths to be processed
         track_id (str, optional): Tracking ID for batch monitoring. Defaults to None.
         scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None.
+        parser (str, optional): Document extraction tool to use.
+            Defaults to None.
+        source (str, optional): The model source used by Mineru.
             Defaults to None.
 
     Note:
@@ -1438,6 +1444,8 @@ async def pipeline_index_files_raganything(
                 output_dir="./output",
                 parse_method="auto",
                 scheme_name=scheme_name,
+                parser=parser,
+                source=source
             )
             if success:
                 pass
@@ -1481,7 +1489,7 @@ async def run_scanning_process(
     rag_anything: RAGAnything,
     doc_manager: DocumentManager,
     track_id: str = None,
-    scheme_name: str = None,
+    schemeConfig = None,
 ):
     """Background task to scan and index documents
 
@@ -1490,8 +1498,8 @@ async def run_scanning_process(
         rag_anythingL: RAGAnything instance
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
-        scheme_name (str, optional): Processing scheme name for categorization.
-            Defaults to None 
+        schemeConfig: Scanning scheme configuration.
+            Defaults to None
     """
     try:
         new_files = doc_manager.scan_directory_for_new_files()
@@ -1503,6 +1511,10 @@ async def run_scanning_process(
         pipeline_status = await get_namespace_data("pipeline_status")
         is_pipeline_scan_busy = pipeline_status.get("scan_disabled", False)
         is_pipeline_busy = pipeline_status.get("busy", False)
+
+        scheme_name = schemeConfig.framework
+        extractor = schemeConfig.extractor
+        modelSource = schemeConfig.modelSource
 
         if new_files:
             # Process all files at once with track_id
@@ -1525,7 +1537,7 @@ async def run_scanning_process(
                 )
             elif scheme_name == "raganything":
                 await pipeline_index_files_raganything(
-                    rag_anything, new_files, track_id, scheme_name=scheme_name
+                    rag_anything, new_files, scheme_name=scheme_name, parser=extractor, source=modelSource
                 )
                 logger.info(
                     f"Scanning process completed with raganything: {total_files} files Processed."
@@ -1834,6 +1846,7 @@ def create_document_routes(
                 "config": {
                     "framework": schemes[0].config.framework,
                     "extractor": schemes[0].config.extractor,
+                    "modelSource": schemes[0].config.modelSource,
                 },
             }
             # 保存新方案
@@ -1842,6 +1855,7 @@ def create_document_routes(
                     item["name"] = updated_item["name"]
                     item["config"]["framework"] = updated_item["config"]["framework"]
                     item["config"]["extractor"] = updated_item["config"]["extractor"]
+                    item["config"]["modelSource"] = updated_item["config"]["modelSource"]
                     break
 
             # 写回文件
@@ -1909,6 +1923,7 @@ def create_document_routes(
                 "config": {
                     "framework": scheme.config.framework,
                     "extractor": scheme.config.extractor,
+                    "modelSource": scheme.config.modelSource,
                 },
             }
 
@@ -1989,7 +2004,6 @@ def create_document_routes(
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
         """
-        scheme_name = request.framework
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
 
@@ -2000,7 +2014,7 @@ def create_document_routes(
             rag_anything,
             doc_manager,
             track_id,
-            scheme_name=scheme_name,
+            schemeConfig=request.schemeConfig,
         )
         return ScanResponse(
             status="scanning_started",
@@ -2077,6 +2091,8 @@ def create_document_routes(
 
             config = load_config()
             current_framework = config.get("framework")
+            current_extractor = config.get("extractor")
+            current_modelSource = config.get("modelSource")
             doc_pre_id = f"doc-pre-{safe_filename}"
 
             if current_framework and current_framework == "lightrag":
@@ -2095,6 +2111,8 @@ def create_document_routes(
                     output_dir="./output",
                     parse_method="auto",
                     scheme_name=current_framework,
+                    parser=current_extractor,
+                    source=current_modelSource
                 )
 
             await rag.doc_status.upsert(
