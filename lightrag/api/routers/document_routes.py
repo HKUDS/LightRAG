@@ -181,8 +181,8 @@ class SchemesResponse(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    """Request model for document scanning operations.
-    """
+    """Request model for document scanning operations."""
+
     schemeConfig: SchemeConfig = Field(..., description="Scanning scheme configuration")
 
 
@@ -1406,7 +1406,7 @@ async def pipeline_index_files_raganything(
     file_paths: List[Path],
     scheme_name: str = None,
     parser: str = None,
-    source: str = None
+    source: str = None,
 ):
     """Index multiple files using RAGAnything framework for multimodal processing.
 
@@ -1445,7 +1445,7 @@ async def pipeline_index_files_raganything(
                 parse_method="auto",
                 scheme_name=scheme_name,
                 parser=parser,
-                source=source
+                source=source,
             )
             if success:
                 pass
@@ -1489,7 +1489,7 @@ async def run_scanning_process(
     rag_anything: RAGAnything,
     doc_manager: DocumentManager,
     track_id: str = None,
-    schemeConfig = None,
+    schemeConfig=None,
 ):
     """Background task to scan and index documents
 
@@ -1537,7 +1537,11 @@ async def run_scanning_process(
                 )
             elif scheme_name == "raganything":
                 await pipeline_index_files_raganything(
-                    rag_anything, new_files, scheme_name=scheme_name, parser=extractor, source=modelSource
+                    rag_anything,
+                    new_files,
+                    scheme_name=scheme_name,
+                    parser=extractor,
+                    source=modelSource,
                 )
                 logger.info(
                     f"Scanning process completed with raganything: {total_files} files Processed."
@@ -1855,7 +1859,9 @@ def create_document_routes(
                     item["name"] = updated_item["name"]
                     item["config"]["framework"] = updated_item["config"]["framework"]
                     item["config"]["extractor"] = updated_item["config"]["extractor"]
-                    item["config"]["modelSource"] = updated_item["config"]["modelSource"]
+                    item["config"]["modelSource"] = updated_item["config"][
+                        "modelSource"
+                    ]
                     break
 
             # 写回文件
@@ -2112,7 +2118,7 @@ def create_document_routes(
                     parse_method="auto",
                     scheme_name=current_framework,
                     parser=current_extractor,
-                    source=current_modelSource
+                    source=current_modelSource,
                 )
 
             await rag.doc_status.upsert(

@@ -967,13 +967,12 @@ class LightRAG:
                 self.move_file_to_enqueue(current_file_path)
             else:
                 continue
-        
+
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
 
         return track_id
-
 
     def move_file_to_enqueue(self, file_path):
         try:

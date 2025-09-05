@@ -1777,7 +1777,7 @@ async def merge_nodes_and_edges(
 
             existing_relation_pairs = set()
             if existing_relations_data and existing_relations_data.get(
-                    "relation_pairs"
+                "relation_pairs"
             ):
                 for pair in existing_relations_data["relation_pairs"]:
                     existing_relation_pairs.add(tuple(sorted(pair)))
