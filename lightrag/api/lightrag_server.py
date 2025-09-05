@@ -97,10 +97,62 @@ def setup_signal_handlers():
     signal.signal(signal.SIGTERM, signal_handler)  # kill command
 
 
+class LLMConfigCache:
+    """Smart LLM and Embedding configuration cache class"""
+
+    def __init__(self, args):
+        self.args = args
+
+        # Initialize configurations based on binding conditions
+        self.openai_llm_options = None
+        self.ollama_llm_options = None
+        self.ollama_embedding_options = None
+
+        # Only initialize and log OpenAI options when using OpenAI-related bindings
+        if args.llm_binding in ["openai", "azure_openai"]:
+            from lightrag.llm.binding_options import OpenAILLMOptions
+
+            self.openai_llm_options = OpenAILLMOptions.options_dict(args)
+            logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
+
+        # Only initialize and log Ollama LLM options when using Ollama LLM binding
+        if args.llm_binding == "ollama":
+            try:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                self.ollama_llm_options = OllamaLLMOptions.options_dict(args)
+                logger.info(f"Ollama LLM Options: {self.ollama_llm_options}")
+            except ImportError:
+                logger.warning(
+                    "OllamaLLMOptions not available, using default configuration"
+                )
+                self.ollama_llm_options = {}
+
+        # Only initialize and log Ollama Embedding options when using Ollama Embedding binding
+        if args.embedding_binding == "ollama":
+            try:
+                from lightrag.llm.binding_options import OllamaEmbeddingOptions
+
+                self.ollama_embedding_options = OllamaEmbeddingOptions.options_dict(
+                    args
+                )
+                logger.info(
+                    f"Ollama Embedding Options: {self.ollama_embedding_options}"
+                )
+            except ImportError:
+                logger.warning(
+                    "OllamaEmbeddingOptions not available, using default configuration"
+                )
+                self.ollama_embedding_options = {}
+
+
 def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
+
+    # Create configuration cache (this will output configuration logs)
+    config_cache = LLMConfigCache(args)
 
     # Verify that bindings are correctly setup
     if args.llm_binding not in [
@@ -238,10 +290,85 @@ def create_app(args):
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
+    def create_optimized_openai_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized OpenAI LLM function with pre-processed configuration"""
+
+        async def optimized_openai_alike_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
+            **kwargs,
+        ) -> str:
+            from lightrag.llm.openai import openai_complete_if_cache
+
+            keyword_extraction = kwargs.pop("keyword_extraction", None)
+            if keyword_extraction:
+                kwargs["response_format"] = GPTKeywordExtractionFormat
+            if history_messages is None:
+                history_messages = []
+
+            # Use pre-processed configuration to avoid repeated parsing
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_llm_options:
+                kwargs.update(config_cache.openai_llm_options)
+
+            return await openai_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=args.llm_binding_api_key,
+                **kwargs,
+            )
+
+        return optimized_openai_alike_model_complete
+
+    def create_optimized_azure_openai_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized Azure OpenAI LLM function with pre-processed configuration"""
+
+        async def optimized_azure_openai_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
+            **kwargs,
+        ) -> str:
+            from lightrag.llm.azure_openai import azure_openai_complete_if_cache
+
+            keyword_extraction = kwargs.pop("keyword_extraction", None)
+            if keyword_extraction:
+                kwargs["response_format"] = GPTKeywordExtractionFormat
+            if history_messages is None:
+                history_messages = []
+
+            # Use pre-processed configuration to avoid repeated parsing
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_llm_options:
+                kwargs.update(config_cache.openai_llm_options)
+
+            return await azure_openai_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=os.getenv("AZURE_OPENAI_API_KEY", args.llm_binding_api_key),
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+                **kwargs,
+            )
+
+        return optimized_azure_openai_model_complete
+
     def create_llm_model_func(binding: str):
         """
         Create LLM model function based on binding type.
-        Uses lazy import to avoid unnecessary dependencies.
+        Uses optimized functions for OpenAI bindings and lazy import for others.
         """
         try:
             if binding == "lollms":
@@ -255,9 +382,13 @@ def create_app(args):
             elif binding == "aws_bedrock":
                 return bedrock_model_complete  # Already defined locally
             elif binding == "azure_openai":
-                return azure_openai_model_complete  # Already defined locally
+                # Use optimized function with pre-processed configuration
+                return create_optimized_azure_openai_llm_func(
+                    config_cache, args, llm_timeout
+                )
             else:  # openai and compatible
-                return openai_alike_model_complete  # Already defined locally
+                # Use optimized function with pre-processed configuration
+                return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
 
@@ -280,15 +411,15 @@ def create_app(args):
                 raise Exception(f"Failed to import {binding} options: {e}")
         return {}
 
-    def create_embedding_function_with_lazy_import(
-        binding, model, host, api_key, dimensions, args
+    def create_optimized_embedding_function(
+        config_cache: LLMConfigCache, binding, model, host, api_key, dimensions, args
     ):
         """
-        Create embedding function with lazy imports for all bindings.
-        Replaces the current create_embedding_function with full lazy import support.
+        Create optimized embedding function with pre-processed configuration for applicable bindings.
+        Uses lazy imports for all bindings and avoids repeated configuration parsing.
         """
 
-        async def embedding_function(texts):
+        async def optimized_embedding_function(texts):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
@@ -297,10 +428,17 @@ def create_app(args):
                         texts, embed_model=model, host=host, api_key=api_key
                     )
                 elif binding == "ollama":
-                    from lightrag.llm.binding_options import OllamaEmbeddingOptions
                     from lightrag.llm.ollama import ollama_embed
 
-                    ollama_options = OllamaEmbeddingOptions.options_dict(args)
+                    # Use pre-processed configuration if available, otherwise fallback to dynamic parsing
+                    if config_cache.ollama_embedding_options is not None:
+                        ollama_options = config_cache.ollama_embedding_options
+                    else:
+                        # Fallback for cases where config cache wasn't initialized properly
+                        from lightrag.llm.binding_options import OllamaEmbeddingOptions
+
+                        ollama_options = OllamaEmbeddingOptions.options_dict(args)
+
                     return await ollama_embed(
                         texts,
                         embed_model=model,
@@ -331,77 +469,12 @@ def create_app(args):
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
 
-        return embedding_function
+        return optimized_embedding_function
 
     llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
     embedding_timeout = get_env_value(
         "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
     )
-
-    async def openai_alike_model_complete(
-        prompt,
-        system_prompt=None,
-        history_messages=None,
-        keyword_extraction=False,
-        **kwargs,
-    ) -> str:
-        # Lazy import
-        from lightrag.llm.openai import openai_complete_if_cache
-        from lightrag.llm.binding_options import OpenAILLMOptions
-
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
-        if keyword_extraction:
-            kwargs["response_format"] = GPTKeywordExtractionFormat
-        if history_messages is None:
-            history_messages = []
-
-        # Use OpenAI LLM options if available
-        openai_options = OpenAILLMOptions.options_dict(args)
-        kwargs["timeout"] = llm_timeout
-        kwargs.update(openai_options)
-
-        return await openai_complete_if_cache(
-            args.llm_model,
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            base_url=args.llm_binding_host,
-            api_key=args.llm_binding_api_key,
-            **kwargs,
-        )
-
-    async def azure_openai_model_complete(
-        prompt,
-        system_prompt=None,
-        history_messages=None,
-        keyword_extraction=False,
-        **kwargs,
-    ) -> str:
-        # Lazy import
-        from lightrag.llm.azure_openai import azure_openai_complete_if_cache
-        from lightrag.llm.binding_options import OpenAILLMOptions
-
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
-        if keyword_extraction:
-            kwargs["response_format"] = GPTKeywordExtractionFormat
-        if history_messages is None:
-            history_messages = []
-
-        # Use OpenAI LLM options
-        openai_options = OpenAILLMOptions.options_dict(args)
-        kwargs["timeout"] = llm_timeout
-        kwargs.update(openai_options)
-
-        return await azure_openai_complete_if_cache(
-            args.llm_model,
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            base_url=args.llm_binding_host,
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
-            **kwargs,
-        )
 
     async def bedrock_model_complete(
         prompt,
@@ -430,16 +503,17 @@ def create_app(args):
             **kwargs,
         )
 
-    # Create embedding function with lazy imports
+    # Create embedding function with optimized configuration
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=create_embedding_function_with_lazy_import(
+        func=create_optimized_embedding_function(
+            config_cache=config_cache,
             binding=args.embedding_binding,
             model=args.embedding_model,
             host=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
             dimensions=args.embedding_dim,
-            args=args,  # Pass args object for dynamic option generation
+            args=args,  # Pass args object for fallback option generation
         ),
     )
 

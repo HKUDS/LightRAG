@@ -870,6 +870,10 @@ async def _process_extraction_result(
             record = record.replace("<|>>", "<|>")
             # fix <<|> with <|>
             record = record.replace("<<|>", "<|>")
+            # fix <.|> with <|>
+            record = record.replace("<.|>", "<|>")
+            # fix <|.> with <|>
+            record = record.replace("<|.>", "<|>")
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 
