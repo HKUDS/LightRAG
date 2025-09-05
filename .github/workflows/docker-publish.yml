@@ -35,6 +35,12 @@ jobs:
           echo "Found tag: $TAG"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Update version in __init__.py
+        run: |
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
+          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
+          cat lightrag/__init__.py | grep __version__
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
