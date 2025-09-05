@@ -9,6 +9,7 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import partial
+from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
