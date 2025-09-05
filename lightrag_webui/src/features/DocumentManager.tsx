@@ -93,6 +93,7 @@ const pulseStyle = `
   white-space: normal;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
+  font-size: 0.75rem; /* 12px */
   background-color: rgba(0, 0, 0, 0.95);
   color: white;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
