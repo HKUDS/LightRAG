@@ -1947,7 +1947,8 @@ def create_document_routes(
                 - cur_batch (int): Current processing batch
                 - request_pending (bool): Flag for pending request for processing
                 - latest_message (str): Latest message from pipeline processing
-                - history_messages (List[str], optional): List of history messages
+                - history_messages (List[str], optional): List of history messages (limited to latest 1000 entries,
+                  with truncation message if more than 1000 messages exist)
 
         Raises:
             HTTPException: If an error occurs while retrieving pipeline status (500)
@@ -1982,8 +1983,28 @@ def create_document_routes(
             status_dict["update_status"] = processed_update_status
 
             # Convert history_messages to a regular list if it's a Manager.list
+            # and limit to latest 1000 entries with truncation message if needed
             if "history_messages" in status_dict:
-                status_dict["history_messages"] = list(status_dict["history_messages"])
+                history_list = list(status_dict["history_messages"])
+                total_count = len(history_list)
+
+                if total_count > 1000:
+                    # Calculate truncated message count
+                    truncated_count = total_count - 1000
+
+                    # Take only the latest 1000 messages
+                    latest_messages = history_list[-1000:]
+
+                    # Add truncation message at the beginning
+                    truncation_message = (
+                        f"[Truncated history messages: {truncated_count}/{total_count}]"
+                    )
+                    status_dict["history_messages"] = [
+                        truncation_message
+                    ] + latest_messages
+                else:
+                    # No truncation needed, return all messages
+                    status_dict["history_messages"] = history_list
 
             # Ensure job_start is properly formatted as a string with timezone information
             if "job_start" in status_dict and status_dict["job_start"]:
