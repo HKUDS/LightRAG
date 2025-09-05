@@ -1,8 +1,6 @@
-name: Build Latest Docker Image on Release
+name: Build Test Docker Image manually
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -18,6 +16,26 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for tags
 
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          # Get the latest tag, fallback to commit SHA if no tags exist
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="sha-$(git rev-parse --short HEAD)"
+            echo "No tags found, using commit SHA: $LATEST_TAG"
+          else
+            echo "Latest tag found: $LATEST_TAG"
+          fi
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "image_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Update version in __init__.py
+        run: |
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
+          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
+          cat lightrag/__init__.py | grep __version__
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -28,19 +46,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get latest tag
-        id: get_tag
-        run: |
-          TAG=$(git describe --tags --abbrev=0)
-          echo "Found tag: $TAG"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - name: Update version in __init__.py
-        run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
-          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
-          cat lightrag/__init__.py | grep __version__
-
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -48,7 +53,6 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ steps.get_tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -60,3 +64,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Output image details
+        run: |
+          echo "Docker image built and pushed successfully!"
+          echo "Image tags:"
+          echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
+          echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"

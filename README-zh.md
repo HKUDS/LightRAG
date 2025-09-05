@@ -50,7 +50,8 @@
 
 ## 🎉 新闻
 
-- [X] [2025.06.05]🎯📢LightRAG现已集成RAG-Anything，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
+- [X] [2025.06.16]🎯📢我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
+- [X] [2025.06.05]🎯📢LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
 - [X] [2025.03.18]🎯📢LightRAG现已支持引文功能。
 - [X] [2025.02.05]🎯📢我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
 - [X] [2025.01.13]🎯📢我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
@@ -142,6 +143,8 @@ LightRAG对大型语言模型（LLM）的能力要求远高于传统RAG，因为
 - **LLM选型**：
   - 推荐选用参数量至少为32B的LLM。
   - 上下文长度至少为32KB，推荐达到64KB。
+  - 在文档索引阶段不建议选择推理模型。
+  - 在查询阶段建议选择比索引阶段能力更强的模型，以达到更高的查询效果。
 - **Embedding模型**：
   - 高性能的Embedding模型对RAG至关重要。
   - 推荐使用主流的多语言Embedding模型，例如：BAAI/bge-m3 和 text-embedding-3-large。
@@ -178,7 +181,7 @@ python examples/lightrag_openai_demo.py
 
 ## 使用LightRAG Core进行编程
 
-> 如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
+> ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
 
 ### 一个简单程序
 
@@ -265,13 +268,14 @@ if __name__ == "__main__":
 | **embedding_func_max_async** | `int` | 最大并发异步嵌入进程数 | `16` |
 | **llm_model_func** | `callable` | LLM生成的函数 | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
-| **summary_max_tokens** | `int` | 生成实体关系摘要时送给LLM的最大令牌数 | `32000`（默认值由环境变量MAX_TOKENS更改） |
+| **summary_context_size** | `int` | 合并实体关系摘要时送给LLM的最大令牌数 | `10000`（由环境变量 SUMMARY_MAX_CONTEXT 设置） |
+| **summary_max_tokens** | `int` | 合并实体关系描述的最大令牌数长度 | `500`（由环境变量 SUMMARY_MAX_TOKENS 设置） |
 | **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
 | **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
 | **enable_llm_cache** | `bool` | 如果为`TRUE`，将LLM结果存储在缓存中；重复的提示返回缓存的响应 | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | 如果为`TRUE`，将实体提取的LLM结果存储在缓存中；适合初学者调试应用程序 | `TRUE` |
-| **addon_params** | `dict` | 附加参数，例如`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | `example_number: 所有示例, language: English` |
+| **addon_params** | `dict` | 附加参数，例如`{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | language: English` |
 | **embedding_cache_config** | `dict` | 问答缓存的配置。包含三个参数：`enabled`：布尔值，启用/禁用缓存查找功能。启用时，系统将在生成新答案之前检查缓存的响应。`similarity_threshold`：浮点值（0-1），相似度阈值。当新问题与缓存问题的相似度超过此阈值时，将直接返回缓存的答案而不调用LLM。`use_llm_check`：布尔值，启用/禁用LLM相似度验证。启用时，在返回缓存答案之前，将使用LLM作为二次检查来验证问题之间的相似度。 | 默认：`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
@@ -591,31 +595,15 @@ if __name__ == "__main__":
 
 </details>
 
-### 对话历史
+### Rerank函数注入
 
-LightRAG现在通过对话历史功能支持多轮对话。以下是使用方法：
+为了提高检索质量，可以根据更有效的相关性评分模型对文档进行重排序。`rerank.py`文件提供了三个Reranker提供商的驱动函数：
 
-```python
-# 创建对话历史
-conversation_history = [
-    {"role": "user", "content": "主角对圣诞节的态度是什么？"},
-    {"role": "assistant", "content": "在故事开始时，埃比尼泽·斯克鲁奇对圣诞节持非常消极的态度..."},
-    {"role": "user", "content": "他的态度是如何改变的？"}
-]
+* **Cohere / vLLM**: `cohere_rerank`
+* **Jina AI**: `jina_rerank`
+* **Aliyun阿里云**: `ali_rerank`
 
-# 创建带有对话历史的查询参数
-query_param = QueryParam(
-    mode="mix",  # 或其他模式："local"、"global"、"hybrid"
-    conversation_history=conversation_history,  # 添加对话历史
-    history_turns=3  # 考虑最近的对话轮数
-)
-
-# 进行考虑对话历史的查询
-response = rag.query(
-    "是什么导致了他性格的这种变化？",
-    param=query_param
-)
-```
+您可以将这些函数之一注入到LightRAG对象的`rerank_model_func`属性中。这将使LightRAG的查询功能能够使用注入的函数对检索到的文本块进行重新排序。有关详细用法，请参阅`examples/rerank_example.py`文件。
 
 ### 用户提示词 vs. 查询内容
 
@@ -787,7 +775,7 @@ MongoDocStatusStorage       MongoDB
 每一种存储类型的链接配置范例可以在 `env.example` 文件中找到。链接字符串中的数据库实例是需要你预先在数据库服务器上创建好的，LightRAG 仅负责在数据库实例中创建数据表，不负责创建数据库实例。如果使用 Redis 作为存储，记得给 Redis 配置自动持久化数据规则，否则 Redis 服务重启后数据会丢失。如果使用PostgreSQL数据库，推荐使用16.6版本或以上。
 
 <details>
-<summary> <b>使用Neo4J进行存储</b> </summary>
+<summary> <b>使用Neo4J存储</b> </summary>
 
 * 对于生产级场景，您很可能想要利用企业级解决方案
 * 进行KG存储。推荐在Docker中运行Neo4J以进行无缝本地测试。
@@ -825,7 +813,7 @@ async def initialize_rag():
 </details>
 
 <details>
-<summary> <b>使用Faiss进行存储</b> </summary>
+<summary> <b>使用Faiss存储</b> </summary>
 在使用Faiss向量数据库之前必须手工安装`faiss-cpu`或`faiss-gpu`。
 
 - 安装所需依赖：
@@ -862,15 +850,36 @@ rag = LightRAG(
 </details>
 
 <details>
-<summary> <b>使用PostgreSQL进行存储</b> </summary>
+<summary> <b>使用PostgreSQL存储</b> </summary>
 
-对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
+对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式储解解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
 
-* PostgreSQL很轻量，整个二进制发行版包括所有必要的插件可以压缩到40MB：参考[Windows发布版](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0)，它在Linux/Mac上也很容易安装。
 * 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（请务必阅读概述）：https://hub.docker.com/r/shangor/postgres-for-rag
-* 如何开始？参考：[examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
-
 * Apache AGE的性能不如Neo4j。最求高性能的图数据库请使用Noe4j。
+
+</details>
+
+<details>
+<summary> <b>使用MogonDB存储</b> </summary>
+
+MongoDB为LightRAG提供了一站式的存储解决方案。MongoDB提供原生的KV存储和向量存储。LightRAG使用MogoDB的集合实现了一个简易的图存储。MongoDB 官方的向量检索功能（`$vectorSearch`）目前必须依赖其官方的云服务 MongoDB Atlas。无法在自托管的 MongoDB Community/Enterprise 版本上使用此功能。
+
+</details>
+
+<details>
+<summary> <b>使用Redis存储</b> </summary>
+
+LightRAG支持使用Reidis作为KV存储。使用Redis存储的时候需要注意进行持久化配置和内存使用量配置。以下是推荐的redis配置
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
+```
 
 </details>
 

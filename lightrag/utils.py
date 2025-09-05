@@ -1896,6 +1896,12 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             if "‘" not in inner_content and "’" not in inner_content:
                 name = inner_content
 
+        # Handle Chinese-style book title mark
+        if name.startswith("《") and name.endswith("》"):
+            inner_content = name[1:-1]
+            if "《" not in inner_content and "》" not in inner_content:
+                name = inner_content
+
     if remove_inner_quotes:
         # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
@@ -1995,8 +2001,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         # Unescape HTML escapes
         sanitized = html.unescape(sanitized)
 
-        # Remove control characters
-        sanitized = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", sanitized)
+        # Remove control characters but preserve common whitespace (\t, \n, \r)
+        sanitized = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]", "", sanitized)
 
         return sanitized.strip()
 

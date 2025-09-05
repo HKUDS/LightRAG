@@ -141,6 +141,8 @@ LightRAG's demands on the capabilities of Large Language Models (LLMs) are signi
 - **LLM Selection**:
   - It is recommended to use an LLM with at least 32 billion parameters.
   - The context length should be at least 32KB, with 64KB being recommended.
+  - It is not recommended to choose reasoning models during the document indexing stage.
+  - During the query stage, it is recommended to choose models with stronger capabilities than those used in the indexing stage to achieve better query results.
 - **Embedding Model**:
   - A high-performance Embedding model is essential for RAG.
   - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
@@ -177,11 +179,12 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ## Programing with LightRAG Core
 
-> If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
+> ⚠️ **If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server**. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
 ### ⚠️ Important: Initialization Requirements
 
 **LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+
 - `AttributeError: __aenter__` - if storages are not initialized
 - `KeyError: 'history_messages'` - if pipeline status is not initialized
 
@@ -272,13 +275,14 @@ A full list of LightRAG init parameters:
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `meta-llama/Llama-3.2-1B-Instruct` |
-| **summary_max_tokens** | `int` | Maximum tokens send to LLM to generate entity relation summaries | `32000`（default value changed by env var MAX_TOKENS) |
+| **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
+| **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **addon_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`: sets example limit, entiy/relation extraction output language | `example_number: all examples, language: English` |
+| **addon_params** | `dict` | Additional parameters, e.g., `{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`: sets example limit, entiy/relation extraction output language | language: English` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
@@ -594,36 +598,15 @@ if __name__ == "__main__":
 
 </details>
 
-### Conversation History Support
+### Rerank Function Injection
 
+To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
 
-LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
+* **Cohere / vLLM**: `cohere_rerank`
+* **Jina AI**: `jina_rerank`
+* **Aliyun**: `ali_rerank`
 
-<details>
-  <summary> <b> Usage Example </b></summary>
-
-```python
-# Create conversation history
-conversation_history = [
-    {"role": "user", "content": "What is the main character's attitude towards Christmas?"},
-    {"role": "assistant", "content": "At the beginning of the story, Ebenezer Scrooge has a very negative attitude towards Christmas..."},
-    {"role": "user", "content": "How does his attitude change?"}
-]
-
-# Create query parameters with conversation history
-query_param = QueryParam(
-    mode="mix",  # or any other mode: "local", "global", "hybrid"
-    conversation_history=conversation_history,  # Add the conversation history
-)
-
-# Make a query that takes into account the conversation history
-response = rag.query(
-    "What causes this change in his character?",
-    param=query_param
-)
-```
-
-</details>
+You can inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. This will enable LightRAG's query function to re-order retrieved text blocks using the injected function. For detailed usage, please refer to the `examples/rerank_example.py` file.
 
 ### User Prompt vs. Query
 
@@ -643,8 +626,6 @@ response_default = rag.query(
 )
 print(response_default)
 ```
-
-
 
 ### Insert
 
@@ -798,7 +779,7 @@ MongoDocStatusStorage       MongoDB
 Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
 
 <details>
-<summary> <b>Using Neo4J for Storage</b> </summary>
+<summary> <b>Using Neo4J Storage</b> </summary>
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
 * for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
@@ -837,7 +818,7 @@ see test_neo4j.py for a working example.
 </details>
 
 <details>
-<summary> <b>Using PostgreSQL for Storage</b> </summary>
+<summary> <b>Using PostgreSQL Storage</b> </summary>
 
 For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
 
@@ -849,7 +830,7 @@ For production level scenarios you will most likely want to leverage an enterpri
 </details>
 
 <details>
-<summary> <b>Using Faiss for Storage</b> </summary>
+<summary> <b>Using Faiss Storage</b> </summary>
 Before using Faiss vector database, you must manually install `faiss-cpu` or `faiss-gpu`.
 
 - Install the required dependencies:
@@ -916,6 +897,30 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+```
+
+</details>
+
+<details>
+<summary> <b>Using MongoDB Storage</b> </summary>
+
+MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
+
+</details>
+
+<details>
+<summary> <b>Using Redis Storage</b> </summary>
+
+LightRAG supports using Redis as KV storage. When using Redis storage, attention should be paid to persistence configuration and memory usage configuration. The following is the recommended Redis configuration:
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
 ```
 
 </details>
@@ -1287,8 +1292,10 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                     ),
                 )
             )
+
             # Initialize storage (this will load existing data if available)
             await lightrag_instance.initialize_storages()
+
             # Now initialize RAGAnything with the existing LightRAG instance
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # Pass the existing LightRAG instance
@@ -1317,12 +1324,14 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 )
                 # Note: working_dir, llm_model_func, embedding_func, etc. are inherited from lightrag_instance
             )
+
             # Query the existing knowledge base
             result = await rag.query_with_multimodal(
                 "What data has been processed in this LightRAG instance?",
                 mode="hybrid"
             )
             print("Query result:", result)
+
             # Add new multimodal documents to the existing LightRAG instance
             await rag.process_document_complete(
                 file_path="path/to/new/multimodal_document.pdf",

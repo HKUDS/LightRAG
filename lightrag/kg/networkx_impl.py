@@ -51,7 +51,7 @@ class NetworkXStorage(BaseGraphStorage):
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._graphml_xml_file = os.path.join(
-            working_dir, f"graph_{self.namespace}.graphml"
+            workspace_dir, f"graph_{self.namespace}.graphml"
         )
         self._storage_lock = None
         self.storage_updated = None

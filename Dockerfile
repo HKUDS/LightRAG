@@ -1,7 +1,10 @@
 # Build stage
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
+
+# Upgrade pip、setuptools and wheel to the latest version
+RUN pip install --upgrade pip setuptools wheel
 
 # Install Rust and required build dependencies
 RUN apt-get update && apt-get install -y \
@@ -19,8 +22,8 @@ COPY lightrag/ ./lightrag/
 
 # Install dependencies
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN pip install --user --no-cache-dir .
-RUN pip install --user --no-cache-dir .[api]
+RUN pip install --user --no-cache-dir --use-pep517 .
+RUN pip install --user --no-cache-dir --use-pep517 .[api]
 
 # Install depndencies for default storage
 RUN pip install --user --no-cache-dir nano-vectordb networkx
@@ -30,16 +33,19 @@ RUN pip install --user --no-cache-dir openai ollama tiktoken
 RUN pip install --user --no-cache-dir pypdf2 python-docx python-pptx openpyxl
 
 # Final stage
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
+
+# Upgrade pip and setuptools
+RUN pip install --upgrade pip setuptools wheel
 
 # Copy only necessary files from builder
 COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
 
-RUN pip install ".[api]"
+RUN pip install --use-pep517 ".[api]"
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 
