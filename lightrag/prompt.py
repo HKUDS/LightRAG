@@ -11,6 +11,7 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
 PROMPTS["entity_extraction"] = """---Task---
+
 For a given text and a list of entity types, extract all entities and their relationships, then return them in the specified language and format described below.
 
 ---Instructions---
@@ -35,6 +36,7 @@ For a given text and a list of entity types, extract all entities and their rela
 - For all output content, explicitly name the subject or object rather than using pronouns
 - Include specific numerical data in entity name when relevant
 - Ensure entity names are consistent throughout the extraction
+
 
 ---Examples---
 {examples}
