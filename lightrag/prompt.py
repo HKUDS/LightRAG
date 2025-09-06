@@ -28,7 +28,8 @@ For a given text and entity types in the provided real data, extract all entitie
   - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection
 4. Format each relationship as: (relationship{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
 5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the entity or relation list delimiter.
-6. Ensure the output language is {language}.
+6. Output `{completion_delimiter}` when all the entities and relationships are extracted.
+7. Ensure the output language is {language}.
 
 ---Quality Guidelines---
 - Only extract entities and relationships that are clearly defined and meaningful in the context
@@ -58,7 +59,8 @@ Identify any missed entities or relationships in the last extraction task.
 1. Output the entities and realtionships in the same format as previous extraction task.
 2. Do not include entities and relations that have been previously extracted.
 3. If the entity doesn't clearly fit in any of entity types provided, classify it as "Other".
-4. Ensure the output language is {language}.
+4. Output `{completion_delimiter}` when all the entities and relationships are extracted.
+5. Ensure the output language is {language}.
 
 <Output>
 """
@@ -90,6 +92,7 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 (relationship{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.){record_delimiter}
 (relationship{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.){record_delimiter}
 (relationship{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.){record_delimiter}
+{completion_delimiter}
 
 """,
     """[Example 2]
@@ -120,6 +123,7 @@ Financial experts are closely watching the Federal Reserve's next move, as specu
 (relationship{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.){record_delimiter}
 (relationship{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.){record_delimiter}
 (relationship{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.){record_delimiter}
+{completion_delimiter}
 
 """,
     """[Example 3]
@@ -142,6 +146,7 @@ At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint 
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.){record_delimiter}
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.){record_delimiter}
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.){record_delimiter}
+{completion_delimiter}
 
 """,
     """[Example 4]
@@ -164,6 +169,7 @@ Text:
 (relationship{tuple_delimiter}张伟{tuple_delimiter}腾讯公司{tuple_delimiter}雇佣关系, 高管职位{tuple_delimiter}张伟担任腾讯公司的首席技术官。){record_delimiter}
 (relationship{tuple_delimiter}张伟{tuple_delimiter}腾讯智言{tuple_delimiter}产品发布, 技术展示{tuple_delimiter}张伟在大会上发布了腾讯智言大语言模型。){record_delimiter}
 (relationship{tuple_delimiter}腾讯智言{tuple_delimiter}自然语言处理技术{tuple_delimiter}技术应用, 突破创新{tuple_delimiter}腾讯智言在自然语言处理技术方面取得了重大突破。){record_delimiter}
+{completion_delimiter}
 
 """,
 ]
