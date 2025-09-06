@@ -172,6 +172,7 @@ async def openai_complete_if_cache(
 
     logger.debug("===== Entering func of LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")
+    logger.debug(f"Client Configs: {client_configs}")
     logger.debug(f"Additional kwargs: {kwargs}")
     logger.debug(f"Num of history messages: {len(history_messages)}")
     verbose_debug(f"System prompt: {system_prompt}")
