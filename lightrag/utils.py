@@ -473,12 +473,12 @@ def priority_limit_async_func_call(
             nonlocal max_execution_timeout, max_task_duration
             if max_execution_timeout is None:
                 max_execution_timeout = (
-                    llm_timeout + 30
-                )  # LLM timeout + 30s buffer for network delays
+                    llm_timeout + 150
+                )  # LLM timeout + 150s buffer for low-level retry
             if max_task_duration is None:
                 max_task_duration = (
-                    llm_timeout + 60
-                )  # LLM timeout + 1min buffer for execution phase
+                    llm_timeout + 180
+                )  # LLM timeout + 180s buffer for health check phase
 
         queue = asyncio.PriorityQueue(maxsize=max_queue_size)
         tasks = set()
