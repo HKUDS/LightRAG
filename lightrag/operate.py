@@ -1396,9 +1396,9 @@ async def _merge_edges_then_upsert(
 
         # Log based on actual LLM usage
         if llm_was_used:
-            status_message = f"LLMmrg: `{src_id} - {tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
         else:
-            status_message = f"Merged: `{src_id} - {tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
 
         logger.info(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
@@ -1759,7 +1759,7 @@ async def merge_nodes_and_edges(
 
                     # Re-raise the original exception with a prefix
                     prefixed_exception = create_prefixed_exception(
-                        e, f"`{sorted_edge_key}`"
+                        e, f"{sorted_edge_key}"
                     )
                     raise prefixed_exception from e
 
