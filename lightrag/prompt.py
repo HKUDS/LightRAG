@@ -13,7 +13,7 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
 PROMPTS["entity_extraction"] = """---Task---
-For a given text and entity types in the provided real data, extract all entities and their relationships, then return them in the specified language and format described below.
+For a given input text and entity types in the provided real data, extract all entities and their relationships, then return them in the specified language and format described below.
 
 ---Instructions---
 1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
