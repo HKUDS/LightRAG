@@ -212,6 +212,16 @@ class LightRAG:
     )
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
+    split_by_character: Optional[str] = field(
+        default=get_env_value("SPLIT_BY_CHARACTER", None, str)
+    )
+    """Character or string to split text on. If None, text is split by token size only."""
+
+    split_by_character_only: bool = field(
+        default=get_env_value("SPLIT_BY_CHARACTER_ONLY", False, bool)
+    )
+    """If True, split text only by character without further token-based splitting."""
+
     tokenizer: Optional[Tokenizer] = field(default=None)
     """
     A function that returns a Tokenizer instance.
@@ -1351,7 +1361,7 @@ class LightRAG:
     async def apipeline_process_enqueue_documents(
         self,
         split_by_character: str | None = None,
-        split_by_character_only: bool = False,
+        split_by_character_only: bool | None = None,
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -1364,6 +1374,12 @@ class LightRAG:
         4. Process each chunk for entity and relation extraction
         5. Update the document status
         """
+        
+        # Use configured defaults if parameters not provided
+        if split_by_character is None:
+            split_by_character = self.split_by_character
+        if split_by_character_only is None:
+            split_by_character_only = self.split_by_character_only
 
         # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data("pipeline_status")

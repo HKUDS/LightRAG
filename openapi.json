@@ -1,0 +1,2979 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "LightRAG Server API",
+        "version": "0214"
+    },
+    "paths": {
+        "/documents/scan": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Scan For New Documents",
+                "description": "Trigger the scanning process for new documents.\n\nThis endpoint initiates a background task that scans the input directory for new documents\nand processes them. If a scanning process is already running, it returns a status indicating\nthat fact.\n\nReturns:\n    ScanResponse: A response object containing the scanning status and track_id",
+                "operationId": "scan_for_new_documents_documents_scan_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ScanResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/upload": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Upload To Input Dir",
+                "description": "Upload a file to the input directory and index it.\n\nThis API endpoint accepts a file through an HTTP POST request, checks if the\nuploaded file is of a supported type, saves it in the specified input directory,\nindexes it for retrieval, and returns a success status with relevant details.\n\nArgs:\n    background_tasks: FastAPI BackgroundTasks for async processing\n    file (UploadFile): The file to be uploaded. It must have an allowed extension.\n\nReturns:\n    InsertResponse: A response object containing the upload status and a message.\n        status can be \"success\", \"duplicated\", or error is thrown.\n\nRaises:\n    HTTPException: If the file type is not supported (400) or other errors occur (500).",
+                "operationId": "upload_to_input_dir_documents_upload_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_upload_to_input_dir_documents_upload_post"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/InsertResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/text": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Insert Text",
+                "description": "Insert text into the RAG system.\n\nThis endpoint allows you to insert text data into the RAG system for later retrieval\nand use in generating responses.\n\nArgs:\n    request (InsertTextRequest): The request body containing the text to be inserted.\n    background_tasks: FastAPI BackgroundTasks for async processing\n\nReturns:\n    InsertResponse: A response object containing the status of the operation.\n\nRaises:\n    HTTPException: If an error occurs during text processing (500).",
+                "operationId": "insert_text_documents_text_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/InsertTextRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/InsertResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/texts": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Insert Texts",
+                "description": "Insert multiple texts into the RAG system.\n\nThis endpoint allows you to insert multiple text entries into the RAG system\nin a single request.\n\nArgs:\n    request (InsertTextsRequest): The request body containing the list of texts.\n    background_tasks: FastAPI BackgroundTasks for async processing\n\nReturns:\n    InsertResponse: A response object containing the status of the operation.\n\nRaises:\n    HTTPException: If an error occurs during text processing (500).",
+                "operationId": "insert_texts_documents_texts_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/InsertTextsRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/InsertResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents": {
+            "delete": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Clear Documents",
+                "description": "Clear all documents from the RAG system.\n\nThis endpoint deletes all documents, entities, relationships, and files from the system.\nIt uses the storage drop methods to properly clean up all data and removes all files\nfrom the input directory.\n\nReturns:\n    ClearDocumentsResponse: A response object containing the status and message.\n        - status=\"success\":           All documents and files were successfully cleared.\n        - status=\"partial_success\":   Document clear job exit with some errors.\n        - status=\"busy\":              Operation could not be completed because the pipeline is busy.\n        - status=\"fail\":              All storage drop operations failed, with message\n        - message: Detailed information about the operation results, including counts\n          of deleted files and any errors encountered.\n\nRaises:\n    HTTPException: Raised when a serious error occurs during the clearing process,\n                  with status code 500 and error details in the detail field.",
+                "operationId": "clear_documents_documents_delete",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ClearDocumentsResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "get": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Documents",
+                "description": "Get the status of all documents in the system.\n\nThis endpoint retrieves the current status of all documents, grouped by their\nprocessing status (PENDING, PROCESSING, PROCESSED, FAILED).\n\nReturns:\n    DocsStatusesResponse: A response object containing a dictionary where keys are\n                        DocStatus values and values are lists of DocStatusResponse\n                        objects representing documents in each status category.\n\nRaises:\n    HTTPException: If an error occurs while retrieving document statuses (500).",
+                "operationId": "documents_documents_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DocsStatusesResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/pipeline_status": {
+            "get": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get Pipeline Status",
+                "description": "Get the current status of the document indexing pipeline.\n\nThis endpoint returns information about the current state of the document processing pipeline,\nincluding the processing status, progress information, and history messages.\n\nReturns:\n    PipelineStatusResponse: A response object containing:\n        - autoscanned (bool): Whether auto-scan has started\n        - busy (bool): Whether the pipeline is currently busy\n        - job_name (str): Current job name (e.g., indexing files/indexing texts)\n        - job_start (str, optional): Job start time as ISO format string\n        - docs (int): Total number of documents to be indexed\n        - batchs (int): Number of batches for processing documents\n        - cur_batch (int): Current processing batch\n        - request_pending (bool): Flag for pending request for processing\n        - latest_message (str): Latest message from pipeline processing\n        - history_messages (List[str], optional): List of history messages\n\nRaises:\n    HTTPException: If an error occurs while retrieving pipeline status (500)",
+                "operationId": "get_pipeline_status_documents_pipeline_status_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PipelineStatusResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/delete_document": {
+            "delete": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Delete a document and all its associated data by its ID.",
+                "description": "Delete documents and all their associated data by their IDs using background processing.\n\nDeletes specific documents and all their associated data, including their status,\ntext chunks, vector embeddings, and any related graph data.\nThe deletion process runs in the background to avoid blocking the client connection.\nIt is disabled when llm cache for entity extraction is disabled.\n\nThis operation is irreversible and will interact with the pipeline status.\n\nArgs:\n    delete_request (DeleteDocRequest): The request containing the document IDs and delete_file options.\n    background_tasks: FastAPI BackgroundTasks for async processing\n\nReturns:\n    DeleteDocByIdResponse: The result of the deletion operation.\n        - status=\"deletion_started\": The document deletion has been initiated in the background.\n        - status=\"busy\": The pipeline is busy with another operation.\n        - status=\"not_allowed\": Operation not allowed when LLM cache for entity extraction is disabled.\n\nRaises:\n    HTTPException:\n      - 500: If an unexpected internal error occurs during initialization.",
+                "operationId": "delete_document_documents_delete_document_delete",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DeleteDocRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeleteDocByIdResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/clear_cache": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Clear Cache",
+                "description": "Clear all cache data from the LLM response cache storage.\n\nThis endpoint clears all cached LLM responses regardless of mode.\nThe request body is accepted for API compatibility but is ignored.\n\nArgs:\n    request (ClearCacheRequest): The request body (ignored for compatibility).\n\nReturns:\n    ClearCacheResponse: A response object containing the status and message.\n\nRaises:\n    HTTPException: If an error occurs during cache clearing (500).",
+                "operationId": "clear_cache_documents_clear_cache_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ClearCacheRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ClearCacheResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/delete_entity": {
+            "delete": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Delete Entity",
+                "description": "Delete an entity and all its relationships from the knowledge graph.\n\nArgs:\n    request (DeleteEntityRequest): The request body containing the entity name.\n\nReturns:\n    DeletionResult: An object containing the outcome of the deletion process.\n\nRaises:\n    HTTPException: If the entity is not found (404) or an error occurs (500).",
+                "operationId": "delete_entity_documents_delete_entity_delete",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DeleteEntityRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeletionResult"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/delete_relation": {
+            "delete": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Delete Relation",
+                "description": "Delete a relationship between two entities from the knowledge graph.\n\nArgs:\n    request (DeleteRelationRequest): The request body containing the source and target entity names.\n\nReturns:\n    DeletionResult: An object containing the outcome of the deletion process.\n\nRaises:\n    HTTPException: If the relation is not found (404) or an error occurs (500).",
+                "operationId": "delete_relation_documents_delete_relation_delete",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DeleteRelationRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeletionResult"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/track_status/{track_id}": {
+            "get": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get Track Status",
+                "description": "Get the processing status of documents by tracking ID.\n\nThis endpoint retrieves all documents associated with a specific tracking ID,\nallowing users to monitor the processing progress of their uploaded files or inserted texts.\n\nArgs:\n    track_id (str): The tracking ID returned from upload, text, or texts endpoints\n\nReturns:\n    TrackStatusResponse: A response object containing:\n        - track_id: The tracking ID\n        - documents: List of documents associated with this track_id\n        - total_count: Total number of documents for this track_id\n\nRaises:\n    HTTPException: If track_id is invalid (400) or an error occurs (500).",
+                "operationId": "get_track_status_documents_track_status__track_id__get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "track_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Track Id"
+                        }
+                    },
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TrackStatusResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/paginated": {
+            "post": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get Documents Paginated",
+                "description": "Get documents with pagination support.\n\nThis endpoint retrieves documents with pagination, filtering, and sorting capabilities.\nIt provides better performance for large document collections by loading only the\nrequested page of data.\n\nArgs:\n    request (DocumentsRequest): The request body containing pagination parameters\n\nReturns:\n    PaginatedDocsResponse: A response object containing:\n        - documents: List of documents for the current page\n        - pagination: Pagination information (page, total_count, etc.)\n        - status_counts: Count of documents by status for all documents\n\nRaises:\n    HTTPException: If an error occurs while retrieving documents (500).",
+                "operationId": "get_documents_paginated_documents_paginated_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DocumentsRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedDocsResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/status_counts": {
+            "get": {
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Get Document Status Counts",
+                "description": "Get counts of documents by status.\n\nThis endpoint retrieves the count of documents in each processing status\n(PENDING, PROCESSING, PROCESSED, FAILED) for all documents in the system.\n\nReturns:\n    StatusCountsResponse: A response object containing status counts\n\nRaises:\n    HTTPException: If an error occurs while retrieving status counts (500).",
+                "operationId": "get_document_status_counts_documents_status_counts_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StatusCountsResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/query": {
+            "post": {
+                "tags": [
+                    "query"
+                ],
+                "summary": "Query Text",
+                "description": "Handle a POST request at the /query endpoint to process user queries using RAG capabilities.\n\nParameters:\n    request (QueryRequest): The request object containing the query parameters.\nReturns:\n    QueryResponse: A Pydantic model containing the result of the query processing.\n               If a string is returned (e.g., cache hit), it's directly returned.\n               Otherwise, an async generator may be used to build the response.\n\nRaises:\n    HTTPException: Raised when an error occurs during the request handling process,\n               with status code 500 and detail containing the exception message.",
+                "operationId": "query_text_query_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/QueryRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/QueryResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/query/stream": {
+            "post": {
+                "tags": [
+                    "query"
+                ],
+                "summary": "Query Text Stream",
+                "description": "This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.\n\nArgs:\n    request (QueryRequest): The request object containing the query parameters.\n    optional_api_key (Optional[str], optional): An optional API key for authentication. Defaults to None.\n\nReturns:\n    StreamingResponse: A streaming response containing the RAG query results.",
+                "operationId": "query_text_stream_query_stream_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/QueryRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graph/label/list": {
+            "get": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Get Graph Labels",
+                "description": "Get all graph labels\n\nReturns:\n    List[str]: List of graph labels",
+                "operationId": "get_graph_labels_graph_label_list_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graphs": {
+            "get": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Get Knowledge Graph",
+                "description": "Retrieve a connected subgraph of nodes where the label includes the specified label.\nWhen reducing the number of nodes, the prioritization criteria are as follows:\n    1. Hops(path) to the staring node take precedence\n    2. Followed by the degree of the nodes\n\nArgs:\n    label (str): Label of the starting node\n    max_depth (int, optional): Maximum depth of the subgraph,Defaults to 3\n    max_nodes: Maxiumu nodes to return\n\nReturns:\n    Dict[str, List[str]]: Knowledge graph for label",
+                "operationId": "get_knowledge_graph_graphs_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "label",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "Label to get knowledge graph for",
+                            "title": "Label"
+                        },
+                        "description": "Label to get knowledge graph for"
+                    },
+                    {
+                        "name": "max_depth",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum depth of graph",
+                            "default": 3,
+                            "title": "Max Depth"
+                        },
+                        "description": "Maximum depth of graph"
+                    },
+                    {
+                        "name": "max_nodes",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum nodes to return",
+                            "default": 1000,
+                            "title": "Max Nodes"
+                        },
+                        "description": "Maximum nodes to return"
+                    },
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graph/entity/exists": {
+            "get": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Check Entity Exists",
+                "description": "Check if an entity with the given name exists in the knowledge graph\n\nArgs:\n    name (str): Name of the entity to check\n\nReturns:\n    Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists",
+                "operationId": "check_entity_exists_graph_entity_exists_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "name",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "Entity name to check",
+                            "title": "Name"
+                        },
+                        "description": "Entity name to check"
+                    },
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graph/entity/edit": {
+            "post": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Update Entity",
+                "description": "Update an entity's properties in the knowledge graph\n\nArgs:\n    request (EntityUpdateRequest): Request containing entity name, updated data, and rename flag\n\nReturns:\n    Dict: Updated entity information",
+                "operationId": "update_entity_graph_entity_edit_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/EntityUpdateRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/graph/relation/edit": {
+            "post": {
+                "tags": [
+                    "graph"
+                ],
+                "summary": "Update Relation",
+                "description": "Update a relation's properties in the knowledge graph\n\nArgs:\n    request (RelationUpdateRequest): Request containing source ID, target ID and updated data\n\nReturns:\n    Dict: Updated relation information",
+                "operationId": "update_relation_graph_relation_edit_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RelationUpdateRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/version": {
+            "get": {
+                "tags": [
+                    "ollama"
+                ],
+                "summary": "Get Version",
+                "description": "Get Ollama version information",
+                "operationId": "get_version_api_version_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tags": {
+            "get": {
+                "tags": [
+                    "ollama"
+                ],
+                "summary": "Get Tags",
+                "description": "Return available models acting as an Ollama server",
+                "operationId": "get_tags_api_tags_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/ps": {
+            "get": {
+                "tags": [
+                    "ollama"
+                ],
+                "summary": "Get Running Models",
+                "description": "List Running Models - returns currently running models",
+                "operationId": "get_running_models_api_ps_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/generate": {
+            "post": {
+                "tags": [
+                    "ollama"
+                ],
+                "summary": "Generate",
+                "description": "Handle generate completion requests acting as an Ollama model\nFor compatibility purpose, the request is not processed by LightRAG,\nand will be handled by underlying LLM model.\nSupports both application/json and application/octet-stream Content-Types.",
+                "operationId": "generate_api_generate_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/chat": {
+            "post": {
+                "tags": [
+                    "ollama"
+                ],
+                "summary": "Chat",
+                "description": "Process chat completion requests by acting as an Ollama model.\nRoutes user queries through LightRAG by selecting query mode based on query prefix.\nDetects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.\nSupports both application/json and application/octet-stream Content-Types.",
+                "operationId": "chat_api_chat_post",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/": {
+            "get": {
+                "summary": "Redirect To Webui",
+                "description": "Redirect root path to /webui",
+                "operationId": "redirect_to_webui__get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth-status": {
+            "get": {
+                "summary": "Get Auth Status",
+                "description": "Get authentication status and guest token if auth is not configured",
+                "operationId": "get_auth_status_auth_status_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/login": {
+            "post": {
+                "summary": "Login",
+                "operationId": "login_login_post",
+                "requestBody": {
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_login_login_post"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "summary": "Get Status",
+                "description": "Get current system status",
+                "operationId": "get_status_health_get",
+                "security": [
+                    {
+                        "OAuth2PasswordBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "api_key_header_value",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Api Key Header Value"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Body_login_login_post": {
+                "properties": {
+                    "grant_type": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "pattern": "^password$"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Grant Type"
+                    },
+                    "username": {
+                        "type": "string",
+                        "title": "Username"
+                    },
+                    "password": {
+                        "type": "string",
+                        "format": "password",
+                        "title": "Password"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "title": "Scope",
+                        "default": ""
+                    },
+                    "client_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Client Id"
+                    },
+                    "client_secret": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "format": "password",
+                        "title": "Client Secret"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "username",
+                    "password"
+                ],
+                "title": "Body_login_login_post"
+            },
+            "Body_upload_to_input_dir_documents_upload_post": {
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "title": "File"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "file"
+                ],
+                "title": "Body_upload_to_input_dir_documents_upload_post"
+            },
+            "ClearCacheRequest": {
+                "properties": {},
+                "type": "object",
+                "title": "ClearCacheRequest",
+                "description": "Request model for clearing cache\n\nThis model is kept for API compatibility but no longer accepts any parameters.\nAll cache will be cleared regardless of the request content.",
+                "example": {}
+            },
+            "ClearCacheResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "success",
+                            "fail"
+                        ],
+                        "title": "Status",
+                        "description": "Status of the clear operation"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "description": "Message describing the operation result"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "message"
+                ],
+                "title": "ClearCacheResponse",
+                "description": "Response model for cache clearing operation\n\nAttributes:\n    status: Status of the clear operation\n    message: Detailed message describing the operation result",
+                "example": {
+                    "message": "Successfully cleared cache for modes: ['default', 'naive']",
+                    "status": "success"
+                }
+            },
+            "ClearDocumentsResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "success",
+                            "partial_success",
+                            "busy",
+                            "fail"
+                        ],
+                        "title": "Status",
+                        "description": "Status of the clear operation"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "description": "Message describing the operation result"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "message"
+                ],
+                "title": "ClearDocumentsResponse",
+                "description": "Response model for document clearing operation\n\nAttributes:\n    status: Status of the clear operation\n    message: Detailed message describing the operation result",
+                "example": {
+                    "message": "All documents cleared successfully. Deleted 15 files.",
+                    "status": "success"
+                }
+            },
+            "DeleteDocByIdResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "deletion_started",
+                            "busy",
+                            "not_allowed"
+                        ],
+                        "title": "Status",
+                        "description": "Status of the deletion operation"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "description": "Message describing the operation result"
+                    },
+                    "doc_id": {
+                        "type": "string",
+                        "title": "Doc Id",
+                        "description": "The ID of the document to delete"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "message",
+                    "doc_id"
+                ],
+                "title": "DeleteDocByIdResponse",
+                "description": "Response model for single document deletion operation."
+            },
+            "DeleteDocRequest": {
+                "properties": {
+                    "doc_ids": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Doc Ids",
+                        "description": "The IDs of the documents to delete."
+                    },
+                    "delete_file": {
+                        "type": "boolean",
+                        "title": "Delete File",
+                        "description": "Whether to delete the corresponding file in the upload directory.",
+                        "default": false
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "doc_ids"
+                ],
+                "title": "DeleteDocRequest"
+            },
+            "DeleteEntityRequest": {
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "title": "Entity Name",
+                        "description": "The name of the entity to delete."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity_name"
+                ],
+                "title": "DeleteEntityRequest"
+            },
+            "DeleteRelationRequest": {
+                "properties": {
+                    "source_entity": {
+                        "type": "string",
+                        "title": "Source Entity",
+                        "description": "The name of the source entity."
+                    },
+                    "target_entity": {
+                        "type": "string",
+                        "title": "Target Entity",
+                        "description": "The name of the target entity."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "source_entity",
+                    "target_entity"
+                ],
+                "title": "DeleteRelationRequest"
+            },
+            "DeletionResult": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "success",
+                            "not_found",
+                            "fail"
+                        ],
+                        "title": "Status"
+                    },
+                    "doc_id": {
+                        "type": "string",
+                        "title": "Doc Id"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "status_code": {
+                        "type": "integer",
+                        "title": "Status Code",
+                        "default": 200
+                    },
+                    "file_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "File Path"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "doc_id",
+                    "message"
+                ],
+                "title": "DeletionResult"
+            },
+            "DocStatus": {
+                "type": "string",
+                "enum": [
+                    "pending",
+                    "processing",
+                    "processed",
+                    "failed"
+                ],
+                "title": "DocStatus",
+                "description": "Document processing status"
+            },
+            "DocStatusResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id",
+                        "description": "Document identifier"
+                    },
+                    "content_summary": {
+                        "type": "string",
+                        "title": "Content Summary",
+                        "description": "Summary of document content"
+                    },
+                    "content_length": {
+                        "type": "integer",
+                        "title": "Content Length",
+                        "description": "Length of document content in characters"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/DocStatus",
+                        "description": "Current processing status"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "title": "Created At",
+                        "description": "Creation timestamp (ISO format string)"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "title": "Updated At",
+                        "description": "Last update timestamp (ISO format string)"
+                    },
+                    "track_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Track Id",
+                        "description": "Tracking ID for monitoring progress"
+                    },
+                    "chunks_count": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Chunks Count",
+                        "description": "Number of chunks the document was split into"
+                    },
+                    "error_msg": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Error Msg",
+                        "description": "Error message if processing failed"
+                    },
+                    "metadata": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Metadata",
+                        "description": "Additional metadata about the document"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "title": "File Path",
+                        "description": "Path to the document file"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "content_summary",
+                    "content_length",
+                    "status",
+                    "created_at",
+                    "updated_at",
+                    "file_path"
+                ],
+                "title": "DocStatusResponse",
+                "example": {
+                    "chunks_count": 12,
+                    "content_length": 15240,
+                    "content_summary": "Research paper on machine learning",
+                    "created_at": "2025-03-31T12:34:56",
+                    "file_path": "research_paper.pdf",
+                    "id": "doc_123456",
+                    "metadata": {
+                        "author": "John Doe",
+                        "year": 2025
+                    },
+                    "status": "PROCESSED",
+                    "track_id": "upload_20250729_170612_abc123",
+                    "updated_at": "2025-03-31T12:35:30"
+                }
+            },
+            "DocsStatusesResponse": {
+                "properties": {
+                    "statuses": {
+                        "additionalProperties": {
+                            "items": {
+                                "$ref": "#/components/schemas/DocStatusResponse"
+                            },
+                            "type": "array"
+                        },
+                        "propertyNames": {
+                            "$ref": "#/components/schemas/DocStatus"
+                        },
+                        "type": "object",
+                        "title": "Statuses",
+                        "description": "Dictionary mapping document status to lists of document status responses"
+                    }
+                },
+                "type": "object",
+                "title": "DocsStatusesResponse",
+                "description": "Response model for document statuses\n\nAttributes:\n    statuses: Dictionary mapping document status to lists of document status responses",
+                "example": {
+                    "statuses": {
+                        "PENDING": [
+                            {
+                                "content_length": 5000,
+                                "content_summary": "Pending document",
+                                "created_at": "2025-03-31T10:00:00",
+                                "file_path": "pending_doc.pdf",
+                                "id": "doc_123",
+                                "status": "PENDING",
+                                "track_id": "upload_20250331_100000_abc123",
+                                "updated_at": "2025-03-31T10:00:00"
+                            }
+                        ],
+                        "PROCESSED": [
+                            {
+                                "chunks_count": 8,
+                                "content_length": 8000,
+                                "content_summary": "Processed document",
+                                "created_at": "2025-03-31T09:00:00",
+                                "file_path": "processed_doc.pdf",
+                                "id": "doc_456",
+                                "metadata": {
+                                    "author": "John Doe"
+                                },
+                                "status": "PROCESSED",
+                                "track_id": "insert_20250331_090000_def456",
+                                "updated_at": "2025-03-31T09:05:00"
+                            }
+                        ]
+                    }
+                }
+            },
+            "DocumentsRequest": {
+                "properties": {
+                    "status_filter": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/DocStatus"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Filter by document status, None for all statuses"
+                    },
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "title": "Page",
+                        "description": "Page number (1-based)",
+                        "default": 1
+                    },
+                    "page_size": {
+                        "type": "integer",
+                        "maximum": 200.0,
+                        "minimum": 10.0,
+                        "title": "Page Size",
+                        "description": "Number of documents per page (10-200)",
+                        "default": 50
+                    },
+                    "sort_field": {
+                        "type": "string",
+                        "enum": [
+                            "created_at",
+                            "updated_at",
+                            "id",
+                            "file_path"
+                        ],
+                        "title": "Sort Field",
+                        "description": "Field to sort by",
+                        "default": "updated_at"
+                    },
+                    "sort_direction": {
+                        "type": "string",
+                        "enum": [
+                            "asc",
+                            "desc"
+                        ],
+                        "title": "Sort Direction",
+                        "description": "Sort direction",
+                        "default": "desc"
+                    }
+                },
+                "type": "object",
+                "title": "DocumentsRequest",
+                "description": "Request model for paginated document queries\n\nAttributes:\n    status_filter: Filter by document status, None for all statuses\n    page: Page number (1-based)\n    page_size: Number of documents per page (10-200)\n    sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path')\n    sort_direction: Sort direction ('asc' or 'desc')",
+                "example": {
+                    "page": 1,
+                    "page_size": 50,
+                    "sort_direction": "desc",
+                    "sort_field": "updated_at",
+                    "status_filter": "PROCESSED"
+                }
+            },
+            "EntityUpdateRequest": {
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "title": "Entity Name"
+                    },
+                    "updated_data": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Updated Data"
+                    },
+                    "allow_rename": {
+                        "type": "boolean",
+                        "title": "Allow Rename",
+                        "default": false
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "entity_name",
+                    "updated_data"
+                ],
+                "title": "EntityUpdateRequest"
+            },
+            "HTTPValidationError": {
+                "properties": {
+                    "detail": {
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        },
+                        "type": "array",
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+            },
+            "InsertResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "success",
+                            "duplicated",
+                            "partial_success",
+                            "failure"
+                        ],
+                        "title": "Status",
+                        "description": "Status of the operation"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "description": "Message describing the operation result"
+                    },
+                    "track_id": {
+                        "type": "string",
+                        "title": "Track Id",
+                        "description": "Tracking ID for monitoring processing status"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "message",
+                    "track_id"
+                ],
+                "title": "InsertResponse",
+                "description": "Response model for document insertion operations\n\nAttributes:\n    status: Status of the operation (success, duplicated, partial_success, failure)\n    message: Detailed message describing the operation result\n    track_id: Tracking ID for monitoring processing status",
+                "example": {
+                    "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
+                    "status": "success",
+                    "track_id": "upload_20250729_170612_abc123"
+                }
+            },
+            "InsertTextRequest": {
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Text",
+                        "description": "The text to insert"
+                    },
+                    "file_source": {
+                        "type": "string",
+                        "minLength": 0,
+                        "title": "File Source",
+                        "description": "File Source"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "text"
+                ],
+                "title": "InsertTextRequest",
+                "description": "Request model for inserting a single text document\n\nAttributes:\n    text: The text content to be inserted into the RAG system\n    file_source: Source of the text (optional)",
+                "example": {
+                    "file_source": "Source of the text (optional)",
+                    "text": "This is a sample text to be inserted into the RAG system."
+                }
+            },
+            "InsertTextsRequest": {
+                "properties": {
+                    "texts": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "minItems": 1,
+                        "title": "Texts",
+                        "description": "The texts to insert"
+                    },
+                    "file_sources": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "minItems": 0,
+                        "title": "File Sources",
+                        "description": "Sources of the texts"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "texts"
+                ],
+                "title": "InsertTextsRequest",
+                "description": "Request model for inserting multiple text documents\n\nAttributes:\n    texts: List of text contents to be inserted into the RAG system\n    file_sources: Sources of the texts (optional)",
+                "example": {
+                    "file_sources": [
+                        "First file source (optional)"
+                    ],
+                    "texts": [
+                        "This is the first text to be inserted.",
+                        "This is the second text to be inserted."
+                    ]
+                }
+            },
+            "PaginatedDocsResponse": {
+                "properties": {
+                    "documents": {
+                        "items": {
+                            "$ref": "#/components/schemas/DocStatusResponse"
+                        },
+                        "type": "array",
+                        "title": "Documents",
+                        "description": "List of documents for the current page"
+                    },
+                    "pagination": {
+                        "$ref": "#/components/schemas/PaginationInfo",
+                        "description": "Pagination information"
+                    },
+                    "status_counts": {
+                        "additionalProperties": {
+                            "type": "integer"
+                        },
+                        "type": "object",
+                        "title": "Status Counts",
+                        "description": "Count of documents by status for all documents"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "documents",
+                    "pagination",
+                    "status_counts"
+                ],
+                "title": "PaginatedDocsResponse",
+                "description": "Response model for paginated document queries\n\nAttributes:\n    documents: List of documents for the current page\n    pagination: Pagination information\n    status_counts: Count of documents by status for all documents",
+                "example": {
+                    "documents": [
+                        {
+                            "chunks_count": 12,
+                            "content_length": 15240,
+                            "content_summary": "Research paper on machine learning",
+                            "created_at": "2025-03-31T12:34:56",
+                            "file_path": "research_paper.pdf",
+                            "id": "doc_123456",
+                            "metadata": {
+                                "author": "John Doe",
+                                "year": 2025
+                            },
+                            "status": "PROCESSED",
+                            "track_id": "upload_20250729_170612_abc123",
+                            "updated_at": "2025-03-31T12:35:30"
+                        }
+                    ],
+                    "pagination": {
+                        "has_next": true,
+                        "has_prev": false,
+                        "page": 1,
+                        "page_size": 50,
+                        "total_count": 150,
+                        "total_pages": 3
+                    },
+                    "status_counts": {
+                        "FAILED": 5,
+                        "PENDING": 10,
+                        "PROCESSED": 130,
+                        "PROCESSING": 5
+                    }
+                }
+            },
+            "PaginationInfo": {
+                "properties": {
+                    "page": {
+                        "type": "integer",
+                        "title": "Page",
+                        "description": "Current page number"
+                    },
+                    "page_size": {
+                        "type": "integer",
+                        "title": "Page Size",
+                        "description": "Number of items per page"
+                    },
+                    "total_count": {
+                        "type": "integer",
+                        "title": "Total Count",
+                        "description": "Total number of items"
+                    },
+                    "total_pages": {
+                        "type": "integer",
+                        "title": "Total Pages",
+                        "description": "Total number of pages"
+                    },
+                    "has_next": {
+                        "type": "boolean",
+                        "title": "Has Next",
+                        "description": "Whether there is a next page"
+                    },
+                    "has_prev": {
+                        "type": "boolean",
+                        "title": "Has Prev",
+                        "description": "Whether there is a previous page"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "page",
+                    "page_size",
+                    "total_count",
+                    "total_pages",
+                    "has_next",
+                    "has_prev"
+                ],
+                "title": "PaginationInfo",
+                "description": "Pagination information\n\nAttributes:\n    page: Current page number\n    page_size: Number of items per page\n    total_count: Total number of items\n    total_pages: Total number of pages\n    has_next: Whether there is a next page\n    has_prev: Whether there is a previous page",
+                "example": {
+                    "has_next": true,
+                    "has_prev": false,
+                    "page": 1,
+                    "page_size": 50,
+                    "total_count": 150,
+                    "total_pages": 3
+                }
+            },
+            "PipelineStatusResponse": {
+                "properties": {
+                    "autoscanned": {
+                        "type": "boolean",
+                        "title": "Autoscanned",
+                        "default": false
+                    },
+                    "busy": {
+                        "type": "boolean",
+                        "title": "Busy",
+                        "default": false
+                    },
+                    "job_name": {
+                        "type": "string",
+                        "title": "Job Name",
+                        "default": "Default Job"
+                    },
+                    "job_start": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Job Start"
+                    },
+                    "docs": {
+                        "type": "integer",
+                        "title": "Docs",
+                        "default": 0
+                    },
+                    "batchs": {
+                        "type": "integer",
+                        "title": "Batchs",
+                        "default": 0
+                    },
+                    "cur_batch": {
+                        "type": "integer",
+                        "title": "Cur Batch",
+                        "default": 0
+                    },
+                    "request_pending": {
+                        "type": "boolean",
+                        "title": "Request Pending",
+                        "default": false
+                    },
+                    "latest_message": {
+                        "type": "string",
+                        "title": "Latest Message",
+                        "default": ""
+                    },
+                    "history_messages": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "History Messages"
+                    },
+                    "update_status": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Update Status"
+                    }
+                },
+                "additionalProperties": true,
+                "type": "object",
+                "title": "PipelineStatusResponse",
+                "description": "Response model for pipeline status\n\nAttributes:\n    autoscanned: Whether auto-scan has started\n    busy: Whether the pipeline is currently busy\n    job_name: Current job name (e.g., indexing files/indexing texts)\n    job_start: Job start time as ISO format string with timezone (optional)\n    docs: Total number of documents to be indexed\n    batchs: Number of batches for processing documents\n    cur_batch: Current processing batch\n    request_pending: Flag for pending request for processing\n    latest_message: Latest message from pipeline processing\n    history_messages: List of history messages\n    update_status: Status of update flags for all namespaces"
+            },
+            "QueryRequest": {
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Query",
+                        "description": "The query text"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "local",
+                            "global",
+                            "hybrid",
+                            "naive",
+                            "mix",
+                            "bypass"
+                        ],
+                        "title": "Mode",
+                        "description": "Query mode",
+                        "default": "mix"
+                    },
+                    "only_need_context": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Only Need Context",
+                        "description": "If True, only returns the retrieved context without generating a response."
+                    },
+                    "only_need_prompt": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Only Need Prompt",
+                        "description": "If True, only returns the generated prompt without producing a response."
+                    },
+                    "response_type": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "minLength": 1
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Response Type",
+                        "description": "Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."
+                    },
+                    "top_k": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Top K",
+                        "description": "Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."
+                    },
+                    "chunk_top_k": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Chunk Top K",
+                        "description": "Number of text chunks to retrieve initially from vector search and keep after reranking."
+                    },
+                    "max_entity_tokens": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Max Entity Tokens",
+                        "description": "Maximum number of tokens allocated for entity context in unified token control system."
+                    },
+                    "max_relation_tokens": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Max Relation Tokens",
+                        "description": "Maximum number of tokens allocated for relationship context in unified token control system."
+                    },
+                    "max_total_tokens": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Max Total Tokens",
+                        "description": "Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."
+                    },
+                    "conversation_history": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Conversation History",
+                        "description": "Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}]."
+                    },
+                    "history_turns": {
+                        "anyOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "History Turns",
+                        "description": "Number of complete conversation turns (user-assistant pairs) to consider in the response context."
+                    },
+                    "ids": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ids",
+                        "description": "List of ids to filter the results."
+                    },
+                    "user_prompt": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "User Prompt",
+                        "description": "User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template."
+                    },
+                    "enable_rerank": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Enable Rerank",
+                        "description": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "query"
+                ],
+                "title": "QueryRequest"
+            },
+            "QueryResponse": {
+                "properties": {
+                    "response": {
+                        "type": "string",
+                        "title": "Response",
+                        "description": "The generated response"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "response"
+                ],
+                "title": "QueryResponse"
+            },
+            "RelationUpdateRequest": {
+                "properties": {
+                    "source_id": {
+                        "type": "string",
+                        "title": "Source Id"
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "title": "Target Id"
+                    },
+                    "updated_data": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Updated Data"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "source_id",
+                    "target_id",
+                    "updated_data"
+                ],
+                "title": "RelationUpdateRequest"
+            },
+            "ScanResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "const": "scanning_started",
+                        "title": "Status",
+                        "description": "Status of the scanning operation"
+                    },
+                    "message": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Message",
+                        "description": "Additional details about the scanning operation"
+                    },
+                    "track_id": {
+                        "type": "string",
+                        "title": "Track Id",
+                        "description": "Tracking ID for monitoring scanning progress"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status",
+                    "track_id"
+                ],
+                "title": "ScanResponse",
+                "description": "Response model for document scanning operation\n\nAttributes:\n    status: Status of the scanning operation\n    message: Optional message with additional details\n    track_id: Tracking ID for monitoring scanning progress",
+                "example": {
+                    "message": "Scanning process has been initiated in the background",
+                    "status": "scanning_started",
+                    "track_id": "scan_20250729_170612_abc123"
+                }
+            },
+            "StatusCountsResponse": {
+                "properties": {
+                    "status_counts": {
+                        "additionalProperties": {
+                            "type": "integer"
+                        },
+                        "type": "object",
+                        "title": "Status Counts",
+                        "description": "Count of documents by status"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "status_counts"
+                ],
+                "title": "StatusCountsResponse",
+                "description": "Response model for document status counts\n\nAttributes:\n    status_counts: Count of documents by status",
+                "example": {
+                    "status_counts": {
+                        "FAILED": 5,
+                        "PENDING": 10,
+                        "PROCESSED": 130,
+                        "PROCESSING": 5
+                    }
+                }
+            },
+            "TrackStatusResponse": {
+                "properties": {
+                    "track_id": {
+                        "type": "string",
+                        "title": "Track Id",
+                        "description": "The tracking ID"
+                    },
+                    "documents": {
+                        "items": {
+                            "$ref": "#/components/schemas/DocStatusResponse"
+                        },
+                        "type": "array",
+                        "title": "Documents",
+                        "description": "List of documents associated with this track_id"
+                    },
+                    "total_count": {
+                        "type": "integer",
+                        "title": "Total Count",
+                        "description": "Total number of documents for this track_id"
+                    },
+                    "status_summary": {
+                        "additionalProperties": {
+                            "type": "integer"
+                        },
+                        "type": "object",
+                        "title": "Status Summary",
+                        "description": "Count of documents by status"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "track_id",
+                    "documents",
+                    "total_count",
+                    "status_summary"
+                ],
+                "title": "TrackStatusResponse",
+                "description": "Response model for tracking document processing status by track_id\n\nAttributes:\n    track_id: The tracking ID\n    documents: List of documents associated with this track_id\n    total_count: Total number of documents for this track_id\n    status_summary: Count of documents by status",
+                "example": {
+                    "documents": [
+                        {
+                            "chunks_count": 12,
+                            "content_length": 15240,
+                            "content_summary": "Research paper on machine learning",
+                            "created_at": "2025-03-31T12:34:56",
+                            "file_path": "research_paper.pdf",
+                            "id": "doc_123456",
+                            "metadata": {
+                                "author": "John Doe",
+                                "year": 2025
+                            },
+                            "status": "PROCESSED",
+                            "track_id": "upload_20250729_170612_abc123",
+                            "updated_at": "2025-03-31T12:35:30"
+                        }
+                    ],
+                    "status_summary": {
+                        "PROCESSED": 1
+                    },
+                    "total_count": 1,
+                    "track_id": "upload_20250729_170612_abc123"
+                }
+            },
+            "ValidationError": {
+                "properties": {
+                    "loc": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "integer"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Location"
+                    },
+                    "msg": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "type": {
+                        "type": "string",
+                        "title": "Error Type"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "loc",
+                    "msg",
+                    "type"
+                ],
+                "title": "ValidationError"
+            }
+        },
+        "securitySchemes": {
+            "OAuth2PasswordBearer": {
+                "type": "oauth2",
+                "description": "OAuth2 Password Authentication",
+                "flows": {
+                    "password": {
+                        "scopes": {},
+                        "tokenUrl": "login"
+                    }
+                }
+            }
+        }
+    }
+}

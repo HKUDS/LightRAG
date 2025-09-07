@@ -339,6 +339,8 @@ def parse_args() -> argparse.Namespace:
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+    args.split_by_character = get_env_value("SPLIT_BY_CHARACTER", None, str)
+    args.split_by_character_only = get_env_value("SPLIT_BY_CHARACTER_ONLY", False, bool)
 
     # Inject LLM cache configuration
     args.enable_llm_cache_for_extract = get_env_value(

@@ -1256,7 +1256,15 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
             rag, file_path, track_id
         )
         if success:
-            await rag.apipeline_process_enqueue_documents()
+            # Get split_by_character parameters from environment variables
+            from lightrag.utils import get_env_value
+            split_by_character = get_env_value("SPLIT_BY_CHARACTER", None, str)
+            split_by_character_only = get_env_value("SPLIT_BY_CHARACTER_ONLY", False, bool)
+            
+            await rag.apipeline_process_enqueue_documents(
+                split_by_character=split_by_character,
+                split_by_character_only=split_by_character_only
+            )
 
     except Exception as e:
         logger.error(f"Error indexing file {file_path.name}: {str(e)}")
@@ -1291,7 +1299,15 @@ async def pipeline_index_files(
 
         # Process the queue only if at least one file was successfully enqueued
         if enqueued:
-            await rag.apipeline_process_enqueue_documents()
+            # Get split_by_character parameters from environment variables
+            from lightrag.utils import get_env_value
+            split_by_character = get_env_value("SPLIT_BY_CHARACTER", None, str)
+            split_by_character_only = get_env_value("SPLIT_BY_CHARACTER_ONLY", False, bool)
+            
+            await rag.apipeline_process_enqueue_documents(
+                split_by_character=split_by_character,
+                split_by_character_only=split_by_character_only
+            )
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
         logger.error(traceback.format_exc())
@@ -1322,6 +1338,8 @@ async def pipeline_index_texts(
     await rag.apipeline_enqueue_documents(
         input=texts, file_paths=file_sources, track_id=track_id
     )
+    
+    # Process documents using the configured defaults from LightRAG instance
     await rag.apipeline_process_enqueue_documents()
 
 

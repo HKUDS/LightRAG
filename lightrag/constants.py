@@ -11,7 +11,7 @@ DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
-DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
+DEFAULT_SUMMARY_LANGUAGE = "Chinese"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
 
 # Number of description fragments to trigger LLM summary
