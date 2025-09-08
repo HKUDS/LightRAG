@@ -2,7 +2,7 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 import asyncio
 import os
 import logging
@@ -18,6 +18,7 @@ from pathlib import Path
 import configparser
 from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware import Middleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
@@ -48,6 +49,7 @@ from lightrag.api.routers.document_routes import (
     run_scanning_process,
 )
 from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.auth import auth_router, AuthService, oauth2_scheme
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 
@@ -178,7 +180,7 @@ def create_app(args):
                 task.add_done_callback(app.state.background_tasks.discard)
                 logger.info(f"Process {os.getpid()} auto scan task started at startup.")
 
-            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
+            ASCIIColors.green("\nServer is ready to accept connections! \n")
 
             yield
 
@@ -188,6 +190,17 @@ def create_app(args):
 
             # Clean up shared data
             finalize_share_data()
+
+    # Authentication middleware
+    middleware = [
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],  # In production, replace with your frontend URL
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    ]
 
     # Initialize FastAPI
     app_kwargs = {
@@ -212,8 +225,17 @@ def create_app(args):
         "tryItOutEnabled": True,
     }
 
-    app = FastAPI(**app_kwargs)
+    app = FastAPI(middleware=middleware, **app_kwargs)
 
+    # Include authentication routes
+    app.include_router(auth_router)
+
+    # Add protected route example (for demonstration)
+    @app.get("/api/protected")
+    async def protected_route(current_user: dict = Depends(AuthService.get_current_user)):
+        return {"message": "This is a protected route", "user": current_user}
+
+    # Update CORS settings for development
     def get_cors_origins():
         """Get allowed origins from global_args
         Returns a list of allowed origins, defaults to ["*"] if not set
@@ -560,10 +582,48 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
+    # Custom StaticFiles class for smart caching
+    class SmartStaticFiles(StaticFiles):  
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+
+            if path.endswith(".html"):
+                response.headers["Cache-Control"] = (
+                    "no-cache, no-store, must-revalidate"
+                )
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            elif (
+                "/assets/" in path
+            ):  
+                response.headers["Cache-Control"] = (
+                    "public, max-age=31536000, immutable"
+                )
+            # Add other rules here if needed for non-HTML, non-asset files
+
+            # Ensure correct Content-Type
+            if path.endswith(".js"):
+                response.headers["Content-Type"] = "application/javascript"
+            elif path.endswith(".css"):
+                response.headers["Content-Type"] = "text/css"
+
+            return response
+
+    # Webui mount webui/index.html
+    static_dir = Path(__file__).parent / "webui"
+    static_dir.mkdir(exist_ok=True)
+    app.mount(
+        "/webui",
+        SmartStaticFiles(
+            directory=static_dir, html=True, check_dir=True
+        ),  
+        name="webui",
+    )
+
+    # Add root redirect to webui
     @app.get("/")
     async def redirect_to_webui():
-        """Redirect root path to /webui"""
-        return RedirectResponse(url="/webui")
+        return RedirectResponse(url="/webui/")
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -696,44 +756,6 @@ def create_app(args):
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
-
-    # Custom StaticFiles class for smart caching
-    class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
-        async def get_response(self, path: str, scope):
-            response = await super().get_response(path, scope)
-
-            if path.endswith(".html"):
-                response.headers["Cache-Control"] = (
-                    "no-cache, no-store, must-revalidate"
-                )
-                response.headers["Pragma"] = "no-cache"
-                response.headers["Expires"] = "0"
-            elif (
-                "/assets/" in path
-            ):  # Assets (JS, CSS, images, fonts) generated by Vite with hash in filename
-                response.headers["Cache-Control"] = (
-                    "public, max-age=31536000, immutable"
-                )
-            # Add other rules here if needed for non-HTML, non-asset files
-
-            # Ensure correct Content-Type
-            if path.endswith(".js"):
-                response.headers["Content-Type"] = "application/javascript"
-            elif path.endswith(".css"):
-                response.headers["Content-Type"] = "text/css"
-
-            return response
-
-    # Webui mount webui/index.html
-    static_dir = Path(__file__).parent / "webui"
-    static_dir.mkdir(exist_ok=True)
-    app.mount(
-        "/webui",
-        SmartStaticFiles(
-            directory=static_dir, html=True, check_dir=True
-        ),  # Use SmartStaticFiles
-        name="webui",
-    )
 
     return app
 
@@ -873,10 +895,10 @@ def main():
 
     # Start Uvicorn in single process mode
     uvicorn_config = {
-        "app": app,  # Pass application instance directly instead of string path
+        "app": app,  
         "host": global_args.host,
         "port": global_args.port,
-        "log_config": None,  # Disable default config
+        "log_config": None,  
     }
 
     if global_args.ssl:

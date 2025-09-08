@@ -28,6 +28,7 @@ dependencies = [
     "configparser",
     "distro>=1.9.0",
     "dotenv",
+    "email-validator>=2.3.0",
     "fastapi>=0.116.1",
     "future",
     "httpcore>=1.0.9",
