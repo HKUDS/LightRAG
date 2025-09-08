@@ -337,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "Copy to clipboard",
-      "copyError": "Failed to copy text to clipboard"
+      "copyError": "Failed to copy text to clipboard",
+      "thinking": "Thinking...",
+      "thinkingTime": "Thinking time {{time}}s",
+      "thinkingInProgress": "Thinking in progress..."
     },
     "retrieval": {
       "startPrompt": "Start a retrieval by typing your query below",

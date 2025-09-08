@@ -337,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "Copier dans le presse-papiers",
-      "copyError": "Échec de la copie du texte dans le presse-papiers"
+      "copyError": "Échec de la copie du texte dans le presse-papiers",
+      "thinking": "Réflexion en cours...",
+      "thinkingTime": "Temps de réflexion {{time}}s",
+      "thinkingInProgress": "Réflexion en cours..."
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
