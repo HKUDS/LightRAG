@@ -59,6 +59,7 @@ export default function RetrievalTesting() {
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
   const thinkingStartTime = useRef<number | null>(null)
+  const thinkingProcessed = useRef(false)
   // Reference to track if user interaction is from the form area
   const isFormInteractionRef = useRef(false)
   // Reference to track if scroll was triggered programmatically
@@ -128,6 +129,7 @@ export default function RetrievalTesting() {
 
       // Reset thinking timer state for new query to prevent confusion
       thinkingStartTime.current = null
+      thinkingProcessed.current = false
 
       // Create messages
       // Save the original input (with prefix if any) in userMessage.content for display
@@ -184,18 +186,25 @@ export default function RetrievalTesting() {
 
         if (thinkStartIndex !== -1) {
           if (thinkEndIndex !== -1) {
-            // Thinking has finished for this chunk, calculate time now
+            // Thinking has finished for this chunk
             assistantMessage.isThinking = false
-            if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
-              const duration = (Date.now() - thinkingStartTime.current) / 1000
-              assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+            
+            // Only calculate time and extract thinking content once
+            if (!thinkingProcessed.current) {
+              if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
+                const duration = (Date.now() - thinkingStartTime.current) / 1000
+                assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+              }
+              assistantMessage.thinkingContent = assistantMessage.content
+                .substring(thinkStartIndex + thinkStartTag.length, thinkEndIndex)
+                .trim()
+              thinkingProcessed.current = true
             }
-            assistantMessage.thinkingContent = assistantMessage.content
-              .substring(thinkStartIndex + thinkStartTag.length, thinkEndIndex)
-              .trim()
+            
+            // Always update display content as content after </think> may grow
             assistantMessage.displayContent = assistantMessage.content.substring(thinkEndIndex + thinkEndTag.length).trim()
           } else {
-            // Still thinking
+            // Still thinking - update thinking content in real-time
             assistantMessage.isThinking = true
             assistantMessage.thinkingContent = assistantMessage.content.substring(thinkStartIndex + thinkStartTag.length)
             assistantMessage.displayContent = ''
