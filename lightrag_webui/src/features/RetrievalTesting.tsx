@@ -58,6 +58,7 @@ export default function RetrievalTesting() {
   const [inputError, setInputError] = useState('') // Error message for input
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
+  const thinkingStartTime = useRef<number | null>(null)
   // Reference to track if user interaction is from the form area
   const isFormInteractionRef = useRef(false)
   // Reference to track if scroll was triggered programmatically
@@ -153,6 +154,39 @@ export default function RetrievalTesting() {
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
         assistantMessage.content += chunk
 
+        // Start thinking timer on first sight of think tag
+        if (assistantMessage.content.includes('<think>') && !thinkingStartTime.current) {
+          thinkingStartTime.current = Date.now()
+        }
+
+        // Real-time parsing for streaming
+        const thinkStartTag = '<think>';
+        const thinkEndTag = '</think>';
+        const thinkStartIndex = assistantMessage.content.indexOf(thinkStartTag);
+        const thinkEndIndex = assistantMessage.content.indexOf(thinkEndTag);
+
+        if (thinkStartIndex !== -1) {
+          if (thinkEndIndex !== -1) {
+            // Thinking has finished for this chunk, calculate time now
+            assistantMessage.isThinking = false
+            if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
+              const duration = (Date.now() - thinkingStartTime.current) / 1000
+              assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+            }
+            assistantMessage.thinkingContent = assistantMessage.content.substring(thinkStartIndex + thinkStartTag.length, thinkEndIndex).trim()
+            assistantMessage.displayContent = assistantMessage.content.substring(thinkEndIndex + thinkEndTag.length).trim()
+          } else {
+            // Still thinking
+            assistantMessage.isThinking = true;
+            assistantMessage.thinkingContent = assistantMessage.content.substring(thinkStartIndex + thinkStartTag.length);
+            assistantMessage.displayContent = '';
+          }
+        } else {
+          assistantMessage.isThinking = false;
+          assistantMessage.displayContent = assistantMessage.content;
+        }
+
+
         // Detect if the assistant message contains a complete mermaid code block
         // Simple heuristic: look for ```mermaid ... ```
         const mermaidBlockRegex = /```mermaid\s+([\s\S]+?)```/g
@@ -171,9 +205,12 @@ export default function RetrievalTesting() {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
           if (lastMessage.role === 'assistant') {
-            lastMessage.content = assistantMessage.content
-            lastMessage.isError = isError
-            lastMessage.mermaidRendered = assistantMessage.mermaidRendered
+            lastMessage.content = assistantMessage.content;
+            lastMessage.thinkingContent = assistantMessage.thinkingContent;
+            lastMessage.displayContent = assistantMessage.displayContent;
+            lastMessage.isThinking = assistantMessage.isThinking;
+            lastMessage.isError = isError;
+            lastMessage.mermaidRendered = assistantMessage.mermaidRendered;
           }
           return newMessages
         })
@@ -223,6 +260,19 @@ export default function RetrievalTesting() {
         // Clear loading and add messages to state
         setIsLoading(false)
         isReceivingResponseRef.current = false
+
+        // Final calculation for thinking time, only if not already calculated
+        if (assistantMessage.thinkingContent && thinkingStartTime.current && !assistantMessage.thinkingTime) {
+          const duration = (Date.now() - thinkingStartTime.current) / 1000
+          assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+        }
+        // Ensure isThinking is false at the very end
+        assistantMessage.isThinking = false;
+        // Always reset the timer at the end of a query
+        if (thinkingStartTime.current) {
+          thinkingStartTime.current = null;
+        }
+
         useSettingsStore
           .getState()
           .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
