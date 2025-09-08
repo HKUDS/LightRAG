@@ -50,10 +50,10 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   // The content to display is now non-ambiguous.
   const finalThinkingContent = thinkingContent
   // For user messages, displayContent will be undefined, so we fall back to content.
-  // For assistant messages, we prefer displayContent and don't fallback to avoid content leakage during thinking
+  // For assistant messages, we prefer displayContent but fallback to content for backward compatibility
   const finalDisplayContent = message.role === 'user'
     ? message.content
-    : displayContent || ''
+    : displayContent || message.content || ''
 
   // Load KaTeX dynamically
   useEffect(() => {
