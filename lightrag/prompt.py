@@ -6,59 +6,61 @@ PROMPTS: dict[str, Any] = {}
 
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
-
-# TODO: Deprecated
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
-PROMPTS["entity_extraction"] = """---Task---
-For a given input text and entity types in the provided real data, extract all entities and their relationships, then return them in the specified language and format described below.
+PROMPTS["entity_extraction_system_prompt"] = """---Role---
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
 
 ---Instructions---
-1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
-  - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
-  - entity_type: Categorize the entity using the provided entity types. If a suitable category cannot be determined, classify it as `Other`.
-  - entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text. To ensure clarity and precision, all descriptions must replace pronouns and referential terms (e.g., "this document," "our company," "I," "you," "he/she") with the specific nouns they represent.
-2. Format each entity as: (entity{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
-3. From the entities identified, identify all pairs of (source_entity, target_entity) that are directly and clearly related, and extract the following information:
-  - source_entity: name of the source entity
-  - target_entity: name of the target entity
-  - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
-  - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection
-4. Format each relationship as: (relationship{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
-5. Use `{tuple_delimiter}` as field delimiter. Use `{record_delimiter}` as the entity or relation list delimiter.
-6. Output `{completion_delimiter}` when all the entities and relationships are extracted.
-7. Ensure the output language is {language}.
-
----Quality Guidelines---
-- Only extract entities and relationships that are clearly defined and meaningful in the context
-- Avoid over-interpretation; stick to what is explicitly stated in the text
-- For all output content, explicitly name the subject or object rather than using pronouns
-- Include specific numerical data in entity name when relevant
-- Ensure entity names are consistent throughout the extraction
+1. **Entity Extraction:** Identify clearly defined and meaningful entities in the input text, and extract the following information:
+  - entity_name: Name of the entity, ensure entity names are consistent throughout the extraction.
+  - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided types are suitable, classify it as `Other`.
+  - entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text.
+2. **Entity Output Format:** (entity{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+3. **Relationship Extraction:** Identify direct, clearly-stated and meaningful relationships between extracted entities within the input text, and extract the following information:
+  - source_entity: name of the source entity.
+  - target_entity: name of the target entity.
+  - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details.
+  - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+4. **Relationship Output Format:**  (relationship{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
+5. **Relationship Order:** Prioritize relationships based on their significance to the intended meaning of input text, and output more crucial relationships first.
+6. **Avoid Pronouns:** For entity names and all descriptions, explicitly name the subject or object instead of using pronouns; avoid pronouns such as `this document`, `our company`, `I`, `you`, and `he/she`.
+7. **Undirectional Relationship:** Treat relationships as undirected; swapping the source and target entities does not constitute a new relationship. Avoid outputting duplicate relationships.
+8. **Language:** Output entity names, keywords and descriptions in {language}.
+9. **Delimiter:** Use `{record_delimiter}` as the entity or relationship list delimiter; output `{completion_delimiter}` when all the entities and relationships are extracted.
 
 ---Examples---
 {examples}
 
----Real Data---
+---Real Data to be Processed---
 <Input>
 Entity_types: [{entity_types}]
 Text:
 ```
 {input_text}
 ```
+"""
+
+PROMPTS["entity_extraction_user_prompt"] = """---Task---
+Extract entities and relationships from the input text to be Processed.
+
+---Instructions---
+1. Output entities and relationships, prioritized by their relevance to the input text's core meaning.
+2. Output `{completion_delimiter}` when all the entities and relationships are extracted.
+3. Ensure the output language is {language}.
 
 <Output>
 """
 
-PROMPTS["entity_continue_extraction"] = """---Task---
-Identify any missed entities or relationships in the last extraction task.
+PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
+Identify any missed entities or relationships from the input text to be Processed of last extraction task.
 
 ---Instructions---
 1. Output the entities and realtionships in the same format as previous extraction task.
-2. Do not include entities and relations that have been previously extracted.
-3. If the entity doesn't clearly fit in any of entity types provided, classify it as "Other".
+2. Do not include entities and relations that have been correctly extracted in last extraction task.
+3. If the entity or relation output is truncated or has missing fields in last extraction task, please re-output it in the correct format.
 4. Output `{completion_delimiter}` when all the entities and relationships are extracted.
 5. Ensure the output language is {language}.
 
@@ -66,11 +68,7 @@ Identify any missed entities or relationships in the last extraction task.
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """[Example 1]
-
-<Input>
-Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
-Text:
+    """<Input Text>
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
@@ -95,11 +93,7 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 {completion_delimiter}
 
 """,
-    """[Example 2]
-
-<Input>
-Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
-Text:
+    """<Input Text>
 ```
 Stock markets faced a sharp downturn today as tech giants saw significant declines, with the Global Tech Index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
 
@@ -126,11 +120,7 @@ Financial experts are closely watching the Federal Reserve's next move, as specu
 {completion_delimiter}
 
 """,
-    """[Example 3]
-
-<Input>
-Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
-Text:
+    """<Input Text>
 ```
 At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
 ```
@@ -146,29 +136,6 @@ At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint 
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.){record_delimiter}
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.){record_delimiter}
 (relationship{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.){record_delimiter}
-{completion_delimiter}
-
-""",
-    """[Example 4]
-
-<Input>
-Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
-Text:
-```
-在北京举行的人工智能大会上，腾讯公司的首席技术官张伟发布了最新的大语言模型"腾讯智言"，该模型在自然语言处理方面取得了重大突破。
-```
-
-<Output>
-(entity{tuple_delimiter}人工智能大会{tuple_delimiter}event{tuple_delimiter}人工智能大会是在北京举行的技术会议，专注于人工智能领域的最新发展。){record_delimiter}
-(entity{tuple_delimiter}北京{tuple_delimiter}location{tuple_delimiter}北京是人工智能大会的举办城市。){record_delimiter}
-(entity{tuple_delimiter}腾讯公司{tuple_delimiter}organization{tuple_delimiter}腾讯公司是参与人工智能大会的科技企业，发布了新的语言模型产品。){record_delimiter}
-(entity{tuple_delimiter}张伟{tuple_delimiter}person{tuple_delimiter}张伟是腾讯公司的首席技术官，在大会上发布了新产品。){record_delimiter}
-(entity{tuple_delimiter}腾讯智言{tuple_delimiter}product{tuple_delimiter}腾讯智言是腾讯公司发布的大语言模型产品，在自然语言处理方面有重大突破。){record_delimiter}
-(entity{tuple_delimiter}自然语言处理技术{tuple_delimiter}technology{tuple_delimiter}自然语言处理技术是腾讯智言模型取得重大突破的技术领域。){record_delimiter}
-(relationship{tuple_delimiter}人工智能大会{tuple_delimiter}北京{tuple_delimiter}会议地点, 举办关系{tuple_delimiter}人工智能大会在北京举行。){record_delimiter}
-(relationship{tuple_delimiter}张伟{tuple_delimiter}腾讯公司{tuple_delimiter}雇佣关系, 高管职位{tuple_delimiter}张伟担任腾讯公司的首席技术官。){record_delimiter}
-(relationship{tuple_delimiter}张伟{tuple_delimiter}腾讯智言{tuple_delimiter}产品发布, 技术展示{tuple_delimiter}张伟在大会上发布了腾讯智言大语言模型。){record_delimiter}
-(relationship{tuple_delimiter}腾讯智言{tuple_delimiter}自然语言处理技术{tuple_delimiter}技术应用, 突破创新{tuple_delimiter}腾讯智言在自然语言处理技术方面取得了重大突破。){record_delimiter}
 {completion_delimiter}
 
 """,
