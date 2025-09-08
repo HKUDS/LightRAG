@@ -101,7 +101,7 @@ export type Message = {
   content: string
   thinkingContent?: string
   displayContent?: string
-  thinkingTime?: number
+  thinkingTime?: number | null
 }
 
 export type QueryRequest = {

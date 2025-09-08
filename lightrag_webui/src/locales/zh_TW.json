@@ -337,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "複製到剪貼簿",
-      "copyError": "複製文字到剪貼簿失敗"
+      "copyError": "複製文字到剪貼簿失敗",
+      "thinking": "正在思考...",
+      "thinkingTime": "思考用時 {{time}} 秒",
+      "thinkingInProgress": "思考進行中..."
     },
     "retrieval": {
       "startPrompt": "輸入查詢開始檢索",

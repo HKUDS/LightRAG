@@ -337,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "نسخ إلى الحافظة",
-      "copyError": "فشل نسخ النص إلى الحافظة"
+      "copyError": "فشل نسخ النص إلى الحافظة",
+      "thinking": "جاري التفكير...",
+      "thinkingTime": "وقت التفكير {{time}} ثانية",
+      "thinkingInProgress": "التفكير قيد التقدم..."
     },
     "retrieval": {
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",

@@ -39,11 +39,21 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   // Directly use props passed from the parent.
   const { thinkingContent, displayContent, thinkingTime, isThinking } = message
 
+  // Reset expansion state when new thinking starts
+  useEffect(() => {
+    if (isThinking) {
+      // When thinking starts, always reset to collapsed state
+      setIsThinkingExpanded(false)
+    }
+  }, [isThinking, message.id])
+
   // The content to display is now non-ambiguous.
   const finalThinkingContent = thinkingContent
   // For user messages, displayContent will be undefined, so we fall back to content.
-  // For assistant messages, we prefer displayContent.
-  const finalDisplayContent = message.role === 'user' ? message.content : displayContent
+  // For assistant messages, we prefer displayContent and don't fallback to avoid content leakage during thinking
+  const finalDisplayContent = message.role === 'user'
+    ? message.content
+    : displayContent || ''
 
   // Load KaTeX dynamically
   useEffect(() => {
@@ -106,7 +116,12 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
         <div className="mb-2">
           <div
             className="flex items-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-200 text-sm cursor-pointer select-none"
-            onClick={() => setIsThinkingExpanded(!isThinkingExpanded)}
+            onClick={() => {
+              // Allow expansion when there's thinking content, even during thinking process
+              if (finalThinkingContent && finalThinkingContent.trim() !== '') {
+                setIsThinkingExpanded(!isThinkingExpanded)
+              }
+            }}
           >
             {isThinking ? (
               <>
@@ -116,10 +131,17 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
             ) : (
               typeof thinkingTime === 'number' && <span>{t('retrievePanel.chatMessage.thinkingTime', { time: thinkingTime })}</span>
             )}
-            {finalThinkingContent && <ChevronDownIcon className={`ml-2 size-4 shrink-0 transition-transform ${isThinkingExpanded ? 'rotate-180' : ''}`} />}
+            {/* Show chevron when there's thinking content, even during thinking process */}
+            {finalThinkingContent && finalThinkingContent.trim() !== '' && <ChevronDownIcon className={`ml-2 size-4 shrink-0 transition-transform ${isThinkingExpanded ? 'rotate-180' : ''}`} />}
           </div>
-          {isThinkingExpanded && finalThinkingContent && (
+          {/* Show thinking content when expanded and content exists, even during thinking process */}
+          {isThinkingExpanded && finalThinkingContent && finalThinkingContent.trim() !== '' && (
             <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2">
+              {isThinking && (
+                <div className="mb-2 text-xs text-gray-400 dark:text-gray-500 italic">
+                  {t('retrievePanel.chatMessage.thinkingInProgress', 'Thinking in progress...')}
+                </div>
+              )}
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[
@@ -170,7 +192,12 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           )}
         </div>
       )}
-      {message.content === '' && !isThinking && !thinkingTime && <LoaderIcon className="animate-spin duration-2000" />} {/* Check for empty string specifically */}
+      {(() => {
+        // More comprehensive loading state check
+        const hasVisibleContent = finalDisplayContent && finalDisplayContent.trim() !== '';
+        const isLoadingState = !hasVisibleContent && !isThinking && !thinkingTime;
+        return isLoadingState && <LoaderIcon className="animate-spin duration-2000" />;
+      })()}
     </div>
   )
 }
