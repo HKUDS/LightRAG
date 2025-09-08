@@ -69,7 +69,7 @@ DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding function
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
 # Gunicorn worker timeout
-DEFAULT_TIMEOUT = 210
+DEFAULT_TIMEOUT = 300
 
 # Default llm and embedding timeout
 DEFAULT_LLM_TIMEOUT = 180
