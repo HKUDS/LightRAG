@@ -188,7 +188,7 @@ export default function RetrievalTesting() {
           if (thinkEndIndex !== -1) {
             // Thinking has finished for this chunk
             assistantMessage.isThinking = false
-            
+
             // Only calculate time and extract thinking content once
             if (!thinkingProcessed.current) {
               if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
@@ -200,7 +200,7 @@ export default function RetrievalTesting() {
                 .trim()
               thinkingProcessed.current = true
             }
-            
+
             // Always update display content as content after </think> may grow
             assistantMessage.displayContent = assistantMessage.content.substring(thinkEndIndex + thinkEndTag.length).trim()
           } else {
