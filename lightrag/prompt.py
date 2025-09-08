@@ -6,18 +6,20 @@ PROMPTS: dict[str, Any] = {}
 
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
+
+# TODO: Deprecated
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
 PROMPTS["entity_extraction"] = """---Task---
 
-For a given text and a list of entity types, extract all entities and their relationships, then return them in the specified language and format described below.
+For a given input text and entity types in the provided real data, extract all entities and their relationships, then return them in the specified language and format described below.
 
 ---Instructions---
 1. Recognizing definitively conceptualized entities in text. For each identified entity, extract the following information:
   - entity_name: Name of the entity, use same language as input text. If English, capitalized the name
-  - entity_type: Categorize the entity using the provided `Entity_types` list. If a suitable category cannot be determined, classify it as `Other`.
+  - entity_type: Categorize the entity using the provided entity types. If a suitable category cannot be determined, classify it as `Other`.
   - entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text. To ensure clarity and precision, all descriptions must replace pronouns and referential terms (e.g., "this document," "our company," "I," "you," "he/she") with the specific nouns they represent.
 2. Format each entity as: (entity{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 3. From the entities identified, identify all pairs of (source_entity, target_entity) that are directly and clearly related, and extract the following information:
@@ -41,14 +43,15 @@ For a given text and a list of entity types, extract all entities and their rela
 ---Examples---
 {examples}
 
----Input---
+---Real Data---
+<Input>
 Entity_types: [{entity_types}]
 Text:
 ```
 {input_text}
 ```
 
----Output---
+<Output>
 """
 
 PROMPTS["entity_continue_extraction"] = """---Task---
@@ -57,16 +60,17 @@ Identify any missed entities or relationships in the last extraction task.
 ---Instructions---
 1. Output the entities and realtionships in the same format as previous extraction task.
 2. Do not include entities and relations that have been previously extracted.
-3. If the entity doesn't clearly fit in any of`Entity_types` provided, classify it as "Other".
-4. Ensure the output language is {language}.
+3. If the entity doesn't clearly fit in any of entity types provided, classify it as "Other".
+4. Output `{completion_delimiter}` when all the entities and relationships are extracted.
+5. Ensure the output language is {language}.
 
----Output---
+<Output>
 """
 
 PROMPTS["entity_extraction_examples"] = [
     """[Example 1]
 
----Input---
+<Input>
 Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
@@ -79,7 +83,7 @@ The underlying dismissal earlier seemed to falter, replaced by a glimpse of relu
 It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
----Output---
+<Output>
 (entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.){record_delimiter}
 (entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.){record_delimiter}
 (entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.){record_delimiter}
@@ -95,7 +99,7 @@ It was a small transformation, barely perceptible, but one that Alex noted with 
 """,
     """[Example 2]
 
----Input---
+<Input>
 Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
@@ -108,7 +112,7 @@ Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1
 Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
 ```
 
----Output---
+<Output>
 (entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.){record_delimiter}
 (entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.){record_delimiter}
 (entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.){record_delimiter}
@@ -126,14 +130,14 @@ Financial experts are closely watching the Federal Reserve's next move, as specu
 """,
     """[Example 3]
 
----Input---
+<Input>
 Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
 ```
 
----Output---
+<Output>
 (entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.){record_delimiter}
 (entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.){record_delimiter}
 (entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.){record_delimiter}
@@ -149,14 +153,14 @@ At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint 
 """,
     """[Example 4]
 
----Input---
+<Input>
 Entity_types: [organization,person,location,event,technology,equiment,product,Document,category]
 Text:
 ```
 在北京举行的人工智能大会上，腾讯公司的首席技术官张伟发布了最新的大语言模型"腾讯智言"，该模型在自然语言处理方面取得了重大突破。
 ```
 
----Output---
+<Output>
 (entity{tuple_delimiter}人工智能大会{tuple_delimiter}event{tuple_delimiter}人工智能大会是在北京举行的技术会议，专注于人工智能领域的最新发展。){record_delimiter}
 (entity{tuple_delimiter}北京{tuple_delimiter}location{tuple_delimiter}北京是人工智能大会的举办城市。){record_delimiter}
 (entity{tuple_delimiter}腾讯公司{tuple_delimiter}organization{tuple_delimiter}腾讯公司是参与人工智能大会的科技企业，发布了新的语言模型产品。){record_delimiter}
