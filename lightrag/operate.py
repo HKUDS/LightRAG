@@ -306,7 +306,7 @@ async def _summarize_descriptions(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
-        cache_type="extract",
+        cache_type="summary",
     )
     return summary
 
@@ -319,9 +319,8 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"Entity extraction failed in {chunk_key}: expecting 4 fields but got {len(record_attributes)}"
+                f"{chunk_key}: Entity `{record_attributes[1]}` extraction failed -- expecting 4 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Entity extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -389,9 +388,8 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"Relation extraction failed in {chunk_key}: expecting 5 fields but got {len(record_attributes)}"
+                f"{chunk_key}: Relation `{record_attributes[1]}` extraction failed -- expecting 5 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Relation extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -838,6 +836,11 @@ async def _process_extraction_result(
     # Standardize Chinese brackets around record_delimiter to English brackets
     bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
     result = re.sub(bracket_pattern, ")\\1(", result)
+
+    if completion_delimiter not in result:
+        logger.warning(
+            f"{chunk_key}: Complete delimiter can not be found in extraction result"
+        )
 
     records = split_string_by_multi_markers(
         result,
@@ -1914,7 +1917,6 @@ async def extract_entities(
     # add example's format
     examples = examples.format(**example_context_base)
 
-    entity_extract_prompt = PROMPTS["entity_extraction"]
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
@@ -1923,8 +1925,6 @@ async def extract_entities(
         examples=examples,
         language=language,
     )
-
-    continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -1948,13 +1948,20 @@ async def extract_entities(
         cache_keys_collector = []
 
         # Get initial extraction
-        hint_prompt = entity_extract_prompt.format(
+        entity_extraction_system_prompt = PROMPTS[
+            "entity_extraction_system_prompt"
+        ].format(**{**context_base, "input_text": content})
+        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
+        entity_continue_extraction_user_prompt = PROMPTS[
+            "entity_continue_extraction_user_prompt"
+        ].format(**{**context_base, "input_text": content})
 
         final_result = await use_llm_func_with_cache(
-            hint_prompt,
+            entity_extraction_user_prompt,
             use_llm_func,
+            system_prompt=entity_extraction_system_prompt,
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
@@ -1962,7 +1969,9 @@ async def extract_entities(
         )
 
         # Store LLM cache reference in chunk (will be handled by use_llm_func_with_cache)
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+        history = pack_user_ass_to_openai_messages(
+            entity_extraction_user_prompt, final_result
+        )
 
         # Process initial extraction with file path
         maybe_nodes, maybe_edges = await _process_extraction_result(
@@ -1977,16 +1986,15 @@ async def extract_entities(
         # Process additional gleaning results
         if entity_extract_max_gleaning > 0:
             glean_result = await use_llm_func_with_cache(
-                continue_prompt,
+                entity_continue_extraction_user_prompt,
                 use_llm_func,
+                system_prompt=entity_extraction_system_prompt,
                 llm_response_cache=llm_response_cache,
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
                 cache_keys_collector=cache_keys_collector,
             )
-
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
 
             # Process gleaning result separately with file path
             glean_nodes, glean_edges = await _process_extraction_result(

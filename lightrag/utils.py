@@ -473,12 +473,12 @@ def priority_limit_async_func_call(
             nonlocal max_execution_timeout, max_task_duration
             if max_execution_timeout is None:
                 max_execution_timeout = (
-                    llm_timeout + 150
-                )  # LLM timeout + 150s buffer for low-level retry
+                    llm_timeout * 2
+                )  # Reserved timeout buffer for low-level retry
             if max_task_duration is None:
                 max_task_duration = (
-                    llm_timeout + 180
-                )  # LLM timeout + 180s buffer for health check phase
+                    llm_timeout * 2 + 15
+                )  # Reserved timeout buffer for health check phase
 
         queue = asyncio.PriorityQueue(maxsize=max_queue_size)
         tasks = set()
@@ -1034,7 +1034,7 @@ async def handle_cache(
     args_hash,
     prompt,
     mode="default",
-    cache_type=None,
+    cache_type="unknown",
 ) -> str | None:
     """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
@@ -1646,9 +1646,10 @@ def remove_think_tags(text: str) -> str:
 
 
 async def use_llm_func_with_cache(
-    input_text: str,
+    user_prompt: str,
     use_llm_func: callable,
     llm_response_cache: "BaseKVStorage | None" = None,
+    system_prompt: str | None = None,
     max_tokens: int = None,
     history_messages: list[dict[str, str]] = None,
     cache_type: str = "extract",
@@ -1677,7 +1678,10 @@ async def use_llm_func_with_cache(
         LLM response text
     """
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
-    safe_input_text = sanitize_text_for_encoding(input_text)
+    safe_user_prompt = sanitize_text_for_encoding(user_prompt)
+    safe_system_prompt = (
+        sanitize_text_for_encoding(system_prompt) if system_prompt else None
+    )
 
     # Sanitize history messages if provided
     safe_history_messages = None
@@ -1688,13 +1692,19 @@ async def use_llm_func_with_cache(
             if "content" in safe_msg:
                 safe_msg["content"] = sanitize_text_for_encoding(safe_msg["content"])
             safe_history_messages.append(safe_msg)
+        history = json.dumps(safe_history_messages, ensure_ascii=False)
+    else:
+        history = None
 
     if llm_response_cache:
-        if safe_history_messages:
-            history = json.dumps(safe_history_messages, ensure_ascii=False)
-            _prompt = history + "\n" + safe_input_text
-        else:
-            _prompt = safe_input_text
+        prompt_parts = []
+        if safe_user_prompt:
+            prompt_parts.append(safe_user_prompt)
+        if safe_system_prompt:
+            prompt_parts.append(safe_system_prompt)
+        if history:
+            prompt_parts.append(history)
+        _prompt = "\n".join(prompt_parts)
 
         arg_hash = compute_args_hash(_prompt)
         # Generate cache key for this LLM call
@@ -1725,7 +1735,9 @@ async def use_llm_func_with_cache(
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        res: str = await use_llm_func(safe_input_text, **kwargs)
+        res: str = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
 
         res = remove_think_tags(res)
 
@@ -1755,7 +1767,9 @@ async def use_llm_func_with_cache(
         kwargs["max_tokens"] = max_tokens
 
     try:
-        res = await use_llm_func(safe_input_text, **kwargs)
+        res = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
     except Exception as e:
         # Add [LLM func] prefix to error message
         error_msg = f"[LLM func] {str(e)}"
