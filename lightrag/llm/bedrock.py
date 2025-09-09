@@ -44,11 +44,18 @@ async def bedrock_complete_if_cache(
     prompt,
     system_prompt=None,
     history_messages=[],
+    enable_cot: bool = False,
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    if enable_cot:
+        import logging
+
+        logging.debug(
+            "enable_cot=True is not supported for Bedrock and will be ignored."
+        )
     # Respect existing env; only set if a non-empty value is available
     access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id
     secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or aws_secret_access_key

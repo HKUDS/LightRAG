@@ -2214,6 +2214,7 @@ async def kg_query(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
+        enable_cot=True,
     )
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
@@ -3736,6 +3737,7 @@ async def naive_query(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
+        enable_cot=True,
     )
 
     if isinstance(response, str) and len(response) > len(sys_prompt):
