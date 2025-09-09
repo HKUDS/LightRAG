@@ -53,7 +53,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   // For assistant messages, we prefer displayContent but fallback to content for backward compatibility
   const finalDisplayContent = message.role === 'user'
     ? message.content
-    : displayContent || message.content || ''
+    : (displayContent !== undefined ? displayContent : (message.content || ''))
 
   // Load KaTeX dynamically
   useEffect(() => {
