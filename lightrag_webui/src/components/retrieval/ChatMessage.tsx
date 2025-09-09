@@ -15,12 +15,13 @@ import type { Element } from 'hast'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
-import { LoaderIcon, CopyIcon } from 'lucide-react'
+import { LoaderIcon, CopyIcon, ChevronDownIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 export type MessageWithError = Message & {
   id: string // Unique identifier for stable React keys
   isError?: boolean
+  isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
   /**
    * Indicates if the mermaid diagram in this message has been rendered.
    * Used to persist the rendering state across updates and prevent flickering.
@@ -33,6 +34,26 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   const { t } = useTranslation()
   const { theme } = useTheme()
   const [katexPlugin, setKatexPlugin] = useState<any>(null)
+  const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
+
+  // Directly use props passed from the parent.
+  const { thinkingContent, displayContent, thinkingTime, isThinking } = message
+
+  // Reset expansion state when new thinking starts
+  useEffect(() => {
+    if (isThinking) {
+      // When thinking starts, always reset to collapsed state
+      setIsThinkingExpanded(false)
+    }
+  }, [isThinking, message.id])
+
+  // The content to display is now non-ambiguous.
+  const finalThinkingContent = thinkingContent
+  // For user messages, displayContent will be undefined, so we fall back to content.
+  // For assistant messages, we prefer displayContent but fallback to content for backward compatibility
+  const finalDisplayContent = message.role === 'user'
+    ? message.content
+    : (displayContent !== undefined ? displayContent : (message.content || ''))
 
   // Load KaTeX dynamically
   useEffect(() => {
@@ -59,6 +80,27 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     }
   }, [message, t]) // Added t to dependency array
 
+  const mainMarkdownComponents = useMemo(() => ({
+    code: (props: any) => (
+      <CodeHighlight
+        {...props}
+        renderAsDiagram={message.mermaidRendered ?? false}
+      />
+    ),
+    p: ({ children }: { children?: ReactNode }) => <p className="my-2">{children}</p>,
+    h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
+    h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
+    h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
+    h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
+    ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
+    ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
+    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
+  }), [message.mermaidRendered]);
+
+  const thinkingMarkdownComponents = useMemo(() => ({
+    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} />)
+  }), [message.mermaidRendered]);
+
   return (
     <div
       className={`${
@@ -69,55 +111,93 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
             : 'w-[95%] bg-muted'
       } rounded-lg px-4 py-2`}
     >
-      <div className="relative">
-        <ReactMarkdown
-          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[
-            ...(katexPlugin ? [[
-              katexPlugin,
-              {
-                errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
-                throwOnError: false,
-                displayMode: false
+      {/* Thinking process display - only for assistant messages */}
+      {message.role === 'assistant' && (isThinking || thinkingTime !== null) && (
+        <div className="mb-2">
+          <div
+            className="flex items-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-200 text-sm cursor-pointer select-none"
+            onClick={() => {
+              // Allow expansion when there's thinking content, even during thinking process
+              if (finalThinkingContent && finalThinkingContent.trim() !== '') {
+                setIsThinkingExpanded(!isThinkingExpanded)
               }
-            ] as any] : []),
-            rehypeReact
-          ]}
-          skipHtml={false}
-          // Memoize the components object to prevent unnecessary re-renders of ReactMarkdown children
-          components={useMemo(() => ({
-            code: (props: any) => ( // Add type annotation if needed, e.g., props: CodeProps from 'react-markdown/lib/ast-to-react'
-              <CodeHighlight
-                {...props}
-                renderAsDiagram={message.mermaidRendered ?? false}
-              />
-            ),
-            p: ({ children }: { children?: ReactNode }) => <p className="my-2">{children}</p>,
-            h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
-            h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
-            h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
-            h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
-            ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
-            ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
-            li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
-          }), [message.mermaidRendered])} // Dependency ensures update if mermaid state changes
-        >
-          {message.content}
-        </ReactMarkdown>
-        {message.role === 'assistant' && message.content && message.content.length > 0 && ( // Added check for message.content existence
-          <Button
-            onClick={handleCopyMarkdown}
-            className="absolute right-0 bottom-0 size-6 rounded-md opacity-20 transition-opacity hover:opacity-100"
-            tooltip={t('retrievePanel.chatMessage.copyTooltip')}
-            variant="default"
-            size="icon"
+            }}
           >
-            <CopyIcon className="size-4" /> {/* Explicit size */}
-          </Button>
-        )}
-      </div>
-      {message.content === '' && <LoaderIcon className="animate-spin duration-2000" />} {/* Check for empty string specifically */}
+            {isThinking ? (
+              <>
+                <LoaderIcon className="mr-2 size-4 animate-spin" />
+                <span>{t('retrievePanel.chatMessage.thinking')}</span>
+              </>
+            ) : (
+              typeof thinkingTime === 'number' && <span>{t('retrievePanel.chatMessage.thinkingTime', { time: thinkingTime })}</span>
+            )}
+            {/* Show chevron when there's thinking content, even during thinking process */}
+            {finalThinkingContent && finalThinkingContent.trim() !== '' && <ChevronDownIcon className={`ml-2 size-4 shrink-0 transition-transform ${isThinkingExpanded ? 'rotate-180' : ''}`} />}
+          </div>
+          {/* Show thinking content when expanded and content exists, even during thinking process */}
+          {isThinkingExpanded && finalThinkingContent && finalThinkingContent.trim() !== '' && (
+            <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2">
+              {isThinking && (
+                <div className="mb-2 text-xs text-gray-400 dark:text-gray-500 italic">
+                  {t('retrievePanel.chatMessage.thinkingInProgress', 'Thinking in progress...')}
+                </div>
+              )}
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[
+                  ...(katexPlugin ? [[katexPlugin, { errorColor: theme === 'dark' ? '#ef4444' : '#dc2626', throwOnError: false, displayMode: false }] as any] : []),
+                  rehypeReact
+                ]}
+                skipHtml={false}
+                components={thinkingMarkdownComponents}
+              >
+                {finalThinkingContent}
+              </ReactMarkdown>
+            </div>
+          )}
+        </div>
+      )}
+      {/* Main content display */}
+      {finalDisplayContent && (
+        <div className="relative">
+          <ReactMarkdown
+            className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[
+              ...(katexPlugin ? [[
+                katexPlugin,
+                {
+                  errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                  throwOnError: false,
+                  displayMode: false
+                }
+              ] as any] : []),
+              rehypeReact
+            ]}
+            skipHtml={false}
+            components={mainMarkdownComponents}
+          >
+            {finalDisplayContent}
+          </ReactMarkdown>
+          {message.role === 'assistant' && finalDisplayContent && finalDisplayContent.length > 0 && (
+            <Button
+              onClick={handleCopyMarkdown}
+              className="absolute right-0 bottom-0 size-6 rounded-md opacity-20 transition-opacity hover:opacity-100"
+              tooltip={t('retrievePanel.chatMessage.copyTooltip')}
+              variant="default"
+              size="icon"
+            >
+              <CopyIcon className="size-4" /> {/* Explicit size */}
+            </Button>
+          )}
+        </div>
+      )}
+      {(() => {
+        // More comprehensive loading state check
+        const hasVisibleContent = finalDisplayContent && finalDisplayContent.trim() !== '';
+        const isLoadingState = !hasVisibleContent && !isThinking && !thinkingTime;
+        return isLoadingState && <LoaderIcon className="animate-spin duration-2000" />;
+      })()}
     </div>
   )
 }

@@ -32,7 +32,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -59,6 +59,26 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
     : fileName;
 };
 
+const formatMetadata = (metadata: Record<string, any>): string => {
+  const formattedMetadata = { ...metadata };
+
+  if (formattedMetadata.processing_start_time && typeof formattedMetadata.processing_start_time === 'number') {
+    const date = new Date(formattedMetadata.processing_start_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.processing_start_time = date.toLocaleString();
+    }
+  }
+
+  if (formattedMetadata.processing_end_time && typeof formattedMetadata.processing_end_time === 'number') {
+    const date = new Date(formattedMetadata.processing_end_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.processing_end_time = date.toLocaleString();
+    }
+  }
+
+  return JSON.stringify(formattedMetadata, null, 2);
+};
+
 const pulseStyle = `
 /* Tooltip styles */
 .tooltip-container {
@@ -73,6 +93,7 @@ const pulseStyle = `
   white-space: normal;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
+  font-size: 0.75rem; /* 12px */
   background-color: rgba(0, 0, 0, 0.95);
   color: white;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -1168,23 +1189,39 @@ export default function DocumentManager() {
                             </div>
                           </TableCell>
                           <TableCell>
-                            {doc.status === 'processed' && (
-                              <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
-                            )}
-                            {doc.status === 'processing' && (
-                              <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
-                            )}
-                            {doc.status === 'pending' && (
-                              <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
-                            )}
-                            {doc.status === 'failed' && (
-                              <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
-                            )}
-                            {doc.error_msg && (
-                              <span className="ml-2 text-red-500" title={doc.error_msg}>
-                                ⚠️
-                              </span>
-                            )}
+                            <div className="group relative flex items-center overflow-visible tooltip-container">
+                              {doc.status === 'processed' && (
+                                <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
+                              )}
+                              {doc.status === 'processing' && (
+                                <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
+                              )}
+                              {doc.status === 'pending' && (
+                                <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
+                              )}
+                              {doc.status === 'failed' && (
+                                <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
+                              )}
+
+                              {/* Icon rendering logic */}
+                              {doc.error_msg ? (
+                                <AlertTriangle className="ml-2 h-4 w-4 text-yellow-500" />
+                              ) : (doc.metadata && Object.keys(doc.metadata).length > 0) && (
+                                <Info className="ml-2 h-4 w-4 text-blue-500" />
+                              )}
+
+                              {/* Tooltip rendering logic */}
+                              {(doc.error_msg || (doc.metadata && Object.keys(doc.metadata).length > 0)) && (
+                                <div className="invisible group-hover:visible tooltip">
+                                  {doc.error_msg && (
+                                    <pre>{doc.error_msg}</pre>
+                                  )}
+                                  {doc.metadata && Object.keys(doc.metadata).length > 0 && (
+                                    <pre>{formatMetadata(doc.metadata)}</pre>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell>{doc.content_length ?? '-'}</TableCell>
                           <TableCell>{doc.chunks_count ?? '-'}</TableCell>

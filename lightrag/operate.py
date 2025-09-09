@@ -29,6 +29,8 @@ from .utils import (
     pick_by_vector_similarity,
     process_chunks_unified,
     build_file_path,
+    safe_vdb_operation_with_exception,
+    create_prefixed_exception,
 )
 from .base import (
     BaseGraphStorage,
@@ -303,7 +305,7 @@ async def _summarize_descriptions(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
-        cache_type="extract",
+        cache_type="summary",
     )
     return summary
 
@@ -316,9 +318,8 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"Entity extraction failed in {chunk_key}: expecting 4 fields but got {len(record_attributes)}"
+                f"{chunk_key}: Entity `{record_attributes[1]}` extraction failed -- expecting 4 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Entity extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -345,6 +346,9 @@ async def _handle_single_entity_extraction(
                 f"Entity extraction error: invalid entity type in: {record_attributes}"
             )
             return None
+
+        # Captitalize first letter of entity_type
+        entity_type = entity_type.title()
 
         # Process entity description with same cleaning pipeline
         entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
@@ -383,9 +387,8 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"Relation extraction failed in {chunk_key}: expecting 5 fields but got {len(record_attributes)}"
+                f"{chunk_key}: Relation `{record_attributes[1]}` extraction failed -- expecting 5 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Relation extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -674,19 +677,34 @@ async def _rebuild_knowledge_from_chunks(
     # Execute all tasks in parallel with semaphore control and early failure detection
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-    # Check if any task raised an exception
+    # Check if any task raised an exception and ensure all exceptions are retrieved
+    first_exception = None
+
     for task in done:
-        if task.exception():
-            # If a task failed, cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
+        try:
+            exception = task.exception()
+            if exception is not None:
+                if first_exception is None:
+                    first_exception = exception
+            else:
+                # Task completed successfully, retrieve result to mark as processed
+                task.result()
+        except Exception as e:
+            if first_exception is None:
+                first_exception = e
 
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
+    # If any task failed, cancel all pending tasks and raise the first exception
+    if first_exception is not None:
+        # Cancel all pending tasks
+        for pending_task in pending:
+            pending_task.cancel()
 
-            # Re-raise the exception to notify the caller
-            raise task.exception()
+        # Wait for cancellation to complete
+        if pending:
+            await asyncio.wait(pending)
+
+        # Re-raise the first exception to notify the caller
+        raise first_exception
 
     # Final status report
     status_message = f"KG rebuild completed: {rebuilt_entities_count} entities and {rebuilt_relationships_count} relationships rebuilt successfully."
@@ -792,6 +810,96 @@ async def _get_cached_extraction_results(
     return sorted_cached_results
 
 
+async def _process_extraction_result(
+    result: str,
+    chunk_key: str,
+    file_path: str = "unknown_source",
+    tuple_delimiter: str = "<|>",
+    record_delimiter: str = "##",
+    completion_delimiter: str = "<|COMPLETE|>",
+) -> tuple[dict, dict]:
+    """Process a single extraction result (either initial or gleaning)
+    Args:
+        result (str): The extraction result to process
+        chunk_key (str): The chunk key for source tracking
+        file_path (str): The file path for citation
+        tuple_delimiter (str): Delimiter for tuple fields
+        record_delimiter (str): Delimiter for records
+        completion_delimiter (str): Delimiter for completion
+    Returns:
+        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+    """
+    maybe_nodes = defaultdict(list)
+    maybe_edges = defaultdict(list)
+
+    # Standardize Chinese brackets around record_delimiter to English brackets
+    bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
+    result = re.sub(bracket_pattern, ")\\1(", result)
+
+    if completion_delimiter not in result:
+        logger.warning(
+            f"{chunk_key}: Complete delimiter can not be found in extraction result"
+        )
+
+    records = split_string_by_multi_markers(
+        result,
+        [record_delimiter, completion_delimiter],
+    )
+
+    for record in records:
+        # Remove outer brackets (support English and Chinese brackets)
+        record = record.strip()
+        if record.startswith("(") or record.startswith("（"):
+            record = record[1:]
+        if record.endswith(")") or record.endswith("）"):
+            record = record[:-1]
+
+        record = record.strip()
+        if record is None:
+            continue
+
+        if tuple_delimiter == "<|>":
+            # fix entity<| with entity<|>
+            record = re.sub(r"^entity<\|(?!>)", r"entity<|>", record)
+            # fix relationship<| with relationship<|>
+            record = re.sub(r"^relationship<\|(?!>)", r"relationship<|>", record)
+            # fix <||> with <|>
+            record = record.replace("<||>", "<|>")
+            # fix  < | > with <|>
+            record = record.replace("< | >", "<|>")
+            # fix <<|>> with <|>
+            record = record.replace("<<|>>", "<|>")
+            # fix <|>> with <|>
+            record = record.replace("<|>>", "<|>")
+            # fix <<|> with <|>
+            record = record.replace("<<|>", "<|>")
+            # fix <.|> with <|>
+            record = record.replace("<.|>", "<|>")
+            # fix <|.> with <|>
+            record = record.replace("<|.>", "<|>")
+
+        record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
+
+        # Try to parse as entity
+        entity_data = await _handle_single_entity_extraction(
+            record_attributes, chunk_key, file_path
+        )
+        if entity_data is not None:
+            maybe_nodes[entity_data["entity_name"]].append(entity_data)
+            continue
+
+        # Try to parse as relationship
+        relationship_data = await _handle_single_relationship_extraction(
+            record_attributes, chunk_key, file_path
+        )
+        if relationship_data is not None:
+            maybe_edges[
+                (relationship_data["src_id"], relationship_data["tgt_id"])
+            ].append(relationship_data)
+
+    return dict(maybe_nodes), dict(maybe_edges)
+
+
 async def _parse_extraction_result(
     text_chunks_storage: BaseKVStorage, extraction_result: str, chunk_id: str
 ) -> tuple[dict, dict]:
@@ -813,53 +921,16 @@ async def _parse_extraction_result(
         if chunk_data
         else "unknown_source"
     )
-    context_base = dict(
+
+    # Call the shared processing function
+    return await _process_extraction_result(
+        extraction_result,
+        chunk_id,
+        file_path,
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
-    maybe_nodes = defaultdict(list)
-    maybe_edges = defaultdict(list)
-
-    # Preventive fix: when tuple_delimiter is <|>, fix LLM output instability issues
-    if context_base["tuple_delimiter"] == "<|>":
-        # 1. Convert <||> to <|>
-        extraction_result = extraction_result.replace("<||>", "<|>")
-        # 2. Convert < | > to <|>
-        extraction_result = extraction_result.replace("< | >", "<|>")
-
-    # Parse the extraction result using the same logic as in extract_entities
-    records = split_string_by_multi_markers(
-        extraction_result,
-        [context_base["record_delimiter"], context_base["completion_delimiter"]],
-    )
-    for record in records:
-        record = re.search(r"\((.*)\)", record)
-        if record is None:
-            continue
-        record = record.group(1)
-        record_attributes = split_string_by_multi_markers(
-            record, [context_base["tuple_delimiter"]]
-        )
-
-        # Try to parse as entity
-        entity_data = await _handle_single_entity_extraction(
-            record_attributes, chunk_id, file_path
-        )
-        if entity_data is not None:
-            maybe_nodes[entity_data["entity_name"]].append(entity_data)
-            continue
-
-        # Try to parse as relationship
-        relationship_data = await _handle_single_relationship_extraction(
-            record_attributes, chunk_id, file_path
-        )
-        if relationship_data is not None:
-            maybe_edges[
-                (relationship_data["src_id"], relationship_data["tgt_id"])
-            ].append(relationship_data)
-
-    return dict(maybe_nodes), dict(maybe_edges)
 
 
 async def _rebuild_single_entity(
@@ -882,24 +953,24 @@ async def _rebuild_single_entity(
     async def _update_entity_storage(
         final_description: str, entity_type: str, file_paths: set[str]
     ):
-        # Update entity in graph storage
-        updated_entity_data = {
-            **current_entity,
-            "description": final_description,
-            "entity_type": entity_type,
-            "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
-            "file_path": GRAPH_FIELD_SEP.join(file_paths)
-            if file_paths
-            else current_entity.get("file_path", "unknown_source"),
-        }
-        await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
+        try:
+            # Update entity in graph storage (critical path)
+            updated_entity_data = {
+                **current_entity,
+                "description": final_description,
+                "entity_type": entity_type,
+                "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
+                "file_path": GRAPH_FIELD_SEP.join(file_paths)
+                if file_paths
+                else current_entity.get("file_path", "unknown_source"),
+            }
+            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
-        # Update entity in vector database
-        entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            # Update entity in vector database (equally critical)
+            entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            entity_content = f"{entity_name}\n{final_description}"
 
-        entity_content = f"{entity_name}\n{final_description}"
-        await entities_vdb.upsert(
-            {
+            vdb_data = {
                 entity_vdb_id: {
                     "content": entity_content,
                     "entity_name": entity_name,
@@ -909,7 +980,20 @@ async def _rebuild_single_entity(
                     "file_path": updated_entity_data["file_path"],
                 }
             }
-        )
+
+            # Use safe operation wrapper - VDB failure must throw exception
+            await safe_vdb_operation_with_exception(
+                operation=lambda: entities_vdb.upsert(vdb_data),
+                operation_name="rebuild_entity_upsert",
+                entity_name=entity_name,
+                max_retries=3,
+                retry_delay=0.1,
+            )
+
+        except Exception as e:
+            error_msg = f"Failed to update entity storage for `{entity_name}`: {e}"
+            logger.error(error_msg)
+            raise  # Re-raise exception
 
     # Collect all entity data from relevant chunks
     all_entity_data = []
@@ -1097,21 +1181,21 @@ async def _rebuild_single_relationship(
     await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Update relationship in vector database
-    rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")
-    rel_vdb_id_reverse = compute_mdhash_id(tgt + src, prefix="rel-")
-
-    # Delete old vector records first (both directions to be safe)
     try:
-        await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
-    except Exception as e:
-        logger.debug(
-            f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
-        )
+        rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")
+        rel_vdb_id_reverse = compute_mdhash_id(tgt + src, prefix="rel-")
 
-    # Insert new vector record
-    rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
-    await relationships_vdb.upsert(
-        {
+        # Delete old vector records first (both directions to be safe)
+        try:
+            await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
+        except Exception as e:
+            logger.debug(
+                f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
+            )
+
+        # Insert new vector record
+        rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
+        vdb_data = {
             rel_vdb_id: {
                 "src_id": src,
                 "tgt_id": tgt,
@@ -1123,7 +1207,20 @@ async def _rebuild_single_relationship(
                 "file_path": updated_relationship_data["file_path"],
             }
         }
-    )
+
+        # Use safe operation wrapper - VDB failure must throw exception
+        await safe_vdb_operation_with_exception(
+            operation=lambda: relationships_vdb.upsert(vdb_data),
+            operation_name="rebuild_relationship_upsert",
+            entity_name=f"{src}-{tgt}",
+            max_retries=3,
+            retry_delay=0.2,
+        )
+
+    except Exception as e:
+        error_msg = f"Failed to rebuild relationship storage for `{src}-{tgt}`: {e}"
+        logger.error(error_msg)
+        raise  # Re-raise exception
 
 
 async def _merge_nodes_then_upsert(
@@ -1301,9 +1398,9 @@ async def _merge_edges_then_upsert(
 
         # Log based on actual LLM usage
         if llm_was_used:
-            status_message = f"LLMmrg: `{src_id} - {tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
+            status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
         else:
-            status_message = f"Merged: `{src_id} - {tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
+            status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
 
         logger.info(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
@@ -1468,27 +1565,71 @@ async def merge_nodes_and_edges(
             async with get_storage_keyed_lock(
                 [entity_name], namespace=namespace, enable_logging=False
             ):
-                entity_data = await _merge_nodes_then_upsert(
-                    entity_name,
-                    entities,
-                    knowledge_graph_inst,
-                    global_config,
-                    pipeline_status,
-                    pipeline_status_lock,
-                    llm_response_cache,
-                )
-                if entity_vdb is not None:
-                    data_for_vdb = {
-                        compute_mdhash_id(entity_data["entity_name"], prefix="ent-"): {
-                            "entity_name": entity_data["entity_name"],
-                            "entity_type": entity_data["entity_type"],
-                            "content": f"{entity_data['entity_name']}\n{entity_data['description']}",
-                            "source_id": entity_data["source_id"],
-                            "file_path": entity_data.get("file_path", "unknown_source"),
+                try:
+                    # Graph database operation (critical path, must succeed)
+                    entity_data = await _merge_nodes_then_upsert(
+                        entity_name,
+                        entities,
+                        knowledge_graph_inst,
+                        global_config,
+                        pipeline_status,
+                        pipeline_status_lock,
+                        llm_response_cache,
+                    )
+
+                    # Vector database operation (equally critical, must succeed)
+                    if entity_vdb is not None and entity_data:
+                        data_for_vdb = {
+                            compute_mdhash_id(
+                                entity_data["entity_name"], prefix="ent-"
+                            ): {
+                                "entity_name": entity_data["entity_name"],
+                                "entity_type": entity_data["entity_type"],
+                                "content": f"{entity_data['entity_name']}\n{entity_data['description']}",
+                                "source_id": entity_data["source_id"],
+                                "file_path": entity_data.get(
+                                    "file_path", "unknown_source"
+                                ),
+                            }
                         }
-                    }
-                    await entity_vdb.upsert(data_for_vdb)
-                return entity_data
+
+                        # Use safe operation wrapper - VDB failure must throw exception
+                        await safe_vdb_operation_with_exception(
+                            operation=lambda: entity_vdb.upsert(data_for_vdb),
+                            operation_name="entity_upsert",
+                            entity_name=entity_name,
+                            max_retries=3,
+                            retry_delay=0.1,
+                        )
+
+                    return entity_data
+
+                except Exception as e:
+                    # Any database operation failure is critical
+                    error_msg = (
+                        f"Critical error in entity processing for `{entity_name}`: {e}"
+                    )
+                    logger.error(error_msg)
+
+                    # Try to update pipeline status, but don't let status update failure affect main exception
+                    try:
+                        if (
+                            pipeline_status is not None
+                            and pipeline_status_lock is not None
+                        ):
+                            async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = error_msg
+                                pipeline_status["history_messages"].append(error_msg)
+                    except Exception as status_error:
+                        logger.error(
+                            f"Failed to update pipeline status: {status_error}"
+                        )
+
+                    # Re-raise the original exception with a prefix
+                    prefixed_exception = create_prefixed_exception(
+                        e, f"`{entity_name}`"
+                    )
+                    raise prefixed_exception from e
 
     # Create entity processing tasks
     entity_tasks = []
@@ -1503,17 +1644,32 @@ async def merge_nodes_and_edges(
             entity_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception
+        # Check if any task raised an exception and ensure all exceptions are retrieved
+        first_exception = None
+        successful_results = []
+
         for task in done:
-            if task.exception():
-                # If a task failed, cancel all pending tasks
-                for pending_task in pending:
-                    pending_task.cancel()
-                # Wait for cancellation to complete
-                if pending:
-                    await asyncio.wait(pending)
-                # Re-raise the exception to notify the caller
-                raise task.exception()
+            try:
+                exception = task.exception()
+                if exception is not None:
+                    if first_exception is None:
+                        first_exception = exception
+                else:
+                    successful_results.append(task.result())
+            except Exception as e:
+                if first_exception is None:
+                    first_exception = e
+
+        # If any task failed, cancel all pending tasks and raise the first exception
+        if first_exception is not None:
+            # Cancel all pending tasks
+            for pending_task in pending:
+                pending_task.cancel()
+            # Wait for cancellation to complete
+            if pending:
+                await asyncio.wait(pending)
+            # Re-raise the first exception to notify the caller
+            raise first_exception
 
         # If all tasks completed successfully, collect results
         processed_entities = [task.result() for task in entity_tasks]
@@ -1536,38 +1692,78 @@ async def merge_nodes_and_edges(
                 namespace=namespace,
                 enable_logging=False,
             ):
-                added_entities = []  # Track entities added during edge processing
-                edge_data = await _merge_edges_then_upsert(
-                    edge_key[0],
-                    edge_key[1],
-                    edges,
-                    knowledge_graph_inst,
-                    global_config,
-                    pipeline_status,
-                    pipeline_status_lock,
-                    llm_response_cache,
-                    added_entities,  # Pass list to collect added entities
-                )
+                try:
+                    added_entities = []  # Track entities added during edge processing
 
-                if edge_data is None:
-                    return None, []
+                    # Graph database operation (critical path, must succeed)
+                    edge_data = await _merge_edges_then_upsert(
+                        edge_key[0],
+                        edge_key[1],
+                        edges,
+                        knowledge_graph_inst,
+                        global_config,
+                        pipeline_status,
+                        pipeline_status_lock,
+                        llm_response_cache,
+                        added_entities,  # Pass list to collect added entities
+                    )
 
-                if relationships_vdb is not None:
-                    data_for_vdb = {
-                        compute_mdhash_id(
-                            edge_data["src_id"] + edge_data["tgt_id"], prefix="rel-"
-                        ): {
-                            "src_id": edge_data["src_id"],
-                            "tgt_id": edge_data["tgt_id"],
-                            "keywords": edge_data["keywords"],
-                            "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
-                            "source_id": edge_data["source_id"],
-                            "file_path": edge_data.get("file_path", "unknown_source"),
-                            "weight": edge_data.get("weight", 1.0),
+                    if edge_data is None:
+                        return None, []
+
+                    # Vector database operation (equally critical, must succeed)
+                    if relationships_vdb is not None:
+                        data_for_vdb = {
+                            compute_mdhash_id(
+                                edge_data["src_id"] + edge_data["tgt_id"], prefix="rel-"
+                            ): {
+                                "src_id": edge_data["src_id"],
+                                "tgt_id": edge_data["tgt_id"],
+                                "keywords": edge_data["keywords"],
+                                "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
+                                "source_id": edge_data["source_id"],
+                                "file_path": edge_data.get(
+                                    "file_path", "unknown_source"
+                                ),
+                                "weight": edge_data.get("weight", 1.0),
+                            }
                         }
-                    }
-                    await relationships_vdb.upsert(data_for_vdb)
-                return edge_data, added_entities
+
+                        # Use safe operation wrapper - VDB failure must throw exception
+                        await safe_vdb_operation_with_exception(
+                            operation=lambda: relationships_vdb.upsert(data_for_vdb),
+                            operation_name="relationship_upsert",
+                            entity_name=f"{edge_data['src_id']}-{edge_data['tgt_id']}",
+                            max_retries=3,
+                            retry_delay=0.1,
+                        )
+
+                    return edge_data, added_entities
+
+                except Exception as e:
+                    # Any database operation failure is critical
+                    error_msg = f"Critical error in relationship processing for `{sorted_edge_key}`: {e}"
+                    logger.error(error_msg)
+
+                    # Try to update pipeline status, but don't let status update failure affect main exception
+                    try:
+                        if (
+                            pipeline_status is not None
+                            and pipeline_status_lock is not None
+                        ):
+                            async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = error_msg
+                                pipeline_status["history_messages"].append(error_msg)
+                    except Exception as status_error:
+                        logger.error(
+                            f"Failed to update pipeline status: {status_error}"
+                        )
+
+                    # Re-raise the original exception with a prefix
+                    prefixed_exception = create_prefixed_exception(
+                        e, f"{sorted_edge_key}"
+                    )
+                    raise prefixed_exception from e
 
     # Create relationship processing tasks
     edge_tasks = []
@@ -1584,17 +1780,32 @@ async def merge_nodes_and_edges(
             edge_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception
+        # Check if any task raised an exception and ensure all exceptions are retrieved
+        first_exception = None
+        successful_results = []
+
         for task in done:
-            if task.exception():
-                # If a task failed, cancel all pending tasks
-                for pending_task in pending:
-                    pending_task.cancel()
-                # Wait for cancellation to complete
-                if pending:
-                    await asyncio.wait(pending)
-                # Re-raise the exception to notify the caller
-                raise task.exception()
+            try:
+                exception = task.exception()
+                if exception is not None:
+                    if first_exception is None:
+                        first_exception = exception
+                else:
+                    successful_results.append(task.result())
+            except Exception as e:
+                if first_exception is None:
+                    first_exception = e
+
+        # If any task failed, cancel all pending tasks and raise the first exception
+        if first_exception is not None:
+            # Cancel all pending tasks
+            for pending_task in pending:
+                pending_task.cancel()
+            # Wait for cancellation to complete
+            if pending:
+                await asyncio.wait(pending)
+            # Re-raise the first exception to notify the caller
+            raise first_exception
 
         # If all tasks completed successfully, collect results
         for task in edge_tasks:
@@ -1705,7 +1916,6 @@ async def extract_entities(
     # add example's format
     examples = examples.format(**example_context_base)
 
-    entity_extract_prompt = PROMPTS["entity_extraction"]
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
@@ -1715,63 +1925,8 @@ async def extract_entities(
         language=language,
     )
 
-    continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
-    if_loop_prompt = PROMPTS["entity_if_loop_extraction"]
-
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
-
-    async def _process_extraction_result(
-        result: str, chunk_key: str, file_path: str = "unknown_source"
-    ):
-        """Process a single extraction result (either initial or gleaning)
-        Args:
-            result (str): The extraction result to process
-            chunk_key (str): The chunk key for source tracking
-            file_path (str): The file path for citation
-        Returns:
-            tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
-        """
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
-
-        # Preventive fix: when tuple_delimiter is <|>, fix LLM output instability issues
-        if context_base["tuple_delimiter"] == "<|>":
-            # 1. Convert <||> to <|>
-            result = result.replace("<||>", "<|>")
-            # 2. Convert < | > to <|>
-            result = result.replace("< | >", "<|>")
-
-        records = split_string_by_multi_markers(
-            result,
-            [context_base["record_delimiter"], context_base["completion_delimiter"]],
-        )
-
-        for record in records:
-            record = re.search(r"\((.*)\)", record)
-            if record is None:
-                continue
-            record = record.group(1)
-            record_attributes = split_string_by_multi_markers(
-                record, [context_base["tuple_delimiter"]]
-            )
-
-            if_entities = await _handle_single_entity_extraction(
-                record_attributes, chunk_key, file_path
-            )
-            if if_entities is not None:
-                maybe_nodes[if_entities["entity_name"]].append(if_entities)
-                continue
-
-            if_relation = await _handle_single_relationship_extraction(
-                record_attributes, chunk_key, file_path
-            )
-            if if_relation is not None:
-                maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
-                    if_relation
-                )
-
-        return maybe_nodes, maybe_edges
 
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         """Process a single chunk
@@ -1792,13 +1947,20 @@ async def extract_entities(
         cache_keys_collector = []
 
         # Get initial extraction
-        hint_prompt = entity_extract_prompt.format(
+        entity_extraction_system_prompt = PROMPTS[
+            "entity_extraction_system_prompt"
+        ].format(**{**context_base, "input_text": content})
+        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
+        entity_continue_extraction_user_prompt = PROMPTS[
+            "entity_continue_extraction_user_prompt"
+        ].format(**{**context_base, "input_text": content})
 
         final_result = await use_llm_func_with_cache(
-            hint_prompt,
+            entity_extraction_user_prompt,
             use_llm_func,
+            system_prompt=entity_extraction_system_prompt,
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
@@ -1806,18 +1968,26 @@ async def extract_entities(
         )
 
         # Store LLM cache reference in chunk (will be handled by use_llm_func_with_cache)
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+        history = pack_user_ass_to_openai_messages(
+            entity_extraction_user_prompt, final_result
+        )
 
         # Process initial extraction with file path
         maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result, chunk_key, file_path
+            final_result,
+            chunk_key,
+            file_path,
+            tuple_delimiter=context_base["tuple_delimiter"],
+            record_delimiter=context_base["record_delimiter"],
+            completion_delimiter=context_base["completion_delimiter"],
         )
 
         # Process additional gleaning results
-        for now_glean_index in range(entity_extract_max_gleaning):
+        if entity_extract_max_gleaning > 0:
             glean_result = await use_llm_func_with_cache(
-                continue_prompt,
+                entity_continue_extraction_user_prompt,
                 use_llm_func,
+                system_prompt=entity_extraction_system_prompt,
                 llm_response_cache=llm_response_cache,
                 history_messages=history,
                 cache_type="extract",
@@ -1825,11 +1995,14 @@ async def extract_entities(
                 cache_keys_collector=cache_keys_collector,
             )
 
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
-
             # Process gleaning result separately with file path
             glean_nodes, glean_edges = await _process_extraction_result(
-                glean_result, chunk_key, file_path
+                glean_result,
+                chunk_key,
+                file_path,
+                tuple_delimiter=context_base["tuple_delimiter"],
+                record_delimiter=context_base["record_delimiter"],
+                completion_delimiter=context_base["completion_delimiter"],
             )
 
             # Merge results - only add entities and edges with new names
@@ -1837,27 +2010,14 @@ async def extract_entities(
                 if (
                     entity_name not in maybe_nodes
                 ):  # Only accetp entities with new name in gleaning stage
+                    maybe_nodes[entity_name] = []  # Explicitly create the list
                     maybe_nodes[entity_name].extend(entities)
             for edge_key, edges in glean_edges.items():
                 if (
                     edge_key not in maybe_edges
                 ):  # Only accetp edges with new name in gleaning stage
+                    maybe_edges[edge_key] = []  # Explicitly create the list
                     maybe_edges[edge_key].extend(edges)
-
-            if now_glean_index == entity_extract_max_gleaning - 1:
-                break
-
-            if_loop_result: str = await use_llm_func_with_cache(
-                if_loop_prompt,
-                use_llm_func,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-                cache_keys_collector=cache_keys_collector,
-            )
-            if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
-            if if_loop_result != "yes":
-                break
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
@@ -1898,24 +2058,40 @@ async def extract_entities(
     # This allows us to cancel remaining tasks if any task fails
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-    # Check if any task raised an exception
+    # Check if any task raised an exception and ensure all exceptions are retrieved
+    first_exception = None
+    chunk_results = []
+
     for task in done:
-        if task.exception():
-            # If a task failed, cancel all pending tasks
-            # This prevents unnecessary processing since the parent function will abort anyway
-            for pending_task in pending:
-                pending_task.cancel()
+        try:
+            exception = task.exception()
+            if exception is not None:
+                if first_exception is None:
+                    first_exception = exception
+            else:
+                chunk_results.append(task.result())
+        except Exception as e:
+            if first_exception is None:
+                first_exception = e
 
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
+    # If any task failed, cancel all pending tasks and raise the first exception
+    if first_exception is not None:
+        # Cancel all pending tasks
+        for pending_task in pending:
+            pending_task.cancel()
 
-            # Re-raise the exception to notify the caller
-            raise task.exception()
+        # Wait for cancellation to complete
+        if pending:
+            await asyncio.wait(pending)
 
-    # If all tasks completed successfully, collect results
-    chunk_results = [task.result() for task in tasks]
+        # Add progress prefix to the exception message
+        progress_prefix = f"Chunks[{processed_chunks+1}/{total_chunks}]"
 
+        # Re-raise the original exception with a prefix
+        prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
+        raise prefixed_exception from first_exception
+
+    # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges
     return chunk_results
 
@@ -3169,7 +3345,7 @@ async def _get_node_data(
 ):
     # get similar entities
     logger.info(
-        f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
+        f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
@@ -3445,7 +3621,7 @@ async def _get_edge_data(
     query_param: QueryParam,
 ):
     logger.info(
-        f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
+        f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)

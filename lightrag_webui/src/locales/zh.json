@@ -187,7 +187,10 @@
       "unknown": "未知",
       "object": "物品",
       "group": "群组",
-      "technology": "技术"
+      "technology": "技术",
+      "product": "产品",
+      "document": "文档",
+      "other": "其他"
     },
     "sideBar": {
       "settings": {
@@ -334,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "复制到剪贴板",
-      "copyError": "复制文本到剪贴板失败"
+      "copyError": "复制文本到剪贴板失败",
+      "thinking": "正在思考...",
+      "thinkingTime": "思考用时 {{time}} 秒",
+      "thinkingInProgress": "思考进行中..."
     },
     "retrieval": {
       "startPrompt": "输入查询开始检索",
