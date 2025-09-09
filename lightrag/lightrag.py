@@ -363,6 +363,7 @@ class LightRAG:
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
             "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
+            "relation_types": get_env_value("RELATION_TYPES", [], list),
         }
     )
 
@@ -469,7 +470,6 @@ class LightRAG:
         self.embedding_func = priority_limit_async_func_call(
             self.embedding_func_max_async,
             llm_timeout=self.default_embedding_timeout,
-            queue_name="Embedding func",
         )(self.embedding_func)
 
         # Initialize all storages
@@ -566,7 +566,6 @@ class LightRAG:
         self.llm_model_func = priority_limit_async_func_call(
             self.llm_model_max_async,
             llm_timeout=self.default_llm_timeout,
-            queue_name="LLM func",
         )(
             partial(
                 self.llm_model_func,  # type: ignore
@@ -993,7 +992,7 @@ class LightRAG:
 
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
+                self._process_entity_relation_graph(inserting_chunks),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
@@ -1504,15 +1503,6 @@ class LightRAG:
                                 pipeline_status["latest_message"] = log_message
                                 pipeline_status["history_messages"].append(log_message)
 
-                                # Prevent memory growth: keep only latest 5000 messages when exceeding 10000
-                                if len(pipeline_status["history_messages"]) > 10000:
-                                    logger.info(
-                                        f"Trimming pipeline history from {len(pipeline_status['history_messages'])} to 5000 messages"
-                                    )
-                                    pipeline_status["history_messages"] = (
-                                        pipeline_status["history_messages"][-5000:]
-                                    )
-
                             # Get document content from full_docs
                             content_data = await self.full_docs.get_by_id(doc_id)
                             if not content_data:
@@ -1591,7 +1581,7 @@ class LightRAG:
 
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
                             entity_relation_task = asyncio.create_task(
-                                self._process_extract_entities(
+                                self._process_entity_relation_graph(
                                     chunks, pipeline_status, pipeline_status_lock
                                 )
                             )
@@ -1801,7 +1791,7 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_extract_entities(
+    async def _process_entity_relation_graph(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
         try:
