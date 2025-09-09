@@ -18,13 +18,13 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
   - entity_name: Name of the entity, ensure entity names are consistent throughout the extraction.
   - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided types are suitable, classify it as `Other`.
   - entity_description: Provide a comprehensive description of the entity's attributes and activities based on the information present in the input text.
-2. **Entity Output Format:** (entity{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+2. **Entity Output Format:** (entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description)
 3. **Relationship Extraction:** Identify direct, clearly-stated and meaningful relationships between extracted entities within the input text, and extract the following information:
   - source_entity: name of the source entity.
   - target_entity: name of the target entity.
   - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details.
   - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-4. **Relationship Output Format:**  (relationship{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>)
+4. **Relationship Output Format:** (relationship{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description)
 5. **Relationship Order:** Prioritize relationships based on their significance to the intended meaning of input text, and output more crucial relationships first.
 6. **Avoid Pronouns:** For entity names and all descriptions, explicitly name the subject or object instead of using pronouns; avoid pronouns such as `this document`, `our company`, `I`, `you`, and `he/she`.
 7. **Undirectional Relationship:** Treat relationships as undirected; swapping the source and target entities does not constitute a new relationship. Avoid outputting duplicate relationships.
