@@ -3011,7 +3011,7 @@ async def _get_node_data(
 ):
     # get similar entities
     logger.info(
-        f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
+        f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
@@ -3287,7 +3287,7 @@ async def _get_edge_data(
     query_param: QueryParam,
 ):
     logger.info(
-        f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
+        f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)

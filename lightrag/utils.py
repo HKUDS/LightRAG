@@ -707,7 +707,7 @@ def priority_limit_async_func_call(
                     timeout_info.append(f"Health Check: {max_task_duration}s")
 
                 timeout_str = (
-                    f" (Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
+                    f"(Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
                 )
                 logger.info(
                     f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
