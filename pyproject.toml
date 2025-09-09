@@ -36,6 +36,7 @@ dependencies = [
     "jiter>=0.10.0",
     "json_repair",
     "nano-vectordb",
+    "neo4j>=5.28.2",
     "networkx",
     "numpy",
     "ollama>=0.5.3",
