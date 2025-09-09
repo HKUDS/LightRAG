@@ -2108,6 +2108,7 @@ class LightRAG:
                 query.strip(),
                 system_prompt=system_prompt,
                 history_messages=param.conversation_history,
+                enable_cot=True,
                 stream=param.stream,
             )
         else:

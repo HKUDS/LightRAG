@@ -56,8 +56,15 @@ async def hf_model_if_cache(
     prompt,
     system_prompt=None,
     history_messages=[],
+    enable_cot: bool = False,
     **kwargs,
 ) -> str:
+    if enable_cot:
+        from lightrag.utils import logger
+
+        logger.debug(
+            "enable_cot=True is not supported for Hugging Face local models and will be ignored."
+        )
     model_name = model
     hf_model, hf_tokenizer = initialize_hf_model(model_name)
     messages = []
@@ -114,7 +121,12 @@ async def hf_model_if_cache(
 
 
 async def hf_model_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    enable_cot: bool = False,
+    **kwargs,
 ) -> str:
     kwargs.pop("keyword_extraction", None)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
@@ -123,6 +135,7 @@ async def hf_model_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
     return result
