@@ -1340,7 +1340,7 @@ async def _merge_nodes_then_upsert(
         )
 
         # Log based on actual LLM usage
-        if already_fragment > 0:
+        if already_fragment > 0 or llm_was_used:
             if llm_was_used:
                 status_message = f"LLMmrg: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
             else:
@@ -1458,7 +1458,7 @@ async def _merge_edges_then_upsert(
         )
 
         # Log based on actual LLM usage
-        if already_fragment > 0:
+        if already_fragment > 0 or llm_was_used:
             if llm_was_used:
                 status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
             else:
