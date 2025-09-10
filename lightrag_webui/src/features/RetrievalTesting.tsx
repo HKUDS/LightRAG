@@ -58,6 +58,8 @@ export default function RetrievalTesting() {
   const [inputError, setInputError] = useState('') // Error message for input
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
+  const thinkingStartTime = useRef<number | null>(null)
+  const thinkingProcessed = useRef(false)
   // Reference to track if user interaction is from the form area
   const isFormInteractionRef = useRef(false)
   // Reference to track if scroll was triggered programmatically
@@ -66,6 +68,16 @@ export default function RetrievalTesting() {
   const isReceivingResponseRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+  // Add cleanup effect for memory leak prevention
+  useEffect(() => {
+    // Component cleanup - reset timer state to prevent memory leaks
+    return () => {
+      if (thinkingStartTime.current) {
+        thinkingStartTime.current = null;
+      }
+    };
+  }, []);
 
   // Scroll to bottom function - restored smooth scrolling with better handling
   const scrollToBottom = useCallback(() => {
@@ -115,6 +127,10 @@ export default function RetrievalTesting() {
       // Clear error message
       setInputError('')
 
+      // Reset thinking timer state for new query to prevent confusion
+      thinkingStartTime.current = null
+      thinkingProcessed.current = false
+
       // Create messages
       // Save the original input (with prefix if any) in userMessage.content for display
       const userMessage: MessageWithError = {
@@ -127,7 +143,11 @@ export default function RetrievalTesting() {
         id: generateUniqueId(), // Use browser-compatible ID generation
         content: '',
         role: 'assistant',
-        mermaidRendered: false
+        mermaidRendered: false,
+        thinkingTime: null,        // Explicitly initialize to null
+        thinkingContent: undefined, // Explicitly initialize to undefined
+        displayContent: undefined,  // Explicitly initialize to undefined
+        isThinking: false          // Explicitly initialize to false
       }
 
       const prevMessages = [...messages]
@@ -153,6 +173,47 @@ export default function RetrievalTesting() {
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
         assistantMessage.content += chunk
 
+        // Start thinking timer on first sight of think tag
+        if (assistantMessage.content.includes('<think>') && !thinkingStartTime.current) {
+          thinkingStartTime.current = Date.now()
+        }
+
+        // Real-time parsing for streaming
+        const thinkStartTag = '<think>'
+        const thinkEndTag = '</think>'
+        const thinkStartIndex = assistantMessage.content.indexOf(thinkStartTag)
+        const thinkEndIndex = assistantMessage.content.indexOf(thinkEndTag)
+
+        if (thinkStartIndex !== -1) {
+          if (thinkEndIndex !== -1) {
+            // Thinking has finished for this chunk
+            assistantMessage.isThinking = false
+
+            // Only calculate time and extract thinking content once
+            if (!thinkingProcessed.current) {
+              if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
+                const duration = (Date.now() - thinkingStartTime.current) / 1000
+                assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+              }
+              assistantMessage.thinkingContent = assistantMessage.content
+                .substring(thinkStartIndex + thinkStartTag.length, thinkEndIndex)
+                .trim()
+              thinkingProcessed.current = true
+            }
+
+            // Always update display content as content after </think> may grow
+            assistantMessage.displayContent = assistantMessage.content.substring(thinkEndIndex + thinkEndTag.length).trim()
+          } else {
+            // Still thinking - update thinking content in real-time
+            assistantMessage.isThinking = true
+            assistantMessage.thinkingContent = assistantMessage.content.substring(thinkStartIndex + thinkStartTag.length)
+            assistantMessage.displayContent = ''
+          }
+        } else {
+          assistantMessage.isThinking = false
+          assistantMessage.displayContent = assistantMessage.content
+        }
+
         // Detect if the assistant message contains a complete mermaid code block
         // Simple heuristic: look for ```mermaid ... ```
         const mermaidBlockRegex = /```mermaid\s+([\s\S]+?)```/g
@@ -167,13 +228,21 @@ export default function RetrievalTesting() {
         }
         assistantMessage.mermaidRendered = mermaidRendered
 
+        // Single unified update to avoid race conditions
         setMessages((prev) => {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
-          if (lastMessage.role === 'assistant') {
-            lastMessage.content = assistantMessage.content
-            lastMessage.isError = isError
-            lastMessage.mermaidRendered = assistantMessage.mermaidRendered
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            // Update all properties at once to maintain consistency
+            Object.assign(lastMessage, {
+              content: assistantMessage.content,
+              thinkingContent: assistantMessage.thinkingContent,
+              displayContent: assistantMessage.displayContent,
+              isThinking: assistantMessage.isThinking,
+              isError: isError,
+              mermaidRendered: assistantMessage.mermaidRendered,
+              thinkingTime: assistantMessage.thinkingTime
+            })
           }
           return newMessages
         })
@@ -223,9 +292,30 @@ export default function RetrievalTesting() {
         // Clear loading and add messages to state
         setIsLoading(false)
         isReceivingResponseRef.current = false
-        useSettingsStore
-          .getState()
-          .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
+
+        // Enhanced cleanup with error handling to prevent memory leaks
+        try {
+          // Final calculation for thinking time, only if not already calculated
+          if (assistantMessage.thinkingContent && thinkingStartTime.current && !assistantMessage.thinkingTime) {
+            const duration = (Date.now() - thinkingStartTime.current) / 1000
+            assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+          }
+        } catch (error) {
+          console.error('Error calculating thinking time:', error)
+        } finally {
+          // Ensure cleanup happens regardless of errors
+          assistantMessage.isThinking = false;
+          thinkingStartTime.current = null;
+        }
+
+        // Save history with error handling
+        try {
+          useSettingsStore
+            .getState()
+            .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
+        } catch (error) {
+          console.error('Error saving retrieval history:', error)
+        }
       }
     },
     [inputValue, isLoading, messages, setMessages, t, scrollToBottom]

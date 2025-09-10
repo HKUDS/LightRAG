@@ -99,6 +99,9 @@ export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypas
 export type Message = {
   role: 'user' | 'assistant' | 'system'
   content: string
+  thinkingContent?: string
+  displayContent?: string
+  thinkingTime?: number | null
 }
 
 export type QueryRequest = {
