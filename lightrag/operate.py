@@ -850,8 +850,16 @@ async def _process_extraction_result(
         record = record.strip()
         if record.startswith("(") or record.startswith("（"):
             record = record[1:]
+        else:
+            logger.warning(
+                f"{chunk_key}: Record starting bracket can not be found in extraction result"
+            )
         if record.endswith(")") or record.endswith("）"):
             record = record[:-1]
+        else:
+            logger.warning(
+                f"{chunk_key}: Record ending bracket can not be found in extraction result"
+            )
 
         record = record.strip()
         if record is None:
