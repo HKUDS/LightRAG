@@ -1285,11 +1285,11 @@ async def _merge_nodes_then_upsert(
             else:
                 status_message = f"Merged: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
 
-        logger.info(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
     else:
         logger.error(f"Entity {entity_name} has no description")
         description = "(no description)"
@@ -1403,11 +1403,11 @@ async def _merge_edges_then_upsert(
             else:
                 status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
 
-        logger.info(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
     else:
         logger.error(f"Edge {src_id} - {tgt_id} has no description")
         description = "(no description)"
