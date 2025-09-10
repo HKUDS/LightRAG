@@ -538,21 +538,51 @@ async def _rebuild_knowledge_from_chunks(
                 )
 
                 # Merge entities and relationships from this extraction result
-                # Only keep the first occurrence of each entity_name in the same chunk_id
+                # Compare description lengths and keep the better version for the same chunk_id
                 for entity_name, entity_list in entities.items():
-                    if (
-                        entity_name not in chunk_entities[chunk_id]
-                        or len(chunk_entities[chunk_id][entity_name]) == 0
-                    ):
+                    if entity_name not in chunk_entities[chunk_id]:
+                        # New entity for this chunk_id
                         chunk_entities[chunk_id][entity_name].extend(entity_list)
+                    elif len(chunk_entities[chunk_id][entity_name]) == 0:
+                        # Empty list, add the new entities
+                        chunk_entities[chunk_id][entity_name].extend(entity_list)
+                    else:
+                        # Compare description lengths and keep the better one
+                        existing_desc_len = len(
+                            chunk_entities[chunk_id][entity_name][0].get(
+                                "description", ""
+                            )
+                            or ""
+                        )
+                        new_desc_len = len(entity_list[0].get("description", "") or "")
 
-                # Only keep the first occurrence of each rel_key in the same chunk_id
+                        if new_desc_len > existing_desc_len:
+                            # Replace with the new entity that has longer description
+                            chunk_entities[chunk_id][entity_name] = list(entity_list)
+                        # Otherwise keep existing version
+
+                # Compare description lengths and keep the better version for the same chunk_id
                 for rel_key, rel_list in relationships.items():
-                    if (
-                        rel_key not in chunk_relationships[chunk_id]
-                        or len(chunk_relationships[chunk_id][rel_key]) == 0
-                    ):
+                    if rel_key not in chunk_relationships[chunk_id]:
+                        # New relationship for this chunk_id
                         chunk_relationships[chunk_id][rel_key].extend(rel_list)
+                    elif len(chunk_relationships[chunk_id][rel_key]) == 0:
+                        # Empty list, add the new relationships
+                        chunk_relationships[chunk_id][rel_key].extend(rel_list)
+                    else:
+                        # Compare description lengths and keep the better one
+                        existing_desc_len = len(
+                            chunk_relationships[chunk_id][rel_key][0].get(
+                                "description", ""
+                            )
+                            or ""
+                        )
+                        new_desc_len = len(rel_list[0].get("description", "") or "")
+
+                        if new_desc_len > existing_desc_len:
+                            # Replace with the new relationship that has longer description
+                            chunk_relationships[chunk_id][rel_key] = list(rel_list)
+                        # Otherwise keep existing version
 
         except Exception as e:
             status_message = (
@@ -2014,19 +2044,36 @@ async def extract_entities(
                 completion_delimiter=context_base["completion_delimiter"],
             )
 
-            # Merge results - only add entities and edges with new names
-            for entity_name, entities in glean_nodes.items():
-                if (
-                    entity_name not in maybe_nodes
-                ):  # Only accetp entities with new name in gleaning stage
-                    maybe_nodes[entity_name] = []  # Explicitly create the list
-                    maybe_nodes[entity_name].extend(entities)
-            for edge_key, edges in glean_edges.items():
-                if (
-                    edge_key not in maybe_edges
-                ):  # Only accetp edges with new name in gleaning stage
-                    maybe_edges[edge_key] = []  # Explicitly create the list
-                    maybe_edges[edge_key].extend(edges)
+            # Merge results - compare description lengths to choose better version
+            for entity_name, glean_entities in glean_nodes.items():
+                if entity_name in maybe_nodes:
+                    # Compare description lengths and keep the better one
+                    original_desc_len = len(
+                        maybe_nodes[entity_name][0].get("description", "") or ""
+                    )
+                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
+
+                    if glean_desc_len > original_desc_len:
+                        maybe_nodes[entity_name] = list(glean_entities)
+                    # Otherwise keep original version
+                else:
+                    # New entity from gleaning stage
+                    maybe_nodes[entity_name] = list(glean_entities)
+
+            for edge_key, glean_edges in glean_edges.items():
+                if edge_key in maybe_edges:
+                    # Compare description lengths and keep the better one
+                    original_desc_len = len(
+                        maybe_edges[edge_key][0].get("description", "") or ""
+                    )
+                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+
+                    if glean_desc_len > original_desc_len:
+                        maybe_edges[edge_key] = list(glean_edges)
+                    # Otherwise keep original version
+                else:
+                    # New edge from gleaning stage
+                    maybe_edges[edge_key] = list(glean_edges)
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
