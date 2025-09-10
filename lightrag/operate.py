@@ -878,32 +878,32 @@ async def _process_extraction_result(
     for record in records:
         # Remove outer brackets (support English and Chinese brackets with enhanced tolerance)
         record = record.strip()
-        
+
         # Define allowed leading and trailing characters
         leading_trailing_chars = r'[`<>"\']*'
-        
+
         # Handle leading characters before left bracket
         if record.startswith("(") or record.startswith("（"):
             record = record[1:]
         else:
             # Check for leading characters + left bracket pattern
-            leading_bracket_pattern = r'^' + leading_trailing_chars + r'([（(])'
+            leading_bracket_pattern = r"^" + leading_trailing_chars + r"([（(])"
             match = re.search(leading_bracket_pattern, record)
             if match:
                 # Extract content from the left bracket position
                 bracket_pos = match.start(1)
-                record = record[bracket_pos + 1:]
+                record = record[bracket_pos + 1 :]
             else:
                 logger.warning(
                     f"{chunk_key}: Record starting bracket can not be found in extraction result"
                 )
-        
+
         # Handle trailing characters after right bracket
         if record.endswith(")") or record.endswith("）"):
             record = record[:-1]
         else:
             # Check for right bracket + trailing characters pattern
-            trailing_bracket_pattern = r'([)）])' + leading_trailing_chars + r'$'
+            trailing_bracket_pattern = r"([)）])" + leading_trailing_chars + r"$"
             match = re.search(trailing_bracket_pattern, record)
             if match:
                 # Extract content up to the right bracket position
@@ -1474,7 +1474,7 @@ async def _merge_edges_then_upsert(
                     pipeline_status["history_messages"].append(status_message)
         else:
             logger.debug(status_message)
-                    
+
     else:
         logger.error(f"Edge {src_id} - {tgt_id} has no description")
         description = "(no description)"
