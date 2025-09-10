@@ -28,8 +28,8 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 5. **Relationship Order:** Prioritize relationships based on their significance to the intended meaning of input text, and output more crucial relationships first.
 6. **Avoid Pronouns:** For entity names and all descriptions, explicitly name the subject or object instead of using pronouns; avoid pronouns such as `this document`, `our company`, `I`, `you`, and `he/she`.
 7. **Undirectional Relationship:** Treat relationships as undirected; swapping the source and target entities does not constitute a new relationship. Avoid outputting duplicate relationships.
-8. **Language:** Output entity names, keywords and descriptions in {language}.
-9. **Delimiter:** Use `{record_delimiter}` as the entity or relationship list delimiter; output `{completion_delimiter}` when all the entities and relationships are extracted.
+8. **Language:** Output entity names, keywords and descriptions in {language}. Proper nouns, such as personal names, should not be translated. Please keep them in their original language.
+9. **Delimiter:** Use {record_delimiter} as the entity or relationship list delimiter; output {completion_delimiter} when all the entities and relationships are extracted.
 
 ---Examples---
 {examples}
@@ -49,7 +49,7 @@ Extract entities and relationships from the input text to be Processed.
 ---Instructions---
 1. Output entities and relationships, prioritized by their relevance to the input text's core meaning.
 2. Output `{completion_delimiter}` when all the entities and relationships are extracted.
-3. Ensure the output language is {language}.
+3. Ensure the output language is {language}. Proper nouns, such as personal names, should not be translated. Please keep them in their original language.
 
 <Output>
 """
