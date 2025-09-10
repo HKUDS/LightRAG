@@ -1144,68 +1144,6 @@ def exists_func(obj, func_name: str) -> bool:
         return False
 
 
-def get_conversation_turns(
-    conversation_history: list[dict[str, Any]], num_turns: int
-) -> str:
-    """
-    Process conversation history to get the specified number of complete turns.
-
-    Args:
-        conversation_history: List of conversation messages in chronological order
-        num_turns: Number of complete turns to include
-
-    Returns:
-        Formatted string of the conversation history
-    """
-    # Check if num_turns is valid
-    if num_turns <= 0:
-        return ""
-
-    # Group messages into turns
-    turns: list[list[dict[str, Any]]] = []
-    messages: list[dict[str, Any]] = []
-
-    # First, filter out keyword extraction messages
-    for msg in conversation_history:
-        if msg["role"] == "assistant" and (
-            msg["content"].startswith('{ "high_level_keywords"')
-            or msg["content"].startswith("{'high_level_keywords'")
-        ):
-            continue
-        messages.append(msg)
-
-    # Then process messages in chronological order
-    i = 0
-    while i < len(messages) - 1:
-        msg1 = messages[i]
-        msg2 = messages[i + 1]
-
-        # Check if we have a user-assistant or assistant-user pair
-        if (msg1["role"] == "user" and msg2["role"] == "assistant") or (
-            msg1["role"] == "assistant" and msg2["role"] == "user"
-        ):
-            # Always put user message first in the turn
-            if msg1["role"] == "assistant":
-                turn = [msg2, msg1]  # user, assistant
-            else:
-                turn = [msg1, msg2]  # user, assistant
-            turns.append(turn)
-        i += 2
-
-    # Keep only the most recent num_turns
-    if len(turns) > num_turns:
-        turns = turns[-num_turns:]
-
-    # Format the turns into a string
-    formatted_turns: list[str] = []
-    for turn in turns:
-        formatted_turns.extend(
-            [f"user: {turn[0]['content']}", f"assistant: {turn[1]['content']}"]
-        )
-
-    return "\n".join(formatted_turns)
-
-
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.

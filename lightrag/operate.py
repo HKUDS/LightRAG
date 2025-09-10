@@ -21,7 +21,6 @@ from .utils import (
     handle_cache,
     save_to_cache,
     CacheData,
-    get_conversation_turns,
     use_llm_func_with_cache,
     update_chunk_cache_list,
     remove_think_tags,
@@ -2180,13 +2179,6 @@ async def kg_query(
     if context is None:
         return PROMPTS["fail_response"]
 
-    # Process conversation history
-    history_context = ""
-    if query_param.conversation_history:
-        history_context = get_conversation_turns(
-            query_param.conversation_history, query_param.history_turns
-        )
-
     # Build system prompt
     user_prompt = (
         query_param.user_prompt
@@ -2197,7 +2189,6 @@ async def kg_query(
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
-        history=history_context,
         user_prompt=user_prompt,
     )
 
@@ -2213,8 +2204,9 @@ async def kg_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
-        stream=query_param.stream,
+        history_messages=query_param.conversation_history,
         enable_cot=True,
+        stream=query_param.stream,
     )
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
@@ -2327,14 +2319,7 @@ async def extract_keywords_only(
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
-    # 3. Process conversation history
-    # history_context = ""
-    # if param.conversation_history:
-    #     history_context = get_conversation_turns(
-    #         param.conversation_history, param.history_turns
-    #     )
-
-    # 4. Build the keyword-extraction prompt
+    # 3. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
         query=text,
         examples=examples,
@@ -2347,7 +2332,7 @@ async def extract_keywords_only(
         f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
     )
 
-    # 5. Call the LLM for keyword extraction
+    # 4. Call the LLM for keyword extraction
     if param.model_func:
         use_model_func = param.model_func
     else:
@@ -2357,7 +2342,7 @@ async def extract_keywords_only(
 
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
-    # 6. Parse out JSON from the LLM response
+    # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
     try:
         keywords_data = json_repair.loads(result)
@@ -2372,7 +2357,7 @@ async def extract_keywords_only(
     hl_keywords = keywords_data.get("high_level_keywords", [])
     ll_keywords = keywords_data.get("low_level_keywords", [])
 
-    # 7. Cache only the processed keywords with cache type
+    # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
         cache_data = {
             "high_level_keywords": hl_keywords,
@@ -3171,7 +3156,6 @@ async def _build_llm_context(
 
         # Create sample system prompt for overhead calculation
         sample_sys_prompt = sys_prompt_template.format(
-            history="",  # History not included in context length calculation
             context_data="",  # Empty for overhead calculation
             response_type=response_type,
             user_prompt=user_prompt,
@@ -3963,14 +3947,6 @@ async def naive_query(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Calculate conversation history tokens
-    history_context = ""
-    if query_param.conversation_history:
-        history_context = get_conversation_turns(
-            query_param.conversation_history, query_param.history_turns
-        )
-    history_tokens = len(tokenizer.encode(history_context)) if history_context else 0
-
     # Calculate system prompt template tokens (excluding content_data)
     user_prompt = query_param.user_prompt if query_param.user_prompt else ""
     response_type = (
@@ -3988,7 +3964,6 @@ async def naive_query(
     sample_sys_prompt = sys_prompt_template.format(
         content_data="",  # Empty for overhead calculation
         response_type=response_type,
-        history=history_context,
         user_prompt=user_prompt,
     )
     sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
@@ -4004,7 +3979,7 @@ async def naive_query(
     available_chunk_tokens = max_total_tokens - used_tokens
 
     logger.debug(
-        f"Naive query token allocation - Total: {max_total_tokens}, History: {history_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
     )
 
     # Process chunks using unified processing with dynamic token limit
@@ -4040,12 +4015,6 @@ async def naive_query(
 ```
 
 """
-    # Process conversation history
-    history_context = ""
-    if query_param.conversation_history:
-        history_context = get_conversation_turns(
-            query_param.conversation_history, query_param.history_turns
-        )
 
     # Build system prompt
     user_prompt = (
@@ -4057,7 +4026,6 @@ async def naive_query(
     sys_prompt = sys_prompt_temp.format(
         content_data=text_units_str,
         response_type=query_param.response_type,
-        history=history_context,
         user_prompt=user_prompt,
     )
 
@@ -4072,8 +4040,9 @@ async def naive_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
-        stream=query_param.stream,
+        history_messages=query_param.conversation_history,
         enable_cot=True,
+        stream=query_param.stream,
     )
 
     if isinstance(response, str) and len(response) > len(sys_prompt):
