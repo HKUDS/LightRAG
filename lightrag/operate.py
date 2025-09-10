@@ -2707,7 +2707,9 @@ async def _apply_token_truncation(
 
         entities_context = truncate_list_by_token_size(
             entities_context,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
+            key=lambda x: "\n".join(
+                json.dumps(item, ensure_ascii=False) for item in [x]
+            ),
             max_token_size=max_entity_tokens,
             tokenizer=tokenizer,
         )
@@ -2720,7 +2722,9 @@ async def _apply_token_truncation(
 
         relations_context = truncate_list_by_token_size(
             relations_context,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
+            key=lambda x: "\n".join(
+                json.dumps(item, ensure_ascii=False) for item in [x]
+            ),
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
@@ -3066,8 +3070,12 @@ async def _build_llm_context(
         logger.warning("No tokenizer found, building context without token limits")
 
         # Build basic context without token processing
-        entities_str = json.dumps(entities_context, ensure_ascii=False)
-        relations_str = json.dumps(relations_context, ensure_ascii=False)
+        entities_str = "\n".join(
+            json.dumps(entity, ensure_ascii=False) for entity in entities_context
+        )
+        relations_str = "\n".join(
+            json.dumps(relation, ensure_ascii=False) for relation in relations_context
+        )
 
         text_units_context = []
         for i, chunk in enumerate(merged_chunks):
@@ -3113,8 +3121,12 @@ async def _build_llm_context(
 
     if merged_chunks:
         # Calculate dynamic token limit for text chunks
-        entities_str = json.dumps(entities_context, ensure_ascii=False)
-        relations_str = json.dumps(relations_context, ensure_ascii=False)
+        entities_str = "\n".join(
+            json.dumps(entity, ensure_ascii=False) for entity in entities_context
+        )
+        relations_str = "\n".join(
+            json.dumps(relation, ensure_ascii=False) for relation in relations_context
+        )
 
         # Calculate base context tokens (entities + relations + template)
         kg_context_template = """-----Entities(KG)-----
@@ -3226,9 +3238,15 @@ async def _build_llm_context(
         if chunk_tracking_log:
             logger.info(f"chunks: {' '.join(chunk_tracking_log)}")
 
-    entities_str = json.dumps(entities_context, ensure_ascii=False)
-    relations_str = json.dumps(relations_context, ensure_ascii=False)
-    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
+    entities_str = "\n".join(
+        json.dumps(entity, ensure_ascii=False) for entity in entities_context
+    )
+    relations_str = "\n".join(
+        json.dumps(relation, ensure_ascii=False) for relation in relations_context
+    )
+    text_units_str = "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
+    )
 
     result = f"""-----Entities(KG)-----
 
@@ -4005,6 +4023,9 @@ async def naive_query(
             }
         )
 
+    text_units_str = "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
+    )
 
     if query_param.only_need_context and not query_param.only_need_prompt:
         return f"""
