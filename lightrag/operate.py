@@ -2137,7 +2137,8 @@ async def kg_query(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
-        return cached_response
+        if not query_param.only_need_context and not query_param.only_need_prompt:
+            return cached_response
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2174,7 +2175,7 @@ async def kg_query(
         chunks_vdb,
     )
 
-    if query_param.only_need_context:
+    if query_param.only_need_context and not query_param.only_need_prompt:
         return context if context is not None else PROMPTS["fail_response"]
     if context is None:
         return PROMPTS["fail_response"]
@@ -3944,7 +3945,8 @@ async def naive_query(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
-        return cached_response
+        if not query_param.only_need_context and not query_param.only_need_prompt:
+            return cached_response
 
     tokenizer: Tokenizer = global_config["tokenizer"]
 
@@ -4028,8 +4030,8 @@ async def naive_query(
             }
         )
 
-    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
-    if query_param.only_need_context:
+
+    if query_param.only_need_context and not query_param.only_need_prompt:
         return f"""
 ---Document Chunks(DC)---
 
