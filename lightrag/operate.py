@@ -891,16 +891,18 @@ async def _process_extraction_result(
         # <XX|SEP|YY> -> <|SEP|> (handles extra characters)
         # |SEP|> -> <|SEP|> (where left | is missing)
         # <|SEP| -> <|SEP|> (where right | is missing)
-        
-        escaped_delimiter_core = re.escape(tuple_delimiter[2:-2])  # Extract "SEP" from "<|SEP|>"
-        
+
+        escaped_delimiter_core = re.escape(
+            tuple_delimiter[2:-2]
+        )  # Extract "SEP" from "<|SEP|>"
+
         # Fix: <SEP> -> <|SEP|> (missing pipes)
         record = re.sub(
             rf"<{escaped_delimiter_core}>",
             tuple_delimiter,
             record,
         )
-        
+
         # Fix: <SEP|> -> <|SEP|> (missing left pipe only)
         record = re.sub(
             rf"<{escaped_delimiter_core}\|>",
@@ -942,7 +944,7 @@ async def _process_extraction_result(
             tuple_delimiter,
             record,
         )
-        
+
         # Fix: <|SEP| -> <|SEP|> (missing closing >)
         record = re.sub(
             rf"<\|{escaped_delimiter_core}\|(?!>)",
@@ -2058,7 +2060,7 @@ async def extract_entities(
             completion_delimiter=context_base["completion_delimiter"],
         )
 
-        # Process additional gleaning results
+        # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
             glean_result = await use_llm_func_with_cache(
                 entity_continue_extraction_user_prompt,
@@ -2510,12 +2512,15 @@ async def _get_vector_context(
     try:
         # Use chunk_top_k if specified, otherwise fall back to top_k
         search_top_k = query_param.chunk_top_k or query_param.top_k
+        cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
         results = await chunks_vdb.query(
             query, top_k=search_top_k, query_embedding=query_embedding
         )
         if not results:
-            logger.info(f"Naive query: 0 chunks (chunk_top_k: {search_top_k})")
+            logger.info(
+                f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
+            )
             return []
 
         valid_chunks = []
@@ -2531,7 +2536,7 @@ async def _get_vector_context(
                 valid_chunks.append(chunk_with_metadata)
 
         logger.info(
-            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k: {search_top_k})"
+            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
         )
         return valid_chunks
 
@@ -3398,7 +3403,11 @@ async def _build_query_context(
     )
 
     if not search_result["final_entities"] and not search_result["final_relations"]:
-        return None
+        if query_param.mode != "mix":
+            return None
+        else:
+            if not search_result["chunk_tracking"]:
+                return None
 
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(
@@ -3419,6 +3428,13 @@ async def _build_query_context(
         chunks_vdb=chunks_vdb,
         chunk_tracking=search_result["chunk_tracking"],
     )
+
+    if (
+        not merged_chunks
+        and not truncation_result["entities_context"]
+        and not truncation_result["relations_context"]
+    ):
+        return None
 
     # Stage 4: Build final LLM context with dynamic token processing
     context = await _build_llm_context(
