@@ -18,7 +18,7 @@ const getStoredLanguage = () => {
   } catch (e) {
     console.error('Failed to get stored language:', e)
   }
-  return 'en'
+  return 'zh'
 }
 
 i18n

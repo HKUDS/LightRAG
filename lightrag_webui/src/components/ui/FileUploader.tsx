@@ -1,5 +1,5 @@
 /**
- * @see https://github.com/sadmann7/file-uploader
+ *
  */
 
 import * as React from 'react'
