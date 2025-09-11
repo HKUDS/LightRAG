@@ -317,7 +317,7 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key} extraction failed: only got {len(record_attributes)} feilds on entity `{record_attributes[1]}`"
+                f"{chunk_key}: extraction failed! only got {len(record_attributes)} feilds on entity `{record_attributes[1]}`"
             )
         return None
 
@@ -386,7 +386,7 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key} extraction failed: only got {len(record_attributes)} fields on realtion `{record_attributes[1]}`"
+                f"{chunk_key}: extraction failed! only got {len(record_attributes)} fields on realtion `{record_attributes[1]}`"
             )
         return None
 
