@@ -531,7 +531,7 @@ async def _rebuild_knowledge_from_chunks(
 
             # process multiple LLM extraction results for a single chunk_id
             for extraction_result in extraction_results:
-                entities, relationships = await _parse_extraction_result(
+                entities, relationships = await _rebuild_from_extraction_result(
                     text_chunks_storage=text_chunks_storage,
                     extraction_result=extraction_result,
                     chunk_id=chunk_id,
@@ -974,7 +974,7 @@ async def _process_extraction_result(
     return dict(maybe_nodes), dict(maybe_edges)
 
 
-async def _parse_extraction_result(
+async def _rebuild_from_extraction_result(
     text_chunks_storage: BaseKVStorage, extraction_result: str, chunk_id: str
 ) -> tuple[dict, dict]:
     """Parse cached extraction result using the same logic as extract_entities
