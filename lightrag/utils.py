@@ -9,6 +9,7 @@ import logging
 import logging.handlers
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -1035,8 +1036,12 @@ async def handle_cache(
     prompt,
     mode="default",
     cache_type="unknown",
-) -> str | None:
-    """Generic cache handling function with flattened cache keys"""
+) -> tuple[str, int] | None:
+    """Generic cache handling function with flattened cache keys
+
+    Returns:
+        tuple[str, int] | None: (content, create_time) if cache hit, None if cache miss
+    """
     if hashing_kv is None:
         return None
 
@@ -1052,7 +1057,9 @@ async def handle_cache(
     cache_entry = await hashing_kv.get_by_id(flattened_key)
     if cache_entry:
         logger.debug(f"Flattened cache hit(key:{flattened_key})")
-        return cache_entry["return"]
+        content = cache_entry["return"]
+        timestamp = cache_entry.get("create_time", 0)
+        return content, timestamp
 
     logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
     return None
@@ -1593,7 +1600,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
-) -> str:
+) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
     If cache is available and enabled (determined by handle_cache based on mode),
@@ -1613,7 +1620,9 @@ async def use_llm_func_with_cache(
         cache_keys_collector: Optional list to collect cache keys for batch processing
 
     Returns:
-        LLM response text
+        tuple[str, int]: (LLM response text, timestamp)
+            - For cache hits: (content, cache_create_time)
+            - For cache misses: (content, current_timestamp)
     """
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
@@ -1648,14 +1657,15 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
-        cached_return = await handle_cache(
+        cached_result = await handle_cache(
             llm_response_cache,
             arg_hash,
             _prompt,
             "default",
             cache_type=cache_type,
         )
-        if cached_return:
+        if cached_result:
+            content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
 
@@ -1663,7 +1673,7 @@ async def use_llm_func_with_cache(
             if cache_keys_collector is not None:
                 cache_keys_collector.append(cache_key)
 
-            return cached_return
+            return content, timestamp
         statistic_data["llm_call"] += 1
 
         # Call LLM with sanitized input
@@ -1678,6 +1688,9 @@ async def use_llm_func_with_cache(
         )
 
         res = remove_think_tags(res)
+
+        # Generate timestamp for cache miss (LLM call completion time)
+        current_timestamp = int(time.time())
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             await save_to_cache(
@@ -1695,7 +1708,7 @@ async def use_llm_func_with_cache(
             if cache_keys_collector is not None:
                 cache_keys_collector.append(cache_key)
 
-        return res
+        return res, current_timestamp
 
     # When cache is disabled, directly call LLM with sanitized input
     kwargs = {}
@@ -1714,7 +1727,9 @@ async def use_llm_func_with_cache(
         # Re-raise with the same exception type but modified message
         raise type(e)(error_msg) from e
 
-    return remove_think_tags(res)
+    # Generate timestamp for non-cached LLM call
+    current_timestamp = int(time.time())
+    return remove_think_tags(res), current_timestamp
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
