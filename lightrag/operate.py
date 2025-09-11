@@ -877,63 +877,36 @@ async def _process_extraction_result(
 
         # Fix various forms of tuple_delimiter corruption from the LLM output.
         # It handles missing or replaced characters around the core delimiter.
-        # 1. `<` or `>` may be missing.
+        # 1. There might be extra characters inserted between the bracket and pipeline.
         # 2. `|` may be missing or replaced by another character.
-        # 3. There might be extra characters inserted.
-        # 4. Missing opening `<` or closing `>`
+        # 3. Missing opening `<` or closing `>`
         # Example transformations:
-        # <SEP> -> <|SEP|>
-        # <SEP|> -> <|SEP|> (where left | is missing)
-        # <|SEP> -> <|SEP|> (where right | is missing)
-        # <XSEP|> -> <|SEP|> (where left | is replace by other charater)
-        # <|SEPX> -> <|SEP|> (where right | is replace by other charater)
-        # <|SEP|X> -> <|SEP|> (where X is not '>')
-        # <XX|SEP|YY> -> <|SEP|> (handles extra characters)
-        # |SEP|> -> <|SEP|> (where left | is missing)
-        # <|SEP| -> <|SEP|> (where right | is missing)
+        #   <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  ((one extra characters outside pipes)
+        #   <SEP>, <SEP|>, <|SEP> -> <|SEP|> (missing one or both pipes)
+        #   <XSEP|> -> <|SEP|>, <|SEPX> -> <|SEP|>  (where one | is replace by other charater)
+        #   |SEP|> -> <|SEP|>, <|SEP| -> <|SEP|> (where one | is missing)
 
         escaped_delimiter_core = re.escape(
             tuple_delimiter[2:-2]
         )  # Extract "SEP" from "<|SEP|>"
 
-        # Fix: <SEP> -> <|SEP|> (missing pipes)
+        # Fix: <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  (one extra characters outside pipes)
         record = re.sub(
-            rf"<{escaped_delimiter_core}>",
+            rf"<.?\|{escaped_delimiter_core}\|.?>",
             tuple_delimiter,
             record,
         )
 
-        # Fix: <SEP|> -> <|SEP|> (missing left pipe only)
+        # Fix: <SEP>, <SEP|>, <|SEP> -> <|SEP|> (missing one or both pipes)
         record = re.sub(
-            rf"<{escaped_delimiter_core}\|>",
+            rf"<\|?{escaped_delimiter_core}\|?>",
             tuple_delimiter,
             record,
         )
 
-        # Fix: <|SEP> -> <|SEP|> (missing right pipe only)
+        # Fix: <XSEP|> -> <|SEP|>, <|SEPX> -> <|SEP|> (one pipe is replaced by other character)
         record = re.sub(
-            rf"<\|{escaped_delimiter_core}>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: <XSEP|> -> <|SEP|> (character X replacing first pipe)
-        record = re.sub(
-            rf"<[^|]+{escaped_delimiter_core}\|>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: <|SEPX> -> <|SEP|> (character X replacing second pipe)
-        record = re.sub(
-            rf"<\|{escaped_delimiter_core}[^|]+>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: <XX|SEP|YY> -> <|SEP|> (extra characters around, but preserve correct delimiters)
-        record = re.sub(
-            rf"<[^<>]+\|{escaped_delimiter_core}\|[^<>]+>",
+            rf"<[^|]{escaped_delimiter_core}\|>|<\|{escaped_delimiter_core}[^|]>",
             tuple_delimiter,
             record,
         )
