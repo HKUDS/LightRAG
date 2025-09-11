@@ -3,7 +3,6 @@ from functools import partial
 
 import asyncio
 import json
-import re
 import json_repair
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
@@ -30,6 +29,7 @@ from .utils import (
     build_file_path,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
+    fix_tuple_delimiter_corruption,
 )
 from .base import (
     BaseGraphStorage,
@@ -875,55 +875,12 @@ async def _process_extraction_result(
         if record is None:
             continue
 
-        # Fix various forms of tuple_delimiter corruption from the LLM output.
-        # It handles missing or replaced characters around the core delimiter.
-        # 1. There might be extra characters inserted between the bracket and pipeline.
-        # 2. `|` may be missing or replaced by another character.
-        # 3. Missing opening `<` or closing `>`
-        # Example transformations:
-        #   <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  ((one extra characters outside pipes)
-        #   <SEP>, <SEP|>, <|SEP> -> <|SEP|> (missing one or both pipes)
-        #   <XSEP|> -> <|SEP|>, <|SEPX> -> <|SEP|>  (where one | is replace by other charater)
-        #   |SEP|> -> <|SEP|>, <|SEP| -> <|SEP|> (where one | is missing)
-
-        escaped_delimiter_core = re.escape(
-            tuple_delimiter[2:-2]
-        )  # Extract "SEP" from "<|SEP|>"
-
-        # Fix: <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  (one extra characters outside pipes)
-        record = re.sub(
-            rf"<.?\|{escaped_delimiter_core}\|.?>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: <SEP>, <SEP|>, <|SEP> -> <|SEP|> (missing one or both pipes)
-        record = re.sub(
-            rf"<\|?{escaped_delimiter_core}\|?>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: <XSEP|> -> <|SEP|>, <|SEPX> -> <|SEP|> (one pipe is replaced by other character)
-        record = re.sub(
-            rf"<[^|]{escaped_delimiter_core}\|>|<\|{escaped_delimiter_core}[^|]>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: |SEP|> -> <|SEP|> (missing opening <)
-        record = re.sub(
-            rf"(?<!<)\|{escaped_delimiter_core}\|>",
-            tuple_delimiter,
-            record,
-        )
-
-        # Fix: <|SEP| -> <|SEP|> (missing closing >)
-        record = re.sub(
-            rf"<\|{escaped_delimiter_core}\|(?!>)",
-            tuple_delimiter,
-            record,
-        )
+        # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
+        delimiter_core = tuple_delimiter[2:-2]  # Extract "SEP" from "<|SEP|>"
+        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
+        # change delimiter_core to lower case, and fix again
+        delimiter_core = delimiter_core.lower()
+        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 

@@ -2544,6 +2544,76 @@ def get_pinyin_sort_key(text: str) -> str:
         return text.lower()
 
 
+def fix_tuple_delimiter_corruption(
+    record: str, delimiter_core: str, tuple_delimiter: str
+) -> str:
+    """
+    Fix various forms of tuple_delimiter corruption from LLM output.
+
+    This function handles missing or replaced characters around the core delimiter.
+    It fixes common corruption patterns where the LLM output doesn't match the expected
+    tuple_delimiter format.
+
+    Args:
+        record: The text record to fix
+        delimiter_core: The core delimiter (e.g., "SEP" from "<|SEP|>")
+        tuple_delimiter: The complete tuple delimiter (e.g., "<|SEP|>")
+
+    Returns:
+        The corrected record with proper tuple_delimiter format
+
+    Examples:
+        >>> fix_tuple_delimiter_corruption("entity<X|SEP|>name", "SEP", "<|SEP|>")
+        "entity<|SEP|>name"
+        >>> fix_tuple_delimiter_corruption("entity<SEP>name", "SEP", "<|SEP|>")
+        "entity<|SEP|>name"
+        >>> fix_tuple_delimiter_corruption("entity|SEP|>name", "SEP", "<|SEP|>")
+        "entity<|SEP|>name"
+    """
+    if not record or not delimiter_core or not tuple_delimiter:
+        return record
+
+    # Escape the delimiter core for regex use
+    escaped_delimiter_core = re.escape(delimiter_core)
+
+    # Fix: <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  (one extra characters outside pipes)
+    record = re.sub(
+        rf"<.?\|{escaped_delimiter_core}\|.?>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <SEP>, <SEP|>, <|SEP> -> <|SEP|> (missing one or both pipes)
+    record = re.sub(
+        rf"<\|?{escaped_delimiter_core}\|?>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <XSEP|> -> <|SEP|>, <|SEPX> -> <|SEP|> (one pipe is replaced by other character)
+    record = re.sub(
+        rf"<[^|]{escaped_delimiter_core}\|>|<\|{escaped_delimiter_core}[^|]>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: |SEP|> -> <|SEP|> (missing opening <)
+    record = re.sub(
+        rf"(?<!<)\|{escaped_delimiter_core}\|>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|SEP| -> <|SEP|> (missing closing >)
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}\|(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    return record
+
+
 def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exception:
     """
     Safely create a prefixed exception that adapts to all error types.

@@ -4,7 +4,7 @@ from typing import Any
 
 PROMPTS: dict[str, Any] = {}
 
-# Delimiter must be bracketed in "<|...|>"
+# All delimiters must be formatted as "<|UPPER_CASE_STRING|>"
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|SEP|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
