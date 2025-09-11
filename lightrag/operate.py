@@ -317,7 +317,7 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: Entity `{record_attributes[1]}` extraction failed -- expecting 4 fields but got {len(record_attributes)}"
+                f"{chunk_key} extraction failed: only got {len(record_attributes)} feilds on entity `{record_attributes[1]}`"
             )
         return None
 
@@ -386,7 +386,7 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: Relation `{record_attributes[1]}` extraction failed -- expecting 5 fields but got {len(record_attributes)}"
+                f"{chunk_key} extraction failed: only got {len(record_attributes)} fields on realtion `{record_attributes[1]}`"
             )
         return None
 
@@ -843,8 +843,7 @@ async def _process_extraction_result(
     result: str,
     chunk_key: str,
     file_path: str = "unknown_source",
-    tuple_delimiter: str = "<|>",
-    record_delimiter: str = "##",
+    tuple_delimiter: str = "<|SEP|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
@@ -861,10 +860,6 @@ async def _process_extraction_result(
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
-    # Standardize Chinese brackets around record_delimiter to English brackets
-    bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
-    result = re.sub(bracket_pattern, ")\\1(", result)
-
     if completion_delimiter not in result:
         logger.warning(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
@@ -872,71 +867,88 @@ async def _process_extraction_result(
 
     records = split_string_by_multi_markers(
         result,
-        [record_delimiter, completion_delimiter],
+        ["\n", completion_delimiter],
     )
 
     for record in records:
-        # Remove outer brackets (support English and Chinese brackets with enhanced tolerance)
-        record = record.strip()
-
-        # Define allowed leading and trailing characters
-        leading_trailing_chars = r'[`<>"\']*'
-
-        # Handle leading characters before left bracket
-        if record.startswith("(") or record.startswith("（"):
-            record = record[1:]
-        else:
-            # Check for leading characters + left bracket pattern
-            leading_bracket_pattern = r"^" + leading_trailing_chars + r"([（(])"
-            match = re.search(leading_bracket_pattern, record)
-            if match:
-                # Extract content from the left bracket position
-                bracket_pos = match.start(1)
-                record = record[bracket_pos + 1 :]
-            else:
-                logger.warning(
-                    f"{chunk_key}: Record starting bracket can not be found in extraction result"
-                )
-
-        # Handle trailing characters after right bracket
-        if record.endswith(")") or record.endswith("）"):
-            record = record[:-1]
-        else:
-            # Check for right bracket + trailing characters pattern
-            trailing_bracket_pattern = r"([)）])" + leading_trailing_chars + r"$"
-            match = re.search(trailing_bracket_pattern, record)
-            if match:
-                # Extract content up to the right bracket position
-                bracket_pos = match.start(1)
-                record = record[:bracket_pos]
-            else:
-                logger.warning(
-                    f"{chunk_key}: Record ending bracket can not be found in extraction result"
-                )
-
         record = record.strip()
         if record is None:
             continue
 
-        if tuple_delimiter == "<|>":
-            # fix entity<| with entity<|>
-            record = re.sub(r"^entity<\|(?!>)", r"entity<|>", record)
-            # fix relationship<| with relationship<|>
-            record = re.sub(r"^relationship<\|(?!>)", r"relationship<|>", record)
-            # fix <||> with <|>
-            record = record.replace("<||>", "<|>")
-            # fix  < | > with <|>
-            record = record.replace("< | >", "<|>")
-            # fix <<|>> with <|>
-            record = record.replace("<<|>>", "<|>")
-            # fix <|>> with <|>
-            record = record.replace("<|>>", "<|>")
-            # fix <<|> with <|>
-            record = record.replace("<<|>", "<|>")
-            # fix <.|> with <|>
-            record = record.replace("<.|>", "<|>")
-            # fix <|.> with <|>
-            record = record.replace("<|.>", "<|>")
+        # Fix various forms of tuple_delimiter corruption from the LLM output.
+        # It handles missing or replaced characters around the core delimiter.
+        # 1. `<` or `>` may be missing.
+        # 2. `|` may be missing or replaced by another character.
+        # 3. There might be extra characters inserted.
+        # 4. Missing opening `<` or closing `>`
+        # Example transformations:
+        # <SEP> -> <|SEP|>
+        # <SEP|> -> <|SEP|> (where left | is missing)
+        # <|SEP> -> <|SEP|> (where right | is missing)
+        # <XSEP|> -> <|SEP|> (where left | is replace by other charater)
+        # <|SEPX> -> <|SEP|> (where right | is replace by other charater)
+        # <|SEP|X> -> <|SEP|> (where X is not '>')
+        # <XX|SEP|YY> -> <|SEP|> (handles extra characters)
+        # |SEP|> -> <|SEP|> (where left | is missing)
+        # <|SEP| -> <|SEP|> (where right | is missing)
+        
+        escaped_delimiter_core = re.escape(tuple_delimiter[2:-2])  # Extract "SEP" from "<|SEP|>"
+        
+        # Fix: <SEP> -> <|SEP|> (missing pipes)
+        record = re.sub(
+            rf"<{escaped_delimiter_core}>",
+            tuple_delimiter,
+            record,
+        )
+        
+        # Fix: <SEP|> -> <|SEP|> (missing left pipe only)
+        record = re.sub(
+            rf"<{escaped_delimiter_core}\|>",
+            tuple_delimiter,
+            record,
+        )
+
+        # Fix: <|SEP> -> <|SEP|> (missing right pipe only)
+        record = re.sub(
+            rf"<\|{escaped_delimiter_core}>",
+            tuple_delimiter,
+            record,
+        )
+
+        # Fix: <XSEP|> -> <|SEP|> (character X replacing first pipe)
+        record = re.sub(
+            rf"<[^|]+{escaped_delimiter_core}\|>",
+            tuple_delimiter,
+            record,
+        )
+
+        # Fix: <|SEPX> -> <|SEP|> (character X replacing second pipe)
+        record = re.sub(
+            rf"<\|{escaped_delimiter_core}[^|]+>",
+            tuple_delimiter,
+            record,
+        )
+
+        # Fix: <XX|SEP|YY> -> <|SEP|> (extra characters around, but preserve correct delimiters)
+        record = re.sub(
+            rf"<[^<>]+\|{escaped_delimiter_core}\|[^<>]+>",
+            tuple_delimiter,
+            record,
+        )
+
+        # Fix: |SEP|> -> <|SEP|> (missing opening <)
+        record = re.sub(
+            rf"(?<!<)\|{escaped_delimiter_core}\|>",
+            tuple_delimiter,
+            record,
+        )
+        
+        # Fix: <|SEP| -> <|SEP|> (missing closing >)
+        record = re.sub(
+            rf"<\|{escaped_delimiter_core}\|(?!>)",
+            tuple_delimiter,
+            record,
+        )
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 
@@ -988,7 +1000,6 @@ async def _parse_extraction_result(
         chunk_id,
         file_path,
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
 
@@ -1976,7 +1987,6 @@ async def extract_entities(
 
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=", ".join(entity_types),
         language=language,
@@ -1986,7 +1996,6 @@ async def extract_entities(
 
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
         examples=examples,
@@ -2046,7 +2055,6 @@ async def extract_entities(
             chunk_key,
             file_path,
             tuple_delimiter=context_base["tuple_delimiter"],
-            record_delimiter=context_base["record_delimiter"],
             completion_delimiter=context_base["completion_delimiter"],
         )
 
@@ -2069,7 +2077,6 @@ async def extract_entities(
                 chunk_key,
                 file_path,
                 tuple_delimiter=context_base["tuple_delimiter"],
-                record_delimiter=context_base["record_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
             )
 
