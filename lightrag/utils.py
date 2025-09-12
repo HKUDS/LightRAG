@@ -2591,6 +2591,13 @@ def fix_tuple_delimiter_corruption(
     # Escape the delimiter core for regex use
     escaped_delimiter_core = re.escape(delimiter_core)
 
+    # Fix: <|SEP||SEP|> -> <|SEP|>, <|SEP|||SEP|> -> <|SEP|>
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}\|+{escaped_delimiter_core}\|>",
+        tuple_delimiter,
+        record,
+    )
+
     # Fix: <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  (one extra characters outside pipes)
     record = re.sub(
         rf"<.?\|{escaped_delimiter_core}\|.?>",
@@ -2612,6 +2619,13 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
+    # Fix: <|SEP| -> <|SEP|> (missing closing >)
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}\|(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
     # Fix: |SEP|> -> <|SEP|> (missing opening <)
     record = re.sub(
         rf"(?<!<)\|{escaped_delimiter_core}\|>",
@@ -2619,9 +2633,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|SEP| -> <|SEP|> (missing closing >)
+    # Fix: <|SEP|>| -> <|SEP|>  ( this is a fix of: <|SEP|| -> <|SEP|> )
     record = re.sub(
-        rf"<\|{escaped_delimiter_core}\|(?!>)",
+        rf"<\|{escaped_delimiter_core}\|>\|",
         tuple_delimiter,
         record,
     )
