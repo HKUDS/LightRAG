@@ -5,7 +5,7 @@ from typing import Any
 PROMPTS: dict[str, Any] = {}
 
 # All delimiters must be formatted as "<|UPPER_CASE_STRING|>"
-PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|SEP|>"
+PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|S|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
@@ -18,7 +18,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
   - entity_name: Name of the entity, ensure entity names are consistent throughout the extraction.
   - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided types are suitable, classify it as `Other`.
   - entity_description: Provide a concise yet comprehensive description of the entity's attributes and activities based on the information present in the input text.
-2. Relationship Extraction: Identify direct, clearly stated and meaningful relationships between extracted entities within the input text, and extract the following information:
+2. Relationship Extraction: Identify direct, clearly stated and meaningful relationships between extracted entities, and extract the following information:
   - source_entity: name of the source entity.
   - target_entity: name of the target entity.
   - relationship_keywords: one or more high-level keywords that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details.
