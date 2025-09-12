@@ -1,1 +1,5 @@
 cachetools
+pymysql
+SQLAlchemy>=2.0
+langchain
+langchain_openai
