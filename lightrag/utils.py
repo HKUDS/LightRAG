@@ -2584,19 +2584,24 @@ def fix_tuple_delimiter_corruption(
         "entity<|S|>name"
         >>> fix_tuple_delimiter_corruption("entity|S|>name", "SEP", "<|S|>")
         "entity<|S|>name"
+    Regex Sample:
+        <\|S\|+S\|>
+        <\|\\S\|>
+        <\|+>
+        <.?\|S\|.?>
+        <\|?S\|?>
+        <[^|]S\|>|<\|S[^|]>
+        <\|S\|(?!>)
+        <\|\|(?!>)
+        (?<!<)\|S\|>
+        <\|S\|>\|
+        \|\|S\|\|
     """
     if not record or not delimiter_core or not tuple_delimiter:
         return record
 
     # Escape the delimiter core for regex use
     escaped_delimiter_core = re.escape(delimiter_core)
-
-    # Fix: <||S||>
-    record = re.sub(
-        rf"<\|+{escaped_delimiter_core}\|+>",
-        tuple_delimiter,
-        record,
-    )
 
     # Fix: <|S||S|> -> <|S|>, <|S|||S|> -> <|S|>
     record = re.sub(
@@ -2619,7 +2624,7 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <X|S|> -> <|S|>, <|S|Y> -> <|S|>, <X|S|Y> -> <|S|>  (one extra characters outside pipes)
+    # Fix: <X|S|> -> <|S|>, <|S|Y> -> <|S|>, <X|S|Y> -> <|S|>, <||S||> -> <|S|> (one extra characters outside pipes)
     record = re.sub(
         rf"<.?\|{escaped_delimiter_core}\|.?>",
         tuple_delimiter,
