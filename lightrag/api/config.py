@@ -352,7 +352,8 @@ def parse_args() -> argparse.Namespace:
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
-    args.entity_types = get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list)
+    args.entity_types = get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES)
+    args.relation_types = get_env_value("RELATION_TYPES", [])
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
@@ -417,7 +418,7 @@ def update_uvicorn_mode_config():
         global_args.workers = 1
         # Log warning directly here
         logging.warning(
-            f">> Forcing workers=1 in uvicorn mode(Ignoring workers={original_workers})"
+            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
         )
 
 
