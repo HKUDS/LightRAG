@@ -2591,6 +2591,13 @@ def fix_tuple_delimiter_corruption(
     # Escape the delimiter core for regex use
     escaped_delimiter_core = re.escape(delimiter_core)
 
+    # Fix: <||S||>
+    record = re.sub(
+        rf"<\|+{escaped_delimiter_core}\|+>",
+        tuple_delimiter,
+        record,
+    )
+
     # Fix: <|S||S|> -> <|S|>, <|S|||S|> -> <|S|>
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|+{escaped_delimiter_core}\|>",
@@ -2605,9 +2612,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|> -> <|S|>
+    # Fix: <|> -> <|S|>, <||> -> <|S|>
     record = re.sub(
-        r"<\|>",
+        r"<\|+>",
         tuple_delimiter,
         record,
     )
@@ -2640,6 +2647,13 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
+    # Fix: <|| -> <|S|>
+    record = re.sub(
+        r"<\|\|(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
     # Fix: |S|> -> <|S|> (missing opening <)
     record = re.sub(
         rf"(?<!<)\|{escaped_delimiter_core}\|>",
@@ -2650,6 +2664,13 @@ def fix_tuple_delimiter_corruption(
     # Fix: <|S|>| -> <|S|>  ( this is a fix for: <|S|| -> <|S|> )
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|>\|",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: ||S|| -> <|S|> (double pipes on both sides without angle brackets)
+    record = re.sub(
+        rf"\|\|{escaped_delimiter_core}\|\|",
         tuple_delimiter,
         record,
     )
