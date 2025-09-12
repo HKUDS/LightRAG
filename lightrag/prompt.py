@@ -241,7 +241,7 @@ Output:
 """,
 ]
 
-PROMPTA["naive_rag_response"] = """---Role---
+PROMPTS["naive_rag_response"] = """---Role---
 
 You are a helpful assistant responding to user query about Document Chunks provided provided in JSON format below.
 
