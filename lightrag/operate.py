@@ -1276,8 +1276,11 @@ async def _merge_nodes_then_upsert(
         if desc not in unique_nodes:
             unique_nodes[desc] = dp
 
-    # Sort description by timestamp
-    sorted_nodes = sorted(unique_nodes.values(), key=lambda x: x.get("timestamp", 0))
+    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
+    sorted_nodes = sorted(
+        unique_nodes.values(),
+        key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
+    )
     sorted_descriptions = [dp["description"] for dp in sorted_nodes]
 
     # Combine already_description with sorted new sorted descriptions
@@ -1405,8 +1408,11 @@ async def _merge_edges_then_upsert(
             if desc not in unique_edges:
                 unique_edges[desc] = dp
 
-    # Sort description by timestamp
-    sorted_edges = sorted(unique_edges.values(), key=lambda x: x.get("timestamp", 0))
+    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
+    sorted_edges = sorted(
+        unique_edges.values(),
+        key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
+    )
     sorted_descriptions = [dp["description"] for dp in sorted_edges]
 
     # Combine already_description with sorted new descriptions
