@@ -10,8 +10,10 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
+
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+
 
 ---Instructions---
 1. **Entity Extraction:** Identify clearly defined and meaningful entities in the input text, and extract the following information:
@@ -30,6 +32,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 7. **Undirectional Relationship:** Treat relationships as undirected; swapping the source and target entities does not constitute a new relationship. Avoid outputting duplicate relationships.
 8. **Language:** Output entity names, keywords and descriptions in {language}.
 9. **Delimiter:** Use `{record_delimiter}` as the entity or relationship list delimiter; output `{completion_delimiter}` when all the entities and relationships are extracted.
+
 
 ---Examples---
 {examples}

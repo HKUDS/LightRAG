@@ -16,6 +16,7 @@ import { uploadDocument } from '@/api/lightrag'
 
 import { UploadIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useScheme } from '@/contexts/SchemeContext';
 
 interface UploadDocumentsDialogProps {
   onDocumentsUploaded?: () => Promise<void>
@@ -27,6 +28,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const { selectedScheme } = useScheme();
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -58,6 +60,11 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
   const handleDocumentsUpload = useCallback(
     async (filesToUpload: File[]) => {
+      if (!selectedScheme) {
+        toast.error(t('schemeManager.upload.noSchemeSelected'));
+        return;
+      }
+
       setIsUploading(true)
       let hasSuccessfulUpload = false
 
@@ -95,7 +102,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
               [file.name]: 0
             }))
 
-            const result = await uploadDocument(file, (percentCompleted: number) => {
+            const result = await uploadDocument(file, selectedScheme?.id, (percentCompleted: number) => {
               console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
               setProgresses((pre) => ({
                 ...pre,
@@ -175,7 +182,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, selectedScheme]
   )
 
   return (
@@ -201,7 +208,11 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         <DialogHeader>
           <DialogTitle>{t('documentPanel.uploadDocuments.title')}</DialogTitle>
           <DialogDescription>
-            {t('documentPanel.uploadDocuments.description')}
+            {selectedScheme ? (
+              <>{t('schemeManager.upload.currentScheme')}<strong>{selectedScheme.name}</strong></>
+            ) : (
+              t('schemeManager.upload.noSchemeMessage')
+            )}
           </DialogDescription>
         </DialogHeader>
         <FileUploader

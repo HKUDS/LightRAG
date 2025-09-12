@@ -3,6 +3,8 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import json
+import uuid
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
@@ -18,6 +20,7 @@ from fastapi import (
     File,
     HTTPException,
     UploadFile,
+    Form,
 )
 from pydantic import BaseModel, Field, field_validator
 
@@ -26,6 +29,7 @@ from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+from raganything import RAGAnything
 
 
 # Function to format datetime to ISO format string with timezone information
@@ -105,6 +109,81 @@ def sanitize_filename(filename: str, input_dir: Path) -> str:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     return clean_name
+
+
+class SchemeConfig(BaseModel):
+    """Configuration model for processing schemes.
+
+    Defines the processing framework and optional extractor to use for document processing.
+
+    Attributes:
+        framework (Literal['lightrag', 'raganything']): Processing framework to use.
+            - "lightrag": Standard LightRAG processing for text-based documents
+            - "raganything": Advanced multimodal processing with image/table/equation support
+        extractor (Literal['mineru', 'docling', '']): Document extraction tool to use.
+            - "mineru": MinerU parser for comprehensive document parsing
+            - "docling": Docling parser for office document processing
+            - "": Default/automatic extractor selection
+        modelSource (Literal["huggingface", "modelscope", "local", ""]): The model source used by Mineru.
+            - "huggingface": Using pre-trained models from the Hugging Face model library
+            - "modelscope": using model resources on ModelScope platform
+            - "local": Use custom models deployed locally
+            - "":Maintain the default model source configuration of the system (usually huggingface)
+    """
+
+    framework: Literal["lightrag", "raganything"]
+    extractor: Literal["mineru", "docling", ""] = ""  # 默认值
+    modelSource: Literal["huggingface", "modelscope", "local", ""] = ""
+
+
+class Scheme(BaseModel):
+    """Base model for processing schemes.
+
+    Attributes:
+        name (str): Human-readable name for the processing scheme
+        config (SchemeConfig): Configuration settings for the scheme
+    """
+
+    name: str
+    config: SchemeConfig
+
+
+class Scheme_include_id(Scheme):
+    """Scheme model with unique identifier included.
+
+    Extends the base Scheme model to include a unique ID field for
+    identification and management operations.
+
+    Attributes:
+        id (int): Unique identifier for the scheme
+        name (str): Inherited from Scheme
+        config (SchemeConfig): Inherited from Scheme
+    """
+
+    id: int
+
+
+class SchemesResponse(BaseModel):
+    """Response model for scheme management operations.
+
+    Used for all scheme-related endpoints to provide consistent response format
+    for scheme retrieval, creation, update, and deletion operations.
+
+    Attributes:
+        status (str): Operation status ("success", "error")
+        message (Optional[str]): Additional message with operation details
+        data (Optional[List[Dict[str, Any]]]): List of scheme objects when retrieving schemes
+    """
+
+    status: str = Field(..., description="Operation status")
+    message: Optional[str] = Field(None, description="Additional message")
+    data: Optional[List[Dict[str, Any]]] = Field(None, description="List of schemes")
+
+
+class ScanRequest(BaseModel):
+    """Request model for document scanning operations."""
+
+    schemeConfig: SchemeConfig = Field(..., description="Scanning scheme configuration")
 
 
 class ScanResponse(BaseModel):
@@ -372,12 +451,20 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+    scheme_name: str = Field(
+        default=None, description="Name of the processing scheme used for this document"
+    )
+    multimodal_content: Optional[list[dict[str, Any]]] = Field(
+        default=None, description="Multimodal content of the document"
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "id": "doc_123456",
                 "content_summary": "Research paper on machine learning",
+                "scheme_name": "lightrag",
+                "multimodal_content": [],
                 "content_length": 15240,
                 "status": "PROCESSED",
                 "created_at": "2025-03-31T12:34:56",
@@ -411,6 +498,8 @@ class DocsStatusesResponse(BaseModel):
                         {
                             "id": "doc_123",
                             "content_summary": "Pending document",
+                            "scheme_name": "lightrag",
+                            "multimodal_content": [],
                             "content_length": 5000,
                             "status": "PENDING",
                             "created_at": "2025-03-31T10:00:00",
@@ -426,6 +515,8 @@ class DocsStatusesResponse(BaseModel):
                         {
                             "id": "doc_456",
                             "content_summary": "Processed document",
+                            "scheme_name": "lightrag",
+                            "multimodal_content": [],
                             "content_length": 8000,
                             "status": "PROCESSED",
                             "created_at": "2025-03-31T09:00:00",
@@ -779,7 +870,7 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, scheme_name: str = None
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -787,6 +878,8 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1159,7 +1252,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    scheme_name=scheme_name,
                 )
 
                 logger.info(
@@ -1243,17 +1339,21 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, track_id: str = None, scheme_name: str = None
+):
     """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, scheme_name
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1264,7 +1364,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
 
 
 async def pipeline_index_files(
-    rag: LightRAG, file_paths: List[Path], track_id: str = None
+    rag: LightRAG, file_paths: List[Path], track_id: str = None, scheme_name: str = None
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -1272,6 +1372,8 @@ async def pipeline_index_files(
         rag: LightRAG instance
         file_paths: Paths to the files to index
         track_id: Optional tracking ID to pass to all files
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None
     """
     if not file_paths:
         return
@@ -1285,7 +1387,9 @@ async def pipeline_index_files(
 
         # Process files sequentially with track_id
         for file_path in sorted_file_paths:
-            success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+            success, _ = await pipeline_enqueue_file(
+                rag, file_path, track_id, scheme_name
+            )
             if success:
                 enqueued = True
 
@@ -1294,6 +1398,61 @@ async def pipeline_index_files(
             await rag.apipeline_process_enqueue_documents()
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
+        logger.error(traceback.format_exc())
+
+
+async def pipeline_index_files_raganything(
+    rag_anything: RAGAnything,
+    file_paths: List[Path],
+    scheme_name: str = None,
+    parser: str = None,
+    source: str = None,
+):
+    """Index multiple files using RAGAnything framework for multimodal processing.
+
+    Args:
+        rag_anything (RAGAnything): RAGAnything instance for multimodal document processing
+        file_paths (List[Path]): List of file paths to be processed
+        track_id (str, optional): Tracking ID for batch monitoring. Defaults to None.
+        scheme_name (str, optional): Processing scheme name for categorization.
+            Defaults to None.
+        parser (str, optional): Document extraction tool to use.
+            Defaults to None.
+        source (str, optional): The model source used by Mineru.
+            Defaults to None.
+
+    Note:
+        - Uses RAGAnything's process_document_complete_lightrag_api method for each file
+        - Supports multimodal content processing (images, tables, equations)
+        - Files are processed with "auto" parse method and "modelscope" source
+        - Output is saved to "./output" directory
+        - Errors are logged but don't stop processing of remaining files
+    """
+    if not file_paths:
+        return
+
+    try:
+        # Use get_pinyin_sort_key for Chinese pinyin sorting
+        sorted_file_paths = sorted(
+            file_paths, key=lambda p: get_pinyin_sort_key(str(p))
+        )
+
+        # Process files sequentially with track_id
+        for file_path in sorted_file_paths:
+            success = await rag_anything.process_document_complete_lightrag_api(
+                file_path=str(file_path),
+                output_dir="./output",
+                parse_method="auto",
+                scheme_name=scheme_name,
+                parser=parser,
+                source=source,
+            )
+            if success:
+                pass
+
+    except Exception as e:
+        error_msg = f"Error indexing files: {str(e)}"
+        logger.error(error_msg)
         logger.error(traceback.format_exc())
 
 
@@ -1326,24 +1485,67 @@ async def pipeline_index_texts(
 
 
 async def run_scanning_process(
-    rag: LightRAG, doc_manager: DocumentManager, track_id: str = None
+    rag: LightRAG,
+    rag_anything: RAGAnything,
+    doc_manager: DocumentManager,
+    track_id: str = None,
+    schemeConfig=None,
 ):
     """Background task to scan and index documents
 
     Args:
         rag: LightRAG instance
+        rag_anythingL: RAGAnything instance
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
+        schemeConfig: Scanning scheme configuration.
+            Defaults to None
     """
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")
 
+        from lightrag.kg.shared_storage import get_namespace_data
+
+        pipeline_status = await get_namespace_data("pipeline_status")
+        is_pipeline_scan_busy = pipeline_status.get("scan_disabled", False)
+        is_pipeline_busy = pipeline_status.get("busy", False)
+
+        scheme_name = schemeConfig.framework
+        extractor = schemeConfig.extractor
+        modelSource = schemeConfig.modelSource
+
         if new_files:
             # Process all files at once with track_id
-            await pipeline_index_files(rag, new_files, track_id)
-            logger.info(f"Scanning process completed: {total_files} files Processed.")
+            if is_pipeline_busy:
+                logger.info(
+                    "Pipe is currently busy, skipping processing to avoid conflicts..."
+                )
+                return
+            if is_pipeline_scan_busy:
+                logger.info(
+                    "Pipe is currently busy, skipping processing to avoid conflicts..."
+                )
+                return
+            if scheme_name == "lightrag":
+                await pipeline_index_files(
+                    rag, new_files, track_id, scheme_name=scheme_name
+                )
+                logger.info(
+                    f"Scanning process completed with lightrag: {total_files} files Processed."
+                )
+            elif scheme_name == "raganything":
+                await pipeline_index_files_raganything(
+                    rag_anything,
+                    new_files,
+                    scheme_name=scheme_name,
+                    parser=extractor,
+                    source=modelSource,
+                )
+                logger.info(
+                    f"Scanning process completed with raganything: {total_files} files Processed."
+                )
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
@@ -1554,15 +1756,250 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    rag: LightRAG,
+    rag_anything: RAGAnything,
+    doc_manager: DocumentManager,
+    api_key: Optional[str] = None,
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
+    @router.get(
+        "/schemes",
+        response_model=SchemesResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_all_schemes():
+        """Get all available processing schemes.
+
+        Retrieves the complete list of processing schemes from the schemes.json file.
+        Each scheme defines a processing framework (lightrag/raganything) and
+        optional extractor configuration (mineru/docling).
+
+        Returns:
+            SchemesResponse: Response containing:
+                - status (str): Operation status ("success")
+                - message (str): Success message
+                - data (List[Dict]): List of all available schemes with their configurations
+
+        Raises:
+            HTTPException: If file reading fails or JSON parsing errors occur (500)
+        """
+        SCHEMES_FILE = Path("./examples/schemes.json")
+
+        if SCHEMES_FILE.exists():
+            with open(SCHEMES_FILE, "r", encoding="utf-8") as f:
+                try:
+                    current_data = json.load(f)
+                except json.JSONDecodeError:
+                    current_data = []
+        else:
+            current_data = []
+            SCHEMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(SCHEMES_FILE, "w") as f:
+                json.dump(current_data, f)
+
+        return SchemesResponse(
+            status="success",
+            message="Schemes retrieved successfully",
+            data=current_data,
+        )
+
+    @router.post(
+        "/schemes",
+        response_model=SchemesResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def save_schemes(schemes: list[Scheme_include_id]):
+        """Save/update processing schemes in batch.
+
+        Updates existing schemes with new configuration data. This endpoint performs
+        a partial update by modifying existing schemes based on their IDs while
+        preserving other schemes in the file.
+
+        Args:
+            schemes (list[Scheme_include_id]): List of schemes to update, each containing:
+                - id (int): Unique identifier of the scheme to update
+                - name (str): Display name for the scheme
+                - config (SchemeConfig): Configuration object with framework and extractor settings
+
+        Returns:
+            SchemesResponse: Response containing:
+                - status (str): Operation status ("success")
+                - message (str): Success message with count of saved schemes
+                - data (List[Dict]): Updated list of all schemes after modification
+
+        Raises:
+            HTTPException: If file operations fail or JSON processing errors occur (500)
+        """
+        try:
+            SCHEMES_FILE = Path("./examples/schemes.json")
+
+            if SCHEMES_FILE.exists():
+                with open(SCHEMES_FILE, "r", encoding="utf-8") as f:
+                    try:
+                        current_data = json.load(f)
+                    except json.JSONDecodeError:
+                        current_data = []
+            else:
+                current_data = []
+
+            updated_item = {
+                "id": schemes[0].id,
+                "name": schemes[0].name,
+                "config": {
+                    "framework": schemes[0].config.framework,
+                    "extractor": schemes[0].config.extractor,
+                    "modelSource": schemes[0].config.modelSource,
+                },
+            }
+            # 保存新方案
+            for item in current_data:
+                if item["id"] == updated_item["id"]:
+                    item["name"] = updated_item["name"]
+                    item["config"]["framework"] = updated_item["config"]["framework"]
+                    item["config"]["extractor"] = updated_item["config"]["extractor"]
+                    item["config"]["modelSource"] = updated_item["config"][
+                        "modelSource"
+                    ]
+                    break
+
+            # 写回文件
+            with open(SCHEMES_FILE, "w", encoding="utf-8") as f:
+                json.dump(current_data, f, indent=4)
+
+            # 返回响应（从文件重新读取确保一致性）
+            with open(SCHEMES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            return SchemesResponse(
+                status="success",
+                message=f"Successfully saved {len(schemes)} schemes",
+                data=data,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/schemes/add",
+        response_model=Scheme_include_id,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def add_scheme(scheme: Scheme):
+        """Add a new processing scheme.
+
+        Creates a new processing scheme with auto-generated ID and saves it to the
+        schemes configuration file. The new scheme will be available for document
+        processing operations.
+
+        Args:
+            scheme (Scheme): New scheme to add, containing:
+                - name (str): Display name for the scheme
+                - config (SchemeConfig): Configuration with framework and extractor settings
+
+        Returns:
+            Scheme_include_id: The created scheme with auto-generated ID, containing:
+                - id (int): Auto-generated unique identifier
+                - name (str): Display name of the scheme
+                - config (SchemeConfig): Processing configuration
+
+        Raises:
+            HTTPException: If file operations fail or ID generation conflicts occur (500)
+        """
+        try:
+            SCHEMES_FILE = Path("./examples/schemes.json")
+
+            if SCHEMES_FILE.exists():
+                with open(SCHEMES_FILE, "r", encoding="utf-8") as f:
+                    try:
+                        current_data = json.load(f)
+                    except json.JSONDecodeError:
+                        current_data = []
+            else:
+                current_data = []
+
+            # 生成新ID（简单实现，实际项目应该用数据库自增ID）
+            new_id = uuid.uuid4().int >> 96  # 生成一个较小的整数ID
+            while new_id in current_data:
+                new_id = uuid.uuid4().int >> 96
+
+            new_scheme = {
+                "id": new_id,
+                "name": scheme.name,
+                "config": {
+                    "framework": scheme.config.framework,
+                    "extractor": scheme.config.extractor,
+                    "modelSource": scheme.config.modelSource,
+                },
+            }
+
+            current_data.append(new_scheme)
+
+            with open(SCHEMES_FILE, "w", encoding="utf-8") as f:
+                json.dump(current_data, f, ensure_ascii=False, indent=2)
+
+            return new_scheme
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete(
+        "/schemes/{scheme_id}",
+        response_model=Dict[str, str],
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_scheme(scheme_id: int):
+        """Delete a specific processing scheme by ID.
+
+        Removes a processing scheme from the configuration file. Once deleted,
+        the scheme will no longer be available for document processing operations.
+
+        Args:
+            scheme_id (int): Unique identifier of the scheme to delete
+
+        Returns:
+            Dict[str, str]: Success message containing:
+                - message (str): Confirmation message with the deleted scheme ID
+
+        Raises:
+            HTTPException:
+                - 404: If the scheme with the specified ID is not found
+                - 500: If file operations fail or other errors occur
+        """
+        try:
+            SCHEMES_FILE = Path("./examples/schemes.json")
+
+            if SCHEMES_FILE.exists():
+                with open(SCHEMES_FILE, "r", encoding="utf-8") as f:
+                    try:
+                        current_data = json.load(f)
+                    except json.JSONDecodeError:
+                        current_data = []
+            else:
+                current_data = []
+
+            current_data_dict = {scheme["id"]: scheme for scheme in current_data}
+
+            if scheme_id not in current_data_dict:  # 直接检查 id 是否存在
+                raise HTTPException(status_code=404, detail="Scheme not found")
+
+            for i, scheme in enumerate(current_data):
+                if scheme["id"] == scheme_id:
+                    del current_data[i]  # 直接删除列表中的元素
+                    break
+
+            with open(SCHEMES_FILE, "w", encoding="utf-8") as f:
+                json.dump(current_data, f, ensure_ascii=False, indent=2)
+
+            return {"message": f"Scheme {scheme_id} deleted successfully"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        request: ScanRequest, background_tasks: BackgroundTasks
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -1577,7 +2014,14 @@ def create_document_routes(
         track_id = generate_track_id("scan")
 
         # Start the scanning process in the background with track_id
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        background_tasks.add_task(
+            run_scanning_process,
+            rag,
+            rag_anything,
+            doc_manager,
+            track_id,
+            schemeConfig=request.schemeConfig,
+        )
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -1588,7 +2032,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        schemeId: str = Form(...),
     ):
         """
         Upload a file to the input directory and index it.
@@ -1599,7 +2045,9 @@ def create_document_routes(
 
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
-            file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            file (UploadFile): The file to be uploaded. It must have an allowed extension
+            schemeId (str): ID of the processing scheme to use for this file. The scheme
+                determines whether to use LightRAG or RAGAnything framework for processing.
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -1632,8 +2080,62 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            def load_config():
+                try:
+                    SCHEMES_FILE = Path("./examples/schemes.json")
+                    with open(SCHEMES_FILE, "r") as f:
+                        schemes = json.load(f)
+                    for scheme in schemes:
+                        if str(scheme.get("id")) == schemeId:
+                            return scheme.get("config", {})
+                    return {}
+                except Exception as e:
+                    logger.error(
+                        f"Failed to load config for scheme {schemeId}: {str(e)}"
+                    )
+                    return {}
+
+            config = load_config()
+            current_framework = config.get("framework")
+            current_extractor = config.get("extractor")
+            current_modelSource = config.get("modelSource")
+            doc_pre_id = f"doc-pre-{safe_filename}"
+
+            if current_framework and current_framework == "lightrag":
+                # Add to background tasks and get track_id
+                background_tasks.add_task(
+                    pipeline_index_file,
+                    rag,
+                    file_path,
+                    track_id,
+                    scheme_name=current_framework,
+                )
+            else:
+                background_tasks.add_task(
+                    rag_anything.process_document_complete_lightrag_api,
+                    file_path=str(file_path),
+                    output_dir="./output",
+                    parse_method="auto",
+                    scheme_name=current_framework,
+                    parser=current_extractor,
+                    source=current_modelSource,
+                )
+
+            await rag.doc_status.upsert(
+                {
+                    doc_pre_id: {
+                        "status": DocStatus.READY,
+                        "content": "",
+                        "content_summary": "",
+                        "multimodal_content": [],
+                        "scheme_name": current_framework,
+                        "content_length": 0,
+                        "created_at": "",
+                        "updated_at": "",
+                        "file_path": safe_filename,
+                    }
+                }
+            )
 
             return InsertResponse(
                 status="success",
@@ -1854,6 +2356,42 @@ def create_document_routes(
                         f"Successfully dropped all {storage_success_count} storage components"
                     )
 
+            # Clean all parse_cache entries after successful storage drops
+            if storage_success_count > 0:
+                try:
+                    if "history_messages" in pipeline_status:
+                        pipeline_status["history_messages"].append(
+                            "Cleaning parse_cache entries"
+                        )
+
+                    parse_cache_result = await rag.aclean_all_parse_cache()
+                    if parse_cache_result.get("error"):
+                        cache_error_msg = f"Warning: Failed to clean parse_cache: {parse_cache_result['error']}"
+                        logger.warning(cache_error_msg)
+                        if "history_messages" in pipeline_status:
+                            pipeline_status["history_messages"].append(cache_error_msg)
+                    else:
+                        deleted_count = parse_cache_result.get("deleted_count", 0)
+                        if deleted_count > 0:
+                            cache_success_msg = f"Successfully cleaned {deleted_count} parse_cache entries"
+                            logger.info(cache_success_msg)
+                            if "history_messages" in pipeline_status:
+                                pipeline_status["history_messages"].append(
+                                    cache_success_msg
+                                )
+                        else:
+                            cache_empty_msg = "No parse_cache entries to clean"
+                            logger.info(cache_empty_msg)
+                            if "history_messages" in pipeline_status:
+                                pipeline_status["history_messages"].append(
+                                    cache_empty_msg
+                                )
+                except Exception as cache_error:
+                    cache_error_msg = f"Warning: Exception while cleaning parse_cache: {str(cache_error)}"
+                    logger.warning(cache_error_msg)
+                    if "history_messages" in pipeline_status:
+                        pipeline_status["history_messages"].append(cache_error_msg)
+
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
@@ -2025,7 +2563,7 @@ def create_document_routes(
         Get the status of all documents in the system.
 
         This endpoint retrieves the current status of all documents, grouped by their
-        processing status (PENDING, PROCESSING, PROCESSED, FAILED).
+        processing status (READY, HANDLING, PENDING, PROCESSING, PROCESSED, FAILED).
 
         Returns:
             DocsStatusesResponse: A response object containing a dictionary where keys are
@@ -2037,6 +2575,8 @@ def create_document_routes(
         """
         try:
             statuses = (
+                DocStatus.READY,
+                DocStatus.HANDLING,
                 DocStatus.PENDING,
                 DocStatus.PROCESSING,
                 DocStatus.PROCESSED,
@@ -2057,6 +2597,7 @@ def create_document_routes(
                         DocStatusResponse(
                             id=doc_id,
                             content_summary=doc_status.content_summary,
+                            multimodal_content=doc_status.multimodal_content,
                             content_length=doc_status.content_length,
                             status=doc_status.status,
                             created_at=format_datetime(doc_status.created_at),
@@ -2066,6 +2607,7 @@ def create_document_routes(
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
                             file_path=doc_status.file_path,
+                            scheme_name=doc_status.scheme_name,
                         )
                     )
             return response
@@ -2402,6 +2944,8 @@ def create_document_routes(
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=doc.file_path,
+                        scheme_name=doc.scheme_name,
+                        multimodal_content=doc.multimodal_content,
                     )
                 )
 

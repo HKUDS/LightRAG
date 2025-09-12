@@ -1,0 +1,165 @@
+.scheme-manager-container {
+  font-family: Arial, sans-serif;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.toggle-button {
+  padding: 8px 16px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-bottom: 20px;
+}
+
+.toggle-button:hover {
+  background-color: #45a049;
+}
+
+.scheme-modal {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #999;
+}
+
+.close-button:hover {
+  color: #333;
+}
+
+.modal-content {
+  display: flex;
+  height: 500px;
+}
+
+.left-panel {
+  flex: 0 0 300px;
+  padding: 16px;
+  border-right: 1px solid #ddd;
+  overflow-y: auto;
+}
+
+.right-panel {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.add-scheme-form {
+  display: flex;
+  margin-bottom: 16px;
+  gap: 8px;
+}
+
+.scheme-name-input {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.add-button {
+  padding: 8px 12px;
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.add-button:hover {
+  background-color: #0b7dda;
+}
+
+.scheme-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.scheme-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  margin-bottom: 8px;
+  background-color: #f9f9f9;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.scheme-item:hover {
+  background-color: #f0f0f0;
+}
+
+.scheme-item.active {
+  background-color: #e3f2fd;
+  border-left: 3px solid #2196F3;
+}
+
+.delete-button {
+  background: none;
+  border: none;
+  color: #f44336;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+}
+
+.delete-button:hover {
+  color: #d32f2f;
+}
+
+.empty-message, .select-message {
+  color: #666;
+  text-align: center;
+  padding: 20px;
+}
+
+.config-form {
+  margin-top: 16px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: bold;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
