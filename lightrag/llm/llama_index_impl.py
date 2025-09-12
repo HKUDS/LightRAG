@@ -4,8 +4,16 @@ from llama_index.core.llms import (
     MessageRole,
     ChatResponse,
 )
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from lightrag.utils import logger
+import re # Importamos re para el parseo
+
+# --- INICIO DE LA MODIFICACIÓN 1: Añadir networkx ---
+# Asegurarse de que networkx está instalado y añadirlo al principio del archivo
+if not pm.is_installed("networkx"):
+    pm.install("networkx")
+import networkx as nx
+# --- FIN DE LA MODIFICACIÓN 1 ---
 
 # Install required dependencies
 if not pm.is_installed("llama-index"):
@@ -206,3 +214,79 @@ async def llama_index_embed(
     # Use _get_text_embeddings for batch processing
     embeddings = embed_model._get_text_embeddings(texts)
     return np.array(embeddings)
+
+
+# --- INICIO DE LA MODIFICACIÓN 2: Nueva función para parsear y validar datos para el DAG ---
+def parse_and_validate_graph_data(
+    llm_output: str,
+    existing_graph: nx.DiGraph,
+    tuple_delimiter: str = "<|>",
+    record_delimiter: str = "##",
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Parses the raw text output from the LLM and validates new relationships to maintain a DAG.
+
+    Args:
+        llm_output (str): The raw string output from the entity extraction LLM call.
+        existing_graph (nx.DiGraph): The current state of the knowledge graph.
+        tuple_delimiter (str): The delimiter used for fields within an entity/relationship tuple.
+        record_delimiter (str): The delimiter used to separate records.
+
+    Returns:
+        Tuple[List[Dict], List[Dict]]: A tuple containing two lists:
+                                       - A list of valid entities to be added/updated.
+                                       - A list of valid relationships (edges) to be added.
+    """
+    valid_entities = []
+    valid_relationships = []
+
+    # Crear una copia temporal del grafo para probar la adición de aristas
+    temp_graph = existing_graph.copy()
+
+    records = llm_output.strip().split(record_delimiter)
+    for record in records:
+        record = record.strip()
+        if not record or not record.startswith("("):
+            continue
+        
+        # Eliminar paréntesis y parsear los campos
+        content = record[1:-1]
+        fields = content.split(tuple_delimiter)
+
+        try:
+            record_type = fields[0]
+            if record_type == "entity" and len(fields) == 4:
+                entity = {
+                    "name": fields[1],
+                    "type": fields[2],
+                    "description": fields[3],
+                }
+                valid_entities.append(entity)
+                # Añadir nodo a nuestro grafo temporal para la validación de relaciones
+                temp_graph.add_node(fields[1])
+
+            elif record_type == "relationship" and len(fields) == 5:
+                source, target, rel_type, desc = fields[1], fields[2], fields[3], fields[4]
+                
+                # --- Lógica de validación de Ciclos ---
+                # Comprobar si la adición de esta arista crearía un ciclo en el grafo temporal
+                if not nx.has_path(temp_graph, target, source):
+                    relationship = {
+                        "source": source,
+                        "target": target,
+                        "type": rel_type,
+                        "description": desc,
+                    }
+                    valid_relationships.append(relationship)
+                    # Añadir la arista validada al grafo temporal para las siguientes comprobaciones
+                    temp_graph.add_edge(source, target)
+                else:
+                    logger.warning(
+                        f"Ignorando relación de '{source}' a '{target}' para prevenir un ciclo."
+                    )
+        except IndexError:
+            logger.warning(f"Error al parsear el registro: {record}")
+            continue
+
+    return valid_entities, valid_relationships
+# --- FIN DE LA MODIFICACIÓN 2 ---
