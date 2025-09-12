@@ -274,16 +274,25 @@ async def _summarize_descriptions(
 
     prompt_template = PROMPTS["summarize_entity_descriptions"]
 
-    # Join descriptions and apply token-based truncation if necessary
-    joined_descriptions = "\n\n".join(description_list)
+    # Convert descriptions to JSONL format and apply token-based truncation
     tokenizer = global_config["tokenizer"]
     summary_context_size = global_config["summary_context_size"]
 
-    # Token-based truncation to ensure input fits within limits
-    tokens = tokenizer.encode(joined_descriptions)
-    if len(tokens) > summary_context_size:
-        truncated_tokens = tokens[:summary_context_size]
-        joined_descriptions = tokenizer.decode(truncated_tokens)
+    # Create list of JSON objects with "Description" field
+    json_descriptions = [{"Description": desc} for desc in description_list]
+
+    # Use truncate_list_by_token_size for length truncation
+    truncated_json_descriptions = truncate_list_by_token_size(
+        json_descriptions,
+        key=lambda x: json.dumps(x, ensure_ascii=False),
+        max_token_size=summary_context_size,
+        tokenizer=tokenizer,
+    )
+
+    # Convert to JSONL format (one JSON object per line)
+    joined_descriptions = "\n".join(
+        json.dumps(desc, ensure_ascii=False) for desc in truncated_json_descriptions
+    )
 
     # Prepare context for the prompt
     context_base = dict(
@@ -294,10 +303,6 @@ async def _summarize_descriptions(
         language=language,
     )
     use_prompt = prompt_template.format(**context_base)
-
-    logger.debug(
-        f"Summarizing {len(description_list)} descriptions for: {description_name}"
-    )
 
     # Use LLM function with cache (higher priority for summary generation)
     summary, _ = await use_llm_func_with_cache(

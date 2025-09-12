@@ -15,12 +15,12 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 ---Instructions---
 1. Entity Extraction: Identify clearly defined and meaningful entities in the input text, and extract the following information:
-  - entity_name: Name of the entity; ensure entity names are consistent throughout the extraction.
+  - entity_name: entity_name: The name of the entity. If entity name is case-insensitive, capitalize the first letter of each word in the entity name. Entity names must be consistently applied across the entire extraction.
   - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided entity types are suitable, classify it as `Other`.
   - entity_description: Provide a concise yet comprehensive description of the entity's attributes and activities based on the information present in the input text.
 2. Relationship Extraction: Identify direct, clearly stated and meaningful relationships between extracted entities, and extract the following information:
-  - source_entity: name of the source entity.
-  - target_entity: name of the target entity.
+  - source_entity: Name of the source entity. If the entity name is case-insensitive, capitalize the first letter of each word in the entity name. Use consistency names in entity extraction stage.
+  - target_entity: Name of the target entity. If the entity name is case-insensitive, capitalize the first letter of each word in the entity name. Use consistency names in entity extraction stage.
   - relationship_keywords: one or more high-level keywords that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details.
   - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
 3. Keep Full Context: Ensure the entity name and description are writtenin third person, explicitly name the subject or object instead of using pronouns; avoid pronouns such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
@@ -97,9 +97,9 @@ relationship{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}r
 """,
     """<Input Text>
 ```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the Global Tech Index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
 
-Among the hardest hit, Nexon Technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
+Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
 
 Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
 
@@ -144,23 +144,36 @@ relationship{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Champio
 ]
 
 PROMPTS["summarize_entity_descriptions"] = """---Role---
-You are a Knowledge Graph Specialist responsible for data curation and synthesis.
+You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
 
 ---Task---
 Your task is to synthesize a list of descriptions of a given entity or relation into a single, comprehensive, and cohesive summary.
 
 ---Instructions---
-1. **Comprehensiveness:** The summary must integrate key information from all provided descriptions. Do not omit important facts.
-2. **Context:** Ensure the summary is written in the third person, and explicitly mention the name of the entity or relation for full clarity and context.
-3. **Conflict:** In case of conflicting or inconsistent descriptions, determine if they originate from multiple, distinct entities or relationships that share the same name. If so, summarize each entity or relationship separately and then consolidate all summaries.
-4. **Style:** The output must be written from an objective, third-person perspective.
-5. **Length:** Maintain depth and completeness while ensuring the summary's length does not exceed {summary_length} tokens.
-6. **Language:** The entire output must be written in {language}.
+1. Input Format: The description list is provided in JSON format. Each JSON object (representing a single description) appears on a new line within the `Description List` section.
+2. Output Format: The merged description will be returned as plain text, presented in multiple paragraphs, without any additional formatting or extraneous comments before or after the summary.
+3. Comprehensiveness: The summary must integrate all key information from *every* provided description. Do not omit any important facts or details.
+4. Context: Ensure the summary is written from an objective, third-person perspective; explicitly mention the name of the entity or relation for full clarity and context.
+5. Context & Objectivity:
+  - Write the summary from an objective, third-person perspective.
+  - Explicitly mention the full name of the entity or relation at the beginning of the summary to ensure immediate clarity and context.
+6. Conflict Handling:
+  - In cases of conflicting or inconsistent descriptions, first determine if these conflicts arise from multiple, distinct entities or relationships that share the same name.
+  - If distinct entities/relations are identified, summarize each one *separately* within the overall output.
+  - If conflicts within a single entity/relation (e.g., historical discrepancies) exist, attempt to reconcile them or present both viewpoints with noted uncertainty.
+7. Length Constraint:The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
+8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
+  - The entire output must be written in {language}.
+  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
----Data---
+---Input---
 {description_type} Name: {description_name}
+
 Description List:
+
+```
 {description_list}
+```
 
 ---Output---
 """

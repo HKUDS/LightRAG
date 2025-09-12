@@ -2598,6 +2598,20 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
+    # Fix: <|\S|> -> <|S|>
+    record = re.sub(
+        rf"<\|\\{escaped_delimiter_core}\|>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|> -> <|S|>
+    record = re.sub(
+        r"<\|>",
+        tuple_delimiter,
+        record,
+    )
+
     # Fix: <X|S|> -> <|S|>, <|S|Y> -> <|S|>, <X|S|Y> -> <|S|>  (one extra characters outside pipes)
     record = re.sub(
         rf"<.?\|{escaped_delimiter_core}\|.?>",
