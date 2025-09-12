@@ -2571,19 +2571,19 @@ def fix_tuple_delimiter_corruption(
 
     Args:
         record: The text record to fix
-        delimiter_core: The core delimiter (e.g., "SEP" from "<|SEP|>")
-        tuple_delimiter: The complete tuple delimiter (e.g., "<|SEP|>")
+        delimiter_core: The core delimiter (e.g., "S" from "<|S|>")
+        tuple_delimiter: The complete tuple delimiter (e.g., "<|S|>")
 
     Returns:
         The corrected record with proper tuple_delimiter format
 
     Examples:
-        >>> fix_tuple_delimiter_corruption("entity<X|SEP|>name", "SEP", "<|SEP|>")
-        "entity<|SEP|>name"
-        >>> fix_tuple_delimiter_corruption("entity<SEP>name", "SEP", "<|SEP|>")
-        "entity<|SEP|>name"
-        >>> fix_tuple_delimiter_corruption("entity|SEP|>name", "SEP", "<|SEP|>")
-        "entity<|SEP|>name"
+        >>> fix_tuple_delimiter_corruption("entity<X|S|>name", "SEP", "<|S|>")
+        "entity<|S|>name"
+        >>> fix_tuple_delimiter_corruption("entity<SEP>name", "SEP", "<|S|>")
+        "entity<|S|>name"
+        >>> fix_tuple_delimiter_corruption("entity|S|>name", "SEP", "<|S|>")
+        "entity<|S|>name"
     """
     if not record or not delimiter_core or not tuple_delimiter:
         return record
@@ -2591,49 +2591,49 @@ def fix_tuple_delimiter_corruption(
     # Escape the delimiter core for regex use
     escaped_delimiter_core = re.escape(delimiter_core)
 
-    # Fix: <|SEP||SEP|> -> <|SEP|>, <|SEP|||SEP|> -> <|SEP|>
+    # Fix: <|S||S|> -> <|S|>, <|S|||S|> -> <|S|>
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|+{escaped_delimiter_core}\|>",
         tuple_delimiter,
         record,
     )
 
-    # Fix: <X|SEP|> -> <|SEP|>, <|SEP|Y> -> <|SEP|>, <X|SEP|Y> -> <|SEP|>  (one extra characters outside pipes)
+    # Fix: <X|S|> -> <|S|>, <|S|Y> -> <|S|>, <X|S|Y> -> <|S|>  (one extra characters outside pipes)
     record = re.sub(
         rf"<.?\|{escaped_delimiter_core}\|.?>",
         tuple_delimiter,
         record,
     )
 
-    # Fix: <SEP>, <SEP|>, <|SEP> -> <|SEP|> (missing one or both pipes)
+    # Fix: <S>, <S|>, <|S> -> <|S|> (missing one or both pipes)
     record = re.sub(
         rf"<\|?{escaped_delimiter_core}\|?>",
         tuple_delimiter,
         record,
     )
 
-    # Fix: <XSEP|> -> <|SEP|>, <|SEPX> -> <|SEP|> (one pipe is replaced by other character)
+    # Fix: <XS|> -> <|S|>, <|SX> -> <|S|> (one pipe is replaced by other character)
     record = re.sub(
         rf"<[^|]{escaped_delimiter_core}\|>|<\|{escaped_delimiter_core}[^|]>",
         tuple_delimiter,
         record,
     )
 
-    # Fix: <|SEP| -> <|SEP|> (missing closing >)
+    # Fix: <|S| -> <|S|> (missing closing >)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|(?!>)",
         tuple_delimiter,
         record,
     )
 
-    # Fix: |SEP|> -> <|SEP|> (missing opening <)
+    # Fix: |S|> -> <|S|> (missing opening <)
     record = re.sub(
         rf"(?<!<)\|{escaped_delimiter_core}\|>",
         tuple_delimiter,
         record,
     )
 
-    # Fix: <|SEP|>| -> <|SEP|>  ( this is a fix of: <|SEP|| -> <|SEP|> )
+    # Fix: <|S|>| -> <|S|>  ( this is a fix for: <|S|| -> <|S|> )
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|>\|",
         tuple_delimiter,

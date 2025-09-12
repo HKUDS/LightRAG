@@ -15,8 +15,8 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 ---Instructions---
 1. Entity Extraction: Identify clearly defined and meaningful entities in the input text, and extract the following information:
-  - entity_name: Name of the entity, ensure entity names are consistent throughout the extraction.
-  - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided types are suitable, classify it as `Other`.
+  - entity_name: Name of the entity; ensure entity names are consistent throughout the extraction.
+  - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided entity types are suitable, classify it as `Other`.
   - entity_description: Provide a concise yet comprehensive description of the entity's attributes and activities based on the information present in the input text.
 2. Relationship Extraction: Identify direct, clearly stated and meaningful relationships between extracted entities, and extract the following information:
   - source_entity: name of the source entity.

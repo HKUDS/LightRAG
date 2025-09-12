@@ -847,7 +847,7 @@ async def _process_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
-    tuple_delimiter: str = "<|SEP|>",
+    tuple_delimiter: str = "<|S|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
