@@ -83,7 +83,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         if not exists:
             client.create_collection(collection_name, **kwargs)
 
-
     def __post_init__(self):
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Qdrant storage instances
@@ -492,7 +491,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
                 if exists:
                     self._client.delete_collection(self.final_namespace)
-
 
                 # Recreate the collection
                 QdrantVectorDBStorage.create_collection_if_not_exist(
