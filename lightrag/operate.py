@@ -887,14 +887,22 @@ async def _process_extraction_result(
             record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
         )
         for entity_record in entity_records:
-            if not entity_record.startswith(f"entity{tuple_delimiter}") and not entity_record.startswith(f"relationship{tuple_delimiter}"):
+            if not entity_record.startswith(
+                f"entity{tuple_delimiter}"
+            ) and not entity_record.startswith(f"relationship{tuple_delimiter}"):
                 entity_record = f"entity{tuple_delimiter}{entity_record}"
             entity_relation_records = split_string_by_multi_markers(
                 entity_record, [f"{tuple_delimiter}relationship{tuple_delimiter}"]
             )
             for entity_relation_record in entity_relation_records:
-                if not entity_relation_record.startswith(f"entity{tuple_delimiter}") and not entity_relation_record.startswith(f"relationship{tuple_delimiter}"):
-                    entity_relation_record = f"relationship{tuple_delimiter}{entity_relation_record}"
+                if not entity_relation_record.startswith(
+                    f"entity{tuple_delimiter}"
+                ) and not entity_relation_record.startswith(
+                    f"relationship{tuple_delimiter}"
+                ):
+                    entity_relation_record = (
+                        f"relationship{tuple_delimiter}{entity_relation_record}"
+                    )
                 fixed_records = fixed_records + [entity_relation_record]
 
     if len(fixed_records) != len(records):
