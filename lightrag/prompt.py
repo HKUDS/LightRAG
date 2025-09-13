@@ -28,7 +28,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 5. Output Each Relationship On A Single Line; use `{tuple_delimiter}` as field delimiter, aAdhering to the following format: relationship{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description
 6. Output Order: Output the entity list first, followed by the relationship list. Within the relationship list, prioritize relationships based on their significance to the intended meaning of the input text, outputting more crucial relationships first.
 7. Undirected Relationship: Treat relationships as undirected; swapping the source and target entities does not constitute a new relationship. Avoid outputting duplicate relationships.
-8. Language: Output entity names, keywords, and descriptions in {language}. Proper nouns (e.g., personal names, place names, organization names) should not be translated. Please keep them in their original language.
+8. Language: Ensure the output language of entity names, keywords, and descriptions is {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
 9. Output `{completion_delimiter}` when all the entities and relationships have been extracted.
 
 ---Examples---
@@ -47,10 +47,9 @@ PROMPTS["entity_extraction_user_prompt"] = """---Task---
 Extract entities and relationships from the input text to be processed.
 
 ---Instructions---
-1. Output each entity and relationship on a single line.
-2. Prioritize entities and relationships most relevant to the input text's core meaning.
-3. Output `{completion_delimiter}` only after all relevant entities and relationships have been extracted.
-4. Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1. Output each entity and relationship on a single line; use `{tuple_delimiter}` as the field separator within each extracted item.
+2. Output `{completion_delimiter}` only after all relevant entities and relationships have been extracted.
+3. Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -62,9 +61,9 @@ Identify any missed entities or relationships from the input text to be processe
 1. Output entities and relationships in the same format as the previous extraction task.
 2. Do not include entities and relationships that were correctly extracted in the last extraction task.
 3. If an entity or relationship output was truncated or had missing fields in the last extraction task, please re-output it in the correct format.
-4. Output each entity and relationship on a single line, prioritizing entities and relationships most relevant to the input text's core meaning.
+4. Output each entity and relationship on a single line; use `{tuple_delimiter}` as the field separator within each extracted item.
 5. Output `{completion_delimiter}` only after all relevant entities and relationships have been extracted.
-6. Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+6. Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
 
 <Output>
 """
