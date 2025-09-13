@@ -874,12 +874,35 @@ async def _process_extraction_result(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
         )
 
+    # Split LLL output result to records by "\n"
     records = split_string_by_multi_markers(
         result,
         ["\n", completion_delimiter],
     )
 
+    # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
+    fixed_records = []
     for record in records:
+        entity_records = split_string_by_multi_markers(
+            record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
+        )
+        for entity_record in entity_records:
+            if not entity_record.startswith(f"entity{tuple_delimiter}") and not entity_record.startswith(f"relationship{tuple_delimiter}"):
+                entity_record = f"entity{tuple_delimiter}{entity_record}"
+            entity_relation_records = split_string_by_multi_markers(
+                entity_record, [f"{tuple_delimiter}relationship{tuple_delimiter}"]
+            )
+            for entity_relation_record in entity_relation_records:
+                if not entity_relation_record.startswith(f"entity{tuple_delimiter}") and not entity_relation_record.startswith(f"relationship{tuple_delimiter}"):
+                    entity_relation_record = f"relationship{tuple_delimiter}{entity_relation_record}"
+                fixed_records = fixed_records + [entity_relation_record]
+
+    if len(fixed_records) != len(records):
+        logger.warning(
+            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record seperators instead new-line"
+        )
+
+    for record in fixed_records:
         record = record.strip()
         if record is None:
             continue
