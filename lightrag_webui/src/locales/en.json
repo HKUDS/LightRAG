@@ -195,7 +195,7 @@
       "artifact": "Artifact",
       "concept": "Concept",
       "naturalobject": "Natural Object",
-      "process": "Process",
+      "method": "Method",
       "other": "Other"
     },
     "sideBar": {

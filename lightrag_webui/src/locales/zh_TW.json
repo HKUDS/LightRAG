@@ -193,9 +193,9 @@
       "content": "內容",
       "data": "資料",
       "artifact": "人工製品",
-      "concept": "抽象概念",
+      "concept": "概念",
       "naturalobject": "自然物件",
-      "process": "過程方法",
+      "method": "方法",
       "other": "其他"
     },
     "sideBar": {

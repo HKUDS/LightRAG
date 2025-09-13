@@ -29,7 +29,7 @@ DEFAULT_ENTITY_TYPES = [
     "Location",
     "Event",
     "Concept",
-    "Process",
+    "Method",
     "Content",
     "Data",
     "Artifact",
