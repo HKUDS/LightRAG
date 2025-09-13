@@ -28,8 +28,10 @@ DEFAULT_ENTITY_TYPES = [
     "Organization",
     "Location",
     "Event",
+    "Concept",
     "Artifact",
     "CreativeWork",
+    "NaturalObject",
 ]
 
 # Separator for graph fields
