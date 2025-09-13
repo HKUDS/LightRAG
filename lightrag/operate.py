@@ -1813,6 +1813,35 @@ async def merge_nodes_and_edges(
                             retry_delay=0.1,
                         )
 
+                    # Update added_entities to entity vector database using safe operation wrapper
+                    if added_entities and entity_vdb is not None:
+                        for entity_data in added_entities:
+                            entity_vdb_id = compute_mdhash_id(
+                                entity_data["entity_name"], prefix="ent-"
+                            )
+                            entity_content = f"{entity_data['entity_name']}\n{entity_data['description']}"
+
+                            vdb_data = {
+                                entity_vdb_id: {
+                                    "content": entity_content,
+                                    "entity_name": entity_data["entity_name"],
+                                    "source_id": entity_data["source_id"],
+                                    "entity_type": entity_data["entity_type"],
+                                    "file_path": entity_data.get(
+                                        "file_path", "unknown_source"
+                                    ),
+                                }
+                            }
+
+                            # Use safe operation wrapper - VDB failure must throw exception
+                            await safe_vdb_operation_with_exception(
+                                operation=lambda data=vdb_data: entity_vdb.upsert(data),
+                                operation_name="added_entity_upsert",
+                                entity_name=entity_data["entity_name"],
+                                max_retries=3,
+                                retry_delay=0.1,
+                            )
+
                     return edge_data, added_entities
 
                 except Exception as e:
