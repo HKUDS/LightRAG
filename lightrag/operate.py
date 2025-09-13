@@ -323,7 +323,7 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: extraction failed! Found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}`"
             )
         return None
 
@@ -394,7 +394,7 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) != 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: extraction failed! Found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`"
             )
         return None
 
@@ -852,7 +852,7 @@ async def _process_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
-    tuple_delimiter: str = "<|S|>",
+    tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
@@ -885,7 +885,7 @@ async def _process_extraction_result(
             continue
 
         # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
-        delimiter_core = tuple_delimiter[2:-2]  # Extract "S" from "<|S|>"
+        delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
         record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
         # change delimiter_core to lower case, and fix again
         delimiter_core = delimiter_core.lower()
