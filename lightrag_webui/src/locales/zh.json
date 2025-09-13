@@ -190,6 +190,12 @@
       "technology": "技术",
       "product": "产品",
       "document": "文档",
+      "content": "内容",
+      "data": "数据",
+      "artifact": "人工制品",
+      "concept": "概念",
+      "naturalobject": "自然对象",
+      "method": "方法",
       "other": "其他"
     },
     "sideBar": {

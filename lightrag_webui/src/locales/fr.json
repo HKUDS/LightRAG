@@ -190,6 +190,12 @@
       "technology": "Technologie",
       "product": "Produit",
       "document": "Document",
+      "content": "Contenu",
+      "data": "Données",
+      "artifact": "Artefact",
+      "concept": "Concept",
+      "naturalobject": "Objet naturel",
+      "method": "Méthode",
       "other": "Autre"
     },
     "sideBar": {

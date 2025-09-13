@@ -5,7 +5,7 @@ from typing import Any
 PROMPTS: dict[str, Any] = {}
 
 # All delimiters must be formatted as "<|UPPER_CASE_STRING|>"
-PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|S|>"
+PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
@@ -14,22 +14,49 @@ PROMPTS["entity_extraction_system_prompt"] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
 
 ---Instructions---
-1. Entity Extraction: Identify clearly defined and meaningful entities in the input text, and extract the following information:
-  - entity_name: entity_name: The name of the entity. If entity name is case-insensitive, capitalize the first letter of each word in the entity name. Entity names must be consistently applied across the entire extraction.
-  - entity_type: Categorize the entity using the following entity types: {entity_types}; if none of the provided entity types are suitable, classify it as `Other`.
-  - entity_description: Provide a concise yet comprehensive description of the entity's attributes and activities based on the information present in the input text.
-2. Relationship Extraction: Identify direct, clearly stated and meaningful relationships between extracted entities, and extract the following information:
-  - source_entity: Name of the source entity. If the entity name is case-insensitive, capitalize the first letter of each word in the entity name. Use consistency names in entity extraction stage.
-  - target_entity: Name of the target entity. If the entity name is case-insensitive, capitalize the first letter of each word in the entity name. Use consistency names in entity extraction stage.
-  - relationship_keywords: one or more high-level keywords that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details.
-  - relationship_description: Explain the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-3. Keep Full Context: Ensure the entity name and description are writtenin third person, explicitly name the subject or object instead of using pronouns; avoid pronouns such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
-4. Output Each Entity On A Single Line: Output 4 fields delimited by `{tuple_delimiter}`, adhering to the following format: entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description
-5. Output Each Relationship On A Single Line: Output 5 fields delimited by `{tuple_delimiter}`, adhering to the following format: relationship{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description
-6. Output Order: Output the entity list first, followed by the relationship list. Within the relationship list, prioritize relationships based on their significance to the intended meaning of the input text, outputting more crucial relationships first.
-7. Undirected Relationship: Treat relationships as undirected; swapping the source and target entities does not constitute a new relationship. Avoid outputting duplicate relationships.
-8. Language: Ensure the output language of entity names, keywords, and descriptions is {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
-9. Output `{completion_delimiter}` when all the entities and relationships have been extracted.
+1.  **Entity Extraction & Output:**
+    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
+    *   **Entity Details:** For each identified entity, extract the following information:
+        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
+        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
+        *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+
+2.  **Relationship Extraction & Output:**
+    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
+        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
+    *   **Relationship Details:** For each binary relationship, extract the following fields:
+        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
+        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relationship`.
+        *   Format: `relationship{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+
+3.  **Delimiter Usage Protocol:**
+    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
+    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
+    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
+
+4.  **Relationship Direction & Duplication:**
+    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+    *   Avoid outputting duplicate relationships.
+
+5.  **Output Order & Prioritization:**
+    *   Output all extracted entities first, followed by all extracted relationships.
+    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+
+6.  **Context & Objectivity:**
+    *   Ensure all entity names and descriptions are written in the **third person**.
+    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+
+7.  **Language & Proper Nouns:**
+    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+
+8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
 
 ---Examples---
 {examples}

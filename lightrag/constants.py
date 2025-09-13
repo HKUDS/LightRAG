@@ -29,8 +29,10 @@ DEFAULT_ENTITY_TYPES = [
     "Location",
     "Event",
     "Concept",
+    "Method",
+    "Content",
+    "Data",
     "Artifact",
-    "CreativeWork",
     "NaturalObject",
 ]
 

@@ -324,7 +324,7 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: extraction failed! Found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}`"
             )
         return None
 
@@ -395,7 +395,7 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) != 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: extraction failed! Found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`"
             )
         return None
 
@@ -853,7 +853,7 @@ async def _process_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
-    tuple_delimiter: str = "<|S|>",
+    tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
@@ -875,18 +875,50 @@ async def _process_extraction_result(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
         )
 
+    # Split LLL output result to records by "\n"
     records = split_string_by_multi_markers(
         result,
         ["\n", completion_delimiter],
     )
 
+    # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
+    fixed_records = []
     for record in records:
+        record = record.strip()
+        if record is None:
+            continue
+        entity_records = split_string_by_multi_markers(
+            record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
+        )
+        for entity_record in entity_records:
+            if not entity_record.startswith("entity") and not entity_record.startswith(
+                "relationship"
+            ):
+                entity_record = f"entity<|{entity_record}"
+            entity_relation_records = split_string_by_multi_markers(
+                entity_record, [f"{tuple_delimiter}relationship{tuple_delimiter}"]
+            )
+            for entity_relation_record in entity_relation_records:
+                if not entity_relation_record.startswith(
+                    "entity"
+                ) and not entity_relation_record.startswith("relationship"):
+                    entity_relation_record = (
+                        f"relationship{tuple_delimiter}{entity_relation_record}"
+                    )
+                fixed_records = fixed_records + [entity_relation_record]
+
+    if len(fixed_records) != len(records):
+        logger.warning(
+            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record seperators instead new-line"
+        )
+
+    for record in fixed_records:
         record = record.strip()
         if record is None:
             continue
 
         # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
-        delimiter_core = tuple_delimiter[2:-2]  # Extract "S" from "<|S|>"
+        delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
         record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
         # change delimiter_core to lower case, and fix again
         delimiter_core = delimiter_core.lower()
@@ -1782,6 +1814,35 @@ async def merge_nodes_and_edges(
                             max_retries=3,
                             retry_delay=0.1,
                         )
+
+                    # Update added_entities to entity vector database using safe operation wrapper
+                    if added_entities and entity_vdb is not None:
+                        for entity_data in added_entities:
+                            entity_vdb_id = compute_mdhash_id(
+                                entity_data["entity_name"], prefix="ent-"
+                            )
+                            entity_content = f"{entity_data['entity_name']}\n{entity_data['description']}"
+
+                            vdb_data = {
+                                entity_vdb_id: {
+                                    "content": entity_content,
+                                    "entity_name": entity_data["entity_name"],
+                                    "source_id": entity_data["source_id"],
+                                    "entity_type": entity_data["entity_type"],
+                                    "file_path": entity_data.get(
+                                        "file_path", "unknown_source"
+                                    ),
+                                }
+                            }
+
+                            # Use safe operation wrapper - VDB failure must throw exception
+                            await safe_vdb_operation_with_exception(
+                                operation=lambda data=vdb_data: entity_vdb.upsert(data),
+                                operation_name="added_entity_upsert",
+                                entity_name=entity_data["entity_name"],
+                                max_retries=3,
+                                retry_delay=0.1,
+                            )
 
                     return edge_data, added_entities
 
