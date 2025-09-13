@@ -78,7 +78,6 @@ from .operate import (
     extract_entities,
     merge_nodes_and_edges,
     kg_query,
-    kg_search,
     naive_query,
     _rebuild_knowledge_from_chunks,
 )
@@ -2116,54 +2115,66 @@ class LightRAG:
         await self._query_done()
         return response
 
-    def search(
+    async def aquery_data(
         self,
         query: str,
         param: QueryParam = QueryParam(),
     ) -> dict[str, Any]:
         """
-        Synchronous search API: returns structured retrieval results without LLM generation.
+        Asynchronous data retrieval API: returns structured retrieval results without LLM generation.
+        
+        This function reuses the same logic as aquery but stops before LLM generation,
+        returning the final processed entities, relationships, and chunks data that would be sent to LLM.
 
         Args:
             query: Query text.
-            param: Query parameters (reuse the same QueryParam as query/aquery).
+            param: Query parameters (same as aquery).
 
         Returns:
-            dict[str, Any]: {"entities": [...], "relationships": [...], "chunks": [...], "metadata": {...}}
-        """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.asearch(query, param))
-
-    async def asearch(
-        self,
-        query: str,
-        param: QueryParam = QueryParam(),
-    ) -> dict[str, Any]:
-        """
-        Asynchronous search API: calls kg_search and returns retrieval-only results
-        (entities, relationships, and merged chunks).
-
-        Args:
-            query: Query text.
-            param: Query parameters (reuse the same QueryParam as query/aquery).
-
-        Returns:
-            dict[str, Any]: Structured search result
+            dict[str, Any]: Structured data result with entities, relationships, chunks, and metadata
         """
         global_config = asdict(self)
-        response = await kg_search(
-            query.strip(),
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            self.text_chunks,
-            param,
-            global_config,
-            hashing_kv=self.llm_response_cache,
-            chunks_vdb=self.chunks_vdb,
-        )
+
+        if param.mode in ["local", "global", "hybrid", "mix"]:
+            final_data = await kg_query(
+                query.strip(),
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=None,
+                chunks_vdb=self.chunks_vdb,
+                return_raw_data=True,  # Get final processed data
+            )
+        elif param.mode == "naive":
+            final_data = await naive_query(
+                query.strip(),
+                self.chunks_vdb,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=None,
+                return_raw_data=True,  # Get final processed data
+            )
+        elif param.mode == "bypass":
+            # bypass mode returns empty data
+            final_data = {
+                "entities": [],
+                "relationships": [],
+                "chunks": [],
+                "metadata": {
+                    "query_mode": "bypass",
+                    "keywords": {"high_level": [], "low_level": []}
+                }
+            }
+        else:
+            raise ValueError(f"Unknown mode {param.mode}")
+        
         await self._query_done()
-        return response
+        return final_data
 
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
