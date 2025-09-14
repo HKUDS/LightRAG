@@ -2576,26 +2576,6 @@ def fix_tuple_delimiter_corruption(
 
     Returns:
         The corrected record with proper tuple_delimiter format
-
-    Examples:
-        >>> fix_tuple_delimiter_corruption("entity<X|#|>name", "SEP", "<|#|>")
-        "entity<|#|>name"
-        >>> fix_tuple_delimiter_corruption("entity<SEP>name", "SEP", "<|#|>")
-        "entity<|#|>name"
-        >>> fix_tuple_delimiter_corruption("entity|#|>name", "SEP", "<|#|>")
-        "entity<|#|>name"
-    Regex Sample:
-        <\|S\|+S\|>
-        <\|\\S\|>
-        <\|+>
-        <.?\|S\|.?>
-        <\|?S\|?>
-        <[^|]S\|>|<\|S[^|]>
-        <\|S\|(?!>)
-        <\|\|(?!>)
-        (?<!<)\|S\|>
-        <\|S\|>\|
-        \|\|S\|\|
     """
     if not record or not delimiter_core or not tuple_delimiter:
         return record
