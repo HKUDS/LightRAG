@@ -323,7 +323,7 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` of type {record_attributes[2] if len(record_attributes) > 2 else 'N/A'}"
             )
         return None
 
@@ -391,10 +391,12 @@ async def _handle_single_relationship_extraction(
     timestamp: int,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) != 5 or "relationship" not in record_attributes[0]:
-        if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
+    if (
+        len(record_attributes) != 5 or "relation" not in record_attributes[0]
+    ):  # treat "relationship" and "relation" interchangeable
+        if len(record_attributes) > 1 and "relation" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) >2 else 'N/A'}`"
             )
         return None
 
@@ -891,18 +893,23 @@ async def _process_extraction_result(
         )
         for entity_record in entity_records:
             if not entity_record.startswith("entity") and not entity_record.startswith(
-                "relationship"
+                "relation"
             ):
                 entity_record = f"entity<|{entity_record}"
             entity_relation_records = split_string_by_multi_markers(
-                entity_record, [f"{tuple_delimiter}relationship{tuple_delimiter}"]
+                # treat "relationship" and "relation" interchangeable
+                entity_record,
+                [
+                    f"{tuple_delimiter}relationship{tuple_delimiter}",
+                    f"{tuple_delimiter}relation{tuple_delimiter}",
+                ],
             )
             for entity_relation_record in entity_relation_records:
                 if not entity_relation_record.startswith(
                     "entity"
-                ) and not entity_relation_record.startswith("relationship"):
+                ) and not entity_relation_record.startswith("relation"):
                     entity_relation_record = (
-                        f"relationship{tuple_delimiter}{entity_relation_record}"
+                        f"relation{tuple_delimiter}{entity_relation_record}"
                     )
                 fixed_records = fixed_records + [entity_relation_record]
 
