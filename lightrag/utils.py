@@ -2626,7 +2626,7 @@ def fix_tuple_delimiter_corruption(
     )
 
     # Fix: <|#| -> <|#|>, <|#|| -> <|#|> (missing closing >)
-    # 
+
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|+(?!>)",
         tuple_delimiter,
@@ -2715,7 +2715,7 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
 
 def _convert_to_user_format(
     entities_context: list[dict],
-    relations_context: list[dict], 
+    relations_context: list[dict],
     final_chunks: list[dict],
     query_mode: str,
     hl_keywords: list[str] = None,
@@ -2725,65 +2725,72 @@ def _convert_to_user_format(
     merged_chunks: list[dict] = None,
 ) -> dict[str, Any]:
     """Convert internal data format to user-friendly format"""
-    
+
     # Convert entities format
     formatted_entities = []
     for entity in entities_context:
-        formatted_entities.append({
-            "entity_name": entity.get("entity", ""),
-            "entity_type": entity.get("type", "UNKNOWN"),
-            "description": entity.get("description", ""),
-            "source_id": entity.get("source_id", ""),
-            "file_path": entity.get("file_path", "unknown_source"),
-            "created_at": entity.get("created_at", ""),
-        })
-    
+        formatted_entities.append(
+            {
+                "entity_name": entity.get("entity", ""),
+                "entity_type": entity.get("type", "UNKNOWN"),
+                "description": entity.get("description", ""),
+                "source_id": entity.get("source_id", ""),
+                "file_path": entity.get("file_path", "unknown_source"),
+                "created_at": entity.get("created_at", ""),
+            }
+        )
+
     # Convert relationships format
     formatted_relationships = []
     for relation in relations_context:
-        formatted_relationships.append({
-            "src_id": relation.get("entity1", ""),
-            "tgt_id": relation.get("entity2", ""),
-            "description": relation.get("description", ""),
-            "keywords": relation.get("keywords", ""),
-            "weight": relation.get("weight", 1.0),
-            "source_id": relation.get("source_id", ""),
-            "file_path": relation.get("file_path", "unknown_source"),
-            "created_at": relation.get("created_at", ""),
-        })
-    
+        formatted_relationships.append(
+            {
+                "src_id": relation.get("entity1", ""),
+                "tgt_id": relation.get("entity2", ""),
+                "description": relation.get("description", ""),
+                "keywords": relation.get("keywords", ""),
+                "weight": relation.get("weight", 1.0),
+                "source_id": relation.get("source_id", ""),
+                "file_path": relation.get("file_path", "unknown_source"),
+                "created_at": relation.get("created_at", ""),
+            }
+        )
+
     # Convert chunks format
     formatted_chunks = []
     for chunk in final_chunks:
-        formatted_chunks.append({
-            "content": chunk.get("content", ""),
-            "file_path": chunk.get("file_path", "unknown_source"),
-            "chunk_id": chunk.get("chunk_id", ""),
-        })
-    
+        formatted_chunks.append(
+            {
+                "content": chunk.get("content", ""),
+                "file_path": chunk.get("file_path", "unknown_source"),
+                "chunk_id": chunk.get("chunk_id", ""),
+            }
+        )
+
     # Build metadata with processing info
     metadata = {
         "query_mode": query_mode,
-        "keywords": {
-            "high_level": hl_keywords or [],
-            "low_level": ll_keywords or []
-        }
+        "keywords": {"high_level": hl_keywords or [], "low_level": ll_keywords or []},
     }
-    
+
     # Add processing info if available
     if search_result and truncation_result and merged_chunks is not None:
         metadata["processing_info"] = {
             "total_entities_found": len(search_result.get("final_entities", [])),
             "total_relations_found": len(search_result.get("final_relations", [])),
-            "entities_after_truncation": len(truncation_result.get("filtered_entities", [])),
-            "relations_after_truncation": len(truncation_result.get("filtered_relations", [])),
+            "entities_after_truncation": len(
+                truncation_result.get("filtered_entities", [])
+            ),
+            "relations_after_truncation": len(
+                truncation_result.get("filtered_relations", [])
+            ),
             "merged_chunks_count": len(merged_chunks),
-            "final_chunks_count": len(final_chunks)
+            "final_chunks_count": len(final_chunks),
         }
-    
+
     return {
         "entities": formatted_entities,
         "relationships": formatted_relationships,
         "chunks": formatted_chunks,
-        "metadata": metadata
+        "metadata": metadata,
     }

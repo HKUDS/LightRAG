@@ -2122,7 +2122,7 @@ class LightRAG:
     ) -> dict[str, Any]:
         """
         Asynchronous data retrieval API: returns structured retrieval results without LLM generation.
-        
+
         This function reuses the same logic as aquery but stops before LLM generation,
         returning the final processed entities, relationships, and chunks data that would be sent to LLM.
 
@@ -2167,12 +2167,12 @@ class LightRAG:
                 "chunks": [],
                 "metadata": {
                     "query_mode": "bypass",
-                    "keywords": {"high_level": [], "low_level": []}
-                }
+                    "keywords": {"high_level": [], "low_level": []},
+                },
             }
         else:
             raise ValueError(f"Unknown mode {param.mode}")
-        
+
         await self._query_done()
         return final_data
 

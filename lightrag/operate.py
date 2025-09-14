@@ -2241,8 +2241,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     return_raw_data: Literal[True] = False,
-) -> dict[str, Any]:
-    ...
+) -> dict[str, Any]: ...
 
 
 @overload
@@ -2258,8 +2257,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     return_raw_data: Literal[False] = False,
-) -> str | AsyncIterator[str]:
-    ...
+) -> str | AsyncIterator[str]: ...
 
 
 async def kg_query(
@@ -3281,14 +3279,11 @@ async def _build_llm_context(
 ```
 
 """
-    
+
     # If final data is requested, return both context and complete data structure
     if return_final_data:
         final_data = _convert_to_user_format(
-            entities_context, 
-            relations_context, 
-            truncated_chunks, 
-            query_param.mode
+            entities_context, relations_context, truncated_chunks, query_param.mode
         )
         return result, final_data
     else:
@@ -3378,34 +3373,42 @@ async def _build_query_context(
             chunk_tracking=search_result["chunk_tracking"],
             return_final_data=True,
         )
-        
+
         if isinstance(context_result, tuple):
             context, final_chunks = context_result
         else:
             # Handle case where no final chunks are returned
             context = context_result
             final_chunks = merged_chunks
-        
+
         # Build raw data structure with the same data that goes to LLM
         raw_data = {
-            "entities": truncation_result["filtered_entities"],  # Use filtered entities (same as LLM)
-            "relationships": truncation_result["filtered_relations"],  # Use filtered relations (same as LLM)
+            "entities": truncation_result[
+                "filtered_entities"
+            ],  # Use filtered entities (same as LLM)
+            "relationships": truncation_result[
+                "filtered_relations"
+            ],  # Use filtered relations (same as LLM)
             "chunks": final_chunks,  # Use final processed chunks (same as LLM)
             "metadata": {
                 "query_mode": query_param.mode,
                 "keywords": {
                     "high_level": hl_keywords.split(", ") if hl_keywords else [],
-                    "low_level": ll_keywords.split(", ") if ll_keywords else []
+                    "low_level": ll_keywords.split(", ") if ll_keywords else [],
                 },
                 "processing_info": {
                     "total_entities_found": len(search_result["final_entities"]),
                     "total_relations_found": len(search_result["final_relations"]),
-                    "entities_after_truncation": len(truncation_result["filtered_entities"]),
-                    "relations_after_truncation": len(truncation_result["filtered_relations"]),
+                    "entities_after_truncation": len(
+                        truncation_result["filtered_entities"]
+                    ),
+                    "relations_after_truncation": len(
+                        truncation_result["filtered_relations"]
+                    ),
                     "merged_chunks_count": len(merged_chunks),
-                    "final_chunks_count": len(final_chunks)
-                }
-            }
+                    "final_chunks_count": len(final_chunks),
+                },
+            },
         }
         return context, raw_data
     else:
@@ -4003,8 +4006,8 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     return_raw_data: Literal[True] = True,
-) -> dict[str, Any]:
-    ...
+) -> dict[str, Any]: ...
+
 
 @overload
 async def naive_query(
@@ -4015,8 +4018,8 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     return_raw_data: Literal[False] = False,
-) -> str | AsyncIterator[str]:
-    ...
+) -> str | AsyncIterator[str]: ...
+
 
 async def naive_query(
     query: str,
@@ -4069,14 +4072,14 @@ async def naive_query(
             "chunks": [],
             "metadata": {
                 "query_mode": "naive",
-                "keywords": {"high_level": [], "low_level": []}
-            }
+                "keywords": {"high_level": [], "low_level": []},
+            },
         }
-        
+
         # If only raw data is requested, return it directly
         if return_raw_data:
             return empty_raw_data
-            
+
         return PROMPTS["fail_response"]
 
     # Calculate dynamic token limit for chunks
@@ -4143,8 +4146,8 @@ async def naive_query(
             "chunks": processed_chunks,  # Use processed chunks (same as LLM)
             "metadata": {
                 "query_mode": "naive",
-                "keywords": {"high_level": [], "low_level": []}
-            }
+                "keywords": {"high_level": [], "low_level": []},
+            },
         }
         return raw_data
 
