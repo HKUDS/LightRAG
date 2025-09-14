@@ -325,6 +325,7 @@ async def _handle_single_entity_extraction(
             logger.warning(
                 f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
+            logger.debug(record_attributes)
         return None
 
     try:
@@ -398,6 +399,7 @@ async def _handle_single_relationship_extraction(
             logger.warning(
                 f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) >2 else 'N/A'}`"
             )
+            logger.debug(record_attributes)
         return None
 
     try:
