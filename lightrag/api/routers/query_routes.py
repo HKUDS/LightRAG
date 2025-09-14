@@ -237,7 +237,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/query/data", response_model=QueryDataResponse, dependencies=[Depends(combined_auth)]
+        "/query/data",
+        response_model=QueryDataResponse,
+        dependencies=[Depends(combined_auth)],
     )
     async def query_data(request: QueryRequest):
         """
@@ -269,7 +271,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 relationships = response.get("relationships", [])
                 chunks = response.get("chunks", [])
                 metadata = response.get("metadata", {})
-                
+
                 # Validate data types
                 if not isinstance(entities, list):
                     entities = []
@@ -279,12 +281,12 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     chunks = []
                 if not isinstance(metadata, dict):
                     metadata = {}
-                
+
                 return QueryDataResponse(
                     entities=entities,
                     relationships=relationships,
                     chunks=chunks,
-                    metadata=metadata
+                    metadata=metadata,
                 )
             else:
                 # Fallback for unexpected response format
@@ -292,7 +294,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     entities=[],
                     relationships=[],
                     chunks=[],
-                    metadata={"error": "Unexpected response format", "raw_response": str(response)}
+                    metadata={
+                        "error": "Unexpected response format",
+                        "raw_response": str(response),
+                    },
                 )
         except Exception as e:
             trace_exception(e)

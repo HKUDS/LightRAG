@@ -2180,7 +2180,9 @@ class LightRAG:
         entities_count = len(final_data.get("entities", []))
         relationships_count = len(final_data.get("relationships", []))
         chunks_count = len(final_data.get("chunks", []))
-        logger.debug(f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks")
+        logger.debug(
+            f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
+        )
 
         await self._query_done()
         return final_data

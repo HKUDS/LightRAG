@@ -2346,7 +2346,9 @@ async def kg_query(
         if isinstance(context_result, tuple):
             context, raw_data = context_result
             logger.debug(f"[kg_query] Context length: {len(context) if context else 0}")
-            logger.debug(f"[kg_query] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}")
+            logger.debug(
+                f"[kg_query] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
+            )
             return raw_data
         else:
             raise RuntimeError(
