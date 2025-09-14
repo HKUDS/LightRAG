@@ -879,7 +879,7 @@ async def _process_extraction_result(
     # Split LLL output result to records by "\n"
     records = split_string_by_multi_markers(
         result,
-        ["\n", completion_delimiter],
+        ["\n", completion_delimiter, completion_delimiter.lower()],
     )
 
     # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
@@ -926,9 +926,12 @@ async def _process_extraction_result(
         # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
         delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
         record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
-        # change delimiter_core to lower case, and fix again
-        delimiter_core = delimiter_core.lower()
-        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
+        if delimiter_core != delimiter_core.lower():
+            # change delimiter_core to lower case, and fix again
+            delimiter_core = delimiter_core.lower()
+            record = fix_tuple_delimiter_corruption(
+                record, delimiter_core, tuple_delimiter
+            )
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 
