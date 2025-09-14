@@ -2718,11 +2718,6 @@ def _convert_to_user_format(
     relations_context: list[dict],
     final_chunks: list[dict],
     query_mode: str,
-    hl_keywords: list[str] = None,
-    ll_keywords: list[str] = None,
-    search_result: dict = None,
-    truncation_result: dict = None,
-    merged_chunks: list[dict] = None,
 ) -> dict[str, Any]:
     """Convert internal data format to user-friendly format"""
 
@@ -2764,30 +2759,20 @@ def _convert_to_user_format(
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
         }
-        formatted_chunks.append(chunk_data)    
+        formatted_chunks.append(chunk_data)
 
-    logger.debug(f"[_convert_to_user_format] Formatted {len(formatted_chunks)}/{len(final_chunks)} chunks")
+    logger.debug(
+        f"[_convert_to_user_format] Formatted {len(formatted_chunks)}/{len(final_chunks)} chunks"
+    )
 
-    # Build metadata with processing info
+    # Build basic metadata (metadata details will be added by calling functions)
     metadata = {
         "query_mode": query_mode,
-        "keywords": {"high_level": hl_keywords or [], "low_level": ll_keywords or []},
+        "keywords": {
+            "high_level": [],
+            "low_level": [],
+        },  # Placeholder, will be set by calling functions
     }
-
-    # Add processing info if available
-    if search_result and truncation_result and merged_chunks is not None:
-        metadata["processing_info"] = {
-            "total_entities_found": len(search_result.get("final_entities", [])),
-            "total_relations_found": len(search_result.get("final_relations", [])),
-            "entities_after_truncation": len(
-                truncation_result.get("filtered_entities", [])
-            ),
-            "relations_after_truncation": len(
-                truncation_result.get("filtered_relations", [])
-            ),
-            "merged_chunks_count": len(merged_chunks),
-            "final_chunks_count": len(final_chunks),
-        }
 
     return {
         "entities": formatted_entities,

@@ -3076,8 +3076,6 @@ async def _build_llm_context(
     global_config: dict[str, str],
     chunk_tracking: dict = None,
     return_raw_data: bool = False,
-    hl_keywords: list[str] = None,
-    ll_keywords: list[str] = None,
 ) -> str | tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
@@ -3239,9 +3237,10 @@ async def _build_llm_context(
         if return_raw_data:
             # Return empty raw data structure when no entities/relations
             empty_raw_data = _convert_to_user_format(
-                [], [], [], query_param.mode,
-                hl_keywords=hl_keywords,
-                ll_keywords=ll_keywords,
+                [],
+                [],
+                [],
+                query_param.mode,
             )
             return None, empty_raw_data
         else:
@@ -3297,16 +3296,18 @@ async def _build_llm_context(
 
     # If final data is requested, return both context and complete data structure
     if return_raw_data:
-        logger.debug(f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks")
-        final_data = _convert_to_user_format(
-            entities_context, 
-            relations_context, 
-            truncated_chunks, 
-            query_param.mode,
-            hl_keywords=hl_keywords,
-            ll_keywords=ll_keywords,
+        logger.debug(
+            f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
         )
-        logger.debug(f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks")
+        final_data = _convert_to_user_format(
+            entities_context,
+            relations_context,
+            truncated_chunks,
+            query_param.mode,
+        )
+        logger.debug(
+            f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+        )
         return result, final_data
     else:
         return result
@@ -3383,7 +3384,7 @@ async def _build_query_context(
         return None
 
     # Stage 4: Build final LLM context with dynamic token processing
-    
+
     if return_raw_data:
         # Convert keywords strings to lists
         hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
@@ -3399,12 +3400,36 @@ async def _build_query_context(
             global_config=text_chunks_db.global_config,
             chunk_tracking=search_result["chunk_tracking"],
             return_raw_data=True,
-            hl_keywords=hl_keywords_list,
-            ll_keywords=ll_keywords_list,
         )
-        
-        logger.debug(f"[_build_query_context] Context length: {len(context) if context else 0}")
-        logger.debug(f"[_build_query_context] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}")
+
+        # Convert keywords strings to lists and add complete metadata to raw_data
+        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
+        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
+
+        # Add complete metadata to raw_data
+        raw_data["metadata"]["keywords"] = {
+            "high_level": hl_keywords_list,
+            "low_level": ll_keywords_list,
+        }
+        raw_data["metadata"]["processing_info"] = {
+            "total_entities_found": len(search_result.get("final_entities", [])),
+            "total_relations_found": len(search_result.get("final_relations", [])),
+            "entities_after_truncation": len(
+                truncation_result.get("filtered_entities", [])
+            ),
+            "relations_after_truncation": len(
+                truncation_result.get("filtered_relations", [])
+            ),
+            "merged_chunks_count": len(merged_chunks),
+            "final_chunks_count": len(raw_data.get("chunks", [])),
+        }
+
+        logger.debug(
+            f"[_build_query_context] Context length: {len(context) if context else 0}"
+        )
+        logger.debug(
+            f"[_build_query_context] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
+        )
         return context, raw_data
     else:
         # Normal context building (existing logic)
@@ -4135,15 +4160,23 @@ async def naive_query(
     # If only raw data is requested, return it directly
     if return_raw_data:
         # Build raw data structure for naive mode using processed chunks
-        raw_data = {
-            "entities": [],  # naive mode has no entities
-            "relationships": [],  # naive mode has no relationships
-            "chunks": processed_chunks,  # Use processed chunks (same as LLM)
-            "metadata": {
-                "query_mode": "naive",
-                "keywords": {"high_level": [], "low_level": []},
-            },
+        raw_data = _convert_to_user_format(
+            [],  # naive mode has no entities
+            [],  # naive mode has no relationships
+            processed_chunks,
+            "naive",
+        )
+
+        # Add complete metadata for naive mode
+        raw_data["metadata"]["keywords"] = {
+            "high_level": [],  # naive mode has no keyword extraction
+            "low_level": [],  # naive mode has no keyword extraction
         }
+        raw_data["metadata"]["processing_info"] = {
+            "total_chunks_found": len(chunks),
+            "final_chunks_count": len(processed_chunks),
+        }
+
         return raw_data
 
     # Build text_units_context from processed chunks
