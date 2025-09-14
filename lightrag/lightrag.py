@@ -2136,6 +2136,7 @@ class LightRAG:
         global_config = asdict(self)
 
         if param.mode in ["local", "global", "hybrid", "mix"]:
+            logger.debug(f"[aquery_data] Using kg_query for mode: {param.mode}")
             final_data = await kg_query(
                 query.strip(),
                 self.chunk_entity_relation_graph,
@@ -2150,6 +2151,7 @@ class LightRAG:
                 return_raw_data=True,  # Get final processed data
             )
         elif param.mode == "naive":
+            logger.debug(f"[aquery_data] Using naive_query for mode: {param.mode}")
             final_data = await naive_query(
                 query.strip(),
                 self.chunks_vdb,
@@ -2160,6 +2162,7 @@ class LightRAG:
                 return_raw_data=True,  # Get final processed data
             )
         elif param.mode == "bypass":
+            logger.debug("[aquery_data] Using bypass mode")
             # bypass mode returns empty data
             final_data = {
                 "entities": [],
@@ -2172,6 +2175,12 @@ class LightRAG:
             }
         else:
             raise ValueError(f"Unknown mode {param.mode}")
+
+        # Log final result counts
+        entities_count = len(final_data.get("entities", []))
+        relationships_count = len(final_data.get("relationships", []))
+        chunks_count = len(final_data.get("chunks", []))
+        logger.debug(f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks")
 
         await self._query_done()
         return final_data

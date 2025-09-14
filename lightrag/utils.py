@@ -2758,14 +2758,15 @@ def _convert_to_user_format(
 
     # Convert chunks format
     formatted_chunks = []
-    for chunk in final_chunks:
-        formatted_chunks.append(
-            {
-                "content": chunk.get("content", ""),
-                "file_path": chunk.get("file_path", "unknown_source"),
-                "chunk_id": chunk.get("chunk_id", ""),
-            }
-        )
+    for i, chunk in enumerate(final_chunks):
+        chunk_data = {
+            "content": chunk.get("content", ""),
+            "file_path": chunk.get("file_path", "unknown_source"),
+            "chunk_id": chunk.get("chunk_id", ""),
+        }
+        formatted_chunks.append(chunk_data)    
+
+    logger.debug(f"[_convert_to_user_format] Formatted {len(formatted_chunks)}/{len(final_chunks)} chunks")
 
     # Build metadata with processing info
     metadata = {
