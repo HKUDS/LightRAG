@@ -2832,6 +2832,8 @@ async def _apply_token_truncation(
             "relations_context": [],
             "filtered_entities": search_result["final_entities"],
             "filtered_relations": search_result["final_relations"],
+            "entity_id_to_original": {},
+            "relation_id_to_original": {},
         }
 
     # Get token limits from query_param with fallbacks
@@ -2849,17 +2851,25 @@ async def _apply_token_truncation(
     final_entities = search_result["final_entities"]
     final_relations = search_result["final_relations"]
 
+    # Create mappings from entity/relation identifiers to original data
+    entity_id_to_original = {}
+    relation_id_to_original = {}
+
     # Generate entities context for truncation
     entities_context = []
     for i, entity in enumerate(final_entities):
+        entity_name = entity["entity_name"]
         created_at = entity.get("created_at", "UNKNOWN")
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
+        # Store mapping from entity name to original data
+        entity_id_to_original[entity_name] = entity
+
         entities_context.append(
             {
                 "id": i + 1,
-                "entity": entity["entity_name"],
+                "entity": entity_name,
                 "type": entity.get("entity_type", "UNKNOWN"),
                 "description": entity.get("description", "UNKNOWN"),
                 "created_at": created_at,
@@ -2880,6 +2890,10 @@ async def _apply_token_truncation(
         else:
             entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
 
+        # Store mapping from relation pair to original data
+        relation_key = (entity1, entity2)
+        relation_id_to_original[relation_key] = relation
+
         relations_context.append(
             {
                 "id": i + 1,
@@ -2898,12 +2912,15 @@ async def _apply_token_truncation(
     # Apply token-based truncation
     if entities_context:
         # Remove file_path and created_at for token calculation
+        entities_context_for_truncation = []
         for entity in entities_context:
-            entity.pop("file_path", None)
-            entity.pop("created_at", None)
+            entity_copy = entity.copy()
+            entity_copy.pop("file_path", None)
+            entity_copy.pop("created_at", None)
+            entities_context_for_truncation.append(entity_copy)
 
         entities_context = truncate_list_by_token_size(
-            entities_context,
+            entities_context_for_truncation,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]
             ),
@@ -2913,12 +2930,15 @@ async def _apply_token_truncation(
 
     if relations_context:
         # Remove file_path and created_at for token calculation
+        relations_context_for_truncation = []
         for relation in relations_context:
-            relation.pop("file_path", None)
-            relation.pop("created_at", None)
+            relation_copy = relation.copy()
+            relation_copy.pop("file_path", None)
+            relation_copy.pop("created_at", None)
+            relations_context_for_truncation.append(relation_copy)
 
         relations_context = truncate_list_by_token_size(
-            relations_context,
+            relations_context_for_truncation,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]
             ),
@@ -2932,6 +2952,7 @@ async def _apply_token_truncation(
 
     # Create filtered original data based on truncated context
     filtered_entities = []
+    filtered_entity_id_to_original = {}
     if entities_context:
         final_entity_names = {e["entity"] for e in entities_context}
         seen_nodes = set()
@@ -2939,9 +2960,11 @@ async def _apply_token_truncation(
             name = entity.get("entity_name")
             if name in final_entity_names and name not in seen_nodes:
                 filtered_entities.append(entity)
+                filtered_entity_id_to_original[name] = entity
                 seen_nodes.add(name)
 
     filtered_relations = []
+    filtered_relation_id_to_original = {}
     if relations_context:
         final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
         seen_edges = set()
@@ -2953,6 +2976,7 @@ async def _apply_token_truncation(
             pair = (src, tgt)
             if pair in final_relation_pairs and pair not in seen_edges:
                 filtered_relations.append(relation)
+                filtered_relation_id_to_original[pair] = relation
                 seen_edges.add(pair)
 
     return {
@@ -2962,6 +2986,8 @@ async def _apply_token_truncation(
         "relations_context": relations_context,  # Formatted and truncated for LLM
         "filtered_entities": filtered_entities,  # Original entities that passed truncation
         "filtered_relations": filtered_relations,  # Original relations that passed truncation
+        "entity_id_to_original": filtered_entity_id_to_original,  # Mapping for original data lookup
+        "relation_id_to_original": filtered_relation_id_to_original,  # Mapping for original data lookup
     }
 
 
@@ -3076,6 +3102,8 @@ async def _build_llm_context(
     global_config: dict[str, str],
     chunk_tracking: dict = None,
     return_raw_data: bool = False,
+    entity_id_to_original: dict = None,
+    relation_id_to_original: dict = None,
 ) -> str | tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
@@ -3304,6 +3332,8 @@ async def _build_llm_context(
             relations_context,
             truncated_chunks,
             query_param.mode,
+            entity_id_to_original,
+            relation_id_to_original,
         )
         logger.debug(
             f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
@@ -3400,6 +3430,8 @@ async def _build_query_context(
             global_config=text_chunks_db.global_config,
             chunk_tracking=search_result["chunk_tracking"],
             return_raw_data=True,
+            entity_id_to_original=truncation_result["entity_id_to_original"],
+            relation_id_to_original=truncation_result["relation_id_to_original"],
         )
 
         # Convert keywords strings to lists and add complete metadata to raw_data
