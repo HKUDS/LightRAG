@@ -74,23 +74,24 @@ PROMPTS["entity_extraction_user_prompt"] = """---Task---
 Extract entities and relationships from the input text to be processed.
 
 ---Instructions---
-1. Adhere strictly to the format requirements for entity and relationship lists as specified in the system prompts.
-2. Output `{completion_delimiter}` only after all relevant entities and relationships have been extracted.
-3. Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
+2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
 
 <Output>
 """
 
 PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
-Identify any missed entities or relationships from the input text to be processed based on the last extraction task.
+Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
 
 ---Instructions---
-1. Adhere strictly to the format requirements for entity and relationship lists as specified in the system prompts.
-2. Do not include entities and relationships that were correctly extracted in the last extraction task.
-3. If an entity or relationship output was truncated or had missing fields in the last extraction task, please re-output it in the correct format.
-4. Output each entity and relationship on a single line; use `{tuple_delimiter}` as the field separator within each extracted item.
-5. Output `{completion_delimiter}` only after all relevant entities and relationships have been extracted.
-6. Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
+1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
+2.  **Focus on Corrections/Additions:**
+    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+    *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
+    *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
+3.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+4.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
 
 <Output>
 """
