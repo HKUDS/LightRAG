@@ -2652,6 +2652,13 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
+    # Fix <|#: -> <|#|> (missing closing >)
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}:(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
     # Fix: <|| -> <|#|>
     record = re.sub(
         r"<\|\|(?!>)",
