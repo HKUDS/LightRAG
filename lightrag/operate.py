@@ -3,10 +3,8 @@ from functools import partial
 
 import asyncio
 import json
-import re
-import os
 import json_repair
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
 from .utils import (
@@ -22,7 +20,6 @@ from .utils import (
     handle_cache,
     save_to_cache,
     CacheData,
-    get_conversation_turns,
     use_llm_func_with_cache,
     update_chunk_cache_list,
     remove_think_tags,
@@ -32,6 +29,8 @@ from .utils import (
     build_file_path,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
+    fix_tuple_delimiter_corruption,
+    _convert_to_user_format,
 )
 from .base import (
     BaseGraphStorage,
@@ -276,16 +275,25 @@ async def _summarize_descriptions(
 
     prompt_template = PROMPTS["summarize_entity_descriptions"]
 
-    # Join descriptions and apply token-based truncation if necessary
-    joined_descriptions = "\n\n".join(description_list)
+    # Convert descriptions to JSONL format and apply token-based truncation
     tokenizer = global_config["tokenizer"]
     summary_context_size = global_config["summary_context_size"]
 
-    # Token-based truncation to ensure input fits within limits
-    tokens = tokenizer.encode(joined_descriptions)
-    if len(tokens) > summary_context_size:
-        truncated_tokens = tokens[:summary_context_size]
-        joined_descriptions = tokenizer.decode(truncated_tokens)
+    # Create list of JSON objects with "Description" field
+    json_descriptions = [{"Description": desc} for desc in description_list]
+
+    # Use truncate_list_by_token_size for length truncation
+    truncated_json_descriptions = truncate_list_by_token_size(
+        json_descriptions,
+        key=lambda x: json.dumps(x, ensure_ascii=False),
+        max_token_size=summary_context_size,
+        tokenizer=tokenizer,
+    )
+
+    # Convert to JSONL format (one JSON object per line)
+    joined_descriptions = "\n".join(
+        json.dumps(desc, ensure_ascii=False) for desc in truncated_json_descriptions
+    )
 
     # Prepare context for the prompt
     context_base = dict(
@@ -297,12 +305,8 @@ async def _summarize_descriptions(
     )
     use_prompt = prompt_template.format(**context_base)
 
-    logger.debug(
-        f"Summarizing {len(description_list)} descriptions for: {description_name}"
-    )
-
     # Use LLM function with cache (higher priority for summary generation)
-    summary = await use_llm_func_with_cache(
+    summary, _ = await use_llm_func_with_cache(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
@@ -314,13 +318,15 @@ async def _summarize_descriptions(
 async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
+    timestamp: int,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
+    if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: Entity `{record_attributes[1]}` extraction failed -- expecting 4 fields but got {len(record_attributes)}"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
+            logger.debug(record_attributes)
         return None
 
     try:
@@ -366,6 +372,7 @@ async def _handle_single_entity_extraction(
             description=entity_description,
             source_id=chunk_key,
             file_path=file_path,
+            timestamp=timestamp,
         )
 
     except ValueError as e:
@@ -383,13 +390,17 @@ async def _handle_single_entity_extraction(
 async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
+    timestamp: int,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
-        if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
+    if (
+        len(record_attributes) != 5 or "relation" not in record_attributes[0]
+    ):  # treat "relationship" and "relation" interchangeable
+        if len(record_attributes) > 1 and "relation" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: Relation `{record_attributes[1]}` extraction failed -- expecting 5 fields but got {len(record_attributes)}"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) >2 else 'N/A'}`"
             )
+            logger.debug(record_attributes)
         return None
 
     try:
@@ -443,6 +454,7 @@ async def _handle_single_relationship_extraction(
             keywords=edge_keywords,
             source_id=edge_source_id,
             file_path=file_path,
+            timestamp=timestamp,
         )
 
     except ValueError as e:
@@ -505,7 +517,7 @@ async def _rebuild_knowledge_from_chunks(
             pipeline_status["history_messages"].append(status_message)
 
     # Get cached extraction results for these chunks using storage
-    #    cached_results： chunk_id -> [list of extraction result from LLM cache sorted by created_at]
+    # cached_results： chunk_id -> [list of (extraction_result, create_time) from LLM cache sorted by create_time of the first extraction_result]
     cached_results = await _get_cached_extraction_results(
         llm_response_cache,
         all_referenced_chunk_ids,
@@ -525,36 +537,67 @@ async def _rebuild_knowledge_from_chunks(
     chunk_entities = {}  # chunk_id -> {entity_name: [entity_data]}
     chunk_relationships = {}  # chunk_id -> {(src, tgt): [relationship_data]}
 
-    for chunk_id, extraction_results in cached_results.items():
+    for chunk_id, results in cached_results.items():
         try:
             # Handle multiple extraction results per chunk
             chunk_entities[chunk_id] = defaultdict(list)
             chunk_relationships[chunk_id] = defaultdict(list)
 
             # process multiple LLM extraction results for a single chunk_id
-            for extraction_result in extraction_results:
-                entities, relationships = await _parse_extraction_result(
+            for result in results:
+                entities, relationships = await _rebuild_from_extraction_result(
                     text_chunks_storage=text_chunks_storage,
-                    extraction_result=extraction_result,
                     chunk_id=chunk_id,
+                    extraction_result=result[0],
+                    timestamp=result[1],
                 )
 
                 # Merge entities and relationships from this extraction result
-                # Only keep the first occurrence of each entity_name in the same chunk_id
+                # Compare description lengths and keep the better version for the same chunk_id
                 for entity_name, entity_list in entities.items():
-                    if (
-                        entity_name not in chunk_entities[chunk_id]
-                        or len(chunk_entities[chunk_id][entity_name]) == 0
-                    ):
+                    if entity_name not in chunk_entities[chunk_id]:
+                        # New entity for this chunk_id
                         chunk_entities[chunk_id][entity_name].extend(entity_list)
+                    elif len(chunk_entities[chunk_id][entity_name]) == 0:
+                        # Empty list, add the new entities
+                        chunk_entities[chunk_id][entity_name].extend(entity_list)
+                    else:
+                        # Compare description lengths and keep the better one
+                        existing_desc_len = len(
+                            chunk_entities[chunk_id][entity_name][0].get(
+                                "description", ""
+                            )
+                            or ""
+                        )
+                        new_desc_len = len(entity_list[0].get("description", "") or "")
 
-                # Only keep the first occurrence of each rel_key in the same chunk_id
+                        if new_desc_len > existing_desc_len:
+                            # Replace with the new entity that has longer description
+                            chunk_entities[chunk_id][entity_name] = list(entity_list)
+                        # Otherwise keep existing version
+
+                # Compare description lengths and keep the better version for the same chunk_id
                 for rel_key, rel_list in relationships.items():
-                    if (
-                        rel_key not in chunk_relationships[chunk_id]
-                        or len(chunk_relationships[chunk_id][rel_key]) == 0
-                    ):
+                    if rel_key not in chunk_relationships[chunk_id]:
+                        # New relationship for this chunk_id
                         chunk_relationships[chunk_id][rel_key].extend(rel_list)
+                    elif len(chunk_relationships[chunk_id][rel_key]) == 0:
+                        # Empty list, add the new relationships
+                        chunk_relationships[chunk_id][rel_key].extend(rel_list)
+                    else:
+                        # Compare description lengths and keep the better one
+                        existing_desc_len = len(
+                            chunk_relationships[chunk_id][rel_key][0].get(
+                                "description", ""
+                            )
+                            or ""
+                        )
+                        new_desc_len = len(rel_list[0].get("description", "") or "")
+
+                        if new_desc_len > existing_desc_len:
+                            # Replace with the new relationship that has longer description
+                            chunk_relationships[chunk_id][rel_key] = list(rel_list)
+                        # Otherwise keep existing version
 
         except Exception as e:
             status_message = (
@@ -792,8 +835,6 @@ async def _get_cached_extraction_results(
         cached_results[chunk_id].sort(key=lambda x: x[1])
         # Store the earliest create_time for this chunk (first item after sorting)
         chunk_earliest_times[chunk_id] = cached_results[chunk_id][0][1]
-        # Extract only extraction_result (x[0])
-        cached_results[chunk_id] = [item[0] for item in cached_results[chunk_id]]
 
     # Sort cached_results by the earliest create_time of each chunk
     sorted_chunk_ids = sorted(
@@ -808,15 +849,15 @@ async def _get_cached_extraction_results(
     logger.info(
         f"Found {valid_entries} valid cache entries, {len(sorted_cached_results)} chunks with results"
     )
-    return sorted_cached_results
+    return sorted_cached_results  # each item: list(extraction_result, create_time)
 
 
 async def _process_extraction_result(
     result: str,
     chunk_key: str,
+    timestamp: int,
     file_path: str = "unknown_source",
-    tuple_delimiter: str = "<|>",
-    record_delimiter: str = "##",
+    tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
@@ -833,57 +874,73 @@ async def _process_extraction_result(
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
-    # Standardize Chinese brackets around record_delimiter to English brackets
-    bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
-    result = re.sub(bracket_pattern, ")\\1(", result)
-
     if completion_delimiter not in result:
         logger.warning(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
         )
 
+    # Split LLL output result to records by "\n"
     records = split_string_by_multi_markers(
         result,
-        [record_delimiter, completion_delimiter],
+        ["\n", completion_delimiter, completion_delimiter.lower()],
     )
 
+    # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
+    fixed_records = []
     for record in records:
-        # Remove outer brackets (support English and Chinese brackets)
         record = record.strip()
-        if record.startswith("(") or record.startswith("（"):
-            record = record[1:]
-        if record.endswith(")") or record.endswith("）"):
-            record = record[:-1]
+        if record is None:
+            continue
+        entity_records = split_string_by_multi_markers(
+            record, [f"{tuple_delimiter}entity{tuple_delimiter}"]
+        )
+        for entity_record in entity_records:
+            if not entity_record.startswith("entity") and not entity_record.startswith(
+                "relation"
+            ):
+                entity_record = f"entity<|{entity_record}"
+            entity_relation_records = split_string_by_multi_markers(
+                # treat "relationship" and "relation" interchangeable
+                entity_record,
+                [
+                    f"{tuple_delimiter}relationship{tuple_delimiter}",
+                    f"{tuple_delimiter}relation{tuple_delimiter}",
+                ],
+            )
+            for entity_relation_record in entity_relation_records:
+                if not entity_relation_record.startswith(
+                    "entity"
+                ) and not entity_relation_record.startswith("relation"):
+                    entity_relation_record = (
+                        f"relation{tuple_delimiter}{entity_relation_record}"
+                    )
+                fixed_records = fixed_records + [entity_relation_record]
 
+    if len(fixed_records) != len(records):
+        logger.warning(
+            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record seperators instead new-line"
+        )
+
+    for record in fixed_records:
         record = record.strip()
         if record is None:
             continue
 
-        if tuple_delimiter == "<|>":
-            # fix entity<| with entity<|>
-            record = re.sub(r"^entity<\|(?!>)", r"entity<|>", record)
-            # fix relationship<| with relationship<|>
-            record = re.sub(r"^relationship<\|(?!>)", r"relationship<|>", record)
-            # fix <||> with <|>
-            record = record.replace("<||>", "<|>")
-            # fix  < | > with <|>
-            record = record.replace("< | >", "<|>")
-            # fix <<|>> with <|>
-            record = record.replace("<<|>>", "<|>")
-            # fix <|>> with <|>
-            record = record.replace("<|>>", "<|>")
-            # fix <<|> with <|>
-            record = record.replace("<<|>", "<|>")
-            # fix <.|> with <|>
-            record = record.replace("<.|>", "<|>")
-            # fix <|.> with <|>
-            record = record.replace("<|.>", "<|>")
+        # Fix various forms of tuple_delimiter corruption from the LLM output using the dedicated function
+        delimiter_core = tuple_delimiter[2:-2]  # Extract "#" from "<|#|>"
+        record = fix_tuple_delimiter_corruption(record, delimiter_core, tuple_delimiter)
+        if delimiter_core != delimiter_core.lower():
+            # change delimiter_core to lower case, and fix again
+            delimiter_core = delimiter_core.lower()
+            record = fix_tuple_delimiter_corruption(
+                record, delimiter_core, tuple_delimiter
+            )
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 
         # Try to parse as entity
         entity_data = await _handle_single_entity_extraction(
-            record_attributes, chunk_key, file_path
+            record_attributes, chunk_key, timestamp, file_path
         )
         if entity_data is not None:
             maybe_nodes[entity_data["entity_name"]].append(entity_data)
@@ -891,7 +948,7 @@ async def _process_extraction_result(
 
         # Try to parse as relationship
         relationship_data = await _handle_single_relationship_extraction(
-            record_attributes, chunk_key, file_path
+            record_attributes, chunk_key, timestamp, file_path
         )
         if relationship_data is not None:
             maybe_edges[
@@ -901,8 +958,11 @@ async def _process_extraction_result(
     return dict(maybe_nodes), dict(maybe_edges)
 
 
-async def _parse_extraction_result(
-    text_chunks_storage: BaseKVStorage, extraction_result: str, chunk_id: str
+async def _rebuild_from_extraction_result(
+    text_chunks_storage: BaseKVStorage,
+    extraction_result: str,
+    chunk_id: str,
+    timestamp: int,
 ) -> tuple[dict, dict]:
     """Parse cached extraction result using the same logic as extract_entities
 
@@ -927,9 +987,9 @@ async def _parse_extraction_result(
     return await _process_extraction_result(
         extraction_result,
         chunk_id,
+        timestamp,
         file_path,
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
 
@@ -1254,13 +1314,22 @@ async def _merge_nodes_then_upsert(
         reverse=True,
     )[0][0]  # Get the entity type with the highest count
 
-    # merge and deduplicate description
-    description_list = list(
-        dict.fromkeys(
-            already_description
-            + [dp["description"] for dp in nodes_data if dp.get("description")]
-        )
+    # Deduplicate by description, keeping first occurrence
+    unique_nodes = {}
+    for dp in nodes_data:
+        desc = dp["description"]
+        if desc not in unique_nodes:
+            unique_nodes[desc] = dp
+
+    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
+    sorted_nodes = sorted(
+        unique_nodes.values(),
+        key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
     )
+    sorted_descriptions = [dp["description"] for dp in sorted_nodes]
+
+    # Combine already_description with sorted new sorted descriptions
+    description_list = already_description + sorted_descriptions
 
     num_fragment = len(description_list)
     already_fragment = len(already_description)
@@ -1282,15 +1351,19 @@ async def _merge_nodes_then_upsert(
 
         # Log based on actual LLM usage
         if llm_was_used:
-            status_message = f"LLMmrg: `{entity_name}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"LLMmrg: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
         else:
-            status_message = f"Merged: `{entity_name}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"Merged: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
 
-        logger.info(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+        if already_fragment > 0 or llm_was_used:
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
+        else:
+            logger.debug(status_message)
+
     else:
         logger.error(f"Entity {entity_name} has no description")
         description = "(no description)"
@@ -1372,12 +1445,23 @@ async def _merge_edges_then_upsert(
     # Process edges_data with None checks
     weight = sum([dp["weight"] for dp in edges_data] + already_weights)
 
-    description_list = list(
-        dict.fromkeys(
-            already_description
-            + [dp["description"] for dp in edges_data if dp.get("description")]
-        )
+    # Deduplicate by description, keeping first occurrence
+    unique_edges = {}
+    for dp in edges_data:
+        if dp.get("description"):
+            desc = dp["description"]
+            if desc not in unique_edges:
+                unique_edges[desc] = dp
+
+    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
+    sorted_edges = sorted(
+        unique_edges.values(),
+        key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
     )
+    sorted_descriptions = [dp["description"] for dp in sorted_edges]
+
+    # Combine already_description with sorted new descriptions
+    description_list = already_description + sorted_descriptions
 
     num_fragment = len(description_list)
     already_fragment = len(already_description)
@@ -1399,15 +1483,19 @@ async def _merge_edges_then_upsert(
 
         # Log based on actual LLM usage
         if llm_was_used:
-            status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
         else:
-            status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
 
-        logger.info(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+        if already_fragment > 0 or llm_was_used:
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
+        else:
+            logger.debug(status_message)
+
     else:
         logger.error(f"Edge {src_id} - {tgt_id} has no description")
         description = "(no description)"
@@ -1739,6 +1827,35 @@ async def merge_nodes_and_edges(
                             retry_delay=0.1,
                         )
 
+                    # Update added_entities to entity vector database using safe operation wrapper
+                    if added_entities and entity_vdb is not None:
+                        for entity_data in added_entities:
+                            entity_vdb_id = compute_mdhash_id(
+                                entity_data["entity_name"], prefix="ent-"
+                            )
+                            entity_content = f"{entity_data['entity_name']}\n{entity_data['description']}"
+
+                            vdb_data = {
+                                entity_vdb_id: {
+                                    "content": entity_content,
+                                    "entity_name": entity_data["entity_name"],
+                                    "source_id": entity_data["source_id"],
+                                    "entity_type": entity_data["entity_type"],
+                                    "file_path": entity_data.get(
+                                        "file_path", "unknown_source"
+                                    ),
+                                }
+                            }
+
+                            # Use safe operation wrapper - VDB failure must throw exception
+                            await safe_vdb_operation_with_exception(
+                                operation=lambda data=vdb_data: entity_vdb.upsert(data),
+                                operation_name="added_entity_upsert",
+                                entity_name=entity_data["entity_name"],
+                                max_retries=3,
+                                retry_delay=0.1,
+                            )
+
                     return edge_data, added_entities
 
                 except Exception as e:
@@ -1909,7 +2026,6 @@ async def extract_entities(
 
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=", ".join(entity_types),
         language=language,
@@ -1919,7 +2035,6 @@ async def extract_entities(
 
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
         examples=examples,
@@ -1958,7 +2073,7 @@ async def extract_entities(
             "entity_continue_extraction_user_prompt"
         ].format(**{**context_base, "input_text": content})
 
-        final_result = await use_llm_func_with_cache(
+        final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
             use_llm_func,
             system_prompt=entity_extraction_system_prompt,
@@ -1968,7 +2083,6 @@ async def extract_entities(
             cache_keys_collector=cache_keys_collector,
         )
 
-        # Store LLM cache reference in chunk (will be handled by use_llm_func_with_cache)
         history = pack_user_ass_to_openai_messages(
             entity_extraction_user_prompt, final_result
         )
@@ -1977,15 +2091,15 @@ async def extract_entities(
         maybe_nodes, maybe_edges = await _process_extraction_result(
             final_result,
             chunk_key,
+            timestamp,
             file_path,
             tuple_delimiter=context_base["tuple_delimiter"],
-            record_delimiter=context_base["record_delimiter"],
             completion_delimiter=context_base["completion_delimiter"],
         )
 
-        # Process additional gleaning results
+        # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
-            glean_result = await use_llm_func_with_cache(
+            glean_result, timestamp = await use_llm_func_with_cache(
                 entity_continue_extraction_user_prompt,
                 use_llm_func,
                 system_prompt=entity_extraction_system_prompt,
@@ -2000,25 +2114,42 @@ async def extract_entities(
             glean_nodes, glean_edges = await _process_extraction_result(
                 glean_result,
                 chunk_key,
+                timestamp,
                 file_path,
                 tuple_delimiter=context_base["tuple_delimiter"],
-                record_delimiter=context_base["record_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
             )
 
-            # Merge results - only add entities and edges with new names
-            for entity_name, entities in glean_nodes.items():
-                if (
-                    entity_name not in maybe_nodes
-                ):  # Only accetp entities with new name in gleaning stage
-                    maybe_nodes[entity_name] = []  # Explicitly create the list
-                    maybe_nodes[entity_name].extend(entities)
-            for edge_key, edges in glean_edges.items():
-                if (
-                    edge_key not in maybe_edges
-                ):  # Only accetp edges with new name in gleaning stage
-                    maybe_edges[edge_key] = []  # Explicitly create the list
-                    maybe_edges[edge_key].extend(edges)
+            # Merge results - compare description lengths to choose better version
+            for entity_name, glean_entities in glean_nodes.items():
+                if entity_name in maybe_nodes:
+                    # Compare description lengths and keep the better one
+                    original_desc_len = len(
+                        maybe_nodes[entity_name][0].get("description", "") or ""
+                    )
+                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
+
+                    if glean_desc_len > original_desc_len:
+                        maybe_nodes[entity_name] = list(glean_entities)
+                    # Otherwise keep original version
+                else:
+                    # New entity from gleaning stage
+                    maybe_nodes[entity_name] = list(glean_entities)
+
+            for edge_key, glean_edges in glean_edges.items():
+                if edge_key in maybe_edges:
+                    # Compare description lengths and keep the better one
+                    original_desc_len = len(
+                        maybe_edges[edge_key][0].get("description", "") or ""
+                    )
+                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+
+                    if glean_desc_len > original_desc_len:
+                        maybe_edges[edge_key] = list(glean_edges)
+                    # Otherwise keep original version
+                else:
+                    # New edge from gleaning stage
+                    maybe_edges[edge_key] = list(glean_edges)
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
@@ -2097,6 +2228,7 @@ async def extract_entities(
     return chunk_results
 
 
+@overload
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2108,7 +2240,39 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
-) -> str | AsyncIterator[str]:
+    return_raw_data: Literal[True] = False,
+) -> dict[str, Any]: ...
+
+
+@overload
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: Literal[False] = False,
+) -> str | AsyncIterator[str]: ...
+
+
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: bool = False,
+) -> str | AsyncIterator[str] | dict[str, Any]:
     if not query:
         return PROMPTS["fail_response"]
 
@@ -2134,11 +2298,13 @@ async def kg_query(
         query_param.user_prompt or "",
         query_param.enable_rerank,
     )
-    cached_response = await handle_cache(
+    cached_result = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
-    if cached_response is not None:
-        return cached_response
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        if not query_param.only_need_context and not query_param.only_need_prompt:
+            return cached_response
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2162,7 +2328,34 @@ async def kg_query(
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
 
-    # Build context
+    # If raw data is requested, get both context and raw data
+    if return_raw_data:
+        context_result = await _build_query_context(
+            query,
+            ll_keywords_str,
+            hl_keywords_str,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+            chunks_vdb,
+            return_raw_data=True,
+        )
+
+        if isinstance(context_result, tuple):
+            context, raw_data = context_result
+            logger.debug(f"[kg_query] Context length: {len(context) if context else 0}")
+            logger.debug(
+                f"[kg_query] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
+            )
+            return raw_data
+        else:
+            raise RuntimeError(
+                "Failed to build query context for raw data. Expected a tuple, but got a different type."
+            )
+
+    # Build context (normal flow)
     context = await _build_query_context(
         query,
         ll_keywords_str,
@@ -2175,17 +2368,10 @@ async def kg_query(
         chunks_vdb,
     )
 
-    if query_param.only_need_context:
+    if query_param.only_need_context and not query_param.only_need_prompt:
         return context if context is not None else PROMPTS["fail_response"]
     if context is None:
         return PROMPTS["fail_response"]
-
-    # Process conversation history
-    history_context = ""
-    if query_param.conversation_history:
-        history_context = get_conversation_turns(
-            query_param.conversation_history, query_param.history_turns
-        )
 
     # Build system prompt
     user_prompt = (
@@ -2197,7 +2383,6 @@ async def kg_query(
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
-        history=history_context,
         user_prompt=user_prompt,
     )
 
@@ -2213,8 +2398,9 @@ async def kg_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
-        stream=query_param.stream,
+        history_messages=query_param.conversation_history,
         enable_cot=True,
+        stream=query_param.stream,
     )
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
@@ -2308,10 +2494,11 @@ async def extract_keywords_only(
         param.hl_keywords or [],
         param.ll_keywords or [],
     )
-    cached_response = await handle_cache(
+    cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
     )
-    if cached_response is not None:
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
         try:
             keywords_data = json_repair.loads(cached_response)
             return keywords_data.get("high_level_keywords", []), keywords_data.get(
@@ -2327,14 +2514,7 @@ async def extract_keywords_only(
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
-    # 3. Process conversation history
-    # history_context = ""
-    # if param.conversation_history:
-    #     history_context = get_conversation_turns(
-    #         param.conversation_history, param.history_turns
-    #     )
-
-    # 4. Build the keyword-extraction prompt
+    # 3. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
         query=text,
         examples=examples,
@@ -2347,7 +2527,7 @@ async def extract_keywords_only(
         f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
     )
 
-    # 5. Call the LLM for keyword extraction
+    # 4. Call the LLM for keyword extraction
     if param.model_func:
         use_model_func = param.model_func
     else:
@@ -2357,7 +2537,7 @@ async def extract_keywords_only(
 
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
-    # 6. Parse out JSON from the LLM response
+    # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
     try:
         keywords_data = json_repair.loads(result)
@@ -2372,7 +2552,7 @@ async def extract_keywords_only(
     hl_keywords = keywords_data.get("high_level_keywords", [])
     ll_keywords = keywords_data.get("low_level_keywords", [])
 
-    # 7. Cache only the processed keywords with cache type
+    # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
         cache_data = {
             "high_level_keywords": hl_keywords,
@@ -2432,12 +2612,15 @@ async def _get_vector_context(
     try:
         # Use chunk_top_k if specified, otherwise fall back to top_k
         search_top_k = query_param.chunk_top_k or query_param.top_k
+        cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
         results = await chunks_vdb.query(
             query, top_k=search_top_k, query_embedding=query_embedding
         )
         if not results:
-            logger.info(f"Naive query: 0 chunks (chunk_top_k: {search_top_k})")
+            logger.info(
+                f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
+            )
             return []
 
         valid_chunks = []
@@ -2453,7 +2636,7 @@ async def _get_vector_context(
                 valid_chunks.append(chunk_with_metadata)
 
         logger.info(
-            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k: {search_top_k})"
+            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
         )
         return valid_chunks
 
@@ -2462,7 +2645,7 @@ async def _get_vector_context(
         return []
 
 
-async def _build_query_context(
+async def _perform_kg_search(
     query: str,
     ll_keywords: str,
     hl_keywords: str,
@@ -2472,25 +2655,21 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
-):
-    if not query:
-        logger.warning("Query is empty, skipping context building")
-        return ""
+) -> dict[str, Any]:
+    """
+    Pure search logic that retrieves raw entities, relations, and vector chunks.
+    No token truncation or formatting - just raw search results.
+    """
 
-    logger.info(f"Process {os.getpid()} building query context...")
-
-    # Collect chunks from different sources separately
-    vector_chunks = []
-    entity_chunks = []
-    relation_chunks = []
-    entities_context = []
-    relations_context = []
-
-    # Store original data for later text chunk retrieval
+    # Initialize result containers
     local_entities = []
     local_relations = []
     global_entities = []
     global_relations = []
+    vector_chunks = []
+    chunk_tracking = {}
+
+    # Handle different query modes
 
     # Track chunk sources and metadata for final logging
     chunk_tracking = {}  # chunk_id -> {source, frequency, order}
@@ -2546,7 +2725,7 @@ async def _build_query_context(
                 query_param,
             )
 
-        # Get vector chunks first if in mix mode
+        # Get vector chunks for mix mode
         if query_param.mode == "mix" and chunks_vdb:
             vector_chunks = await _get_vector_context(
                 query,
@@ -2566,11 +2745,9 @@ async def _build_query_context(
                 else:
                     logger.warning(f"Vector chunk missing chunk_id: {chunk}")
 
-    # Use round-robin merge to combine local and global data fairly
+    # Round-robin merge entities
     final_entities = []
     seen_entities = set()
-
-    # Round-robin merge entities
     max_len = max(len(local_entities), len(global_entities))
     for i in range(max_len):
         # First from local
@@ -2592,7 +2769,6 @@ async def _build_query_context(
     # Round-robin merge relations
     final_relations = []
     seen_relations = set()
-
     max_len = max(len(local_relations), len(global_relations))
     for i in range(max_len):
         # First from local
@@ -2625,153 +2801,219 @@ async def _build_query_context(
                 final_relations.append(relation)
                 seen_relations.add(rel_key)
 
-    # Generate entities context
+    logger.info(
+        f"Raw search results: {len(final_entities)} entities, {len(final_relations)} relations, {len(vector_chunks)} vector chunks"
+    )
+
+    return {
+        "final_entities": final_entities,
+        "final_relations": final_relations,
+        "vector_chunks": vector_chunks,
+        "chunk_tracking": chunk_tracking,
+        "query_embedding": query_embedding,
+    }
+
+
+async def _apply_token_truncation(
+    search_result: dict[str, Any],
+    query_param: QueryParam,
+    global_config: dict[str, str],
+) -> dict[str, Any]:
+    """
+    Apply token-based truncation to entities and relations for LLM efficiency.
+    """
+    tokenizer = global_config.get("tokenizer")
+    if not tokenizer:
+        logger.warning("No tokenizer found, skipping truncation")
+        return {
+            "truncated_entities": search_result["final_entities"],
+            "truncated_relations": search_result["final_relations"],
+            "entities_context": [],
+            "relations_context": [],
+            "filtered_entities": search_result["final_entities"],
+            "filtered_relations": search_result["final_relations"],
+            "entity_id_to_original": {},
+            "relation_id_to_original": {},
+        }
+
+    # Get token limits from query_param with fallbacks
+    max_entity_tokens = getattr(
+        query_param,
+        "max_entity_tokens",
+        global_config.get("max_entity_tokens", DEFAULT_MAX_ENTITY_TOKENS),
+    )
+    max_relation_tokens = getattr(
+        query_param,
+        "max_relation_tokens",
+        global_config.get("max_relation_tokens", DEFAULT_MAX_RELATION_TOKENS),
+    )
+
+    final_entities = search_result["final_entities"]
+    final_relations = search_result["final_relations"]
+
+    # Create mappings from entity/relation identifiers to original data
+    entity_id_to_original = {}
+    relation_id_to_original = {}
+
+    # Generate entities context for truncation
     entities_context = []
-    for i, n in enumerate(final_entities):
-        created_at = n.get("created_at", "UNKNOWN")
+    for i, entity in enumerate(final_entities):
+        entity_name = entity["entity_name"]
+        created_at = entity.get("created_at", "UNKNOWN")
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from node data
-        file_path = n.get("file_path", "unknown_source")
+        # Store mapping from entity name to original data
+        entity_id_to_original[entity_name] = entity
 
         entities_context.append(
             {
                 "id": i + 1,
-                "entity": n["entity_name"],
-                "type": n.get("entity_type", "UNKNOWN"),
-                "description": n.get("description", "UNKNOWN"),
+                "entity": entity_name,
+                "type": entity.get("entity_type", "UNKNOWN"),
+                "description": entity.get("description", "UNKNOWN"),
                 "created_at": created_at,
-                "file_path": file_path,
+                "file_path": entity.get("file_path", "unknown_source"),
             }
         )
 
-    # Generate relations context
+    # Generate relations context for truncation
     relations_context = []
-    for i, e in enumerate(final_relations):
-        created_at = e.get("created_at", "UNKNOWN")
-        # Convert timestamp to readable format
+    for i, relation in enumerate(final_relations):
+        created_at = relation.get("created_at", "UNKNOWN")
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from edge data
-        file_path = e.get("file_path", "unknown_source")
-
         # Handle different relation data formats
-        if "src_tgt" in e:
-            entity1, entity2 = e["src_tgt"]
+        if "src_tgt" in relation:
+            entity1, entity2 = relation["src_tgt"]
         else:
-            entity1, entity2 = e.get("src_id"), e.get("tgt_id")
+            entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
+
+        # Store mapping from relation pair to original data
+        relation_key = (entity1, entity2)
+        relation_id_to_original[relation_key] = relation
 
         relations_context.append(
             {
                 "id": i + 1,
                 "entity1": entity1,
                 "entity2": entity2,
-                "description": e.get("description", "UNKNOWN"),
+                "description": relation.get("description", "UNKNOWN"),
                 "created_at": created_at,
-                "file_path": file_path,
+                "file_path": relation.get("file_path", "unknown_source"),
             }
         )
 
     logger.debug(
-        f"Initial KG query results: {len(entities_context)} entities, {len(relations_context)} relations"
+        f"Before truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    # Unified token control system - Apply precise token limits to entities and relations
-    tokenizer = text_chunks_db.global_config.get("tokenizer")
-    # Get new token limits from query_param (with fallback to global_config)
-    max_entity_tokens = getattr(
-        query_param,
-        "max_entity_tokens",
-        text_chunks_db.global_config.get(
-            "max_entity_tokens", DEFAULT_MAX_ENTITY_TOKENS
-        ),
-    )
-    max_relation_tokens = getattr(
-        query_param,
-        "max_relation_tokens",
-        text_chunks_db.global_config.get(
-            "max_relation_tokens", DEFAULT_MAX_RELATION_TOKENS
-        ),
-    )
-    max_total_tokens = getattr(
-        query_param,
-        "max_total_tokens",
-        text_chunks_db.global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
-    )
-
-    # Truncate entities based on complete JSON serialization
+    # Apply token-based truncation
     if entities_context:
-        # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
+        # Remove file_path and created_at for token calculation
+        entities_context_for_truncation = []
         for entity in entities_context:
-            # remove file_path and created_at
-            entity.pop("file_path", None)
-            entity.pop("created_at", None)
-            # if "file_path" in entity and entity["file_path"]:
-            #     entity["file_path"] = entity["file_path"].replace(GRAPH_FIELD_SEP, ";")
+            entity_copy = entity.copy()
+            entity_copy.pop("file_path", None)
+            entity_copy.pop("created_at", None)
+            entities_context_for_truncation.append(entity_copy)
 
         entities_context = truncate_list_by_token_size(
-            entities_context,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
+            entities_context_for_truncation,
+            key=lambda x: "\n".join(
+                json.dumps(item, ensure_ascii=False) for item in [x]
+            ),
             max_token_size=max_entity_tokens,
             tokenizer=tokenizer,
         )
 
-    # Truncate relations based on complete JSON serialization
     if relations_context:
-        # Process relations context to replace GRAPH_FIELD_SEP with : in file_path fields
+        # Remove file_path and created_at for token calculation
+        relations_context_for_truncation = []
         for relation in relations_context:
-            # remove file_path and created_at
-            relation.pop("file_path", None)
-            relation.pop("created_at", None)
-            # if "file_path" in relation and relation["file_path"]:
-            #     relation["file_path"] = relation["file_path"].replace(
-            #         GRAPH_FIELD_SEP, ";"
-            #     )
+            relation_copy = relation.copy()
+            relation_copy.pop("file_path", None)
+            relation_copy.pop("created_at", None)
+            relations_context_for_truncation.append(relation_copy)
 
         relations_context = truncate_list_by_token_size(
-            relations_context,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
+            relations_context_for_truncation,
+            key=lambda x: "\n".join(
+                json.dumps(item, ensure_ascii=False) for item in [x]
+            ),
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
 
-    # After truncation, get text chunks based on final entities and relations
     logger.info(
-        f"Truncated KG query results: {len(entities_context)} entities, {len(relations_context)} relations"
+        f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    # Create filtered data based on truncated context
-    final_node_datas = []
-    if entities_context and final_entities:
+    # Create filtered original data based on truncated context
+    filtered_entities = []
+    filtered_entity_id_to_original = {}
+    if entities_context:
         final_entity_names = {e["entity"] for e in entities_context}
         seen_nodes = set()
-        for node in final_entities:
-            name = node.get("entity_name")
+        for entity in final_entities:
+            name = entity.get("entity_name")
             if name in final_entity_names and name not in seen_nodes:
-                final_node_datas.append(node)
+                filtered_entities.append(entity)
+                filtered_entity_id_to_original[name] = entity
                 seen_nodes.add(name)
 
-    final_edge_datas = []
-    if relations_context and final_relations:
+    filtered_relations = []
+    filtered_relation_id_to_original = {}
+    if relations_context:
         final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
         seen_edges = set()
-        for edge in final_relations:
-            src, tgt = edge.get("src_id"), edge.get("tgt_id")
+        for relation in final_relations:
+            src, tgt = relation.get("src_id"), relation.get("tgt_id")
             if src is None or tgt is None:
-                src, tgt = edge.get("src_tgt", (None, None))
+                src, tgt = relation.get("src_tgt", (None, None))
 
             pair = (src, tgt)
             if pair in final_relation_pairs and pair not in seen_edges:
-                final_edge_datas.append(edge)
+                filtered_relations.append(relation)
+                filtered_relation_id_to_original[pair] = relation
                 seen_edges.add(pair)
 
-    # Get text chunks based on final filtered data
-    # To preserve the influence of entity order,  entiy-based chunks should not be deduplcicated by vector_chunks
-    if final_node_datas:
+    return {
+        "truncated_entities": final_entities,  # Keep original for backward compatibility
+        "truncated_relations": final_relations,  # Keep original for backward compatibility
+        "entities_context": entities_context,  # Formatted and truncated for LLM
+        "relations_context": relations_context,  # Formatted and truncated for LLM
+        "filtered_entities": filtered_entities,  # Original entities that passed truncation
+        "filtered_relations": filtered_relations,  # Original relations that passed truncation
+        "entity_id_to_original": filtered_entity_id_to_original,  # Mapping for original data lookup
+        "relation_id_to_original": filtered_relation_id_to_original,  # Mapping for original data lookup
+    }
+
+
+async def _merge_all_chunks(
+    filtered_entities: list[dict],
+    filtered_relations: list[dict],
+    vector_chunks: list[dict],
+    query: str = "",
+    knowledge_graph_inst: BaseGraphStorage = None,
+    text_chunks_db: BaseKVStorage = None,
+    query_param: QueryParam = None,
+    chunks_vdb: BaseVectorStorage = None,
+    chunk_tracking: dict = None,
+    query_embedding: list[float] = None,
+) -> list[dict]:
+    """
+    Merge chunks from different sources: vector_chunks + entity_chunks + relation_chunks.
+    """
+    if chunk_tracking is None:
+        chunk_tracking = {}
+
+    # Get chunks from entities
+    entity_chunks = []
+    if filtered_entities and text_chunks_db:
         entity_chunks = await _find_related_text_unit_from_entities(
-            final_node_datas,
+            filtered_entities,
             query_param,
             text_chunks_db,
             knowledge_graph_inst,
@@ -2781,21 +3023,21 @@ async def _build_query_context(
             query_embedding=query_embedding,
         )
 
-    # Find deduplcicated chunks from edge
-    # Deduplication cause chunks solely relation-based to be prioritized and sent to the LLM when re-ranking is disabled
-    if final_edge_datas:
+    # Get chunks from relations
+    relation_chunks = []
+    if filtered_relations and text_chunks_db:
         relation_chunks = await _find_related_text_unit_from_relations(
-            final_edge_datas,
+            filtered_relations,
             query_param,
             text_chunks_db,
-            entity_chunks,
+            entity_chunks,  # For deduplication
             query,
             chunks_vdb,
             chunk_tracking=chunk_tracking,
             query_embedding=query_embedding,
         )
 
-    # Round-robin merge chunks from different sources with deduplication by chunk_id
+    # Round-robin merge chunks from different sources with deduplication
     merged_chunks = []
     seen_chunk_ids = set()
     max_len = max(len(vector_chunks), len(entity_chunks), len(relation_chunks))
@@ -2845,16 +3087,90 @@ async def _build_query_context(
                 )
 
     logger.info(
-        f"Round-robin merged total chunks from {origin_len} to {len(merged_chunks)}"
+        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplication: {origin_len - len(merged_chunks)})"
     )
 
-    # Apply token processing to merged chunks
+    return merged_chunks
+
+
+async def _build_llm_context(
+    entities_context: list[dict],
+    relations_context: list[dict],
+    merged_chunks: list[dict],
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    chunk_tracking: dict = None,
+    return_raw_data: bool = False,
+    entity_id_to_original: dict = None,
+    relation_id_to_original: dict = None,
+) -> str | tuple[str, dict[str, Any]]:
+    """
+    Build the final LLM context string with token processing.
+    This includes dynamic token calculation and final chunk truncation.
+    """
+    tokenizer = global_config.get("tokenizer")
+    if not tokenizer:
+        logger.warning("No tokenizer found, building context without token limits")
+
+        # Build basic context without token processing
+        entities_str = "\n".join(
+            json.dumps(entity, ensure_ascii=False) for entity in entities_context
+        )
+        relations_str = "\n".join(
+            json.dumps(relation, ensure_ascii=False) for relation in relations_context
+        )
+
+        text_units_context = []
+        for i, chunk in enumerate(merged_chunks):
+            text_units_context.append(
+                {
+                    "id": i + 1,
+                    "content": chunk["content"],
+                    "file_path": chunk.get("file_path", "unknown_source"),
+                }
+            )
+
+        text_units_str = json.dumps(text_units_context, ensure_ascii=False)
+
+        return f"""-----Entities(KG)-----
+
+```json
+{entities_str}
+```
+
+-----Relationships(KG)-----
+
+```json
+{relations_str}
+```
+
+-----Document Chunks(DC)-----
+
+```json
+{text_units_str}
+```
+
+"""
+
+    # Get token limits
+    max_total_tokens = getattr(
+        query_param,
+        "max_total_tokens",
+        global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
+    )
+
     text_units_context = []
     truncated_chunks = []
+
     if merged_chunks:
         # Calculate dynamic token limit for text chunks
-        entities_str = json.dumps(entities_context, ensure_ascii=False)
-        relations_str = json.dumps(relations_context, ensure_ascii=False)
+        entities_str = "\n".join(
+            json.dumps(entity, ensure_ascii=False) for entity in entities_context
+        )
+        relations_str = "\n".join(
+            json.dumps(relation, ensure_ascii=False) for relation in relations_context
+        )
 
         # Calculate base context tokens (entities + relations + template)
         kg_context_template = """-----Entities(KG)-----
@@ -2881,18 +3197,7 @@ async def _build_query_context(
         )
         kg_context_tokens = len(tokenizer.encode(kg_context))
 
-        # Calculate actual system prompt overhead dynamically
-        # 1. Converstion history not included in context length calculation
-        history_context = ""
-        # if query_param.conversation_history:
-        #     history_context = get_conversation_turns(
-        #         query_param.conversation_history, query_param.history_turns
-        #     )
-        # history_tokens = (
-        #     len(tokenizer.encode(history_context)) if history_context else 0
-        # )
-
-        # 2. Calculate system prompt template tokens (excluding context_data)
+        # Calculate system prompt template overhead
         user_prompt = query_param.user_prompt if query_param.user_prompt else ""
         response_type = (
             query_param.response_type
@@ -2900,14 +3205,13 @@ async def _build_query_context(
             else "Multiple Paragraphs"
         )
 
-        # Get the system prompt template from PROMPTS
-        sys_prompt_template = text_chunks_db.global_config.get(
+        # Get the system prompt template from PROMPTS or global_config
+        sys_prompt_template = global_config.get(
             "system_prompt_template", PROMPTS["rag_response"]
         )
 
-        # Create a sample system prompt with placeholders filled (excluding context_data)
+        # Create sample system prompt for overhead calculation
         sample_sys_prompt = sys_prompt_template.format(
-            history=history_context,
             context_data="",  # Empty for overhead calculation
             response_type=response_type,
             user_prompt=user_prompt,
@@ -2933,7 +3237,7 @@ async def _build_query_context(
             query=query,
             unique_chunks=merged_chunks,
             query_param=query_param,
-            global_config=text_chunks_db.global_config,
+            global_config=global_config,
             source_type=query_param.mode,
             chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
         )
@@ -2958,7 +3262,17 @@ async def _build_query_context(
 
     # not necessary to use LLM to generate a response
     if not entities_context and not relations_context:
-        return None
+        if return_raw_data:
+            # Return empty raw data structure when no entities/relations
+            empty_raw_data = _convert_to_user_format(
+                [],
+                [],
+                [],
+                query_param.mode,
+            )
+            return None, empty_raw_data
+        else:
+            return None
 
     # output chunks tracking infomations
     # format: <source><frequency>/<order> (e.g., E5/2 R2/1 C1/1)
@@ -2978,9 +3292,15 @@ async def _build_query_context(
         if chunk_tracking_log:
             logger.info(f"chunks: {' '.join(chunk_tracking_log)}")
 
-    entities_str = json.dumps(entities_context, ensure_ascii=False)
-    relations_str = json.dumps(relations_context, ensure_ascii=False)
-    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
+    entities_str = "\n".join(
+        json.dumps(entity, ensure_ascii=False) for entity in entities_context
+    )
+    relations_str = "\n".join(
+        json.dumps(relation, ensure_ascii=False) for relation in relations_context
+    )
+    text_units_str = "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
+    )
 
     result = f"""-----Entities(KG)-----
 
@@ -3001,7 +3321,160 @@ async def _build_query_context(
 ```
 
 """
-    return result
+
+    # If final data is requested, return both context and complete data structure
+    if return_raw_data:
+        logger.debug(
+            f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
+        )
+        final_data = _convert_to_user_format(
+            entities_context,
+            relations_context,
+            truncated_chunks,
+            query_param.mode,
+            entity_id_to_original,
+            relation_id_to_original,
+        )
+        logger.debug(
+            f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+        )
+        return result, final_data
+    else:
+        return result
+
+
+# Now let's update the old _build_query_context to use the new architecture
+async def _build_query_context(
+    query: str,
+    ll_keywords: str,
+    hl_keywords: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: bool = False,
+) -> str | tuple[str, dict[str, Any]]:
+    """
+    Main query context building function using the new 4-stage architecture:
+    1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
+    """
+
+    if not query:
+        logger.warning("Query is empty, skipping context building")
+        return ""
+
+    # Stage 1: Pure search
+    search_result = await _perform_kg_search(
+        query,
+        ll_keywords,
+        hl_keywords,
+        knowledge_graph_inst,
+        entities_vdb,
+        relationships_vdb,
+        text_chunks_db,
+        query_param,
+        chunks_vdb,
+    )
+
+    if not search_result["final_entities"] and not search_result["final_relations"]:
+        if query_param.mode != "mix":
+            return None
+        else:
+            if not search_result["chunk_tracking"]:
+                return None
+
+    # Stage 2: Apply token truncation for LLM efficiency
+    truncation_result = await _apply_token_truncation(
+        search_result,
+        query_param,
+        text_chunks_db.global_config,
+    )
+
+    # Stage 3: Merge chunks using filtered entities/relations
+    merged_chunks = await _merge_all_chunks(
+        filtered_entities=truncation_result["filtered_entities"],
+        filtered_relations=truncation_result["filtered_relations"],
+        vector_chunks=search_result["vector_chunks"],
+        query=query,
+        knowledge_graph_inst=knowledge_graph_inst,
+        text_chunks_db=text_chunks_db,
+        query_param=query_param,
+        chunks_vdb=chunks_vdb,
+        chunk_tracking=search_result["chunk_tracking"],
+        query_embedding=search_result["query_embedding"],
+    )
+
+    if (
+        not merged_chunks
+        and not truncation_result["entities_context"]
+        and not truncation_result["relations_context"]
+    ):
+        return None
+
+    # Stage 4: Build final LLM context with dynamic token processing
+
+    if return_raw_data:
+        # Convert keywords strings to lists
+        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
+        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
+
+        # Get both context and final data - when return_raw_data=True, _build_llm_context always returns tuple
+        context, raw_data = await _build_llm_context(
+            entities_context=truncation_result["entities_context"],
+            relations_context=truncation_result["relations_context"],
+            merged_chunks=merged_chunks,
+            query=query,
+            query_param=query_param,
+            global_config=text_chunks_db.global_config,
+            chunk_tracking=search_result["chunk_tracking"],
+            return_raw_data=True,
+            entity_id_to_original=truncation_result["entity_id_to_original"],
+            relation_id_to_original=truncation_result["relation_id_to_original"],
+        )
+
+        # Convert keywords strings to lists and add complete metadata to raw_data
+        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
+        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
+
+        # Add complete metadata to raw_data
+        raw_data["metadata"]["keywords"] = {
+            "high_level": hl_keywords_list,
+            "low_level": ll_keywords_list,
+        }
+        raw_data["metadata"]["processing_info"] = {
+            "total_entities_found": len(search_result.get("final_entities", [])),
+            "total_relations_found": len(search_result.get("final_relations", [])),
+            "entities_after_truncation": len(
+                truncation_result.get("filtered_entities", [])
+            ),
+            "relations_after_truncation": len(
+                truncation_result.get("filtered_relations", [])
+            ),
+            "merged_chunks_count": len(merged_chunks),
+            "final_chunks_count": len(raw_data.get("chunks", [])),
+        }
+
+        logger.debug(
+            f"[_build_query_context] Context length: {len(context) if context else 0}"
+        )
+        logger.debug(
+            f"[_build_query_context] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
+        )
+        return context, raw_data
+    else:
+        # Normal context building (existing logic)
+        context = await _build_llm_context(
+            entities_context=truncation_result["entities_context"],
+            relations_context=truncation_result["relations_context"],
+            merged_chunks=merged_chunks,
+            query=query,
+            query_param=query_param,
+            global_config=text_chunks_db.global_config,
+            chunk_tracking=search_result["chunk_tracking"],
+        )
+        return context
 
 
 async def _get_node_data(
@@ -3576,6 +4049,7 @@ async def _find_related_text_unit_from_relations(
     return result_chunks
 
 
+@overload
 async def naive_query(
     query: str,
     chunks_vdb: BaseVectorStorage,
@@ -3583,7 +4057,31 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
-) -> str | AsyncIterator[str]:
+    return_raw_data: Literal[True] = True,
+) -> dict[str, Any]: ...
+
+
+@overload
+async def naive_query(
+    query: str,
+    chunks_vdb: BaseVectorStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    return_raw_data: Literal[False] = False,
+) -> str | AsyncIterator[str]: ...
+
+
+async def naive_query(
+    query: str,
+    chunks_vdb: BaseVectorStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    return_raw_data: bool = False,
+) -> str | AsyncIterator[str] | dict[str, Any]:
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
@@ -3606,17 +4104,34 @@ async def naive_query(
         query_param.user_prompt or "",
         query_param.enable_rerank,
     )
-    cached_response = await handle_cache(
+    cached_result = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
-    if cached_response is not None:
-        return cached_response
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        if not query_param.only_need_context and not query_param.only_need_prompt:
+            return cached_response
 
     tokenizer: Tokenizer = global_config["tokenizer"]
 
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
+        # Build empty raw data for consistency
+        empty_raw_data = {
+            "entities": [],  # naive mode has no entities
+            "relationships": [],  # naive mode has no relationships
+            "chunks": [],
+            "metadata": {
+                "query_mode": "naive",
+                "keywords": {"high_level": [], "low_level": []},
+            },
+        }
+
+        # If only raw data is requested, return it directly
+        if return_raw_data:
+            return empty_raw_data
+
         return PROMPTS["fail_response"]
 
     # Calculate dynamic token limit for chunks
@@ -3626,14 +4141,6 @@ async def naive_query(
         "max_total_tokens",
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
-
-    # Calculate conversation history tokens
-    history_context = ""
-    if query_param.conversation_history:
-        history_context = get_conversation_turns(
-            query_param.conversation_history, query_param.history_turns
-        )
-    history_tokens = len(tokenizer.encode(history_context)) if history_context else 0
 
     # Calculate system prompt template tokens (excluding content_data)
     user_prompt = query_param.user_prompt if query_param.user_prompt else ""
@@ -3652,7 +4159,6 @@ async def naive_query(
     sample_sys_prompt = sys_prompt_template.format(
         content_data="",  # Empty for overhead calculation
         response_type=response_type,
-        history=history_context,
         user_prompt=user_prompt,
     )
     sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
@@ -3668,7 +4174,7 @@ async def naive_query(
     available_chunk_tokens = max_total_tokens - used_tokens
 
     logger.debug(
-        f"Naive query token allocation - Total: {max_total_tokens}, History: {history_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
     )
 
     # Process chunks using unified processing with dynamic token limit
@@ -3683,6 +4189,28 @@ async def naive_query(
 
     logger.info(f"Final context: {len(processed_chunks)} chunks")
 
+    # If only raw data is requested, return it directly
+    if return_raw_data:
+        # Build raw data structure for naive mode using processed chunks
+        raw_data = _convert_to_user_format(
+            [],  # naive mode has no entities
+            [],  # naive mode has no relationships
+            processed_chunks,
+            "naive",
+        )
+
+        # Add complete metadata for naive mode
+        raw_data["metadata"]["keywords"] = {
+            "high_level": [],  # naive mode has no keyword extraction
+            "low_level": [],  # naive mode has no keyword extraction
+        }
+        raw_data["metadata"]["processing_info"] = {
+            "total_chunks_found": len(chunks),
+            "final_chunks_count": len(processed_chunks),
+        }
+
+        return raw_data
+
     # Build text_units_context from processed chunks
     text_units_context = []
     for i, chunk in enumerate(processed_chunks):
@@ -3694,8 +4222,11 @@ async def naive_query(
             }
         )
 
-    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
-    if query_param.only_need_context:
+    text_units_str = "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
+    )
+
+    if query_param.only_need_context and not query_param.only_need_prompt:
         return f"""
 ---Document Chunks(DC)---
 
@@ -3704,12 +4235,6 @@ async def naive_query(
 ```
 
 """
-    # Process conversation history
-    history_context = ""
-    if query_param.conversation_history:
-        history_context = get_conversation_turns(
-            query_param.conversation_history, query_param.history_turns
-        )
 
     # Build system prompt
     user_prompt = (
@@ -3721,7 +4246,6 @@ async def naive_query(
     sys_prompt = sys_prompt_temp.format(
         content_data=text_units_str,
         response_type=query_param.response_type,
-        history=history_context,
         user_prompt=user_prompt,
     )
 
@@ -3736,8 +4260,9 @@ async def naive_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
-        stream=query_param.stream,
+        history_messages=query_param.conversation_history,
         enable_cot=True,
+        stream=query_param.stream,
     )
 
     if isinstance(response, str) and len(response) > len(sys_prompt):

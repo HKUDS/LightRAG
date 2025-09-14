@@ -67,9 +67,21 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     def create_collection_if_not_exist(
         client: QdrantClient, collection_name: str, **kwargs
     ):
-        if client.collection_exists(collection_name):
-            return
-        client.create_collection(collection_name, **kwargs)
+        exists = False
+        if hasattr(client, "collection_exists"):
+            try:
+                exists = client.collection_exists(collection_name)
+            except Exception:
+                exists = False
+        else:
+            try:
+                client.get_collection(collection_name)
+                exists = True
+            except Exception:
+                exists = False
+
+        if not exists:
+            client.create_collection(collection_name, **kwargs)
 
     def __post_init__(self):
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
@@ -464,7 +476,20 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         async with get_storage_lock():
             try:
                 # Delete the collection and recreate it
-                if self._client.collection_exists(self.final_namespace):
+                exists = False
+                if hasattr(self._client, "collection_exists"):
+                    try:
+                        exists = self._client.collection_exists(self.final_namespace)
+                    except Exception:
+                        exists = False
+                else:
+                    try:
+                        self._client.get_collection(self.final_namespace)
+                        exists = True
+                    except Exception:
+                        exists = False
+
+                if exists:
                     self._client.delete_collection(self.final_namespace)
 
                 # Recreate the collection

@@ -2115,6 +2115,78 @@ class LightRAG:
         await self._query_done()
         return response
 
+    async def aquery_data(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Asynchronous data retrieval API: returns structured retrieval results without LLM generation.
+
+        This function reuses the same logic as aquery but stops before LLM generation,
+        returning the final processed entities, relationships, and chunks data that would be sent to LLM.
+
+        Args:
+            query: Query text.
+            param: Query parameters (same as aquery).
+
+        Returns:
+            dict[str, Any]: Structured data result with entities, relationships, chunks, and metadata
+        """
+        global_config = asdict(self)
+
+        if param.mode in ["local", "global", "hybrid", "mix"]:
+            logger.debug(f"[aquery_data] Using kg_query for mode: {param.mode}")
+            final_data = await kg_query(
+                query.strip(),
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=None,
+                chunks_vdb=self.chunks_vdb,
+                return_raw_data=True,  # Get final processed data
+            )
+        elif param.mode == "naive":
+            logger.debug(f"[aquery_data] Using naive_query for mode: {param.mode}")
+            final_data = await naive_query(
+                query.strip(),
+                self.chunks_vdb,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=None,
+                return_raw_data=True,  # Get final processed data
+            )
+        elif param.mode == "bypass":
+            logger.debug("[aquery_data] Using bypass mode")
+            # bypass mode returns empty data
+            final_data = {
+                "entities": [],
+                "relationships": [],
+                "chunks": [],
+                "metadata": {
+                    "query_mode": "bypass",
+                    "keywords": {"high_level": [], "low_level": []},
+                },
+            }
+        else:
+            raise ValueError(f"Unknown mode {param.mode}")
+
+        # Log final result counts
+        entities_count = len(final_data.get("entities", []))
+        relationships_count = len(final_data.get("relationships", []))
+        chunks_count = len(final_data.get("chunks", []))
+        logger.debug(
+            f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
+        )
+
+        await self._query_done()
+        return final_data
+
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
 

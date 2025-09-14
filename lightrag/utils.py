@@ -9,6 +9,7 @@ import logging
 import logging.handlers
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -1035,8 +1036,12 @@ async def handle_cache(
     prompt,
     mode="default",
     cache_type="unknown",
-) -> str | None:
-    """Generic cache handling function with flattened cache keys"""
+) -> tuple[str, int] | None:
+    """Generic cache handling function with flattened cache keys
+
+    Returns:
+        tuple[str, int] | None: (content, create_time) if cache hit, None if cache miss
+    """
     if hashing_kv is None:
         return None
 
@@ -1052,7 +1057,9 @@ async def handle_cache(
     cache_entry = await hashing_kv.get_by_id(flattened_key)
     if cache_entry:
         logger.debug(f"Flattened cache hit(key:{flattened_key})")
-        return cache_entry["return"]
+        content = cache_entry["return"]
+        timestamp = cache_entry.get("create_time", 0)
+        return content, timestamp
 
     logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
     return None
@@ -1142,68 +1149,6 @@ def exists_func(obj, func_name: str) -> bool:
         return True
     else:
         return False
-
-
-def get_conversation_turns(
-    conversation_history: list[dict[str, Any]], num_turns: int
-) -> str:
-    """
-    Process conversation history to get the specified number of complete turns.
-
-    Args:
-        conversation_history: List of conversation messages in chronological order
-        num_turns: Number of complete turns to include
-
-    Returns:
-        Formatted string of the conversation history
-    """
-    # Check if num_turns is valid
-    if num_turns <= 0:
-        return ""
-
-    # Group messages into turns
-    turns: list[list[dict[str, Any]]] = []
-    messages: list[dict[str, Any]] = []
-
-    # First, filter out keyword extraction messages
-    for msg in conversation_history:
-        if msg["role"] == "assistant" and (
-            msg["content"].startswith('{ "high_level_keywords"')
-            or msg["content"].startswith("{'high_level_keywords'")
-        ):
-            continue
-        messages.append(msg)
-
-    # Then process messages in chronological order
-    i = 0
-    while i < len(messages) - 1:
-        msg1 = messages[i]
-        msg2 = messages[i + 1]
-
-        # Check if we have a user-assistant or assistant-user pair
-        if (msg1["role"] == "user" and msg2["role"] == "assistant") or (
-            msg1["role"] == "assistant" and msg2["role"] == "user"
-        ):
-            # Always put user message first in the turn
-            if msg1["role"] == "assistant":
-                turn = [msg2, msg1]  # user, assistant
-            else:
-                turn = [msg1, msg2]  # user, assistant
-            turns.append(turn)
-        i += 2
-
-    # Keep only the most recent num_turns
-    if len(turns) > num_turns:
-        turns = turns[-num_turns:]
-
-    # Format the turns into a string
-    formatted_turns: list[str] = []
-    for turn in turns:
-        formatted_turns.extend(
-            [f"user: {turn[0]['content']}", f"assistant: {turn[1]['content']}"]
-        )
-
-    return "\n".join(formatted_turns)
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -1655,7 +1600,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
-) -> str:
+) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
     If cache is available and enabled (determined by handle_cache based on mode),
@@ -1675,7 +1620,9 @@ async def use_llm_func_with_cache(
         cache_keys_collector: Optional list to collect cache keys for batch processing
 
     Returns:
-        LLM response text
+        tuple[str, int]: (LLM response text, timestamp)
+            - For cache hits: (content, cache_create_time)
+            - For cache misses: (content, current_timestamp)
     """
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
@@ -1710,14 +1657,15 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
-        cached_return = await handle_cache(
+        cached_result = await handle_cache(
             llm_response_cache,
             arg_hash,
             _prompt,
             "default",
             cache_type=cache_type,
         )
-        if cached_return:
+        if cached_result:
+            content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
 
@@ -1725,7 +1673,7 @@ async def use_llm_func_with_cache(
             if cache_keys_collector is not None:
                 cache_keys_collector.append(cache_key)
 
-            return cached_return
+            return content, timestamp
         statistic_data["llm_call"] += 1
 
         # Call LLM with sanitized input
@@ -1740,6 +1688,9 @@ async def use_llm_func_with_cache(
         )
 
         res = remove_think_tags(res)
+
+        # Generate timestamp for cache miss (LLM call completion time)
+        current_timestamp = int(time.time())
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             await save_to_cache(
@@ -1757,7 +1708,7 @@ async def use_llm_func_with_cache(
             if cache_keys_collector is not None:
                 cache_keys_collector.append(cache_key)
 
-        return res
+        return res, current_timestamp
 
     # When cache is disabled, directly call LLM with sanitized input
     kwargs = {}
@@ -1776,7 +1727,9 @@ async def use_llm_func_with_cache(
         # Re-raise with the same exception type but modified message
         raise type(e)(error_msg) from e
 
-    return remove_think_tags(res)
+    # Generate timestamp for non-cached LLM call
+    current_timestamp = int(time.time())
+    return remove_think_tags(res), current_timestamp
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
@@ -2490,7 +2443,9 @@ async def process_chunks_unified(
 
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
+            key=lambda x: "\n".join(
+                json.dumps(item, ensure_ascii=False) for item in [x]
+            ),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
@@ -2604,6 +2559,118 @@ def get_pinyin_sort_key(text: str) -> str:
         return text.lower()
 
 
+def fix_tuple_delimiter_corruption(
+    record: str, delimiter_core: str, tuple_delimiter: str
+) -> str:
+    """
+    Fix various forms of tuple_delimiter corruption from LLM output.
+
+    This function handles missing or replaced characters around the core delimiter.
+    It fixes common corruption patterns where the LLM output doesn't match the expected
+    tuple_delimiter format.
+
+    Args:
+        record: The text record to fix
+        delimiter_core: The core delimiter (e.g., "S" from "<|#|>")
+        tuple_delimiter: The complete tuple delimiter (e.g., "<|#|>")
+
+    Returns:
+        The corrected record with proper tuple_delimiter format
+    """
+    if not record or not delimiter_core or not tuple_delimiter:
+        return record
+
+    # Escape the delimiter core for regex use
+    escaped_delimiter_core = re.escape(delimiter_core)
+
+    # Fix: <|##|> -> <|#|>, <|#||#|> -> <|#|>, <|#|||#|> -> <|#|>
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}\|*?{escaped_delimiter_core}\|>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|\#|> -> <|#|>
+    record = re.sub(
+        rf"<\|\\{escaped_delimiter_core}\|>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|> -> <|#|>, <||> -> <|#|>
+    record = re.sub(
+        r"<\|+>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|>, <||#> -> <|#|> (one extra characters outside pipes)
+    record = re.sub(
+        rf"<.?\|{escaped_delimiter_core}\|*?>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <#>, <#|>, <|#> -> <|#|> (missing one or both pipes)
+    record = re.sub(
+        rf"<\|?{escaped_delimiter_core}\|?>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <X#|> -> <|#|>, <|#X> -> <|#|> (one pipe is replaced by other character)
+    record = re.sub(
+        rf"<[^|]{escaped_delimiter_core}\|>|<\|{escaped_delimiter_core}[^|]>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|#| -> <|#|>, <|#|| -> <|#|> (missing closing >)
+
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}\|+(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix <|#: -> <|#|> (missing closing >)
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}:(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|| -> <|#|>
+    record = re.sub(
+        r"<\|\|(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: |#|> -> <|#|> (missing opening <)
+    record = re.sub(
+        rf"(?<!<)\|{escaped_delimiter_core}\|>",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <|#|>| -> <|#|>  ( this is a fix for: <|#|| -> <|#|> )
+    record = re.sub(
+        rf"<\|{escaped_delimiter_core}\|>\|",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: ||#|| -> <|#|> (double pipes on both sides without angle brackets)
+    record = re.sub(
+        rf"\|\|{escaped_delimiter_core}\|\|",
+        tuple_delimiter,
+        record,
+    )
+
+    return record
+
+
 def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exception:
     """
     Safely create a prefixed exception that adapts to all error types.
@@ -2644,3 +2711,120 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
             f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
             f"(Original exception could not be reconstructed: {construct_error})"
         )
+
+
+def _convert_to_user_format(
+    entities_context: list[dict],
+    relations_context: list[dict],
+    final_chunks: list[dict],
+    query_mode: str,
+    entity_id_to_original: dict = None,
+    relation_id_to_original: dict = None,
+) -> dict[str, Any]:
+    """Convert internal data format to user-friendly format using original database data"""
+
+    # Convert entities format using original data when available
+    formatted_entities = []
+    for entity in entities_context:
+        entity_name = entity.get("entity", "")
+
+        # Try to get original data first
+        original_entity = None
+        if entity_id_to_original and entity_name in entity_id_to_original:
+            original_entity = entity_id_to_original[entity_name]
+
+        if original_entity:
+            # Use original database data
+            formatted_entities.append(
+                {
+                    "entity_name": original_entity.get("entity_name", entity_name),
+                    "entity_type": original_entity.get("entity_type", "UNKNOWN"),
+                    "description": original_entity.get("description", ""),
+                    "source_id": original_entity.get("source_id", ""),
+                    "file_path": original_entity.get("file_path", "unknown_source"),
+                    "created_at": original_entity.get("created_at", ""),
+                }
+            )
+        else:
+            # Fallback to LLM context data (for backward compatibility)
+            formatted_entities.append(
+                {
+                    "entity_name": entity_name,
+                    "entity_type": entity.get("type", "UNKNOWN"),
+                    "description": entity.get("description", ""),
+                    "source_id": entity.get("source_id", ""),
+                    "file_path": entity.get("file_path", "unknown_source"),
+                    "created_at": entity.get("created_at", ""),
+                }
+            )
+
+    # Convert relationships format using original data when available
+    formatted_relationships = []
+    for relation in relations_context:
+        entity1 = relation.get("entity1", "")
+        entity2 = relation.get("entity2", "")
+        relation_key = (entity1, entity2)
+
+        # Try to get original data first
+        original_relation = None
+        if relation_id_to_original and relation_key in relation_id_to_original:
+            original_relation = relation_id_to_original[relation_key]
+
+        if original_relation:
+            # Use original database data
+            formatted_relationships.append(
+                {
+                    "src_id": original_relation.get("src_id", entity1),
+                    "tgt_id": original_relation.get("tgt_id", entity2),
+                    "description": original_relation.get("description", ""),
+                    "keywords": original_relation.get("keywords", ""),
+                    "weight": original_relation.get("weight", 1.0),
+                    "source_id": original_relation.get("source_id", ""),
+                    "file_path": original_relation.get("file_path", "unknown_source"),
+                    "created_at": original_relation.get("created_at", ""),
+                }
+            )
+        else:
+            # Fallback to LLM context data (for backward compatibility)
+            formatted_relationships.append(
+                {
+                    "src_id": entity1,
+                    "tgt_id": entity2,
+                    "description": relation.get("description", ""),
+                    "keywords": relation.get("keywords", ""),
+                    "weight": relation.get("weight", 1.0),
+                    "source_id": relation.get("source_id", ""),
+                    "file_path": relation.get("file_path", "unknown_source"),
+                    "created_at": relation.get("created_at", ""),
+                }
+            )
+
+    # Convert chunks format (chunks already contain complete data)
+    formatted_chunks = []
+    for i, chunk in enumerate(final_chunks):
+        chunk_data = {
+            "content": chunk.get("content", ""),
+            "file_path": chunk.get("file_path", "unknown_source"),
+            "chunk_id": chunk.get("chunk_id", ""),
+        }
+        formatted_chunks.append(chunk_data)
+
+    logger.debug(
+        f"[_convert_to_user_format] Formatted {len(formatted_chunks)}/{len(final_chunks)} chunks"
+    )
+
+    # Build basic metadata (metadata details will be added by calling functions)
+    metadata = {
+        "query_mode": query_mode,
+        "keywords": {
+            "high_level": [],
+            "low_level": [],
+        },  # Placeholder, will be set by calling functions
+    }
+
+    return {
+        "entities": formatted_entities,
+        "relationships": formatted_relationships,
+        "chunks": formatted_chunks,
+        "metadata": metadata,
+    }
