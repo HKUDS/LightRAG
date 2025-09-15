@@ -374,9 +374,23 @@ lightrag-server --llm-binding ollama --help
 lightrag-server --embedding-binding ollama --help
 ```
 
-> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM. You can pass additional parameters to OpenRouter or vLLM through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
+> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM/SGLang. You can pass additional parameters to OpenRouter or vLLM/SGLang through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
+
+Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `180s * 50 tokens/s = 9000`)
+
+```
+# For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
+OPENAI_LLM_MAX_TOKENS=9000
+
+# For Ollama Deployed Modeles
+OLLAMA_LLM_NUM_PREDICT=9000
+
+# For OpenAI o1-mini or newer modles
+OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
+```
 
 ### Entity Extraction Configuration
+
 * ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
 
 It's very common to set `ENABLE_LLM_CACHE_FOR_EXTRACT` to true for a test environment to reduce the cost of LLM calls.
