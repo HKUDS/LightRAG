@@ -91,6 +91,7 @@ const pulseStyle = `
   z-index: 9999; /* Ensure tooltip appears above all other elements */
   max-width: 600px;
   white-space: normal;
+  word-break: break-all;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.75rem; /* 12px */
@@ -111,6 +112,11 @@ const pulseStyle = `
 .dark .tooltip {
   background-color: rgba(255, 255, 255, 0.95);
   color: black;
+}
+
+.tooltip pre {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 /* Position tooltip helper class */
