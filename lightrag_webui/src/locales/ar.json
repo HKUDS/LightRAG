@@ -194,6 +194,12 @@
       "technology": "العلوم",
       "product": "منتج",
       "document": "وثيقة",
+      "content": "محتوى",
+      "data": "بيانات",
+      "artifact": "قطعة أثرية",
+      "concept": "مفهوم",
+      "naturalobject": "كائن طبيعي",
+      "method": "عملية",
       "other": "أخرى"
     },
     "sideBar": {

@@ -134,6 +134,21 @@ class QueryResponse(BaseModel):
     )
 
 
+class QueryDataResponse(BaseModel):
+    entities: List[Dict[str, Any]] = Field(
+        description="Retrieved entities from knowledge graph"
+    )
+    relationships: List[Dict[str, Any]] = Field(
+        description="Retrieved relationships from knowledge graph"
+    )
+    chunks: List[Dict[str, Any]] = Field(
+        description="Retrieved text chunks from documents"
+    )
+    metadata: Dict[str, Any] = Field(
+        description="Query metadata including mode, keywords, and processing information"
+    )
+
+
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -217,6 +232,73 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "X-Accel-Buffering": "no",  # Ensure proper handling of streaming response when proxied by Nginx
                 },
             )
+        except Exception as e:
+            trace_exception(e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/query/data",
+        response_model=QueryDataResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def query_data(request: QueryRequest):
+        """
+        Retrieve structured data without LLM generation.
+
+        This endpoint returns raw retrieval results including entities, relationships,
+        and text chunks that would be used for RAG, but without generating a final response.
+        All parameters are compatible with the regular /query endpoint.
+
+        Parameters:
+            request (QueryRequest): The request object containing the query parameters.
+
+        Returns:
+            QueryDataResponse: A Pydantic model containing structured data with entities,
+                             relationships, chunks, and metadata.
+
+        Raises:
+            HTTPException: Raised when an error occurs during the request handling process,
+                         with status code 500 and detail containing the exception message.
+        """
+        try:
+            param = request.to_query_params(False)  # No streaming for data endpoint
+            response = await rag.aquery_data(request.query, param=param)
+
+            # The aquery_data method returns a dict with entities, relationships, chunks, and metadata
+            if isinstance(response, dict):
+                # Ensure all required fields exist and are lists/dicts
+                entities = response.get("entities", [])
+                relationships = response.get("relationships", [])
+                chunks = response.get("chunks", [])
+                metadata = response.get("metadata", {})
+
+                # Validate data types
+                if not isinstance(entities, list):
+                    entities = []
+                if not isinstance(relationships, list):
+                    relationships = []
+                if not isinstance(chunks, list):
+                    chunks = []
+                if not isinstance(metadata, dict):
+                    metadata = {}
+
+                return QueryDataResponse(
+                    entities=entities,
+                    relationships=relationships,
+                    chunks=chunks,
+                    metadata=metadata,
+                )
+            else:
+                # Fallback for unexpected response format
+                return QueryDataResponse(
+                    entities=[],
+                    relationships=[],
+                    chunks=[],
+                    metadata={
+                        "error": "Unexpected response format",
+                        "raw_response": str(response),
+                    },
+                )
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
