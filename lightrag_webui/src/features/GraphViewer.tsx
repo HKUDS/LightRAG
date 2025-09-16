@@ -23,12 +23,13 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import { labelColorDarkTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
 
-// Sigma settings
-const defaultSigmaSettings: Partial<SigmaSettings> = {
+// Function to create sigma settings based on theme
+const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   allowInvalidContainer: true,
   defaultNodeType: 'default',
   defaultEdgeType: 'curvedNoArrow',
@@ -47,18 +48,18 @@ const defaultSigmaSettings: Partial<SigmaSettings> = {
   labelRenderedSizeThreshold: 12,
   enableEdgeEvents: true,
   labelColor: {
-    color: '#000',
+    color: isDarkTheme ? labelColorDarkTheme : '#000',
     attribute: 'labelColor'
   },
   edgeLabelColor: {
-    color: '#000',
+    color: isDarkTheme ? labelColorDarkTheme : '#000',
     attribute: 'labelColor'
   },
   edgeLabelSize: 8,
   labelSize: 12
   // minEdgeThickness: 2
   // labelFont: 'Lato, sans-serif'
-}
+})
 
 const GraphEvents = () => {
   const registerEvents = useRegisterEvents()
@@ -107,7 +108,7 @@ const GraphEvents = () => {
 }
 
 const GraphViewer = () => {
-  const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
+  const [sigmaSettings, setSigmaSettings] = useState<Partial<SigmaSettings>>({})
   const sigmaRef = useRef<any>(null)
 
   const selectedNode = useGraphStore.use.selectedNode()
@@ -119,13 +120,15 @@ const GraphViewer = () => {
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const showLegend = useSettingsStore.use.showLegend()
+  const theme = useSettingsStore.use.theme()
 
-  // Initialize sigma settings once on component mount
-  // All dynamic settings will be updated in GraphControl using useSetSettings
+  // Initialize sigma settings based on theme
   useEffect(() => {
-    setSigmaSettings(defaultSigmaSettings)
-    console.log('Initialized sigma settings')
-  }, [])
+    const isDarkTheme = theme === 'dark'
+    const settings = createSigmaSettings(isDarkTheme)
+    setSigmaSettings(settings)
+    console.log('Initialized sigma settings for theme:', theme)
+  }, [theme])
 
   // Clean up sigma instance when component unmounts
   useEffect(() => {
