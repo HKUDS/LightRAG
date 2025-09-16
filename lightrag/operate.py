@@ -2179,7 +2179,12 @@ async def extract_entities(
 
     async def _process_with_semaphore(chunk):
         async with semaphore:
-            return await _process_single_content(chunk)
+            try:
+                return await _process_single_content(chunk)
+            except Exception as e:
+                chunk_id = chunk[0]  # Extract chunk_id from chunk[0]
+                prefixed_exception = create_prefixed_exception(e, chunk_id)
+                raise prefixed_exception from e
 
     tasks = []
     for c in ordered_chunks:
@@ -2217,7 +2222,7 @@ async def extract_entities(
             await asyncio.wait(pending)
 
         # Add progress prefix to the exception message
-        progress_prefix = f"Chunks[{processed_chunks+1}/{total_chunks}]"
+        progress_prefix = f"C[{processed_chunks+1}/{total_chunks}]"
 
         # Re-raise the original exception with a prefix
         prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
