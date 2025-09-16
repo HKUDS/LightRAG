@@ -2222,7 +2222,7 @@ async def extract_entities(
             await asyncio.wait(pending)
 
         # Add progress prefix to the exception message
-        progress_prefix = f"Chunks[{processed_chunks+1}/{total_chunks}]"
+        progress_prefix = f"C[{processed_chunks+1}/{total_chunks}]"
 
         # Re-raise the original exception with a prefix
         prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
