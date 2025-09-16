@@ -6,6 +6,7 @@ export const webuiPrefix = '/webui/'
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
 export const labelColorDarkTheme = '#B2EBF2'
+export const labelColorLightTheme = '#000'
 export const LabelColorHighlightedDarkTheme = '#000'
 
 export const nodeColorDisabled = '#E2E2E2'

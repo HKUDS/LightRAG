@@ -23,7 +23,7 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
-import { labelColorDarkTheme } from '@/lib/constants'
+import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -48,11 +48,11 @@ const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   labelRenderedSizeThreshold: 12,
   enableEdgeEvents: true,
   labelColor: {
-    color: isDarkTheme ? labelColorDarkTheme : '#000',
+    color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
     attribute: 'labelColor'
   },
   edgeLabelColor: {
-    color: isDarkTheme ? labelColorDarkTheme : '#000',
+    color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
     attribute: 'labelColor'
   },
   edgeLabelSize: 8,
