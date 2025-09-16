@@ -126,6 +126,7 @@
         "id": "ID",
         "fileName": "檔案名稱",
         "summary": "摘要",
+        "handler": "處理方案",
         "status": "狀態",
         "length": "長度",
         "chunks": "分塊",
@@ -138,13 +139,16 @@
         "all": "全部",
         "completed": "已完成",
         "processing": "處理中",
+        "handling": "提取中",
         "pending": "等待中",
+        "ready": "準備中",
         "failed": "失敗"
       },
       "errors": {
         "loadFailed": "載入文件失敗\n{{error}}",
         "scanFailed": "掃描文件失敗\n{{error}}",
-        "scanProgressFailed": "取得掃描進度失敗\n{{error}}"
+        "scanProgressFailed": "取得掃描進度失敗\n{{error}}",
+        "missingSchemeId": "缺少處理方案，請選擇處理方案"
       },
       "fileNameLabel": "檔案名稱",
       "showButton": "顯示",
@@ -422,5 +426,31 @@
     "prevPage": "上一頁",
     "nextPage": "下一頁",
     "lastPage": "最後一頁"
+  },
+  "schemeManager": {
+    "button": "文件處理方案",
+    "title": "方案管理器",
+    "description": "建立新方案並設定選項",
+    "schemeList": "方案清單",
+    "schemeConfig": "方案設定",
+    "inputPlaceholder": "輸入方案名稱",
+    "deleteTooltip": "刪除方案",
+    "emptySchemes": "暫無方案",
+    "selectSchemePrompt": "請先選擇或建立一個方案",
+    "processingFramework": "處理框架",
+    "extractionTool": "提取工具",
+    "modelSource": "模型源",
+    "errors": {
+      "loadFailed": "載入方案失敗",
+      "nameEmpty": "方案名稱不能為空",
+      "nameExists": "方案名稱已存在",
+      "addFailed": "新增方案失敗",
+      "deleteFailed": "刪除方案失敗"
+    },
+    "upload": {
+      "noSchemeSelected": "未選擇處理方案，請先選擇文件處理方案！",
+      "currentScheme": "目前方案：",
+      "noSchemeMessage": "未選擇處理方案，請先新增選擇"
+    }
   }
 }

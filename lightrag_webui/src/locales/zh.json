@@ -126,6 +126,7 @@
         "id": "ID",
         "fileName": "文件名",
         "summary": "摘要",
+        "handler": "处理方案",
         "status": "状态",
         "length": "长度",
         "chunks": "分块",
@@ -138,13 +139,16 @@
         "all": "全部",
         "completed": "已完成",
         "processing": "处理中",
+        "handling": "提取中",
         "pending": "等待中",
+        "ready": "准备中",
         "failed": "失败"
       },
       "errors": {
         "loadFailed": "加载文档失败\n{{error}}",
         "scanFailed": "扫描文档失败\n{{error}}",
-        "scanProgressFailed": "获取扫描进度失败\n{{error}}"
+        "scanProgressFailed": "获取扫描进度失败\n{{error}}",
+        "missingSchemeId": "缺少处理方案，请选择处理方案"
       },
       "fileNameLabel": "文件名",
       "showButton": "显示",
@@ -422,5 +426,31 @@
     "prevPage": "上一页",
     "nextPage": "下一页",
     "lastPage": "末页"
+  },
+  "schemeManager": {
+    "button": "文档处理方案",
+    "title": "方案管理器",
+    "description": "创建新方案并配置选项",
+    "schemeList": "方案列表",
+    "schemeConfig": "方案配置",
+    "inputPlaceholder": "输入方案名称",
+    "deleteTooltip": "删除方案",
+    "emptySchemes": "暂无方案",
+    "selectSchemePrompt": "请先选择或创建一个方案",
+    "processingFramework": "处理框架",
+    "extractionTool": "提取工具",
+    "modelSource": "模型源",
+    "errors": {
+      "loadFailed": "加载方案失败",
+      "nameEmpty": "方案名称不能为空",
+      "nameExists": "方案名称已存在",
+      "addFailed": "添加方案失败",
+      "deleteFailed": "删除方案失败"
+    },
+    "upload": {
+      "noSchemeSelected": "未选择处理方案，请先选择文档处理方案！",
+      "currentScheme": "当前方案：",
+      "noSchemeMessage": "未选择处理方案，请先添加选择"
+    }
   }
 }

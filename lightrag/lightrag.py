@@ -9,6 +9,7 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import partial
+from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
@@ -98,6 +99,7 @@ from .utils import (
 )
 from .types import KnowledgeGraph
 from dotenv import load_dotenv
+from .ragmanager import RAGManager
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -134,6 +136,9 @@ class LightRAG:
 
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
+
+    input_dir: str = field(default_factory=lambda: os.getenv("INPUT_DIR", "./inputs"))
+    """Directory containing input documents"""
 
     # Workspace
     # ---
@@ -863,16 +868,22 @@ class LightRAG:
     def insert(
         self,
         input: str | list[str],
+        multimodal_content: list[dict[str, Any]]
+        | list[list[dict[str, Any]]]
+        | None = None,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        scheme_name: str | None = None,
     ) -> str:
         """Sync Insert documents with checkpoint support
 
         Args:
             input: Single document string or list of document strings
+            multimodal_content (list[dict[str, Any]] | list[list[dict[str, Any]]] | None, optional):
+                Multimodal content (images, tables, equations) associated with documents
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             chunk_token_size, it will be split again by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
@@ -880,6 +891,7 @@ class LightRAG:
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            scheme_name (str | None, optional): Scheme name for categorizing documents
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -888,27 +900,35 @@ class LightRAG:
         return loop.run_until_complete(
             self.ainsert(
                 input,
+                multimodal_content,
                 split_by_character,
                 split_by_character_only,
                 ids,
                 file_paths,
                 track_id,
+                scheme_name,
             )
         )
 
     async def ainsert(
         self,
         input: str | list[str],
+        multimodal_content: list[dict[str, Any]]
+        | list[list[dict[str, Any]]]
+        | None = None,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        scheme_name: str | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
         Args:
             input: Single document string or list of document strings
+            multimodal_content (list[dict[str, Any]] | list[list[dict[str, Any]]] | None, optional):
+                Multimodal content (images, tables, equations) associated with documents
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             chunk_token_size, it will be split again by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
@@ -916,6 +936,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            scheme_name (str | None, optional): Scheme name for categorizing documents
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -924,12 +945,82 @@ class LightRAG:
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
+        paths_to_check = [file_paths] if isinstance(file_paths, str) else file_paths
+        base_input_dir = Path(self.input_dir)
+        if self.workspace:
+            current_input_dir = base_input_dir / self.workspace
+        else:
+            current_input_dir = base_input_dir
+
+        await self.apipeline_enqueue_documents(
+            input,
+            multimodal_content,
+            ids,
+            file_paths,
+            track_id,
+            scheme_name=scheme_name,
+        )
+
+        for file_path in paths_to_check:
+            current_file_path = current_input_dir / file_path
+            if current_file_path.exists():
+                self.move_file_to_enqueue(current_file_path)
+            else:
+                continue
+
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
 
         return track_id
+
+    def move_file_to_enqueue(self, file_path):
+        try:
+            enqueued_dir = file_path.parent / "__enqueued__"
+            enqueued_dir.mkdir(exist_ok=True)
+
+            # Generate unique filename to avoid conflicts
+            unique_filename = self.get_unique_filename_in_enqueued(
+                enqueued_dir, file_path.name
+            )
+            target_path = enqueued_dir / unique_filename
+
+            # Move the file
+            file_path.rename(target_path)
+            logger.debug(
+                f"Moved file to enqueued directory: {file_path.name} -> {unique_filename}"
+            )
+
+        except Exception as move_error:
+            logger.error(
+                f"Failed to move file {file_path.name} to __enqueued__ directory: {move_error}"
+            )
+            # Don't affect the main function's success status
+
+    def get_unique_filename_in_enqueued(
+        self, target_dir: Path, original_name: str
+    ) -> str:
+        from pathlib import Path
+        import time
+
+        original_path = Path(original_name)
+        base_name = original_path.stem
+        extension = original_path.suffix
+
+        # Try original name first
+        if not (target_dir / original_name).exists():
+            return original_name
+
+        # Try with numeric suffixes 001-999
+        for i in range(1, 1000):
+            suffix = f"{i:03d}"
+            new_name = f"{base_name}_{suffix}{extension}"
+            if not (target_dir / new_name).exists():
+                return new_name
+
+        # Fallback with timestamp if all 999 slots are taken
+        timestamp = int(time.time())
+        return f"{base_name}_{timestamp}{extension}"
 
     # TODO: deprecated, use insert instead
     def insert_custom_chunks(
@@ -1006,9 +1097,13 @@ class LightRAG:
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
+        multimodal_content: list[dict[str, Any]]
+        | list[list[dict[str, Any]]]
+        | None = None,
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        scheme_name: str | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1020,9 +1115,12 @@ class LightRAG:
 
         Args:
             input: Single document string or list of document strings
+            multimodal_content (list[dict[str, Any]] | list[list[dict[str, Any]]] | None, optional):
+                Multimodal content (images, tables, equations) associated with documents
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            scheme_name (str | None, optional): Scheme name for categorizing documents
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1093,6 +1191,7 @@ class LightRAG:
             id_: {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(content_data["content"]),
+                "multimodal_content": multimodal_content,
                 "content_length": len(content_data["content"]),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1100,6 +1199,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "scheme_name": scheme_name,
             }
             for id_, content_data in contents.items()
         }
@@ -1130,6 +1230,12 @@ class LightRAG:
             if doc_id in new_docs
         }
 
+        new_docs_idList = [
+            f"doc-pre-{new_docs[doc_id]['file_path']}"
+            for doc_id in unique_new_doc_ids
+            if doc_id in new_docs
+        ]
+
         if not new_docs:
             logger.warning("No new unique documents were found.")
             return
@@ -1147,6 +1253,10 @@ class LightRAG:
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
         logger.debug(f"Stored {len(new_docs)} new unique documents")
+        await self.doc_status.index_done_callback()
+
+        await self.doc_status.delete(new_docs_idList)
+        logger.info(f"Deleted {new_docs_idList} Successful")
 
         return track_id
 
@@ -1322,6 +1432,7 @@ class LightRAG:
                     docs_to_reset[doc_id] = {
                         "status": DocStatus.PENDING,
                         "content_summary": status_doc.content_summary,
+                        "multimodal_content": status_doc.multimodal_content,
                         "content_length": status_doc.content_length,
                         "created_at": status_doc.created_at,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1330,11 +1441,15 @@ class LightRAG:
                         # Clear any error messages and processing metadata
                         "error_msg": "",
                         "metadata": {},
+                        "scheme_name": status_doc.scheme_name,
                     }
 
                     # Update the status in to_process_docs as well
                     status_doc.status = DocStatus.PENDING
                     reset_count += 1
+                    logger.info(
+                        f"Document {status_doc.file_path} from PROCESSING/FAILED to PENDING status"
+                    )
 
         # Update doc_status storage if there are documents to reset
         if docs_to_reset:
@@ -1557,6 +1672,7 @@ class LightRAG:
                                                 chunks.keys()
                                             ),  # Save chunks list
                                             "content_summary": status_doc.content_summary,
+                                            "multimodal_content": status_doc.multimodal_content,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now(
@@ -1567,6 +1683,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time
                                             },
+                                            "scheme_name": status_doc.scheme_name,
                                         }
                                     }
                                 )
@@ -1632,6 +1749,7 @@ class LightRAG:
                                         "status": DocStatus.FAILED,
                                         "error_msg": str(e),
                                         "content_summary": status_doc.content_summary,
+                                        "multimodal_content": status_doc.multimodal_content,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
                                         "updated_at": datetime.now(
@@ -1643,6 +1761,7 @@ class LightRAG:
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
                                         },
+                                        "scheme_name": status_doc.scheme_name,
                                     }
                                 }
                             )
@@ -1675,10 +1794,11 @@ class LightRAG:
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
-                                            "status": DocStatus.PROCESSED,
+                                            "status": DocStatus.PROCESSING,
                                             "chunks_count": len(chunks),
                                             "chunks_list": list(chunks.keys()),
                                             "content_summary": status_doc.content_summary,
+                                            "multimodal_content": status_doc.multimodal_content,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now(
@@ -1690,6 +1810,32 @@ class LightRAG:
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
                                             },
+                                            "scheme_name": status_doc.scheme_name,
+                                        }
+                                    }
+                                )
+
+                                if (
+                                    status_doc.multimodal_content
+                                    and len(status_doc.multimodal_content) > 0
+                                ):
+                                    raganything_instance = RAGManager.get_rag()
+                                    await raganything_instance._process_multimodal_content(
+                                        status_doc.multimodal_content,
+                                        status_doc.file_path,
+                                        doc_id,
+                                        pipeline_status=pipeline_status,
+                                        pipeline_status_lock=pipeline_status_lock,
+                                    )
+
+                                current_doc_status = await self.doc_status.get_by_id(
+                                    doc_id
+                                )
+                                await self.doc_status.upsert(
+                                    {
+                                        doc_id: {
+                                            **current_doc_status,
+                                            "status": DocStatus.PROCESSED,
                                         }
                                     }
                                 )
@@ -1733,6 +1879,7 @@ class LightRAG:
                                             "status": DocStatus.FAILED,
                                             "error_msg": str(e),
                                             "content_summary": status_doc.content_summary,
+                                            "multimodal_content": status_doc.multimodal_content,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now().isoformat(),
@@ -1742,6 +1889,7 @@ class LightRAG:
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
                                             },
+                                            "scheme_name": status_doc.scheme_name,
                                         }
                                     }
                                 )
@@ -2293,6 +2441,156 @@ class LightRAG:
 
         # Return the dictionary containing statuses only for the found document IDs
         return found_statuses
+
+    async def aclean_parse_cache_by_doc_ids(
+        self, doc_ids: str | list[str]
+    ) -> dict[str, Any]:
+        """Asynchronously clean parse_cache entries for specified document IDs
+
+        Args:
+            doc_ids: Single document ID string or list of document IDs
+
+        Returns:
+            Dictionary containing cleanup results:
+            - deleted_entries: List of deleted cache entries
+            - not_found: List of document IDs not found
+            - error: Error message (if operation fails)
+        """
+        import json
+        from pathlib import Path
+
+        # Normalize input to list
+        if isinstance(doc_ids, str):
+            doc_ids = [doc_ids]
+
+        result = {"deleted_entries": [], "not_found": [], "error": None}
+
+        try:
+            # Build parse_cache file path using class storage location variables
+            if self.workspace:
+                # If workspace exists, use workspace subdirectory
+                cache_file_path = (
+                    Path(self.working_dir)
+                    / self.workspace
+                    / "kv_store_parse_cache.json"
+                )
+            else:
+                # Default to using working_dir
+                cache_file_path = Path(self.working_dir) / "kv_store_parse_cache.json"
+
+            # Check if parse_cache file exists
+            if not cache_file_path.exists():
+                logger.warning(f"Parse cache file not found: {cache_file_path}")
+                result["not_found"] = doc_ids.copy()
+                return result
+
+            # Read current parse_cache data
+            with open(cache_file_path, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+
+            # Find entries to delete and record found doc_ids
+            entries_to_delete = []
+            doc_ids_set = set(doc_ids)
+            found_doc_ids = set()
+
+            for cache_key, cache_entry in cache_data.items():
+                if (
+                    isinstance(cache_entry, dict)
+                    and cache_entry.get("doc_id") in doc_ids_set
+                ):
+                    entries_to_delete.append(cache_key)
+                    result["deleted_entries"].append(cache_key)
+                    found_doc_ids.add(cache_entry.get("doc_id"))
+
+            # Delete found entries
+            for cache_key in entries_to_delete:
+                del cache_data[cache_key]
+
+            # Find doc_ids not found
+            result["not_found"] = list(doc_ids_set - found_doc_ids)
+
+            # Write back updated cache data
+            with open(cache_file_path, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+
+            logger.info(
+                f"Deleted {len(entries_to_delete)} parse_cache entries, document IDs: {doc_ids}"
+            )
+
+        except Exception as e:
+            error_msg = f"Error cleaning parse_cache: {str(e)}"
+            logger.error(error_msg)
+            result["error"] = error_msg
+
+        return result
+
+    def clean_parse_cache_by_doc_ids(self, doc_ids: str | list[str]) -> dict[str, Any]:
+        """Synchronously clean parse_cache entries for specified document IDs
+
+        Args:
+            doc_ids: Single document ID string or list of document IDs
+
+        Returns:
+            Dictionary containing cleanup results
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aclean_parse_cache_by_doc_ids(doc_ids))
+
+    async def aclean_all_parse_cache(self) -> dict[str, Any]:
+        """Asynchronously clean all parse_cache entries
+
+        Returns:
+            Dictionary containing cleanup results:
+            - deleted_count: Number of deleted entries
+            - error: Error message (if operation fails)
+        """
+        import json
+        from pathlib import Path
+
+        result = {"deleted_count": 0, "error": None}
+
+        try:
+            # Build parse_cache file path
+            if self.workspace:
+                cache_file_path = (
+                    Path(self.working_dir)
+                    / self.workspace
+                    / "kv_store_parse_cache.json"
+                )
+            else:
+                cache_file_path = Path(self.working_dir) / "kv_store_parse_cache.json"
+
+            if not cache_file_path.exists():
+                logger.warning(f"Parse cache file not found: {cache_file_path}")
+                return result
+
+            # Read current cache to count entries
+            with open(cache_file_path, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+
+            result["deleted_count"] = len(cache_data)
+
+            # Clear all entries
+            with open(cache_file_path, "w", encoding="utf-8") as f:
+                json.dump({}, f, indent=2)
+
+            logger.info(f"Cleared all {result['deleted_count']} parse_cache entries")
+
+        except Exception as e:
+            error_msg = f"Error clearing parse_cache: {str(e)}"
+            logger.error(error_msg)
+            result["error"] = error_msg
+
+        return result
+
+    def clean_all_parse_cache(self) -> dict[str, Any]:
+        """Synchronously clean all parse_cache entries
+
+        Returns:
+            Dictionary containing cleanup results
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aclean_all_parse_cache())
 
     async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements, and cached entries.

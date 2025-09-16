@@ -15,6 +15,7 @@ import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import ApiSite from '@/features/ApiSite'
+import { SchemeProvider } from '@/contexts/SchemeContext';
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
@@ -204,9 +205,11 @@ function App() {
             >
               <SiteHeader />
               <div className="relative grow">
-                <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
-                  <DocumentManager />
-                </TabsContent>
+                <SchemeProvider>
+                  <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
+                    <DocumentManager />
+                  </TabsContent>
+                </SchemeProvider>
                 <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <GraphViewer />
                 </TabsContent>

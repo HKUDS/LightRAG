@@ -10,8 +10,10 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
+
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+
 
 ---Instructions---
 1.  **Entity Extraction & Output:**
@@ -57,6 +59,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
     *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
 8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
+
 
 ---Examples---
 {examples}

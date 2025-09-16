@@ -25,6 +25,7 @@ from lightrag.api.utils_api import (
     display_splash_screen,
     check_env_file,
 )
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from .config import (
     global_args,
     update_uvicorn_mode_config,
@@ -61,6 +62,8 @@ from lightrag.kg.shared_storage import (
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
+from lightrag.ragmanager import RAGManager
+from raganything import RAGAnything, RAGAnythingConfig
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -619,10 +622,147 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Initialize RAGAnything with comprehensive error handling
+    rag_anything = None
+    raganything_enabled = False
+    raganything_error_message = None
+
+    try:
+        api_key = get_env_value("LLM_BINDING_API_KEY", "", str)
+        base_url = get_env_value("LLM_BINDING_HOST", "", str)
+
+        # Validate required configuration
+        if not api_key:
+            raise ValueError(
+                "LLM_BINDING_API_KEY is required for RAGAnything functionality"
+            )
+        if not base_url:
+            raise ValueError(
+                "LLM_BINDING_HOST is required for RAGAnything functionality"
+            )
+
+        config = RAGAnythingConfig(
+            working_dir=args.working_dir or "./rag_storage",
+            parser="mineru",  # Parser selection: mineru or docling
+            parse_method="auto",  # Parse method: auto, ocr, or txt
+            enable_image_processing=True,
+            enable_table_processing=True,
+            enable_equation_processing=True,
+        )
+
+        # Define LLM model function
+        def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            return openai_complete_if_cache(
+                "gpt-4o-mini",
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                api_key=api_key,
+                base_url=base_url,
+                **kwargs,
+            )
+
+        # Define vision model function for image processing
+        def vision_model_func(
+            prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs
+        ):
+            if image_data:
+                return openai_complete_if_cache(
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
+                    messages=[
+                        {"role": "system", "content": system_prompt}
+                        if system_prompt
+                        else None,
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_data}"
+                                    },
+                                },
+                            ],
+                        }
+                        if image_data
+                        else {"role": "user", "content": prompt},
+                    ],
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs,
+                )
+            else:
+                return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
+        # Define embedding function
+        raganything_embedding_func = EmbeddingFunc(
+            embedding_dim=3072,
+            max_token_size=8192,
+            func=lambda texts: openai_embed(
+                texts,
+                model="text-embedding-3-large",
+                api_key=api_key,
+                base_url=base_url,
+            ),
+        )
+
+        # Initialize RAGAnything with new dataclass structure
+        logger.info("Initializing RAGAnything functionality...")
+        rag_anything = RAGAnything(
+            lightrag=rag,
+            config=config,
+            llm_model_func=llm_model_func,
+            vision_model_func=vision_model_func,
+            embedding_func=raganything_embedding_func,
+        )
+
+        logger.info("Check the download status of the RAGAnything parser...")
+        rag_anything.verify_parser_installation_once()
+
+        RAGManager.set_rag(rag_anything)
+        raganything_enabled = True
+        logger.info(
+            "The RAGAnything feature has been successfully enabled, supporting multimodal document processing functionality"
+        )
+
+    except ImportError as e:
+        raganything_error_message = (
+            f"RAGAnything dependency package not installed: {str(e)}"
+        )
+        logger.warning(f"{raganything_error_message}")
+        logger.info(
+            "Please run 'pip install raganything' to install dependency packages to enable multimodal document processing functionality"
+        )
+    except ValueError as e:
+        raganything_error_message = f"RAGAnything configuration error: {str(e)}"
+        logger.warning(f"{raganything_error_message}")
+        logger.info(
+            "Please check if the environment variables LLM-BINDING_API_KEY and LLM-BINDING_HOST are set correctly"
+        )
+    except Exception as e:
+        raganything_error_message = f"RAGAnything initialization failed: {str(e)}"
+        logger.error(f" {raganything_error_message}")
+        logger.info(
+            "The system will run in basic mode and only support standard document processing functions"
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize LightRAG: {e}")
+        raise
+
+    if not raganything_enabled:
+        logger.info(
+            "The system has been downgraded to basic mode, but LightRAG core functions are still available"
+        )
+
     # Add routes
     app.include_router(
         create_document_routes(
             rag,
+            rag_anything,
             doc_manager,
             api_key,
         )

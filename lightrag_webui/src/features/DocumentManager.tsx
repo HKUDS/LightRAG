@@ -18,6 +18,8 @@ import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
+import { SchemeProvider } from '@/contexts/SchemeContext';
+import SchemeManager from '@/components/documents/SchemeManager/SchemeManager'
 
 import {
   scanNewDocuments,
@@ -34,6 +36,8 @@ import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
+
+import { useScheme } from '@/contexts/SchemeContext';
 
 type StatusFilter = DocStatus | 'all';
 
@@ -169,6 +173,8 @@ type SortField = 'created_at' | 'updated_at' | 'id' | 'file_path';
 type SortDirection = 'asc' | 'desc';
 
 export default function DocumentManager() {
+  const { selectedScheme } = useScheme();
+
   // Track component mount status
   const isMountedRef = useRef(true);
 
@@ -230,6 +236,8 @@ export default function DocumentManager() {
     processing: 1,
     pending: 1,
     failed: 1,
+    ready: 1,
+    handling: 1
   });
 
   // State for document selection
@@ -296,6 +304,8 @@ export default function DocumentManager() {
       processing: 1,
       pending: 1,
       failed: 1,
+      ready: 1,
+      handling: 1
     });
   };
 
@@ -441,7 +451,9 @@ export default function DocumentManager() {
   const prevStatusCounts = useRef({
     processed: 0,
     processing: 0,
+    handling: 0,
     pending: 0,
+    ready: 0,
     failed: 0
   })
 
@@ -532,6 +544,8 @@ export default function DocumentManager() {
         processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processed'),
         processing: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processing'),
         pending: response.documents.filter((doc: DocStatusResponse) => doc.status === 'pending'),
+        ready: response.documents.filter((doc: DocStatusResponse) => doc.status === 'ready'),
+        handling: response.documents.filter((doc: DocStatusResponse) => doc.status === 'handling'),
         failed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'failed')
       }
     };
@@ -794,7 +808,14 @@ export default function DocumentManager() {
       // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
 
-      const { status, message, track_id: _track_id } = await scanNewDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
+      if (!selectedScheme) {
+        toast.error(t('documentPanel.documentManager.errors.missingSchemeId'));
+        return;
+      }
+
+      const schemeConfig = selectedScheme.config
+
+      const { status, message, track_id: _track_id } = await scanNewDocuments(schemeConfig); // eslint-disable-line @typescript-eslint/no-unused-vars
 
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
@@ -820,10 +841,10 @@ export default function DocumentManager() {
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
+        toast.error(t('documentPanel.documentManager.errors.scanFiled', { error: errorMessage(err) }));
       }
     }
-  }, [t, startPollingInterval, currentTab, health, statusCounts])
+  }, [t, startPollingInterval, currentTab, health, statusCounts, selectedScheme])
 
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
@@ -839,6 +860,8 @@ export default function DocumentManager() {
       processing: 1,
       pending: 1,
       failed: 1,
+      ready: 1,
+      handling: 1
     });
 
     setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
@@ -878,6 +901,8 @@ export default function DocumentManager() {
             processed: response.documents.filter(doc => doc.status === 'processed'),
             processing: response.documents.filter(doc => doc.status === 'processing'),
             pending: response.documents.filter(doc => doc.status === 'pending'),
+            ready: response.documents.filter((doc: DocStatusResponse) => doc.status === 'ready'),
+            handling: response.documents.filter((doc: DocStatusResponse) => doc.status === 'handling'),
             failed: response.documents.filter(doc => doc.status === 'failed')
           }
         };
@@ -945,7 +970,9 @@ export default function DocumentManager() {
     const newStatusCounts = {
       processed: docs?.statuses?.processed?.length || 0,
       processing: docs?.statuses?.processing?.length || 0,
+      handling: docs?.statuses?.handling?.length || 0,
       pending: docs?.statuses?.pending?.length || 0,
+      ready: docs?.statuses?.ready?.length || 0,
       failed: docs?.statuses?.failed?.length || 0
     }
 
@@ -1133,6 +1160,7 @@ export default function DocumentManager() {
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
             <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
+            <SchemeManager />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}
@@ -1183,6 +1211,17 @@ export default function DocumentManager() {
                   </Button>
                   <Button
                     size="sm"
+                    variant={statusFilter === 'handling' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('handling')}
+                    className={cn(
+                      documentCounts.handling > 0 ? 'text-purple-600' : 'text-gray-500',
+                      statusFilter === 'handling' && 'bg-purple-100 dark:bg-purple-900/30 font-medium border border-purple-400 dark:border-purple-600 shadow-sm'
+                    )}
+                  >
+                    {t('documentPanel.documentManager.status.handling')} ({statusCounts.HANDLING || statusCounts.handling || 0})
+                  </Button>
+                  <Button
+                    size="sm"
                     variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
                     onClick={() => handleStatusFilterChange('pending')}
                     disabled={isRefreshing}
@@ -1192,6 +1231,17 @@ export default function DocumentManager() {
                     )}
                   >
                     {t('documentPanel.documentManager.status.pending')} ({statusCounts.PENDING || statusCounts.pending || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'ready' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('ready')}
+                    className={cn(
+                      documentCounts.ready > 0 ? 'text-gray-600' : 'text-gray-500',
+                      statusFilter === 'ready' && 'bg-gray-100 dark:bg-gray-900/30 font-medium border border-gray-400 dark:border-gray-600 shadow-sm'
+                    )}
+                  >
+                    {t('documentPanel.documentManager.status.ready')} ({statusCounts.READY || statusCounts.ready || 0})
                   </Button>
                   <Button
                     size="sm"
@@ -1273,6 +1323,7 @@ export default function DocumentManager() {
                           </div>
                         </TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.handler')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
@@ -1344,6 +1395,9 @@ export default function DocumentManager() {
                               </div>
                             </div>
                           </TableCell>
+                          <TableCell className="truncate max-w-[150px]">
+                            {doc.scheme_name || '-'}
+                          </TableCell>
                           <TableCell>
                             <div className="group relative flex items-center overflow-visible tooltip-container">
                               {doc.status === 'processed' && (
@@ -1357,6 +1411,12 @@ export default function DocumentManager() {
                               )}
                               {doc.status === 'failed' && (
                                 <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
+                              )}
+                              {doc.status === 'ready' && (
+                                <span className="text-purple-600">{t('documentPanel.documentManager.status.ready')}</span>
+                              )}
+                              {doc.status === 'handling' && (
+                                <span className="text-gray-600">{t('documentPanel.documentManager.status.handling')}</span>
                               )}
 
                               {/* Icon rendering logic */}
@@ -1382,10 +1442,10 @@ export default function DocumentManager() {
                           <TableCell>{doc.content_length ?? '-'}</TableCell>
                           <TableCell>{doc.chunks_count ?? '-'}</TableCell>
                           <TableCell className="truncate">
-                            {new Date(doc.created_at).toLocaleString()}
+                            {doc.created_at ? new Date(doc.created_at).toLocaleString() : '-'}
                           </TableCell>
                           <TableCell className="truncate">
-                            {new Date(doc.updated_at).toLocaleString()}
+                            {doc.updated_at ? new Date(doc.updated_at).toLocaleString() : '-'}
                           </TableCell>
                           <TableCell className="text-center">
                             <Checkbox
