@@ -245,6 +245,10 @@ Generate a concise response based on Knowledge Base and follow Response Rules, c
     - For a Knowledge Graph Relationship: `[KG] <entity1_name> ~ <entity2_name>`
     - For a Document Chunk: `[DC] <file_path_or_document_name>`
 
+---Conversation History---
+
+{history}
+
 ---User Context---
 - Additional user prompt: {user_prompt}
 
