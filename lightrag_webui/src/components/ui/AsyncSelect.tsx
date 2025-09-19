@@ -63,6 +63,8 @@ export interface AsyncSelectProps<T> {
   triggerTooltip?: string
   /** Allow clearing the selection */
   clearable?: boolean
+  /** Debounce time in milliseconds */
+  debounceTime?: number
 }
 
 export function AsyncSelect<T>({
@@ -84,7 +86,8 @@ export function AsyncSelect<T>({
   searchInputClassName,
   noResultsMessage,
   triggerTooltip,
-  clearable = true
+  clearable = true,
+  debounceTime = 150
 }: AsyncSelectProps<T>) {
   const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
@@ -94,7 +97,7 @@ export function AsyncSelect<T>({
   const [selectedValue, setSelectedValue] = useState(value)
   const [selectedOption, setSelectedOption] = useState<T | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
-  const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
+  const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : debounceTime)
   const [originalOptions, setOriginalOptions] = useState<T[]>([])
   const [initialValueDisplay, setInitialValueDisplay] = useState<React.ReactNode | null>(null)
 

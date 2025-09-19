@@ -225,18 +225,6 @@ export type EdgeType = {
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
   let rawData: any = null;
 
-  // Check if we need to fetch all database labels first
-  const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
-  if (!lastSuccessfulQueryLabel) {
-    console.log('Last successful queryLabel is empty');
-    try {
-      await useGraphStore.getState().fetchAllDatabaseLabels();
-    } catch (e) {
-      console.error('Failed to fetch all database labels:', e);
-      // Continue with graph fetch even if labels fetch fails
-    }
-  }
-
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
   useGraphStore.getState().setLabelsFetchAttempted(true)
@@ -411,6 +399,7 @@ const useLightrangeGraph = () => {
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
+  const graphDataVersion = useGraphStore.use.graphDataVersion()
 
 
   // Use ref to track if data has been loaded and initial load
@@ -597,7 +586,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
 
   // Handle node expansion
   useEffect(() => {

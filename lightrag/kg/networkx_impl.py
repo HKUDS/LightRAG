@@ -212,6 +212,87 @@ class NetworkXStorage(BaseGraphStorage):
         # Return sorted list
         return sorted(list(labels))
 
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """
+        Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+        graph = await self._get_graph()
+
+        # Get degrees of all nodes and sort by degree descending
+        degrees = dict(graph.degree())
+        sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+
+        # Return top labels limited by the specified limit
+        popular_labels = [str(node) for node, _ in sorted_nodes[:limit]]
+
+        logger.debug(
+            f"[{self.workspace}] Retrieved {len(popular_labels)} popular labels (limit: {limit})"
+        )
+
+        return popular_labels
+
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """
+        Search labels with fuzzy matching
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching labels sorted by relevance
+        """
+        graph = await self._get_graph()
+        query_lower = query.lower().strip()
+
+        if not query_lower:
+            return []
+
+        # Collect matching nodes with relevance scores
+        matches = []
+        for node in graph.nodes():
+            node_str = str(node)
+            node_lower = node_str.lower()
+
+            # Skip if no match
+            if query_lower not in node_lower:
+                continue
+
+            # Calculate relevance score
+            # Exact match gets highest score
+            if node_lower == query_lower:
+                score = 1000
+            # Prefix match gets high score
+            elif node_lower.startswith(query_lower):
+                score = 500
+            # Contains match gets base score, with bonus for shorter strings
+            else:
+                # Shorter strings with matches are more relevant
+                score = 100 - len(node_str)
+                # Bonus for word boundary matches
+                if f" {query_lower}" in node_lower or f"_{query_lower}" in node_lower:
+                    score += 50
+
+            matches.append((node_str, score))
+
+        # Sort by relevance score (desc) then alphabetically
+        matches.sort(key=lambda x: (-x[1], x[0]))
+
+        # Return top matches limited by the specified limit
+        search_results = [match[0] for match in matches[:limit]]
+
+        logger.debug(
+            f"[{self.workspace}] Search query '{query}' returned {len(search_results)} results (limit: {limit})"
+        )
+
+        return search_results
+
     async def get_knowledge_graph(
         self,
         node_label: str,

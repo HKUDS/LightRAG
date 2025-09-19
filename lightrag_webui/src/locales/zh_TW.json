@@ -336,7 +336,7 @@
       "label": "標籤",
       "placeholder": "搜尋標籤...",
       "andOthers": "還有 {count} 個",
-      "refreshTooltip": "重載圖形數據(新增檔案後需重載)"
+      "refreshTooltip": "重設圖形資料和搜尋歷史(文件變化後需重設)"
     },
     "emptyGraph": "無數據(請重載圖形數據)"
   },
