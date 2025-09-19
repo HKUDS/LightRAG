@@ -65,6 +65,8 @@ LightRAG.pdf
 download_models_hf.py
 lightrag-dev/
 gui/
+/md
+/uv.lock
 
 # unit-test files
 test_*

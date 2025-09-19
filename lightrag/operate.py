@@ -41,6 +41,7 @@ from .base import (
     QueryParam,
     QueryResult,
     QueryContextResult,
+    MetadataFilter
 )
 from .prompt import PROMPTS
 from .constants import (
@@ -3568,14 +3569,12 @@ async def _get_node_data(
     # Extract all entity IDs from your results list
     node_ids = [r["entity_name"] for r in results]
 
-    # HARDCODED QUERY FOR DEBUGGING
-    filter_query = "WHERE (n.class) is not null AND n.class = 'bando' RETURN (n.entity_id) AS entity_id, n.class AS class_value"
 
     # TODO update method to take in the metadata_filter dataclass
     node_kg_ids = []
     if hasattr(knowledge_graph_inst, "get_nodes_by_metadata_filter"):
         node_kg_ids = await asyncio.gather(
-            knowledge_graph_inst.get_nodes_by_metadata_filter(filter_query)
+            knowledge_graph_inst.get_nodes_by_metadata_filter(QueryParam.metadata_filter)
         )
 
     filtered_node_ids = (

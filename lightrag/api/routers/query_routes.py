@@ -4,10 +4,11 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 import logging
+import textwrap
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
+from lightrag.base import QueryParam, MetadataFilter
 from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
@@ -22,8 +23,8 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    metadata_filter: dict[str, str] | None = Field(
-        default=None,
+    metadata_filter: MetadataFilter | None = Field(
+        default=textwrap.dedent('{"operator": "AND","operands": [{"MetadataFilter": {}},"string"]},'),
         description="Optional dictionary of metadata key-value pairs to filter nodes",
     )
 
@@ -79,7 +80,7 @@ class QueryRequest(BaseModel):
     )
 
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
-        default=None,
+        default=[],
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
