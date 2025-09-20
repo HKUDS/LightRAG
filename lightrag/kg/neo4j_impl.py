@@ -72,7 +72,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     def _is_chinese_text(self, text: str) -> bool:
         """Check if text contains Chinese characters."""
-        chinese_pattern = re.compile(r'[\u4e00-\u9fff]+')
+        chinese_pattern = re.compile(r"[\u4e00-\u9fff]+")
         return bool(chinese_pattern.search(text))
 
     async def initialize(self):
@@ -251,8 +251,10 @@ class Neo4JStorage(BaseGraphStorage):
                 if existing_index:
                     # Check if the existing index has CJK analyzer
                     index_config = existing_index.get("options", {})
-                    current_analyzer = index_config.get("indexConfig", {}).get("fulltext.analyzer", "standard")
-                    
+                    current_analyzer = index_config.get("indexConfig", {}).get(
+                        "fulltext.analyzer", "standard"
+                    )
+
                     if current_analyzer != "cjk":
                         logger.info(
                             f"[{self.workspace}] Existing index '{index_name}' uses '{current_analyzer}' analyzer. "
@@ -272,18 +274,22 @@ class Neo4JStorage(BaseGraphStorage):
                             drop_query = f"DROP INDEX {index_name}"
                             result = await session.run(drop_query)
                             await result.consume()
-                            logger.info(f"[{self.workspace}] Dropped existing index '{index_name}'")
+                            logger.info(
+                                f"[{self.workspace}] Dropped existing index '{index_name}'"
+                            )
                         except Exception as drop_error:
-                            logger.warning(f"[{self.workspace}] Failed to drop existing index: {str(drop_error)}")
+                            logger.warning(
+                                f"[{self.workspace}] Failed to drop existing index: {str(drop_error)}"
+                            )
 
                     # Create new index with CJK analyzer
                     logger.info(
                         f"[{self.workspace}] Creating full-text index '{index_name}' with Chinese tokenizer support."
                     )
-                    
+
                     try:
                         create_index_query = f"""
-                        CREATE FULLTEXT INDEX {index_name} 
+                        CREATE FULLTEXT INDEX {index_name}
                         FOR (n:`{workspace_label}`) ON EACH [n.entity_id]
                         OPTIONS {{
                             indexConfig: {{
@@ -304,7 +310,7 @@ class Neo4JStorage(BaseGraphStorage):
                             "Falling back to standard analyzer."
                         )
                         create_index_query = f"""
-                        CREATE FULLTEXT INDEX {index_name} 
+                        CREATE FULLTEXT INDEX {index_name}
                         FOR (n:`{workspace_label}`) ON EACH [n.entity_id]
                         """
                         result = await session.run(create_index_query)
@@ -1708,7 +1714,7 @@ class Neo4JStorage(BaseGraphStorage):
                     LIMIT $limit
                     """
                     search_query = f"{query_strip}*"
-                
+
                 result = await session.run(
                     cypher_query,
                     index_name=index_name,
@@ -1724,14 +1730,14 @@ class Neo4JStorage(BaseGraphStorage):
                     f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
                 )
                 return labels
-                
+
         except Exception as e:
             # If the full-text search fails, fall back to CONTAINS search
             logger.warning(
                 f"[{self.workspace}] Full-text search failed with error: {str(e)}. "
                 "Falling back to slower, non-indexed search."
             )
-            
+
             # Enhanced fallback implementation
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
@@ -1776,7 +1782,7 @@ class Neo4JStorage(BaseGraphStorage):
                     result = await session.run(
                         cypher_query, query_lower=query_lower, limit=limit
                     )
-                
+
                 labels = [record["label"] async for record in result]
                 await result.consume()
                 logger.debug(
