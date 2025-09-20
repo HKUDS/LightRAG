@@ -331,12 +331,12 @@
       "message": "還有 {count} 個"
     },
     "graphLabels": {
-      "selectTooltip": "選擇查詢標籤",
-      "noLabels": "未找到標籤",
+      "selectTooltip": "查詢節點名(標籤)",
+      "noLabels": "未找到節點",
       "label": "標籤",
-      "placeholder": "搜尋標籤...",
+      "placeholder": "搜尋節點...",
       "andOthers": "還有 {count} 個",
-      "refreshGlobalTooltip": "重新整理全圖資料和搜尋歷史",
+      "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
       "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
       "refreshingTooltip": "正在重新整理資料..."
     },

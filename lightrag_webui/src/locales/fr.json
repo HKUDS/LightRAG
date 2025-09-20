@@ -331,12 +331,12 @@
       "message": "Et {{count}} autres"
     },
     "graphLabels": {
-      "selectTooltip": "Sélectionner l'étiquette de la requête",
-      "noLabels": "Aucune étiquette trouvée",
+      "selectTooltip": "Nom du nœud de requête (étiquette)",
+      "noLabels": "Aucun nœud trouvé",
       "label": "Étiquette",
-      "placeholder": "Rechercher des étiquettes...",
+      "placeholder": "Rechercher des nœuds...",
       "andOthers": "Et {{count}} autres",
-      "refreshGlobalTooltip": "Actualiser les données du graphe global et l'historique de recherche",
+      "refreshGlobalTooltip": "Actualiser les données du graphe global et réinitialiser l'historique de recherche",
       "refreshCurrentLabelTooltip": "Actualiser les données du graphe de la page actuelle",
       "refreshingTooltip": "Actualisation des données en cours..."
     },

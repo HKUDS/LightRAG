@@ -331,12 +331,12 @@
       "message": "And {count} others"
     },
     "graphLabels": {
-      "selectTooltip": "Select query label",
-      "noLabels": "No labels found",
+      "selectTooltip": "Query node name (label)",
+      "noLabels": "No nodes found",
       "label": "Label",
-      "placeholder": "Search labels...",
+      "placeholder": "Search nodes...",
       "andOthers": "And {count} others",
-      "refreshGlobalTooltip": "Refresh global graph data and search history",
+      "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
       "refreshingTooltip": "Refreshing data..."
     },
