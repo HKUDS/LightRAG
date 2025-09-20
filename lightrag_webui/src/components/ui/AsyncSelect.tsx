@@ -248,21 +248,18 @@ export function AsyncSelect<T>({
                 </CommandEmpty>
               ))}
             <CommandGroup>
-              {options.map((option, index) => {
+              {options.map((option) => {
                 const optionValue = getOptionValue(option);
-                // Use index as a safe value that won't be trimmed by cmdk
-                const safeValue = `option-${index}-${optionValue.length}`;
+                // Fix cmdk filtering issue: use empty string when search is empty
+                // This ensures all items are shown when searchTerm is empty
+                const itemValue = searchTerm.trim() === '' ? '' : optionValue;
 
                 return (
                   <CommandItem
                     key={optionValue}
-                    value={safeValue}
-                    onSelect={(selectedSafeValue) => {
-                      // Extract the original value from the safe value
-                      const selectedIndex = parseInt(selectedSafeValue.split('-')[1]);
-                      const originalValue = getOptionValue(options[selectedIndex]);
-                      console.log(`CommandItem onSelect: safeValue='${selectedSafeValue}', originalValue='${originalValue}' (length: ${originalValue.length})`);
-                      handleSelect(originalValue);
+                    value={itemValue}
+                    onSelect={() => {
+                      handleSelect(optionValue);
                     }}
                     className="truncate"
                   >
