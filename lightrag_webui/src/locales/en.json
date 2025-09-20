@@ -336,7 +336,7 @@
       "label": "Label",
       "placeholder": "Search labels...",
       "andOthers": "And {count} others",
-      "refreshTooltip": "Reload data(After file added)"
+      "refreshTooltip": "Reset graph data and search history (required after document changes)"
     },
     "emptyGraph": "Empty(Try Reload Again)"
   },
