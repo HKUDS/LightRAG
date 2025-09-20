@@ -327,14 +327,14 @@
       }
     },
     "search": {
-      "placeholder": "Rechercher des nœuds...",
+      "placeholder": "Rechercher des nœuds dans la page...",
       "message": "Et {{count}} autres"
     },
     "graphLabels": {
-      "selectTooltip": "Nom du nœud de requête (étiquette)",
+      "selectTooltip": "Obtenir le sous-graphe d'un nœud (étiquette)",
       "noLabels": "Aucun nœud trouvé",
       "label": "Étiquette",
-      "placeholder": "Rechercher des nœuds...",
+      "placeholder": "Interroger le sous-graphe de nœuds...",
       "andOthers": "Et {{count}} autres",
       "refreshGlobalTooltip": "Actualiser les données du graphe global et réinitialiser l'historique de recherche",
       "refreshCurrentLabelTooltip": "Actualiser les données du graphe de la page actuelle",

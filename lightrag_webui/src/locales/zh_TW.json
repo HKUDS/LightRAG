@@ -327,14 +327,14 @@
       }
     },
     "search": {
-      "placeholder": "搜尋節點...",
+      "placeholder": "頁面內搜尋節點...",
       "message": "還有 {count} 個"
     },
     "graphLabels": {
-      "selectTooltip": "查詢節點名(標籤)",
+      "selectTooltip": "獲取節點(標籤)子圖",
       "noLabels": "未找到節點",
       "label": "標籤",
-      "placeholder": "搜尋節點...",
+      "placeholder": "查詢節點子圖...",
       "andOthers": "還有 {count} 個",
       "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
       "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",

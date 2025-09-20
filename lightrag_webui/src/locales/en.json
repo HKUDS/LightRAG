@@ -327,14 +327,14 @@
       }
     },
     "search": {
-      "placeholder": "Search nodes...",
+      "placeholder": "Search nodes in page...",
       "message": "And {count} others"
     },
     "graphLabels": {
-      "selectTooltip": "Query node name (label)",
+      "selectTooltip": "Get subgraph of a node (label)",
       "noLabels": "No nodes found",
       "label": "Label",
-      "placeholder": "Search nodes...",
+      "placeholder": "Query node subgraph...",
       "andOthers": "And {count} others",
       "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
