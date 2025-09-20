@@ -133,8 +133,8 @@ export function AsyncSelect<T>({
       try {
         setLoading(true)
         setError(null)
-        // If we have a value, use it for the initial search
-        const data = await fetcher(value)
+        // Always use empty query for initial load to show search history
+        const data = await fetcher('')
         setOriginalOptions(data)
         setOptions(data)
       } catch (err) {
@@ -147,7 +147,7 @@ export function AsyncSelect<T>({
     if (!mounted) {
       initializeOptions()
     }
-  }, [mounted, fetcher, value])
+  }, [mounted, fetcher])
 
   useEffect(() => {
     const fetchOptions = async () => {
