@@ -671,6 +671,29 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             A list of all edges, where each edge is a dictionary of its properties
         """
 
+    @abstractmethod
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+
+    @abstractmethod
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """Search labels with fuzzy matching
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching labels sorted by relevance
+        """
+
 
 class DocStatus(str, Enum):
     """Document processing status"""
