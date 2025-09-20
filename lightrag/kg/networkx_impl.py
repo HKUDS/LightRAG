@@ -353,6 +353,9 @@ class NetworkXStorage(BaseGraphStorage):
             # Store (node, depth, degree) in the queue
             queue = [(node_label, 0, graph.degree(node_label))]
 
+            # Flag to track if there are unexplored neighbors due to depth limit
+            has_unexplored_neighbors = False
+
             # Modified breadth-first search with degree-based prioritization
             while queue and len(bfs_nodes) < max_nodes:
                 # Get the current depth from the first node in queue
@@ -384,18 +387,32 @@ class NetworkXStorage(BaseGraphStorage):
                             for neighbor in unvisited_neighbors:
                                 neighbor_degree = graph.degree(neighbor)
                                 queue.append((neighbor, depth + 1, neighbor_degree))
+                        else:
+                            # Check if there are unexplored neighbors (skipped due to depth limit)
+                            neighbors = list(graph.neighbors(current_node))
+                            unvisited_neighbors = [
+                                n for n in neighbors if n not in visited
+                            ]
+                            if unvisited_neighbors:
+                                has_unexplored_neighbors = True
 
                     # Check if we've reached max_nodes
                     if len(bfs_nodes) >= max_nodes:
                         break
 
-            # Check if graph is truncated - if we still have nodes in the queue
-            # and we've reached max_nodes, then the graph is truncated
-            if queue and len(bfs_nodes) >= max_nodes:
+            # Check if graph is truncated - either due to max_nodes limit or depth limit
+            if (queue and len(bfs_nodes) >= max_nodes) or has_unexplored_neighbors:
                 result.is_truncated = True
-                logger.info(
-                    f"[{self.workspace}] Graph truncated: breadth-first search limited to {max_nodes} nodes"
-                )
+                if has_unexplored_neighbors and not (
+                    queue and len(bfs_nodes) >= max_nodes
+                ):
+                    logger.info(
+                        f"[{self.workspace}] Graph truncated: reached max_depth {max_depth}, unexplored neighbors exist"
+                    )
+                else:
+                    logger.info(
+                        f"[{self.workspace}] Graph truncated: breadth-first search limited to {max_nodes} nodes"
+                    )
 
             # Create subgraph with BFS discovered nodes
             subgraph = graph.subgraph(bfs_nodes)
