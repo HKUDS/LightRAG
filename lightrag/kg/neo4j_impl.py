@@ -246,28 +246,35 @@ class Neo4JStorage(BaseGraphStorage):
                         existing_index = idx
                         break
 
-                # Check if we need to recreate the index
-                needs_recreation = False
+                # Check if index exists and is online
                 if existing_index:
-                    # Check if the existing index has CJK analyzer
-                    index_config = existing_index.get("options", {})
-                    current_analyzer = index_config.get("indexConfig", {}).get(
-                        "fulltext.analyzer", "standard"
+                    index_state = existing_index.get("state", "UNKNOWN")
+                    logger.info(
+                        f"[{self.workspace}] Found existing index '{index_name}' with state: {index_state}"
                     )
 
-                    if current_analyzer != "cjk":
+                    if index_state == "ONLINE":
                         logger.info(
-                            f"[{self.workspace}] Existing index '{index_name}' uses '{current_analyzer}' analyzer. "
-                            "Recreating with CJK analyzer for Chinese support."
-                        )
-                        needs_recreation = True
-                    else:
-                        logger.debug(
-                            f"[{self.workspace}] Full-text index '{index_name}' already exists with CJK analyzer."
+                            f"[{self.workspace}] Full-text index '{index_name}' already exists and is online. Skipping recreation."
                         )
                         return
+                    else:
+                        logger.warning(
+                            f"[{self.workspace}] Existing index '{index_name}' is not online (state: {index_state}). Will recreate."
+                        )
+                else:
+                    logger.info(
+                        f"[{self.workspace}] No existing index '{index_name}' found. Creating new index."
+                    )
 
-                if not existing_index or needs_recreation:
+                # Create or recreate the index if needed
+                needs_recreation = (
+                    existing_index is not None
+                    and existing_index.get("state") != "ONLINE"
+                )
+                needs_creation = existing_index is None
+
+                if needs_recreation or needs_creation:
                     # Drop existing index if it needs recreation
                     if needs_recreation:
                         try:
