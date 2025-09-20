@@ -45,6 +45,56 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error getting graph labels: {str(e)}"
             )
 
+    @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
+    async def get_popular_labels(
+        limit: int = Query(
+            300, description="Maximum number of popular labels to return", ge=1, le=1000
+        ),
+    ):
+        """
+        Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit (int): Maximum number of labels to return (default: 300, max: 1000)
+
+        Returns:
+            List[str]: List of popular labels sorted by degree (highest first)
+        """
+        try:
+            return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
+        except Exception as e:
+            logger.error(f"Error getting popular labels: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error getting popular labels: {str(e)}"
+            )
+
+    @router.get("/graph/label/search", dependencies=[Depends(combined_auth)])
+    async def search_labels(
+        q: str = Query(..., description="Search query string"),
+        limit: int = Query(
+            50, description="Maximum number of search results to return", ge=1, le=100
+        ),
+    ):
+        """
+        Search labels with fuzzy matching
+
+        Args:
+            q (str): Search query string
+            limit (int): Maximum number of results to return (default: 50, max: 100)
+
+        Returns:
+            List[str]: List of matching labels sorted by relevance
+        """
+        try:
+            return await rag.chunk_entity_relation_graph.search_labels(q, limit)
+        except Exception as e:
+            logger.error(f"Error searching labels with query '{q}': {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error searching labels: {str(e)}"
+            )
+
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
         label: str = Query(..., description="Label to get knowledge graph for"),

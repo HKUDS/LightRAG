@@ -419,7 +419,12 @@ export default function QuerySettings() {
                   className="mr-1 cursor-pointer"
                   id="only_need_context"
                   checked={querySettings.only_need_context}
-                  onCheckedChange={(checked) => handleChange('only_need_context', checked)}
+                  onCheckedChange={(checked) => {
+                    handleChange('only_need_context', checked)
+                    if (checked) {
+                      handleChange('only_need_prompt', false)
+                    }
+                  }}
                 />
               </div>
 
@@ -440,7 +445,12 @@ export default function QuerySettings() {
                   className="mr-1 cursor-pointer"
                   id="only_need_prompt"
                   checked={querySettings.only_need_prompt}
-                  onCheckedChange={(checked) => handleChange('only_need_prompt', checked)}
+                  onCheckedChange={(checked) => {
+                    handleChange('only_need_prompt', checked)
+                    if (checked) {
+                      handleChange('only_need_context', false)
+                    }
+                  }}
                 />
               </div>
 

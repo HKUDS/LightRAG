@@ -336,7 +336,7 @@
       "label": "Étiquette",
       "placeholder": "Rechercher des étiquettes...",
       "andOthers": "Et {{count}} autres",
-      "refreshTooltip": "Recharger les données (Après l'ajout de fichier)"
+      "refreshTooltip": "Réinitialiser les données du graphe et l'historique de recherche (requis après modification des documents)"
     },
     "emptyGraph": "Vide (Essayez de recharger)"
   },
