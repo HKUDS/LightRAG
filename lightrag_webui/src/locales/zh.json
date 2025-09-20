@@ -336,7 +336,9 @@
       "label": "标签",
       "placeholder": "搜索标签...",
       "andOthers": "还有 {count} 个",
-      "refreshTooltip": "重置图形数据和搜索历史(文档变化后需重置)"
+      "refreshGlobalTooltip": "刷新全图数据和搜索历史",
+      "refreshCurrentLabelTooltip": "刷新当前页面图数据",
+      "refreshingTooltip": "正在刷新数据..."
     },
     "emptyGraph": "无数据(请重载图形数据)"
   },

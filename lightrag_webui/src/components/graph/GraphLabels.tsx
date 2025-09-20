@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -17,6 +17,22 @@ import { getPopularLabels, searchLabels } from '@/api/lightrag'
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const [selectKey, setSelectKey] = useState(0)
+
+  // Dynamic tooltip based on current label state
+  const getRefreshTooltip = useCallback(() => {
+    if (isRefreshing) {
+      return t('graphPanel.graphLabels.refreshingTooltip')
+    }
+
+    if (!label || label === '*') {
+      return t('graphPanel.graphLabels.refreshGlobalTooltip')
+    } else {
+      return t('graphPanel.graphLabels.refreshCurrentLabelTooltip', { label })
+    }
+  }, [label, t, isRefreshing])
 
   // Initialize search history on component mount
   useEffect(() => {
@@ -67,37 +83,75 @@ const GraphLabels = () => {
       const finalResults = ['*', ...results.filter(label => label !== '*')];
       return finalResults;
     },
-    []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [refreshTrigger] // Intentionally added to trigger re-creation when data changes
   )
 
   const handleRefresh = useCallback(async () => {
-    // Clear search history
-    SearchHistoryManager.clearHistory()
+    setIsRefreshing(true)
 
-    // Reinitialize with popular labels
     try {
-      const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
-      await SearchHistoryManager.initializeWithDefaults(popularLabels)
+      const currentLabel = label
+
+      if (currentLabel && currentLabel !== '*') {
+        // Scenario 1: Has specific label, try to refresh current label
+        console.log(`Refreshing current label: ${currentLabel}`)
+
+        // Reset graph data fetch status to trigger refresh
+        useGraphStore.getState().setGraphDataFetchAttempted(false)
+        useGraphStore.getState().setLastSuccessfulQueryLabel('')
+
+        // Force data refresh for current label
+        useGraphStore.getState().incrementGraphDataVersion()
+
+        // Note: If the current label has no data after refresh,
+        // the fallback logic would be handled by the graph component itself
+        // For now, we keep the current label and let the user see the result
+
+      } else {
+        // Scenario 3: queryLabel is "*", refresh global data and popular labels
+        console.log('Refreshing global data and popular labels')
+
+        try {
+          // Re-fetch popular labels and update search history
+          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
+          SearchHistoryManager.clearHistory()
+
+          if (popularLabels.length === 0) {
+            // If no popular labels, provide fallback defaults
+            const fallbackLabels = ['entity', 'relationship', 'document', 'concept']
+            await SearchHistoryManager.initializeWithDefaults(fallbackLabels)
+          } else {
+            await SearchHistoryManager.initializeWithDefaults(popularLabels)
+          }
+        } catch (error) {
+          console.error('Failed to reload popular labels:', error)
+          // Provide fallback even if API fails
+          const fallbackLabels = ['entity', 'relationship', 'document']
+          SearchHistoryManager.clearHistory()
+          await SearchHistoryManager.initializeWithDefaults(fallbackLabels)
+        }
+
+        // Reset graph data fetch status
+        useGraphStore.getState().setGraphDataFetchAttempted(false)
+        useGraphStore.getState().setLastSuccessfulQueryLabel('')
+
+        // Force global data refresh
+        useGraphStore.getState().incrementGraphDataVersion()
+
+        // Ensure data update completes before triggering UI refresh
+        await new Promise(resolve => setTimeout(resolve, 0))
+
+        // Trigger both refresh mechanisms to ensure dropdown updates
+        setRefreshTrigger(prev => prev + 1)
+        setSelectKey(prev => prev + 1)
+      }
     } catch (error) {
-      console.error('Failed to reload popular labels:', error)
-      // No fallback needed
+      console.error('Error during refresh:', error)
+    } finally {
+      setIsRefreshing(false)
     }
-
-    // Reset fetch status flags to trigger UI refresh
-    useGraphStore.getState().setLabelsFetchAttempted(false)
-    useGraphStore.getState().setGraphDataFetchAttempted(false)
-
-    // Clear last successful query label to ensure labels are fetched,
-    // which is the key to forcing a data refresh.
-    useGraphStore.getState().setLastSuccessfulQueryLabel('')
-
-    // Reset to default label to ensure consistency
-    useSettingsStore.getState().setQueryLabel('*')
-
-    // Force a data refresh by incrementing the version counter in the graph store.
-    // This is the reliable way to trigger a re-fetch of the graph data.
-    useGraphStore.getState().incrementGraphDataVersion()
-  }, []);
+  }, [label])
 
   return (
     <div className="flex items-center">
@@ -106,12 +160,14 @@ const GraphLabels = () => {
         size="icon"
         variant={controlButtonVariant}
         onClick={handleRefresh}
-        tooltip={t('graphPanel.graphLabels.refreshTooltip')}
+        tooltip={getRefreshTooltip()}
         className="mr-2"
+        disabled={isRefreshing}
       >
-        <RefreshCw className="h-4 w-4" />
+        <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
       </Button>
       <AsyncSelect<string>
+        key={selectKey} // Force re-render when data changes
         className="min-w-[300px]"
         triggerClassName="max-h-8"
         searchInputClassName="max-h-8"

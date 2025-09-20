@@ -336,7 +336,9 @@
       "label": "Label",
       "placeholder": "Search labels...",
       "andOthers": "And {count} others",
-      "refreshTooltip": "Reset graph data and search history (required after document changes)"
+      "refreshGlobalTooltip": "Refresh global graph data and search history",
+      "refreshCurrentLabelTooltip": "Refresh current page graph data",
+      "refreshingTooltip": "Refreshing data..."
     },
     "emptyGraph": "Empty(Try Reload Again)"
   },
