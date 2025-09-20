@@ -403,15 +403,13 @@ class NetworkXStorage(BaseGraphStorage):
             # Check if graph is truncated - either due to max_nodes limit or depth limit
             if (queue and len(bfs_nodes) >= max_nodes) or has_unexplored_neighbors:
                 result.is_truncated = True
-                if has_unexplored_neighbors and not (
-                    queue and len(bfs_nodes) >= max_nodes
-                ):
+                if len(bfs_nodes) >= max_nodes:
                     logger.info(
-                        f"[{self.workspace}] Graph truncated: reached max_depth {max_depth}, unexplored neighbors exist"
+                        f"[{self.workspace}] Graph truncated: max_nodes limit {max_nodes} reached"
                     )
                 else:
                     logger.info(
-                        f"[{self.workspace}] Graph truncated: breadth-first search limited to {max_nodes} nodes"
+                        f"[{self.workspace}] Graph truncated: only {len(bfs_nodes)} nodes found within max_depth {max_depth}"
                     )
 
             # Create subgraph with BFS discovered nodes
