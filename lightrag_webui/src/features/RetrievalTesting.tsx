@@ -22,6 +22,66 @@ const generateUniqueId = () => {
   return `id-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 };
 
+// Robust COT parsing function to handle multiple think blocks and edge cases
+const parseCOTContent = (content: string) => {
+  const thinkStartTag = '<think>'
+  const thinkEndTag = '</think>'
+
+  // Find all <think> and </think> tag positions
+  const startMatches: number[] = []
+  const endMatches: number[] = []
+
+  let startIndex = 0
+  while ((startIndex = content.indexOf(thinkStartTag, startIndex)) !== -1) {
+    startMatches.push(startIndex)
+    startIndex += thinkStartTag.length
+  }
+
+  let endIndex = 0
+  while ((endIndex = content.indexOf(thinkEndTag, endIndex)) !== -1) {
+    endMatches.push(endIndex)
+    endIndex += thinkEndTag.length
+  }
+
+  // Analyze COT state
+  const hasThinkStart = startMatches.length > 0
+  const hasThinkEnd = endMatches.length > 0
+  const isThinking = hasThinkStart && (startMatches.length > endMatches.length)
+
+  let thinkingContent = ''
+  let displayContent = content
+
+  if (hasThinkStart) {
+    if (hasThinkEnd && startMatches.length === endMatches.length) {
+      // Complete thinking blocks: extract the last complete thinking content
+      const lastStartIndex = startMatches[startMatches.length - 1]
+      const lastEndIndex = endMatches[endMatches.length - 1]
+
+      if (lastEndIndex > lastStartIndex) {
+        thinkingContent = content.substring(
+          lastStartIndex + thinkStartTag.length,
+          lastEndIndex
+        ).trim()
+
+        // Remove all thinking blocks, keep only the final display content
+        displayContent = content.substring(lastEndIndex + thinkEndTag.length).trim()
+      }
+    } else if (isThinking) {
+      // Currently thinking: extract current thinking content
+      const lastStartIndex = startMatches[startMatches.length - 1]
+      thinkingContent = content.substring(lastStartIndex + thinkStartTag.length)
+      displayContent = ''
+    }
+  }
+
+  return {
+    isThinking,
+    thinkingContent,
+    displayContent,
+    hasValidThinkBlock: hasThinkStart && hasThinkEnd && startMatches.length === endMatches.length
+  }
+}
+
 export default function RetrievalTesting() {
   const { t } = useTranslation()
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
@@ -178,40 +238,28 @@ export default function RetrievalTesting() {
           thinkingStartTime.current = Date.now()
         }
 
-        // Real-time parsing for streaming
-        const thinkStartTag = '<think>'
-        const thinkEndTag = '</think>'
-        const thinkStartIndex = assistantMessage.content.indexOf(thinkStartTag)
-        const thinkEndIndex = assistantMessage.content.indexOf(thinkEndTag)
+        // Use the new robust COT parsing function
+        const cotResult = parseCOTContent(assistantMessage.content)
 
-        if (thinkStartIndex !== -1) {
-          if (thinkEndIndex !== -1) {
-            // Thinking has finished for this chunk
-            assistantMessage.isThinking = false
+        // Update thinking state
+        assistantMessage.isThinking = cotResult.isThinking
 
-            // Only calculate time and extract thinking content once
-            if (!thinkingProcessed.current) {
-              if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
-                const duration = (Date.now() - thinkingStartTime.current) / 1000
-                assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
-              }
-              assistantMessage.thinkingContent = assistantMessage.content
-                .substring(thinkStartIndex + thinkStartTag.length, thinkEndIndex)
-                .trim()
-              thinkingProcessed.current = true
-            }
-
-            // Always update display content as content after </think> may grow
-            assistantMessage.displayContent = assistantMessage.content.substring(thinkEndIndex + thinkEndTag.length).trim()
-          } else {
-            // Still thinking - update thinking content in real-time
-            assistantMessage.isThinking = true
-            assistantMessage.thinkingContent = assistantMessage.content.substring(thinkStartIndex + thinkStartTag.length)
-            assistantMessage.displayContent = ''
+        // Only calculate time and extract thinking content once when thinking is complete
+        if (cotResult.hasValidThinkBlock && !thinkingProcessed.current) {
+          if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
+            const duration = (Date.now() - thinkingStartTime.current) / 1000
+            assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
           }
+          thinkingProcessed.current = true
+        }
+
+        // Update content based on parsing results
+        assistantMessage.thinkingContent = cotResult.thinkingContent
+        // Only fallback to full content if not in a thinking state.
+        if (cotResult.isThinking) {
+          assistantMessage.displayContent = ''
         } else {
-          assistantMessage.isThinking = false
-          assistantMessage.displayContent = assistantMessage.content
+          assistantMessage.displayContent = cotResult.displayContent || assistantMessage.content
         }
 
         // Detect if the assistant message contains a complete mermaid code block
@@ -297,17 +345,30 @@ export default function RetrievalTesting() {
 
         // Enhanced cleanup with error handling to prevent memory leaks
         try {
-          // Final calculation for thinking time, only if not already calculated
-          if (assistantMessage.thinkingContent && thinkingStartTime.current && !assistantMessage.thinkingTime) {
+          // Final COT state validation and cleanup
+          const finalCotResult = parseCOTContent(assistantMessage.content)
+
+          // Force set final state - stream ended so thinking must be false
+          assistantMessage.isThinking = false
+
+          // If we have a complete thinking block but time wasn't calculated, do final calculation
+          if (finalCotResult.hasValidThinkBlock && thinkingStartTime.current && !assistantMessage.thinkingTime) {
             const duration = (Date.now() - thinkingStartTime.current) / 1000
             assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
           }
+
+          // Ensure display content is correctly set based on final parsing
+          if (finalCotResult.displayContent !== undefined) {
+            assistantMessage.displayContent = finalCotResult.displayContent
+          }
+
         } catch (error) {
-          console.error('Error calculating thinking time:', error)
+          console.error('Error in final COT state validation:', error)
+          // Force reset state on error
+          assistantMessage.isThinking = false
         } finally {
           // Ensure cleanup happens regardless of errors
-          assistantMessage.isThinking = false;
-          thinkingStartTime.current = null;
+          thinkingStartTime.current = null
         }
 
         // Save history with error handling
