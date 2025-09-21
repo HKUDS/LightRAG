@@ -136,7 +136,7 @@ const GraphViewer = () => {
     if (isThemeChange) {
       setIsThemeSwitching(true)
       console.log('Theme switching detected:', prevTheme.current, '->', theme)
-      
+
       // Reset theme switching state after a short delay
       const timer = setTimeout(() => {
         setIsThemeSwitching(false)

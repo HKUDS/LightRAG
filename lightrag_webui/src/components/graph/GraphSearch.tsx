@@ -22,21 +22,21 @@ export interface OptionItem {
 
 const NodeOption = ({ id }: { id: string }) => {
   const graph = useGraphStore.use.sigmaGraph()
-  
+
   // Early return if no graph or node doesn't exist
   if (!graph?.hasNode(id)) {
     return null
   }
-  
+
   // Safely get node attributes with fallbacks
   const label = graph.getNodeAttribute(id, 'label') || id
   const color = graph.getNodeAttribute(id, 'color') || '#666'
   const size = graph.getNodeAttribute(id, 'size') || 4
-  
+
   // Custom node display component that doesn't rely on @react-sigma/graph-search
   return (
     <div className="flex items-center gap-2 p-2 text-sm">
-      <div 
+      <div
         className="rounded-full flex-shrink-0"
         style={{
           width: Math.max(8, Math.min(size * 2, 16)),
@@ -110,7 +110,7 @@ export const GraphSearchInput = ({
         id: id,
         label: graph.getNodeAttribute(id, 'label')
       }))
-    
+
     if (documents.length > 0) {
       newSearchEngine.addAll(documents)
     }

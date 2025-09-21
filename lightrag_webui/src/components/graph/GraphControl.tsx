@@ -218,7 +218,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       // Node reducer for node appearance
       nodeReducer: (node, data) => {
         const graph = sigma.getGraph()
-        
+
         // Add defensive check for node existence during theme switching
         if (!graph.hasNode(node)) {
           console.warn(`Node ${node} not found in graph during theme switch, returning default data`)
@@ -275,7 +275,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       // Edge reducer for edge appearance
       edgeReducer: (edge, data) => {
         const graph = sigma.getGraph()
-        
+
         // Add defensive check for edge existence during theme switching
         if (!graph.hasEdge(edge)) {
           console.warn(`Edge ${edge} not found in graph during theme switch, returning default data`)
