@@ -2378,21 +2378,20 @@ async def kg_query(
     if context is None:
         return PROMPTS["fail_response"]
 
-    # Build system prompt
-    user_prompt = (
-        query_param.user_prompt
-        if query_param.user_prompt
-        else PROMPTS["DEFAULT_USER_PROMPT"]
-    )
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
-        user_prompt=user_prompt,
+    )
+
+    user_query = (
+        "\n\n".join([query, query_param.user_prompt])
+        if query_param.user_prompt
+        else query
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return "\n\n".join([sys_prompt, "---User Query---", user_query])
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
@@ -2401,7 +2400,7 @@ async def kg_query(
     )
 
     response = await use_model_func(
-        query,
+        user_query,
         system_prompt=sys_prompt,
         history_messages=query_param.conversation_history,
         enable_cot=True,
@@ -4236,22 +4235,20 @@ async def naive_query(
 ```
 
 """
-
-    # Build system prompt
-    user_prompt = (
-        query_param.user_prompt
+    user_query = (
+        "\n\n".join([query, query_param.user_prompt])
         if query_param.user_prompt
-        else PROMPTS["DEFAULT_USER_PROMPT"]
+        else query
     )
+
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
         content_data=text_units_str,
         response_type=query_param.response_type,
-        user_prompt=user_prompt,
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return "\n\n".join([sys_prompt, "---User Query---", user_query])
 
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
@@ -4259,7 +4256,7 @@ async def naive_query(
     )
 
     response = await use_model_func(
-        query,
+        user_query,
         system_prompt=sys_prompt,
         history_messages=query_param.conversation_history,
         enable_cot=True,
