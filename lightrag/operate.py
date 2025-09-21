@@ -2870,7 +2870,7 @@ async def _apply_token_truncation(
 
         entities_context.append(
             {
-                "id": i + 1,
+                "id": f"EN{i + 1}",
                 "entity": entity_name,
                 "type": entity.get("entity_type", "UNKNOWN"),
                 "description": entity.get("description", "UNKNOWN"),
@@ -2898,7 +2898,7 @@ async def _apply_token_truncation(
 
         relations_context.append(
             {
-                "id": i + 1,
+                "id": f"RE{i + 1}",
                 "entity1": entity1,
                 "entity2": entity2,
                 "description": relation.get("description", "UNKNOWN"),
@@ -3246,7 +3246,7 @@ async def _build_llm_context(
         for i, chunk in enumerate(truncated_chunks):
             text_units_context.append(
                 {
-                    "id": i + 1,
+                    "id": chunk["id"],
                     "content": chunk["content"],
                     "file_path": chunk.get("file_path", "unknown_source"),
                 }
@@ -4216,7 +4216,7 @@ async def naive_query(
     for i, chunk in enumerate(processed_chunks):
         text_units_context.append(
             {
-                "id": i + 1,
+                "id": chunk["id"],
                 "content": chunk["content"],
                 "file_path": chunk.get("file_path", "unknown_source"),
             }

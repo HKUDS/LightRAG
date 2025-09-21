@@ -2455,7 +2455,14 @@ async def process_chunks_unified(
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
         )
 
-    return unique_chunks
+    # 5. add id field to each chunk
+    final_chunks = []
+    for i, chunk in enumerate(unique_chunks):
+        chunk_with_id = chunk.copy()
+        chunk_with_id["id"] = f"DC{i + 1}"
+        final_chunks.append(chunk_with_id)
+
+    return final_chunks
 
 
 def build_file_path(already_file_paths, data_list, target):
