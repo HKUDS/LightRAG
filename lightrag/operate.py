@@ -2391,7 +2391,7 @@ async def kg_query(
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return "\n\n".join([sys_prompt, "---User Query---", user_query])
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
@@ -4248,7 +4248,7 @@ async def naive_query(
     )
 
     if query_param.only_need_prompt:
-        return sys_prompt
+        return "\n\n".join([sys_prompt, "---User Query---", user_query])
 
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(

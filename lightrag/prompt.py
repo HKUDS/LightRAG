@@ -236,7 +236,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Target format and length: {response_type}
 
 4. **Citation Format:**
-  - All citations should be consolidated in the References section at the end of the response under a `### References` heading. Do not include citation information within the main body of the answer. 
+  - All citations should be consolidated in the References section at the end of the response under a `### References` heading. Do not include citation information within the main body of the answer.
   - Output the citation in the following formats:
     - For a Knowledge Graph Entity: `[KG] <entity_name>`
     - For a Knowledge Graph Relationship: `[KG] <entity1_name> ~ <entity2_name>`
@@ -276,7 +276,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Target format and length: {response_type}
 
 4. **Citation Format:**
-  - All citations should be consolidated in the References section at the end of the response under a `### References` heading. Do not include citation information within the main body of the answer. 
+  - All citations should be consolidated in the References section at the end of the response under a `### References` heading. Do not include citation information within the main body of the answer.
   - Output the citation in the following format: `[DC] <file_path_or_document_name>`
   - Output each citation on a single new line.
   - Provide a maximum of 5 unique and most relevant references. Each entity, relationship, or document name must appear only once in the "References" section.
