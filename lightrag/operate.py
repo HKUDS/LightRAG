@@ -2831,8 +2831,6 @@ async def _apply_token_truncation(
     if not tokenizer:
         logger.warning("No tokenizer found, skipping truncation")
         return {
-            "truncated_entities": search_result["final_entities"],
-            "truncated_relations": search_result["final_relations"],
             "entities_context": [],
             "relations_context": [],
             "filtered_entities": search_result["final_entities"],
@@ -2985,14 +2983,12 @@ async def _apply_token_truncation(
                 seen_edges.add(pair)
 
     return {
-        "truncated_entities": final_entities,  # Keep original for backward compatibility
-        "truncated_relations": final_relations,  # Keep original for backward compatibility
-        "entities_context": entities_context,  # Formatted and truncated for LLM
-        "relations_context": relations_context,  # Formatted and truncated for LLM
-        "filtered_entities": filtered_entities,  # Original entities that passed truncation
-        "filtered_relations": filtered_relations,  # Original relations that passed truncation
-        "entity_id_to_original": filtered_entity_id_to_original,  # Mapping for original data lookup
-        "relation_id_to_original": filtered_relation_id_to_original,  # Mapping for original data lookup
+        "entities_context": entities_context,
+        "relations_context": relations_context,
+        "filtered_entities": filtered_entities,
+        "filtered_relations": filtered_relations,
+        "entity_id_to_original": filtered_entity_id_to_original,
+        "relation_id_to_original": filtered_relation_id_to_original,
     }
 
 
