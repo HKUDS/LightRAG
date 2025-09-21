@@ -1,4 +1,4 @@
-import Input from '@/components/ui/Input'
+import Textarea from '@/components/ui/Textarea'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { throttle } from '@/lib/utils'
@@ -116,6 +116,7 @@ export default function RetrievalTesting() {
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [inputError, setInputError] = useState('') // Error message for input
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
   const thinkingStartTime = useRef<number | null>(null)
@@ -228,6 +229,11 @@ export default function RetrievalTesting() {
       // Clear input and set loading
       setInputValue('')
       setIsLoading(true)
+
+      // Reset textarea height to minimum after clearing input
+      if (textareaRef.current) {
+        textareaRef.current.style.height = '40px'
+      }
 
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
@@ -504,7 +510,7 @@ export default function RetrievalTesting() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex shrink-0 items-center gap-2">
+        <form onSubmit={handleSubmit} className="flex shrink-0 items-center gap-2" autoComplete="on">
           <Button
             type="button"
             variant="outline"
@@ -519,16 +525,37 @@ export default function RetrievalTesting() {
             <label htmlFor="query-input" className="sr-only">
               {t('retrievePanel.retrieval.placeholder')}
             </label>
-            <Input
+            <Textarea
+              ref={textareaRef}
               id="query-input"
-              className="w-full"
+              name="query"
+              autoComplete="on"
+              className="w-full min-h-[40px] max-h-[120px] overflow-y-auto"
               value={inputValue}
-              onChange={(e) => {
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
                 setInputValue(e.target.value)
                 if (inputError) setInputError('')
               }}
+              onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSubmit(e as any)
+                }
+              }}
               placeholder={t('retrievePanel.retrieval.placeholder')}
               disabled={isLoading}
+              rows={1}
+              style={{
+                resize: 'none',
+                height: 'auto',
+                minHeight: '40px',
+                maxHeight: '120px'
+              }}
+              onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
+                const target = e.target as HTMLTextAreaElement
+                target.style.height = 'auto'
+                target.style.height = Math.min(target.scrollHeight, 120) + 'px'
+              }}
             />
             {/* Error message below input */}
             {inputError && (
