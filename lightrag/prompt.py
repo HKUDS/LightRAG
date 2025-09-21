@@ -225,6 +225,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize the `Source Data`(both Knowledge Graph and Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Review the draft to ensure it strictly adheres to all `Formatting & Language` rules below before generating the final response.
+  - Append a reference section at the end of the response; merge citations that share the same file_path into one reference item.
 
 2. **Content & Grounding:**
   - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -234,16 +235,31 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - Target format and length: {response_type}
+  - Append a reference section at the end of the response.
+  Generate a Only output citation information in the references section
+  The main body of the response should exclude inline citations; all references should be listed exclusively in the references section at the end.
 
-4. **Citation Format:**
-  - All citations should be consolidated in the References section at the end of the response. Do not include citation information within the main body of the answer.
+4. **Reference/Citation Format:**
+  - Append a reference section at the end of the response.
+  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
+  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
+  - Preserve the original file_path language in citation
   - The References section should be under a `### References` heading.
   - Output the citation in the following formats:
-    - For a Knowledge Graph Entity: `[KG] <entity_name>`
-    - For a Knowledge Graph Relationship: `[KG] <entity1_name> ~ <entity2_name>`
-    - For a Document Chunk: `[DC] <file_path_or_document_name>`
-  - List each citation on a separate new line.
-  - Provide a maximum of 5 unique and most relevant references. Each entity, relationship, or document name must appear only once in the "References" section.
+    - For a Knowledge Graph Entity: `[EN] <entity_name>`
+    - For a Knowledge Graph Relationship: `RE] <entity1_name> ~ <entity2_name>`
+    - For a Document Chunk: `[DC] <file_path>`
+
+5. **Example of Section:**
+```
+### References
+- [EN] LightRAG
+- [EN] Dual-Level Retrieval System
+- [RE] LightRAG ~ GraphRAG
+- [DC1] Simple and Fast RAG.pdf
+- [DC2] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
+- [DC3] Microsoft GraphRAG Technology Summary.md
+```
 
 ---Source Data---
 Knowledge Graph and Document Chunks:
@@ -266,6 +282,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize the `Source Data`(Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Review the draft to ensure it strictly adheres to all `Formatting & Language` rules below before generating the final response.
+  - Append a reference section at the end of the response; merge citations that share the same file_path into one reference item.
 
 2. **Content & Grounding:**
   - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -275,13 +292,23 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - Target format and length: {response_type}
+  - The main body of the response should exclude inline citations; all references should be listed exclusively in the references section at the end.
 
-4. **Citation Format:**
-  - All citations should be consolidated in the References section at the end of the response. Do not include citation information within the main body of the answer.
+4. **Reference/Citation Format:**
+  - Append a reference section at the end of the response.
+  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
+  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
+  - Preserve the original file_path language in citation
   - The References section should be under a `### References` heading.
-  - Output the citation in the following format: `[DC] <file_path_or_document_name>`
-  - List each citation on a separate new line.
-  - Provide a maximum of 5 unique and most relevant references. Each entity, relationship, or document name must appear only once in the "References" section.
+  - Output the citation in the following format: `[DC] <file_path>`
+
+5. **Example of Section:**
+```
+### References
+- [DC1] Simple and Fast RAG.pdf
+- [DC2] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
+- [DC3] Microsoft GraphRAG Technology Summary.md
+```
 
 ---Source Data---
 Document Chunks:
