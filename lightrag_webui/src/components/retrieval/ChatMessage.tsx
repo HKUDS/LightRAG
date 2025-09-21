@@ -10,7 +10,6 @@ import rehypeReact from 'rehype-react'
 import remarkMath from 'remark-math'
 import mermaid from 'mermaid'
 
-import type { Element } from 'hast'
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
@@ -85,6 +84,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
       <CodeHighlight
         {...props}
         renderAsDiagram={message.mermaidRendered ?? false}
+        messageRole={message.role}
       />
     ),
     p: ({ children }: { children?: ReactNode }) => <p className="my-2">{children}</p>,
@@ -95,11 +95,11 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
     li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
-  }), [message.mermaidRendered]);
+  }), [message.mermaidRendered, message.role]);
 
   const thinkingMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} />)
-  }), [message.mermaidRendered]);
+    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
+  }), [message.mermaidRendered, message.role]);
 
   return (
     <div
@@ -208,20 +208,10 @@ interface CodeHighlightProps {
   inline?: boolean
   className?: string
   children?: ReactNode
-  node?: Element // Keep node for inline check
   renderAsDiagram?: boolean // Flag to indicate if rendering as diagram should be attempted
+  messageRole?: 'user' | 'assistant' // Message role for context-aware styling
 }
 
-// Helper function remains the same
-const isInlineCode = (node?: Element): boolean => {
-  if (!node || !node.children) return false;
-  const textContent = node.children
-    .filter((child) => child.type === 'text')
-    .map((child) => (child as any).value)
-    .join('');
-  // Consider inline if it doesn't contain newline or is very short
-  return !textContent.includes('\n') || textContent.length < 40;
-};
 
 
 // Check if it is a large JSON
@@ -231,12 +221,11 @@ const isLargeJson = (language: string | undefined, content: string | undefined):
 };
 
 // Memoize the CodeHighlight component
-const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false, ...props }: CodeHighlightProps) => {
+const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = false, messageRole, ...props }: CodeHighlightProps) => {
   const { theme } = useTheme();
   const [hasRendered, setHasRendered] = useState(false); // State to track successful render
   const match = className?.match(/language-(\w+)/);
   const language = match ? match[1] : undefined;
-  const inline = isInlineCode(node); // Use the helper function
   const mermaidRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Use ReturnType for better typing
 
@@ -401,20 +390,45 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
   }
 
 
+  // ReactMarkdown determines inline vs block based on markdown syntax
+  // Inline code: `code` (no className with language)
+  // Block code: ```language (has className like "language-js")
+  // If there's no language className and no explicit inline prop, it's likely inline code
+  const isInline = inline ?? !className?.startsWith('language-');
+
+  // Generate dynamic inline code styles based on message role and theme
+  const getInlineCodeStyles = () => {
+    if (messageRole === 'user') {
+      // User messages have dark background (bg-primary), need light inline code
+      return theme === 'dark'
+        ? 'bg-primary-foreground/20 text-primary-foreground border border-primary-foreground/30'
+        : 'bg-primary-foreground/20 text-primary-foreground border border-primary-foreground/30';
+    } else {
+      // Assistant messages have light background (bg-muted), need contrasting inline code
+      return theme === 'dark'
+        ? 'bg-muted-foreground/20 text-muted-foreground border border-muted-foreground/30'
+        : 'bg-slate-200 text-slate-800 border border-slate-300';
+    }
+  };
+
   // Handle non-Mermaid code blocks
-  return !inline ? (
+  return !isInline ? (
     <SyntaxHighlighter
       style={theme === 'dark' ? oneDark : oneLight}
-      PreTag="div" // Use div for block code
+      PreTag="div"
       language={language}
       {...props}
     >
       {contentStr}
     </SyntaxHighlighter>
   ) : (
-    // Handle inline code
+    // Handle inline code with context-aware styling
     <code
-      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 font-mono text-sm')} // Add font-mono to ensure monospaced font is used
+      className={cn(
+        className,
+        'mx-1 rounded-sm px-1 py-0.5 font-mono text-sm',
+        getInlineCodeStyles()
+      )}
       {...props}
     >
       {children}
