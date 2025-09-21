@@ -224,8 +224,6 @@ Consider the conversation history if provided to maintain conversational flow an
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize the `Source Data`(both Knowledge Graph and Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Review the draft to ensure it strictly adheres to all `Formatting & Language` rules below before generating the final response.
-  - Append a reference section at the end of the response; merge citations that share the same file_path into one reference item.
 
 2. **Content & Grounding:**
   - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -234,21 +232,21 @@ Consider the conversation history if provided to maintain conversational flow an
 3. **Formatting & Language:**
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
-  - Target format and length: {response_type}
+  - The response should be presented in {response_type}.
   - Append a reference section at the end of the response.
-  Generate a Only output citation information in the references section
-  The main body of the response should exclude inline citations; all references should be listed exclusively in the references section at the end.
+  - Merge citations that share the same file_path into one reference item.
+  - The main body of the response should exclude inline citations; all citation information should be listed exclusively in the references section.
 
 4. **Reference/Citation Format:**
   - Append a reference section at the end of the response.
-  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
-  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
-  - Preserve the original file_path language in citation
   - The References section should be under a `### References` heading.
   - Output the citation in the following formats:
-    - For a Knowledge Graph Entity: `[EN] <entity_name>`
-    - For a Knowledge Graph Relationship: `RE] <entity1_name> ~ <entity2_name>`
-    - For a Document Chunk: `[DC] <file_path>`
+    - For a Knowledge Graph Entity: [EN] <entity>
+    - For a Knowledge Graph Relationship: [RE] <entity1> ~ <entity2>
+    - For a Document Chunk: [DC] <file_path>
+  - <entity>, <entity1>, <entity2>, and <file_path> should be derived from the attribute values in `Source Data` and preserved in their original language.
+  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
+  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
 
 5. **Example of Section:**
 ```
@@ -256,9 +254,9 @@ Consider the conversation history if provided to maintain conversational flow an
 - [EN] LightRAG
 - [EN] Dual-Level Retrieval System
 - [RE] LightRAG ~ GraphRAG
-- [DC1] Simple and Fast RAG.pdf
-- [DC2] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
-- [DC3] Microsoft GraphRAG Technology Summary.md
+- [DC] Simple and Fast RAG.pdf
+- [DC] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
+- [DC] Microsoft GraphRAG Technology Summary.md
 ```
 
 ---Source Data---
@@ -281,8 +279,6 @@ Consider the conversation history if provided to maintain conversational flow an
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize the `Source Data`(Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Review the draft to ensure it strictly adheres to all `Formatting & Language` rules below before generating the final response.
-  - Append a reference section at the end of the response; merge citations that share the same file_path into one reference item.
 
 2. **Content & Grounding:**
   - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -291,23 +287,24 @@ Consider the conversation history if provided to maintain conversational flow an
 3. **Formatting & Language:**
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
-  - Target format and length: {response_type}
-  - The main body of the response should exclude inline citations; all references should be listed exclusively in the references section at the end.
+  - The response should be presented in {response_type}.
+  - Append a reference section at the end of the response.
+  - The main body of the response should exclude inline citations; all citation information should be listed exclusively in the references section.
 
 4. **Reference/Citation Format:**
   - Append a reference section at the end of the response.
-  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
-  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
-  - Preserve the original file_path language in citation
   - The References section should be under a `### References` heading.
-  - Output the citation in the following format: `[DC] <file_path>`
+  - Output the citation in the following format: [DC] <file_path>
+  - <file_path> should be derived from the attribute values in `Source Data` and preserved in their original language.
+  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
+  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
 
 5. **Example of Section:**
 ```
 ### References
-- [DC1] Simple and Fast RAG.pdf
-- [DC2] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
-- [DC3] Microsoft GraphRAG Technology Summary.md
+- [DC] Simple and Fast RAG.pdf
+- [DC] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
+- [DC] Microsoft GraphRAG Technology Summary.md
 ```
 
 ---Source Data---
