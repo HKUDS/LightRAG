@@ -244,9 +244,11 @@ Consider the conversation history if provided to maintain conversational flow an
     - For a Knowledge Graph Entity: [EN] <entity>
     - For a Knowledge Graph Relationship: [RE] <entity1> ~ <entity2>
     - For a Document Chunk: [DC] <file_path>
-  - <entity>, <entity1>, <entity2>, and <file_path> should be derived from the attribute values in `Source Data` and preserved in their original language.
-  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
-  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
+  - <entity>, <entity1>, <entity2>, and <file_path> should originate from attribute values in `Source Data` and be retained in their original language.
+  - Merge citations that share the same <file_path> into one reference item, disregarding their distinct IDs.
+  - Only include citations that directly reference the facts presented in the answer.
+  - Prioritize the most relevant references, and provide maximum of 6 most relevant citations.
+  - List each citation on an individual line.
 
 5. **Example of Section:**
 ```
@@ -295,9 +297,11 @@ Consider the conversation history if provided to maintain conversational flow an
   - Append a reference section at the end of the response.
   - The References section should be under a `### References` heading.
   - Output the citation in the following format: [DC] <file_path>
-  - <file_path> should be derived from the attribute values in `Source Data` and preserved in their original language.
-  - Merge citations that share the same file_path into one reference item, disregarding their distinct IDs.
-  - Provide a maximum of 8 unique and most relevant references, and list each citation on a separate line.
+  - <file_path> should originate from attribute values in `Source Data` and be retained in their original language.
+  - Merge citations that share the same <file_path> into one reference item, disregarding their distinct IDs.
+  - Only include citations that directly reference the facts presented in the answer.
+  - Prioritize the most relevant references, and provide maximum of 6 most relevant citations.
+  - List each citation on an individual line.
 
 5. **Example of Section:**
 ```
