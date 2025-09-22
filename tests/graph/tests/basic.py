@@ -119,9 +119,7 @@ async def test_graph_basic(storage):
             print(t("undirected_verification_success"))
         else:
             print(f"{t('failed_read_reverse_edge')}: {node2_id} -> {node1_id}")
-            assert (
-                False
-            ), f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
+            assert False, f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
 
         ASCIIColors.green(t("basic_test_complete"))
         return True

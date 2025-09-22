@@ -7,7 +7,7 @@ Allows users to select tests to run with bilingual support
 import asyncio
 import sys
 import os
-from typing import List, Tuple, Optional
+from typing import List
 import argparse
 
 # Add parent directory to path so we can import from tests
@@ -18,7 +18,6 @@ from tests.graph.core.storage_setup import (
     initialize_graph_test_storage,
     cleanup_kuzu_test_environment,
 )
-from tests.graph.core.translation_engine import t
 
 
 # Import test functions

@@ -742,7 +742,6 @@ class KuzuDBStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
         """BFS implementation for subgraph traversal"""
-        from collections import deque
 
         result = KnowledgeGraph()
         visited_nodes = set()
@@ -1008,7 +1007,7 @@ class KuzuDBStorage(BaseGraphStorage):
         try:
             search_query = f"""
                 MATCH (n:{label})
-                WHERE LOWER(n.entity_id) CONTAINS LOWER($query) 
+                WHERE LOWER(n.entity_id) CONTAINS LOWER($query)
                    OR LOWER(n.description) CONTAINS LOWER($query)
                    OR LOWER(n.keywords) CONTAINS LOWER($query)
                 RETURN DISTINCT n.entity_id

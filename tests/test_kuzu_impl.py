@@ -828,7 +828,7 @@ class TestKuzuDBStorage:
         assert isinstance(kg_empty, KnowledgeGraph)
         assert len(kg_empty.nodes) == 0
         assert len(kg_empty.edges) == 0
-        assert kg_empty.is_truncated == False
+        assert not kg_empty.is_truncated
 
         # Test 2: Create a complex connected graph with multiple depths
         # Layer 1: Central node
@@ -994,7 +994,7 @@ class TestKuzuDBStorage:
         assert isinstance(kg_limited, KnowledgeGraph)
         assert len(kg_limited.nodes) <= 3
         # Should be truncated due to node limit
-        assert kg_limited.is_truncated == True
+        assert kg_limited.is_truncated
 
         # Test 6: Verify node and edge properties are preserved
         kg_full = await storage.get_knowledge_graph(

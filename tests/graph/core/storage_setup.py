@@ -7,7 +7,7 @@ import sys
 import importlib
 import tempfile
 import shutil
-from typing import Optional, Tuple
+from typing import Tuple
 from ascii_colors import ASCIIColors
 
 # Add parent directory to path for imports

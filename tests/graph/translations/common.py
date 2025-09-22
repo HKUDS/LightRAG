@@ -150,10 +150,8 @@ COMMON_TRANSLATIONS = {
         "Computer science contains algorithms as a concept",
     ],
     # Common status messages
-    "no_description": ["无描述", "No description"],
     "no_type": ["无类型", "No type"],
     "no_keywords": ["无关键词", "No keywords"],
-    "no_relationship": ["无关系", "No relationship"],
     "no_weight": ["无权重", "No weight"],
     "actual": ["实际", "actual"],
     "test_error": ["测试过程中发生错误", "Error occurred during testing"],

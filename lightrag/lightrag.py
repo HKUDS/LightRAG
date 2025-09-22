@@ -86,7 +86,6 @@ from .constants import GRAPH_FIELD_SEP
 from .utils import (
     Tokenizer,
     TiktokenTokenizer,
-    EmbeddingFunc,
     always_get_an_event_loop,
     compute_mdhash_id,
     lazy_external_import,

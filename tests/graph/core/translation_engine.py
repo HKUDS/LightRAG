@@ -4,7 +4,7 @@ Enhanced translation engine for multilingual test support
 
 import inspect
 import os
-from typing import Dict, List, Union, Any, Optional
+from typing import Dict, Any, Optional
 
 
 # Language configuration
