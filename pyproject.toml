@@ -50,7 +50,6 @@ api = [
     "configparser",
     "dotenv",
     "future",
-    "json_repair",
     "nano-vectordb",
     "networkx",
     "numpy",
