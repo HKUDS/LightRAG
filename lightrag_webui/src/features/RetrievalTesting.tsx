@@ -310,13 +310,23 @@ export default function RetrievalTesting() {
 
       // Prepare query parameters
       const state = useSettingsStore.getState()
+
+      // Determine the effective mode
+      const effectiveMode = modeOverride || state.querySettings.mode
+
+      // Determine effective history turns with bypass override
+      const configuredHistoryTurns = state.querySettings.history_turns || 0
+      const effectiveHistoryTurns = (effectiveMode === 'bypass' && configuredHistoryTurns === 0)
+        ? 3
+        : configuredHistoryTurns
+
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
-        conversation_history: (state.querySettings.history_turns || 0) > 0
+        conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
-            .slice(-(state.querySettings.history_turns || 0) * 2)
+            .slice(-effectiveHistoryTurns * 2)
             .map((m) => ({ role: m.role, content: m.content }))
           : [],
         ...(modeOverride ? { mode: modeOverride } : {})
