@@ -1323,7 +1323,7 @@ class ClientManager:
             ),
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=20),
+                config.get("postgres", "max_connections", fallback=50),
             ),
             # SSL configuration
             "ssl_mode": os.environ.get(
