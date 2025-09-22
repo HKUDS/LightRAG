@@ -808,6 +808,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.51.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4f/3a/f30f3c92da3a285dcbe469c50b058f2d349dc9a20fc1b60c3219befda53f/json_repair-0.51.0.tar.gz", hash = "sha256:487e00042d5bc5cc4897ea9c3cccd4f6641e926b732cc09f98691a832485098a", size = 35289 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/fc/eb15e39547b29dbf2b786bbbd1e79e7f1d87ec4e7c9ea61786f093181481/json_repair-0.51.0-py3-none-any.whl", hash = "sha256:871f7651ee82abf72efc50a80d3a9af0ade8abf5b4541b418eeeabe4e677e314", size = 26263 },
+]
+
+[[package]]
 name = "kuzu"
 version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
@@ -845,7 +854,10 @@ dependencies = [
     { name = "configparser" },
     { name = "dotenv" },
     { name = "future" },
+    { name = "httpx" },
+    { name = "json-repair" },
     { name = "kuzu" },
+    { name = "nano-vectordb" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -853,8 +865,8 @@ dependencies = [
     { name = "pandas" },
     { name = "pipmaster" },
     { name = "pydantic" },
+    { name = "pypinyin" },
     { name = "python-dotenv" },
-    { name = "pyuca" },
     { name = "setuptools" },
     { name = "tenacity" },
     { name = "tiktoken" },
@@ -875,19 +887,24 @@ api = [
     { name = "httpcore" },
     { name = "httpx" },
     { name = "jiter" },
+    { name = "json-repair" },
+    { name = "nano-vectordb" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "openai" },
     { name = "pandas" },
     { name = "passlib", extra = ["bcrypt"] },
     { name = "pipmaster" },
+    { name = "psutil" },
     { name = "pydantic" },
     { name = "pyjwt" },
+    { name = "pypinyin" },
     { name = "python-dotenv" },
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
     { name = "pytz" },
-    { name = "pyuca" },
     { name = "setuptools" },
     { name = "tenacity" },
     { name = "tiktoken" },
@@ -918,10 +935,17 @@ requires-dist = [
     { name = "future" },
     { name = "future", marker = "extra == 'api'" },
     { name = "httpcore", marker = "extra == 'api'" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'api'" },
     { name = "jiter", marker = "extra == 'api'" },
+    { name = "json-repair" },
+    { name = "json-repair", marker = "extra == 'api'" },
     { name = "kuzu", specifier = ">=0.10.1" },
+    { name = "nano-vectordb" },
+    { name = "nano-vectordb", marker = "extra == 'api'" },
+    { name = "networkx" },
     { name = "networkx", specifier = ">=3.4.2" },
+    { name = "networkx", marker = "extra == 'api'" },
     { name = "numpy" },
     { name = "numpy", marker = "extra == 'api'" },
     { name = "openai", marker = "extra == 'api'" },
@@ -930,16 +954,17 @@ requires-dist = [
     { name = "passlib", extras = ["bcrypt"], marker = "extra == 'api'" },
     { name = "pipmaster" },
     { name = "pipmaster", marker = "extra == 'api'" },
+    { name = "psutil", marker = "extra == 'api'" },
     { name = "pydantic" },
     { name = "pydantic", marker = "extra == 'api'" },
     { name = "pyjwt", marker = "extra == 'api'" },
+    { name = "pypinyin" },
+    { name = "pypinyin", marker = "extra == 'api'" },
     { name = "python-dotenv" },
     { name = "python-dotenv", marker = "extra == 'api'" },
     { name = "python-jose", extras = ["cryptography"], marker = "extra == 'api'" },
     { name = "python-multipart", marker = "extra == 'api'" },
     { name = "pytz", marker = "extra == 'api'" },
-    { name = "pyuca" },
-    { name = "pyuca", marker = "extra == 'api'" },
     { name = "setuptools" },
     { name = "setuptools", marker = "extra == 'api'" },
     { name = "tenacity" },
@@ -1059,6 +1084,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b6/d6/a9d2c808f2c489ad199723197419207ecbfbc1776f6e155e1ecea9c883aa/multidict-6.6.3-cp313-cp313t-win_amd64.whl", hash = "sha256:9f97e181f344a0ef3881b573d31de8542cc0dbc559ec68c8f8b5ce2c2e91646d", size = 53011 },
     { url = "https://files.pythonhosted.org/packages/f2/40/b68001cba8188dd267590a111f9661b6256debc327137667e832bf5d66e8/multidict-6.6.3-cp313-cp313t-win_arm64.whl", hash = "sha256:ce8b7693da41a3c4fde5871c738a81490cea5496c671d74374c8ab889e1834fb", size = 45254 },
     { url = "https://files.pythonhosted.org/packages/d8/30/9aec301e9772b098c1f5c0ca0279237c9766d94b97802e9888010c64b0ed/multidict-6.6.3-py3-none-any.whl", hash = "sha256:8db10f29c7541fc5da4defd8cd697e1ca429db743fa716325f236079b96f775a", size = 12313 },
+]
+
+[[package]]
+name = "nano-vectordb"
+version = "0.0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/ff/ed9ff1c4e5b0418687c17d02fdc453c212e7550c62622914ba0243c106bc/nano_vectordb-0.0.4.3.tar.gz", hash = "sha256:3d13074476f2b739e51261974ed44aa467725579966219734c03502c929ed3b5", size = 6332 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/d8/f1876f59916da0a2147e63066650c46bf7992828a9e92f1b4e3b695f1fb0/nano_vectordb-0.0.4.3-py3-none-any.whl", hash = "sha256:1b70401a54c02fabf76515b5dfb630076434547ed3c6861828ee8771b6dd7c19", size = 5590 },
 ]
 
 [[package]]
@@ -1450,6 +1488,22 @@ wheels = [
 ]
 
 [[package]]
+name = "psutil"
+version = "7.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/31/4723d756b59344b643542936e37a31d1d3204bcdc42a7daa8ee9eb06fb50/psutil-7.1.0.tar.gz", hash = "sha256:655708b3c069387c8b77b072fc429a57d0e214221d01c0a772df7dfedcb3bcd2", size = 497660 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/62/ce4051019ee20ce0ed74432dd73a5bb087a6704284a470bb8adff69a0932/psutil-7.1.0-cp36-abi3-macosx_10_9_x86_64.whl", hash = "sha256:76168cef4397494250e9f4e73eb3752b146de1dd950040b29186d0cce1d5ca13", size = 245242 },
+    { url = "https://files.pythonhosted.org/packages/38/61/f76959fba841bf5b61123fbf4b650886dc4094c6858008b5bf73d9057216/psutil-7.1.0-cp36-abi3-macosx_11_0_arm64.whl", hash = "sha256:5d007560c8c372efdff9e4579c2846d71de737e4605f611437255e81efcca2c5", size = 246682 },
+    { url = "https://files.pythonhosted.org/packages/88/7a/37c99d2e77ec30d63398ffa6a660450b8a62517cabe44b3e9bae97696e8d/psutil-7.1.0-cp36-abi3-manylinux_2_12_i686.manylinux2010_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:22e4454970b32472ce7deaa45d045b34d3648ce478e26a04c7e858a0a6e75ff3", size = 287994 },
+    { url = "https://files.pythonhosted.org/packages/9d/de/04c8c61232f7244aa0a4b9a9fbd63a89d5aeaf94b2fc9d1d16e2faa5cbb0/psutil-7.1.0-cp36-abi3-manylinux_2_12_x86_64.manylinux2010_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8c70e113920d51e89f212dd7be06219a9b88014e63a4cec69b684c327bc474e3", size = 291163 },
+    { url = "https://files.pythonhosted.org/packages/f4/58/c4f976234bf6d4737bc8c02a81192f045c307b72cf39c9e5c5a2d78927f6/psutil-7.1.0-cp36-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7d4a113425c037300de3ac8b331637293da9be9713855c4fc9d2d97436d7259d", size = 293625 },
+    { url = "https://files.pythonhosted.org/packages/79/87/157c8e7959ec39ced1b11cc93c730c4fb7f9d408569a6c59dbd92ceb35db/psutil-7.1.0-cp37-abi3-win32.whl", hash = "sha256:09ad740870c8d219ed8daae0ad3b726d3bf9a028a198e7f3080f6a1888b99bca", size = 244812 },
+    { url = "https://files.pythonhosted.org/packages/bf/e9/b44c4f697276a7a95b8e94d0e320a7bf7f3318521b23de69035540b39838/psutil-7.1.0-cp37-abi3-win_amd64.whl", hash = "sha256:57f5e987c36d3146c0dd2528cd42151cf96cd359b9d67cfff836995cc5df9a3d", size = 247965 },
+    { url = "https://files.pythonhosted.org/packages/26/65/1070a6e3c036f39142c2820c4b52e9243246fcfc3f96239ac84472ba361e/psutil-7.1.0-cp37-abi3-win_arm64.whl", hash = "sha256:6937cb68133e7c97b6cc9649a570c9a18ba0efebed46d8c5dae4c07fa1b67a07", size = 244971 },
+]
+
+[[package]]
 name = "pyasn1"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1588,6 +1642,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pypinyin"
+version = "0.55.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/a4/784cf98c09e0dc22776b0d7d8a4a5b761218bcae4608c2416ce1e167c8af/pypinyin-0.55.0.tar.gz", hash = "sha256:b5711b3a0c6f76e67408ec6b2e3c4987a3a806b7c528076e7c7b86fcf0eaa66b", size = 839836 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/7b/4cabc76fcc21c3c7d5c671d8783984d30ac9d3bb387c4ba784fca3cdfa3a/pypinyin-0.55.0-py2.py3-none-any.whl", hash = "sha256:d53b1e8ad2cdb815fb2cb604ed3123372f5a28c6f447571244aca36fc62a286f", size = 840203 },
+]
+
+[[package]]
 name = "pytest"
 version = "8.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1673,15 +1736,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f8/bf/abbd3cdfb8fbc7fb3d4d38d320f2441b1e7cbe29be4f23797b4a2b5d8aac/pytz-2025.2.tar.gz", hash = "sha256:360b9e3dbb49a209c21ad61809c7fb453643e048b38924c765813546746e81c3", size = 320884 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/c4/34e93fe5f5429d7570ec1fa436f1986fb1f00c3e0f43a589fe2bbcd22c3f/pytz-2025.2-py2.py3-none-any.whl", hash = "sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00", size = 509225 },
-]
-
-[[package]]
-name = "pyuca"
-version = "1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/30/32/95beca7e3308581c6da4735c7102b0c0cbb30a6b863cc1a8e44e6d2f5c3c/pyuca-1.2.tar.gz", hash = "sha256:8a382fe74627f08c0d18908c0713ca4a20aad5385f077579e56208beea2893b2", size = 1398641 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/88/aeeee34d88f841aca712a8c18fbd62a33eaad8f2dbe535e87f3c829b02f9/pyuca-1.2-py2.py3-none-any.whl", hash = "sha256:abaa12e1bd2c7c68ca8396ff8383bc0654a739cef3ae68fd7af58bf29af0a91e", size = 1464896 },
 ]
 
 [[package]]

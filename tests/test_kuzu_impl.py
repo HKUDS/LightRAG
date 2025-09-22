@@ -320,6 +320,441 @@ class TestKuzuDBStorage:
         for node_id in test_nodes:
             assert node_id in labels
 
+    async def test_get_all_nodes(self, storage):
+        """Test retrieving all nodes from the database"""
+        # Clear any existing data first
+        await storage.drop()
+
+        # Test empty database
+        all_nodes = await storage.get_all_nodes()
+        assert isinstance(all_nodes, list)
+        assert len(all_nodes) == 0
+
+        # Create test nodes with various properties
+        test_nodes = [
+            {
+                "entity_id": "node_all_1",
+                "entity_type": "Person",
+                "description": "First test person",
+                "keywords": "test,person,first",
+                "source_id": "chunk_1",
+            },
+            {
+                "entity_id": "node_all_2",
+                "entity_type": "Organization",
+                "description": "Test organization",
+                "keywords": "test,org,company",
+                "source_id": "chunk_2",
+            },
+            {
+                "entity_id": "node_all_3",
+                "entity_type": "Location",
+                "description": "Test location",
+                "keywords": "test,place,location",
+                "source_id": "chunk_3",
+            },
+        ]
+
+        # Insert test nodes
+        for node_data in test_nodes:
+            await storage.upsert_node(node_data["entity_id"], node_data)
+
+        # Get all nodes
+        all_nodes = await storage.get_all_nodes()
+
+        # Verify correct number of nodes returned
+        assert len(all_nodes) == 3
+
+        # Verify all nodes are returned with correct properties
+        returned_node_ids = {node["entity_id"] for node in all_nodes}
+        expected_node_ids = {node["entity_id"] for node in test_nodes}
+        assert returned_node_ids == expected_node_ids
+
+        # Verify node properties are correctly preserved
+        for returned_node in all_nodes:
+            original_node = next(
+                node
+                for node in test_nodes
+                if node["entity_id"] == returned_node["entity_id"]
+            )
+            assert returned_node["entity_type"] == original_node["entity_type"]
+            assert returned_node["description"] == original_node["description"]
+            assert returned_node["keywords"] == original_node["keywords"]
+            assert returned_node["source_id"] == original_node["source_id"]
+
+        print("✓ get_all_nodes test passed")
+
+    async def test_get_all_edges(self, storage):
+        """Test retrieving all edges from the database"""
+        # Clear any existing data first
+        await storage.drop()
+
+        # Test empty database
+        all_edges = await storage.get_all_edges()
+        assert isinstance(all_edges, list)
+        assert len(all_edges) == 0
+
+        # Create test nodes
+        nodes = [
+            {
+                "entity_id": "edge_node_1",
+                "entity_type": "Person",
+                "description": "First person",
+                "source_id": "chunk_1",
+            },
+            {
+                "entity_id": "edge_node_2",
+                "entity_type": "Person",
+                "description": "Second person",
+                "source_id": "chunk_1",
+            },
+            {
+                "entity_id": "edge_node_3",
+                "entity_type": "Organization",
+                "description": "Test org",
+                "source_id": "chunk_2",
+            },
+        ]
+
+        for node in nodes:
+            await storage.upsert_node(node["entity_id"], node)
+
+        # Create test edges with various properties
+        test_edges = [
+            {
+                "source": "edge_node_1",
+                "target": "edge_node_2",
+                "weight": 0.9,
+                "description": "knows personally",
+                "keywords": "personal,relationship",
+                "source_id": "chunk_1",
+            },
+            {
+                "source": "edge_node_1",
+                "target": "edge_node_3",
+                "weight": 0.7,
+                "description": "works for",
+                "keywords": "professional,employment",
+                "source_id": "chunk_2",
+            },
+            {
+                "source": "edge_node_2",
+                "target": "edge_node_3",
+                "weight": 0.6,
+                "description": "collaborates with",
+                "keywords": "professional,collaboration",
+                "source_id": "chunk_3",
+            },
+        ]
+
+        # Insert test edges
+        for edge_data in test_edges:
+            source = edge_data.pop("source")
+            target = edge_data.pop("target")
+            await storage.upsert_edge(source, target, edge_data)
+
+        # Get all edges
+        all_edges = await storage.get_all_edges()
+
+        # Verify correct number of edges (should handle bidirectional properly)
+        assert len(all_edges) == 3
+
+        # Verify edge properties and normalize bidirectional edges
+        expected_pairs = {
+            ("edge_node_1", "edge_node_2"),
+            ("edge_node_1", "edge_node_3"),
+            ("edge_node_2", "edge_node_3"),
+        }
+        returned_pairs = set()
+
+        for edge in all_edges:
+            # Normalize edge pair (since edges are bidirectional)
+            edge_pair = tuple(sorted([edge["source"], edge["target"]]))
+            returned_pairs.add(edge_pair)
+
+            # Verify edge has required properties
+            assert "weight" in edge
+            assert "description" in edge
+            assert "keywords" in edge
+            assert "source_id" in edge
+            assert isinstance(edge["weight"], (int, float))
+
+        # Verify all expected edge pairs are present
+        assert returned_pairs == expected_pairs
+
+        # Verify specific edge properties
+        for edge in all_edges:
+            source, target = edge["source"], edge["target"]
+            edge_pair = tuple(sorted([source, target]))
+
+            if edge_pair == ("edge_node_1", "edge_node_2"):
+                assert edge["weight"] == 0.9
+                assert edge["description"] == "knows personally"
+                assert edge["keywords"] == "personal,relationship"
+            elif edge_pair == ("edge_node_1", "edge_node_3"):
+                assert edge["weight"] == 0.7
+                assert edge["description"] == "works for"
+                assert edge["keywords"] == "professional,employment"
+            elif edge_pair == ("edge_node_2", "edge_node_3"):
+                assert edge["weight"] == 0.6
+                assert edge["description"] == "collaborates with"
+                assert edge["keywords"] == "professional,collaboration"
+
+        print("✓ get_all_edges test passed")
+
+    async def test_get_popular_labels(self, storage):
+        """Test retrieving popular node labels by degree"""
+        # Clear any existing data first
+        await storage.drop()
+
+        # Test empty database
+        popular_labels = await storage.get_popular_labels(top_k=5)
+        assert isinstance(popular_labels, list)
+        assert len(popular_labels) == 0
+
+        # Create nodes with different degrees
+        # Hub node - will have highest degree (connected to 4 others)
+        await storage.upsert_node(
+            "hub_node",
+            {
+                "entity_id": "hub_node",
+                "entity_type": "Hub",
+                "description": "Central hub",
+                "source_id": "chunk_hub",
+            },
+        )
+
+        # Popular node - connected to 2 others
+        await storage.upsert_node(
+            "popular_node",
+            {
+                "entity_id": "popular_node",
+                "entity_type": "Popular",
+                "description": "Somewhat popular",
+                "source_id": "chunk_pop",
+            },
+        )
+
+        # Regular nodes - connected to 1 other each
+        regular_nodes = ["regular_1", "regular_2", "regular_3"]
+        for node_id in regular_nodes:
+            await storage.upsert_node(
+                node_id,
+                {
+                    "entity_id": node_id,
+                    "entity_type": "Regular",
+                    "description": f"Regular node {node_id}",
+                    "source_id": "chunk_reg",
+                },
+            )
+
+        # Isolated node - no connections (degree 0)
+        await storage.upsert_node(
+            "isolated_node",
+            {
+                "entity_id": "isolated_node",
+                "entity_type": "Isolated",
+                "description": "Isolated node",
+                "source_id": "chunk_iso",
+            },
+        )
+
+        # Create edges to establish different degrees
+        # Hub node connections (degree 4)
+        hub_connections = ["popular_node", "regular_1", "regular_2", "regular_3"]
+        for target in hub_connections:
+            await storage.upsert_edge(
+                "hub_node",
+                target,
+                {
+                    "weight": 0.8,
+                    "description": f"connects to {target}",
+                    "source_id": "chunk_hub",
+                },
+            )
+
+        # Popular node additional connection (degree 2 total)
+        await storage.upsert_edge(
+            "popular_node",
+            "regular_1",
+            {
+                "weight": 0.6,
+                "description": "additional connection",
+                "source_id": "chunk_pop",
+            },
+        )
+
+        # Test default top_k (10)
+        popular_labels = await storage.get_popular_labels()
+        assert len(popular_labels) <= 10
+
+        # Verify ordering: hub_node should be first (highest degree)
+        assert popular_labels[0] == "hub_node"
+
+        # Popular_node should be second (second highest degree)
+        assert popular_labels[1] == "popular_node"
+
+        # Regular nodes should follow (degree 1 each), ordered by entity_id
+        regular_positions = [popular_labels.index(node) for node in regular_nodes]
+        assert all(pos > 1 for pos in regular_positions)  # All after popular_node
+
+        # Isolated node should be last (degree 0)
+        assert popular_labels[-1] == "isolated_node"
+
+        # Test specific top_k limit
+        top_3 = await storage.get_popular_labels(top_k=3)
+        assert len(top_3) == 3
+        assert top_3[0] == "hub_node"
+        assert top_3[1] == "popular_node"
+        assert top_3[2] in regular_nodes  # One of the regular nodes
+
+        # Test top_k larger than available nodes
+        all_labels = await storage.get_popular_labels(top_k=20)
+        assert len(all_labels) == 6  # Total nodes we created
+
+        # Test top_k = 1
+        top_1 = await storage.get_popular_labels(top_k=1)
+        assert len(top_1) == 1
+        assert top_1[0] == "hub_node"
+
+        print("✓ get_popular_labels test passed")
+
+    async def test_search_labels(self, storage):
+        """Test searching for node labels with various queries"""
+        # Clear any existing data first
+        await storage.drop()
+
+        # Test empty database
+        search_results = await storage.search_labels("test")
+        assert isinstance(search_results, list)
+        assert len(search_results) == 0
+
+        # Create diverse test nodes with searchable content
+        test_nodes = [
+            {
+                "entity_id": "john_doe",
+                "entity_type": "Person",
+                "description": "Software engineer at tech company",
+                "keywords": "python,programming,software",
+                "source_id": "chunk_1",
+            },
+            {
+                "entity_id": "jane_smith",
+                "entity_type": "Person",
+                "description": "Data scientist specializing in machine learning",
+                "keywords": "data,science,ml,python",
+                "source_id": "chunk_2",
+            },
+            {
+                "entity_id": "acme_corp",
+                "entity_type": "Organization",
+                "description": "Technology company developing software solutions",
+                "keywords": "tech,software,company,business",
+                "source_id": "chunk_3",
+            },
+            {
+                "entity_id": "silicon_valley",
+                "entity_type": "Location",
+                "description": "Technology hub in California",
+                "keywords": "tech,california,innovation,startups",
+                "source_id": "chunk_4",
+            },
+            {
+                "entity_id": "machine_learning_project",
+                "entity_type": "Project",
+                "description": "Research project on deep learning algorithms",
+                "keywords": "ml,ai,research,algorithms,deep_learning",
+                "source_id": "chunk_5",
+            },
+        ]
+
+        # Insert test nodes
+        for node in test_nodes:
+            await storage.upsert_node(node["entity_id"], node)
+
+        # Test 1: Search by entity_id substring
+        results = await storage.search_labels("john")
+        assert "john_doe" in results
+        assert len([r for r in results if "john" in r.lower()]) >= 1
+
+        # Test 2: Search by description content
+        results = await storage.search_labels("software")
+        expected_matches = {"john_doe", "acme_corp"}  # Both mention software
+        actual_matches = set(results)
+        assert expected_matches.issubset(actual_matches)
+
+        # Test 3: Search by keywords
+        results = await storage.search_labels("python")
+        expected_matches = {"john_doe", "jane_smith"}  # Both have python keyword
+        actual_matches = set(results)
+        assert expected_matches.issubset(actual_matches)
+
+        # Test 4: Search for technology-related terms
+        results = await storage.search_labels("tech")
+        expected_matches = {"acme_corp", "silicon_valley"}  # Both have tech keyword
+        actual_matches = set(results)
+        assert expected_matches.issubset(actual_matches)
+
+        # Test 5: Search with no matches
+        results = await storage.search_labels("nonexistent_term_xyz")
+        assert len(results) == 0
+
+        # Test 6: Case sensitive search (KuzuDB CONTAINS is case sensitive)
+        results_tech_desc = await storage.search_labels(
+            "Technology"
+        )  # Capital T, matches description
+        results_tech_keyword = await storage.search_labels(
+            "tech"
+        )  # Lowercase, matches keywords
+        # Both should return results but may be different
+        assert (
+            len(results_tech_desc) > 0
+        )  # Should find acme_corp and silicon_valley descriptions
+        assert len(results_tech_keyword) > 0  # Should find tech keywords
+
+        # Test 7: Search with limit parameter
+        results_limited = await storage.search_labels("tech", limit=2)
+        assert len(results_limited) <= 2
+        assert len(results_limited) > 0  # Should find at least some matches
+
+        # Test 8: Search for machine learning related content
+        results = await storage.search_labels("machine learning")
+        expected_matches = {
+            "jane_smith"
+        }  # Only jane_smith has "machine learning" in description
+        actual_matches = set(results)
+        assert expected_matches.issubset(actual_matches)
+
+        # Test 8b: Search for deep learning related content
+        results = await storage.search_labels("deep learning")
+        expected_matches = {
+            "machine_learning_project"
+        }  # Only machine_learning_project has "deep learning"
+        actual_matches = set(results)
+        assert expected_matches.issubset(actual_matches)
+
+        # Test 9: Search for partial entity_id match
+        results = await storage.search_labels("_corp")
+        assert "acme_corp" in results
+
+        # Test 10: Verify result ordering (should be by entity_id)
+        results = await storage.search_labels("tech", limit=10)
+        if len(results) > 1:
+            # Check if results are ordered alphabetically by entity_id
+            sorted_results = sorted(results)
+            assert results == sorted_results
+
+        # Test 11: Empty query string
+        results = await storage.search_labels("")
+        # Should return all nodes when query is empty (or handle gracefully)
+        assert isinstance(results, list)
+
+        # Test 12: Search with very large limit
+        results = await storage.search_labels("tech", limit=1000)
+        assert len(results) <= 5  # Can't exceed total number of nodes
+
+        print("✓ search_labels test passed")
+
     async def test_deletion_operations(self, storage):
         """Test node and edge deletion"""
         # Create test data
@@ -747,6 +1182,18 @@ async def run_tests():
 
             await test_instance.test_get_all_labels(storage)
             print("✓ Get all labels test passed")
+
+            await test_instance.test_get_all_nodes(storage)
+            print("✓ Get all nodes test passed")
+
+            await test_instance.test_get_all_edges(storage)
+            print("✓ Get all edges test passed")
+
+            await test_instance.test_get_popular_labels(storage)
+            print("✓ Get popular labels test passed")
+
+            await test_instance.test_search_labels(storage)
+            print("✓ Search labels test passed")
 
             await test_instance.test_deletion_operations(storage)
             print("✓ Deletion operations test passed")

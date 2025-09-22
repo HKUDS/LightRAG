@@ -574,14 +574,20 @@ class KuzuDBStorage(BaseGraphStorage):
             raise
 
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        edge_data: dict[str, str | int | float],
     ) -> None:
         """Upsert an edge and its properties between two nodes"""
         label = self._get_label()
 
         try:
             # Build the properties dict
-            params = {"source_id": source_node_id, "target_id": target_node_id}
+            params: dict[str, str | int | float] = {
+                "source_id": source_node_id,
+                "target_id": target_node_id,
+            }
             set_props = []
 
             for key, value in edge_data.items():
@@ -899,3 +905,129 @@ class KuzuDBStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"Error dropping KuzuDB workspace '{label}': {e}")
             return {"status": "error", "message": str(e)}
+
+    async def get_all_nodes(self) -> list[dict]:
+        """Get all nodes from the database"""
+        label = self._get_label()
+        try:
+            query = f"MATCH (n:{label}) RETURN n.*"
+            result = self.get_all(self.connection.execute(query))
+
+            nodes = []
+            for query_result in result:
+                if not query_result.has_next():
+                    continue
+                while query_result.has_next():
+                    row = query_result.get_next()
+                    node_dict = {
+                        "entity_id": row[0],
+                        "entity_type": row[1],
+                        "description": row[2],
+                        "keywords": row[3],
+                        "source_id": row[4],
+                    }
+                    nodes.append(node_dict)
+            return nodes
+        except Exception as e:
+            logger.error(f"Error getting all nodes: {str(e)}")
+            return []
+
+    async def get_all_edges(self) -> list[dict]:
+        """Get all edges from the database"""
+        label = self._get_label()
+        try:
+            query = f"""
+                MATCH (a:{label})-[r:Related]-(b:{label})
+                RETURN a.entity_id, b.entity_id, r.*
+            """
+            result = self.get_all(self.connection.execute(query))
+
+            edges = []
+            seen_edges = set()
+            for query_result in result:
+                if not query_result.has_next():
+                    continue
+                while query_result.has_next():
+                    row = query_result.get_next()
+                    column_names = query_result.get_column_names()
+                    edge_data = dict(zip(column_names[2:], row[2:]))
+
+                    # Clean up column names by removing prefixes
+                    clean_edge_data = {}
+                    for key, value in edge_data.items():
+                        clean_key = (
+                            key.replace("r.", "") if key.startswith("r.") else key
+                        )
+                        clean_edge_data[clean_key] = value
+
+                    source, target = row[0], row[1]
+                    clean_edge_data["source"] = source
+                    clean_edge_data["target"] = target
+
+                    # Create normalized edge pair to avoid bidirectional duplicates
+                    edge_pair = tuple(sorted([source, target]))
+                    if edge_pair not in seen_edges:
+                        edges.append(clean_edge_data)
+                        seen_edges.add(edge_pair)
+
+            return edges
+        except Exception as e:
+            logger.error(f"Error getting all edges: {str(e)}")
+            return []
+
+    async def get_popular_labels(self, top_k: int = 10) -> list[str]:
+        """Get the most popular node labels by degree"""
+        label = self._get_label()
+        try:
+            query = f"""
+                MATCH (n:{label})
+                OPTIONAL MATCH (n)-[r:Related]-(connected:{label})
+                WITH n.entity_id AS entity_id, COUNT(DISTINCT connected) AS degree
+                RETURN entity_id
+                ORDER BY degree DESC, entity_id ASC
+                LIMIT $top_k
+            """
+            result = self.get_all(self.connection.execute(query, {"top_k": top_k}))
+
+            labels = []
+            for query_result in result:
+                if not query_result.has_next():
+                    continue
+                while query_result.has_next():
+                    row = query_result.get_next()
+                    labels.append(row[0])
+
+            return labels
+        except Exception as e:
+            logger.error(f"Error getting popular labels: {str(e)}")
+            return []
+
+    async def search_labels(self, query: str, limit: int = 10) -> list[str]:
+        """Search for node labels that match the given query"""
+        label = self._get_label()
+        try:
+            search_query = f"""
+                MATCH (n:{label})
+                WHERE LOWER(n.entity_id) CONTAINS LOWER($query) 
+                   OR LOWER(n.description) CONTAINS LOWER($query)
+                   OR LOWER(n.keywords) CONTAINS LOWER($query)
+                RETURN DISTINCT n.entity_id
+                ORDER BY n.entity_id
+                LIMIT $limit
+            """
+            result = self.get_all(
+                self.connection.execute(search_query, {"query": query, "limit": limit})
+            )
+
+            labels = []
+            for query_result in result:
+                if not query_result.has_next():
+                    continue
+                while query_result.has_next():
+                    row = query_result.get_next()
+                    labels.append(row[0])
+
+            return labels
+        except Exception as e:
+            logger.error(f"Error searching labels: {str(e)}")
+            return []
