@@ -90,8 +90,17 @@ const GraphLabels = () => {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true)
 
+    // Clear legend cache to ensure legend is re-generated on refresh
+    useGraphStore.getState().setTypeColorMap(new Map<string, string>())
+
     try {
-      const currentLabel = label
+      let currentLabel = label
+
+      // If queryLabel is empty, set it to '*'
+      if (!currentLabel || currentLabel.trim() === '') {
+        useSettingsStore.getState().setQueryLabel('*')
+        currentLabel = '*'
+      }
 
       if (currentLabel && currentLabel !== '*') {
         // Scenario 1: Has specific label, try to refresh current label

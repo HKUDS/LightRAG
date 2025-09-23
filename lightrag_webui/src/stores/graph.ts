@@ -113,7 +113,10 @@ interface GraphState {
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
   setIsFetching: (isFetching: boolean) => void
 
-  // 搜索引擎方法
+  // Legend color mapping methods
+  setTypeColorMap: (typeColorMap: Map<string, string>) => void
+
+  // Search engine methods
   setSearchEngine: (engine: MiniSearch | null) => void
   resetSearchEngine: () => void
 
