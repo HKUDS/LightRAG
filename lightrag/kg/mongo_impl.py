@@ -683,6 +683,18 @@ class MongoDocStatusStorage(DocStatusStorage):
 
         return counts
 
+    async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
+        """Get document by file path
+
+        Args:
+            file_path: The file path to search for
+
+        Returns:
+            Union[dict[str, Any], None]: Document data if found, None otherwise
+            Returns the same format as get_by_id method
+        """
+        return await self._data.find_one({"file_path": file_path})
+
 
 @final
 @dataclass
