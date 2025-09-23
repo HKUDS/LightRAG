@@ -140,18 +140,6 @@ docker compose up
 ```
 > 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
-### 启动时自动扫描
-
-当使用 `--auto-scan-at-startup` 参数启动LightRAG Server时，系统将自动：
-
-1. 扫描输入目录中的新文件
-2. 为尚未在数据库中的新文档建立索引
-3. 使所有内容立即可用于 RAG 查询
-
-这种工作模式给启动一个临时的RAG任务提供给了方便。
-
-> `--input-dir` 参数指定要扫描的输入目录。您可以从 webui 触发输入目录扫描。
-
 ### 启动多个LightRAG实例
 
 有两种方式可以启动多个LightRAG实例。第一种方式是为每个实例配置一个完全独立的工作环境。此时需要为每个实例创建一个独立的工作目录，然后在这个工作目录上放置一个当前实例专用的`.env`配置文件。不同实例的配置文件中的服务器监听端口不能重复，然后在工作目录上执行 lightrag-server 启动服务即可。
@@ -432,7 +420,6 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --ssl-keyfile | None | SSL 私钥文件路径（如果启用 --ssl 则必需） |
 | --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai、aws_bedrock） |
 | --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、aws_bedrock） |
-| auto-scan-at-startup | - | 扫描输入目录中的新文件并开始索引 |
 
 ### Reranking 配置
 
