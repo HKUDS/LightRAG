@@ -25,6 +25,7 @@ DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
+    "Creature",
     "Organization",
     "Location",
     "Event",

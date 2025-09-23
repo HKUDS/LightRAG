@@ -39,14 +39,22 @@ const TYPE_SYNONYMS: Record<string, string> = {
   '过程': 'method', 
 
   'artifact': 'artifact',
+  'technology': 'technology',
+  'tech': 'technology',
   'equipment': 'artifact',
   'device': 'artifact',
   'stuff': 'artifact',
+  'weapon': 'artifact',
+  'arms': 'artifact',
   '人工制品': 'artifact',
   '人造物品': 'artifact',
+  '技术': 'technology',
+  '科技': 'technology',
   '设备': 'artifact',
   '装备': 'artifact',
   '物品': 'artifact',
+  '武器': 'artifact',
+  '军火': 'artifact',
 
   'naturalobject': 'naturalobject',
   'natural': 'naturalobject',
@@ -86,71 +94,60 @@ const TYPE_SYNONYMS: Record<string, string> = {
   '人物': 'person',
   '人': 'person',
 
-  'animal': 'animal',
-  '动物': 'animal',
-  'creature': 'animal',
-  '生物': 'animal',
-
-  'geo': 'geo',
-  '地理': 'geo',
-  'geography': 'geo',
-  '地域': 'geo',
+  'creature': 'creature',
+  'animal': 'creature',
+  'beings': 'creature',
+  'being': 'creature',
+  'alien': 'creature',
+  'ghost': 'creature',
+  '动物': 'creature',
+  '生物': 'creature',
+  '神仙': 'creature',
+  '鬼怪': 'creature',
+  '妖怪': 'creature',
 
   'location': 'location',
-  '地点': 'location',
+  'geography': 'location',
+  'geo': 'location',
   'place': 'location',
   'address': 'location',
+  '地点': 'location',
   '位置': 'location',
   '地址': 'location',
-
-  'technology': 'technology',
-  '技术': 'technology',
-  'tech': 'technology',
-  '科技': 'technology',
-
-  'weapon': 'weapon',
-  '武器': 'weapon',
-  'arms': 'weapon',
-  '军火': 'weapon',
-
-  'group': 'group',
-  '群组': 'group',
-  'community': 'group',
-  '社区': 'group'
+  '地理': 'location',
+  '地域': 'location',
 };
 
 // node type to color mapping
 const NODE_TYPE_COLORS: Record<string, string> = {
-  'unknown': '#b0b0b0', // Yellow
-  'other': '#f4d371', // Yellow
-  'concept': '#e3493b', // GoogleRed
-  'group': '#ec407a', // red
-  'method': '#b71c1c', // red
-  'organization': '#0f705d', // Green
-  'event': '#00bfa0', // Turquoise
   'person': '#4169E1', // RoyalBlue
-  'animal': '#84a3e1', // SkyBlue
-  'geo': '#ff99cc', // Pale Pink
+  'creature': '#bd7ebe', // LightViolet
+  'organization': '#00cc00', // LightGreen
   'location': '#cf6d17', // Carrot
-  'data': '#b300b3', // Purple
-  'technology': '#2F4F4F', // DarkSlateGray
-  'content': '#4421af', // DeepPurple
-  'naturalobject': '#00cc00', // Green
-  'artifact': '#0f558a', // NavyBlue
+  'event': '#00bfa0', // Turquoise
+  'concept': '#e3493b', // GoogleRed
+  'method': '#b71c1c', // red
+  'content': '#0f558a', // NavyBlue
+  'data': '#0000ff', // Blue
+  'artifact': '#4421af', // DeepPurple
+  'naturalobject': '#b2e061', // YellowGreen
+  'other': '#f4d371', // Yellow
+  'unknown': '#b0b0b0', // Yellow
 };
 
 // Extended colors pool - Used for unknown node types
 const EXTENDED_COLORS = [
+  '#84a3e1', // SkyBlue
   '#5a2c6d', // DeepViolet
-  '#0000ff', // Blue
-  '#cd071e', // ChinaRed
-  '#00CED1', // DarkTurquoise
-  '#9b3a31', // DarkBrown
-  '#b2e061', // YellowGreen
-  '#bd7ebe', // LightViolet
-  '#6ef7b3', // LightGreen
+  '#2F4F4F', // DarkSlateGray
   '#003366', // DarkBlue
-  '#DEB887', // BurlyWood
+  '#9b3a31', // DarkBrown
+  '#00CED1', // DarkTurquoise
+  '#b300b3', // Purple
+  '#0f705d', // Green
+  '#ff99cc', // Pale Pink
+  '#6ef7b3', // LightGreen
+  '#cd071e', // ChinaRed
 ];
 
 // Select color based on node type
