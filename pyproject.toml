@@ -103,3 +103,8 @@ lightrag = ["api/webui/**/*"]
 
 [tool.ruff]
 target-version = "py310"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+]

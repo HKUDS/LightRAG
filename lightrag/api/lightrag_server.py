@@ -167,35 +167,45 @@ class DualModelLLMWrapper:
     async def __call__(self, prompt, **kwargs):
         """Route LLM call to appropriate model based on context"""
         # Check for explicit context hints first
-        if kwargs.pop('_is_ingestion', False) or self._in_ingestion_context:
+        if kwargs.pop("_is_ingestion", False) or self._in_ingestion_context:
             logger.info(f"Using ingestion model: {self.ingestion_model}")
             return await self.ingestion_func(prompt, **kwargs)
 
         # Check for keyword extraction (entity extraction indicator)
-        if kwargs.get('keyword_extraction', False):
-            logger.info(f"Using ingestion model for keyword extraction: {self.ingestion_model}")
+        if kwargs.get("keyword_extraction", False):
+            logger.info(
+                f"Using ingestion model for keyword extraction: {self.ingestion_model}"
+            )
             return await self.ingestion_func(prompt, **kwargs)
 
         # Check for system prompts indicating entity extraction
-        system_prompt = kwargs.get('system_prompt', '')
-        if system_prompt and any(indicator in system_prompt.lower() for indicator in [
-            'extract entities', 'entity extraction', 'identify entities',
-            'extract relationships', 'relationship extraction'
-        ]):
-            logger.info(f"Using ingestion model for entity/relation extraction: {self.ingestion_model}")
+        system_prompt = kwargs.get("system_prompt", "")
+        if system_prompt and any(
+            indicator in system_prompt.lower()
+            for indicator in [
+                "extract entities",
+                "entity extraction",
+                "identify entities",
+                "extract relationships",
+                "relationship extraction",
+            ]
+        ):
+            logger.info(
+                f"Using ingestion model for entity/relation extraction: {self.ingestion_model}"
+            )
             return await self.ingestion_func(prompt, **kwargs)
 
         # Default to query function for user queries
         logger.info(f"Using query model: {self.query_model}")
         return await self.query_func(prompt, **kwargs)
 
-    def get_active_model(self, context='query'):
+    def get_active_model(self, context="query"):
         """Get the model name for display purposes"""
-        if context == 'ingestion':
+        if context == "ingestion":
             return self.ingestion_model
         return self.query_model
 
-    def get_active_binding(self, context='query'):
+    def get_active_binding(self, context="query"):
         """Get the binding type for display purposes"""
         # For simplicity, we'll extract this from the model name or return generic info
         return f"{context}_model"
@@ -357,7 +367,12 @@ def create_app(args):
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     def create_optimized_openai_llm_func(
-        config_cache: LLMConfigCache, args, llm_timeout: int, model: str = None, host: str = None, api_key: str = None
+        config_cache: LLMConfigCache,
+        args,
+        llm_timeout: int,
+        model: str = None,
+        host: str = None,
+        api_key: str = None,
     ):
         """Create optimized OpenAI LLM function with pre-processed configuration"""
 
@@ -399,7 +414,12 @@ def create_app(args):
         return optimized_openai_alike_model_complete
 
     def create_optimized_azure_openai_llm_func(
-        config_cache: LLMConfigCache, args, llm_timeout: int, model: str = None, host: str = None, api_key: str = None
+        config_cache: LLMConfigCache,
+        args,
+        llm_timeout: int,
+        model: str = None,
+        host: str = None,
+        api_key: str = None,
     ):
         """Create optimized Azure OpenAI LLM function with pre-processed configuration"""
 
@@ -441,7 +461,9 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
-    def create_llm_model_func(binding: str, model: str = None, host: str = None, api_key: str = None):
+    def create_llm_model_func(
+        binding: str, model: str = None, host: str = None, api_key: str = None
+    ):
         """
         Create LLM model function based on binding type.
         Uses optimized functions for OpenAI bindings and lazy import for others.
@@ -472,7 +494,9 @@ def create_app(args):
                 )
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
-                return create_optimized_openai_llm_func(config_cache, args, llm_timeout, model, host, api_key)
+                return create_optimized_openai_llm_func(
+                    config_cache, args, llm_timeout, model, host, api_key
+                )
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
 
@@ -486,7 +510,7 @@ def create_app(args):
             args.ingestion_llm_binding,
             args.ingestion_llm_model,
             args.ingestion_llm_binding_host,
-            args.ingestion_llm_binding_api_key
+            args.ingestion_llm_binding_api_key,
         )
 
         # Create query LLM function
@@ -494,22 +518,28 @@ def create_app(args):
             args.query_llm_binding,
             args.query_llm_model,
             args.query_llm_binding_host,
-            args.query_llm_binding_api_key
+            args.query_llm_binding_api_key,
         )
 
         # If both models are the same, return the query function directly for backwards compatibility
-        if (args.ingestion_llm_binding == args.query_llm_binding and
-            args.ingestion_llm_model == args.query_llm_model):
-            logger.info(f"Using single LLM model for both ingestion and query: {args.query_llm_model}")
+        if (
+            args.ingestion_llm_binding == args.query_llm_binding
+            and args.ingestion_llm_model == args.query_llm_model
+        ):
+            logger.info(
+                f"Using single LLM model for both ingestion and query: {args.query_llm_model}"
+            )
             return query_func
 
         # Create dual model wrapper
-        logger.info(f"Using dual LLM configuration - Ingestion: {args.ingestion_llm_model}, Query: {args.query_llm_model}")
+        logger.info(
+            f"Using dual LLM configuration - Ingestion: {args.ingestion_llm_model}, Query: {args.query_llm_model}"
+        )
         return DualModelLLMWrapper(
             ingestion_func=ingestion_func,
             query_func=query_func,
             ingestion_model=args.ingestion_llm_model,
-            query_model=args.query_llm_model
+            query_model=args.query_llm_model,
         )
 
     def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
@@ -715,7 +745,9 @@ def create_app(args):
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs=create_llm_model_kwargs(
-                args.query_llm_binding, args, llm_timeout  # Use query binding for kwargs
+                args.query_llm_binding,
+                args,
+                llm_timeout,  # Use query binding for kwargs
             ),
             embedding_func=embedding_func,
             default_llm_timeout=llm_timeout,
@@ -740,7 +772,9 @@ def create_app(args):
         )
 
         # Store dual LLM wrapper for API access
-        app.state.dual_llm_wrapper = dual_llm_func if isinstance(dual_llm_func, DualModelLLMWrapper) else None
+        app.state.dual_llm_wrapper = (
+            dual_llm_func if isinstance(dual_llm_func, DualModelLLMWrapper) else None
+        )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
@@ -772,10 +806,10 @@ def create_app(args):
             "models": {
                 "ingestion": args.ingestion_llm_model,
                 "query": args.query_llm_model,
-                "embedding": args.embedding_model
+                "embedding": args.embedding_model,
             },
             "llm_binding": args.llm_binding,
-            "embedding_binding": args.embedding_binding
+            "embedding_binding": args.embedding_binding,
         }
 
     @app.get("/auth-status")
@@ -873,7 +907,8 @@ def create_app(args):
                     "query_llm_binding": args.query_llm_binding,
                     "query_llm_model": args.query_llm_model,
                     "query_llm_binding_host": args.query_llm_binding_host,
-                    "dual_llm_enabled": hasattr(app.state, 'dual_llm_wrapper') and app.state.dual_llm_wrapper is not None,
+                    "dual_llm_enabled": hasattr(app.state, "dual_llm_wrapper")
+                    and app.state.dual_llm_wrapper is not None,
                     # embedding model configuration binding/host address (if applicable)/model (if applicable)
                     "embedding_binding": args.embedding_binding,
                     "embedding_binding_host": args.embedding_binding_host,
