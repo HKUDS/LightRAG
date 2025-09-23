@@ -3097,7 +3097,7 @@ async def _merge_all_chunks(
                 )
 
     logger.info(
-        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplication: {origin_len - len(merged_chunks)})"
+        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
 
     return merged_chunks
@@ -3971,7 +3971,7 @@ async def _find_related_text_unit_from_relations(
         total_relation_chunks += len(sorted_chunks)
 
     logger.info(
-        f"Find {total_relation_chunks} additional chunks in {len(relations_with_chunks)} relations ({len(removed_entity_chunk_ids)} duplicated chunks removed)"
+        f"Find {total_relation_chunks} additional chunks in {len(relations_with_chunks)} relations (duplicated {len(removed_entity_chunk_ids)})"
     )
 
     # Step 4: Apply the selected chunk selection algorithm
