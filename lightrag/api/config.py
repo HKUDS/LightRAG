@@ -384,7 +384,9 @@ def parse_args() -> argparse.Namespace:
     if not args.ingestion_llm_binding:
         args.ingestion_llm_binding = args.llm_binding
     if not args.ingestion_llm_model:
-        args.ingestion_llm_model = get_env_value("INGESTION_LLM_MODEL", get_env_value("LLM_MODEL", "mistral-nemo:latest"))
+        args.ingestion_llm_model = get_env_value(
+            "INGESTION_LLM_MODEL", get_env_value("LLM_MODEL", "mistral-nemo:latest")
+        )
     if not args.ingestion_llm_binding_host:
         args.ingestion_llm_binding_host = get_env_value(
             "LLM_BINDING_HOST", get_default_host(args.ingestion_llm_binding)
@@ -395,7 +397,9 @@ def parse_args() -> argparse.Namespace:
     if not args.query_llm_binding:
         args.query_llm_binding = args.llm_binding
     if not args.query_llm_model:
-        args.query_llm_model = get_env_value("QUERY_LLM_MODEL", get_env_value("LLM_MODEL", "mistral-nemo:latest"))
+        args.query_llm_model = get_env_value(
+            "QUERY_LLM_MODEL", get_env_value("LLM_MODEL", "mistral-nemo:latest")
+        )
     if not args.query_llm_binding_host:
         args.query_llm_binding_host = get_env_value(
             "LLM_BINDING_HOST", get_default_host(args.query_llm_binding)
