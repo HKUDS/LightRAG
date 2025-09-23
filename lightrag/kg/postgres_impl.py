@@ -2382,6 +2382,57 @@ class PGDocStatusStorage(DocStatusStorage):
 
         return processed_results
 
+    async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
+        """Get document by file path
+
+        Args:
+            file_path: The file path to search for
+
+        Returns:
+            Union[dict[str, Any], None]: Document data if found, None otherwise
+            Returns the same format as get_by_id method
+        """
+        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and file_path=$2"
+        params = {"workspace": self.workspace, "file_path": file_path}
+        result = await self.db.query(sql, list(params.values()), True)
+
+        if result is None or result == []:
+            return None
+        else:
+            # Parse chunks_list JSON string back to list
+            chunks_list = result[0].get("chunks_list", [])
+            if isinstance(chunks_list, str):
+                try:
+                    chunks_list = json.loads(chunks_list)
+                except json.JSONDecodeError:
+                    chunks_list = []
+
+            # Parse metadata JSON string back to dict
+            metadata = result[0].get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(result[0]["created_at"])
+            updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
+
+            return dict(
+                content_length=result[0]["content_length"],
+                content_summary=result[0]["content_summary"],
+                status=result[0]["status"],
+                chunks_count=result[0]["chunks_count"],
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=result[0]["file_path"],
+                chunks_list=chunks_list,
+                metadata=metadata,
+                error_msg=result[0].get("error_msg"),
+                track_id=result[0].get("track_id"),
+            )
+
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         sql = """SELECT status as "status", COUNT(1) as "count"

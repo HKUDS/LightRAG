@@ -1395,9 +1395,37 @@ async def run_scanning_process(
         logger.info(f"Found {total_files} files to index.")
 
         if new_files:
-            # Process all files at once with track_id
-            await pipeline_index_files(rag, new_files, track_id)
-            logger.info(f"Scanning process completed: {total_files} files Processed.")
+            # Check for files with PROCESSED status and filter them out
+            valid_files = []
+            processed_files = []
+
+            for file_path in new_files:
+                filename = file_path.name
+                existing_doc_data = await rag.doc_status.get_doc_by_file_path(filename)
+
+                if existing_doc_data and existing_doc_data.get("status") == "processed":
+                    # File is already PROCESSED, skip it with warning
+                    processed_files.append(filename)
+                    logger.warning(f"Skipping already processed file: {filename}")
+                else:
+                    # File is new or in non-PROCESSED status, add to processing list
+                    valid_files.append(file_path)
+
+            # Process valid files (new files + non-PROCESSED status files)
+            if valid_files:
+                await pipeline_index_files(rag, valid_files, track_id)
+                if processed_files:
+                    logger.info(
+                        f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
+                    )
+                else:
+                    logger.info(
+                        f"Scanning process completed: {len(valid_files)} files Processed."
+                    )
+            else:
+                logger.info(
+                    "No files to process after filtering already processed files."
+                )
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
@@ -1697,8 +1725,19 @@ def create_document_routes(
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
 
+            # Check if filename already exists in doc_status storage
+            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+            if existing_doc_data:
+                # Get document status information for error message
+                status = existing_doc_data.get("status", "unknown")
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
+                    track_id="",
+                )
+
             file_path = doc_manager.input_dir / safe_filename
-            # Check if file already exists
+            # Check if file already exists in file system
             if file_path.exists():
                 return InsertResponse(
                     status="duplicated",
@@ -1748,6 +1787,24 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Check if file_source already exists in doc_status storage
+            if (
+                request.file_source
+                and request.file_source.strip()
+                and request.file_source != "unknown_source"
+            ):
+                existing_doc_data = await rag.doc_status.get_doc_by_file_path(
+                    request.file_source
+                )
+                if existing_doc_data:
+                    # Get document status information for error message
+                    status = existing_doc_data.get("status", "unknown")
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
+                        track_id="",
+                    )
+
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
@@ -1794,6 +1851,26 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Check if any file_sources already exist in doc_status storage
+            if request.file_sources:
+                for file_source in request.file_sources:
+                    if (
+                        file_source
+                        and file_source.strip()
+                        and file_source != "unknown_source"
+                    ):
+                        existing_doc_data = await rag.doc_status.get_doc_by_file_path(
+                            file_source
+                        )
+                        if existing_doc_data:
+                            # Get document status information for error message
+                            status = existing_doc_data.get("status", "unknown")
+                            return InsertResponse(
+                                status="duplicated",
+                                message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
+                                track_id="",
+                            )
+
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 

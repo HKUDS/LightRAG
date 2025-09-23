@@ -3,7 +3,6 @@ LightRAG FastAPI Server
 """
 
 from fastapi import FastAPI, Depends, HTTPException
-import asyncio
 import os
 import logging
 import logging.config
@@ -45,7 +44,6 @@ from lightrag.constants import (
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
-    run_scanning_process,
 )
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
@@ -54,7 +52,6 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_pipeline_status_lock,
     initialize_pipeline_status,
     cleanup_keyed_lock,
     finalize_share_data,
@@ -211,24 +208,6 @@ def create_app(args):
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
-
-            pipeline_status = await get_namespace_data("pipeline_status")
-
-            should_start_autoscan = False
-            async with get_pipeline_status_lock():
-                # Auto scan documents if enabled
-                if args.auto_scan_at_startup:
-                    if not pipeline_status.get("autoscanned", False):
-                        pipeline_status["autoscanned"] = True
-                        should_start_autoscan = True
-
-            # Only run auto scan when no other process started it first
-            if should_start_autoscan:
-                # Create background task
-                task = asyncio.create_task(run_scanning_process(rag, doc_manager))
-                app.state.background_tasks.add(task)
-                task.add_done_callback(app.state.background_tasks.discard)
-                logger.info(f"Process {os.getpid()} auto scan task started at startup.")
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
