@@ -36,7 +36,7 @@ const TYPE_SYNONYMS: Record<string, string> = {
   'method': 'method',
   'process': 'method',
   '方法': 'method',
-  '过程': 'method', 
+  '过程': 'method',
 
   'artifact': 'artifact',
   'technology': 'technology',
@@ -160,13 +160,13 @@ const getNodeColorByType = (nodeType: string | undefined): string => {
 
   // First try to find standard type
   const standardType = TYPE_SYNONYMS[normalizedType];
-  
+
   // Check cache using standard type if available, otherwise use normalized type
   const cacheKey = standardType || normalizedType;
   if (typeColorMap.has(cacheKey)) {
     return typeColorMap.get(cacheKey) || defaultColor;
   }
-  
+
   if (standardType) {
     const color = NODE_TYPE_COLORS[standardType];
     // Store using standard type name as key
