@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
-import { checkHealth, LightragStatus } from '@/api/lightrag'
+import { checkHealth, LightragStatus, ConfigResponse } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
 
@@ -33,11 +33,13 @@ interface AuthState {
   username: string | null; // login username
   webuiTitle: string | null; // Custom title
   webuiDescription: string | null; // Title description
+  config: ConfigResponse | null; // Model configuration
 
   login: (token: string, isGuest?: boolean, coreVersion?: string | null, apiVersion?: string | null, webuiTitle?: string | null, webuiDescription?: string | null) => void;
   logout: () => void;
   setVersion: (coreVersion: string | null, apiVersion: string | null) => void;
   setCustomTitle: (webuiTitle: string | null, webuiDescription: string | null) => void;
+  setConfig: (config: ConfigResponse | null) => void;
 }
 
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
@@ -222,6 +224,7 @@ export const useAuthStore = create<AuthState>(set => {
     username: initialState.username,
     webuiTitle: initialState.webuiTitle,
     webuiDescription: initialState.webuiDescription,
+    config: null,
 
     login: (token, isGuest = false, coreVersion = null, apiVersion = null, webuiTitle = null, webuiDescription = null) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
@@ -311,6 +314,10 @@ export const useAuthStore = create<AuthState>(set => {
         webuiTitle: webuiTitle,
         webuiDescription: webuiDescription
       });
+    },
+
+    setConfig: (config) => {
+      set({ config });
     }
   };
 });

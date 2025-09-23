@@ -30,8 +30,10 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
         <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
           <span>{t('graphPanel.statusCard.llmBindingHost')}:</span>
           <span>{status.configuration.llm_binding_host}</span>
-          <span>{t('graphPanel.statusCard.llmModel')}:</span>
-          <span>{status.configuration.llm_binding}: {status.configuration.llm_model} (#{status.configuration.max_async} Async)</span>
+          <span>{t('graphPanel.statusCard.ingestionModel')}:</span>
+          <span>{status.configuration.llm_binding}: {status.configuration.ingestion_llm_model} (#{status.configuration.max_async} Async)</span>
+          <span>{t('graphPanel.statusCard.queryModel')}:</span>
+          <span>{status.configuration.llm_binding}: {status.configuration.query_llm_model} (#{status.configuration.max_async} Async)</span>
         </div>
       </div>
 

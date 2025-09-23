@@ -7,8 +7,10 @@ import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
+import { ZapIcon, GithubIcon, LogOutIcon, CpuIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import { getConfig } from '@/api/lightrag'
+import { useEffect } from 'react'
 
 interface NavigationTabProps {
   value: string
@@ -56,7 +58,7 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription, config, setConfig } = useAuthStore()
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -65,6 +67,19 @@ export default function SiteHeader() {
   const handleLogout = () => {
     navigationService.navigateToLogin();
   }
+
+  // Fetch config on component mount
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const configData = await getConfig()
+        setConfig(configData)
+      } catch (error) {
+        console.error('Failed to fetch config:', error)
+      }
+    }
+    fetchConfig()
+  }, [])
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
@@ -105,6 +120,25 @@ export default function SiteHeader() {
 
       <nav className="w-[200px] flex items-center justify-end">
         <div className="flex items-center gap-2">
+          {config && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 mr-1 cursor-default">
+                    <span>🏗️</span>
+                    <span>Models</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  <div className="text-xs">
+                    <div>Ingestion: {config.models.ingestion}</div>
+                    <div>Query: {config.models.query}</div>
+                    <div>Embedding: {config.models.embedding}</div>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
           {versionDisplay && (
             <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">
               v{versionDisplay}
