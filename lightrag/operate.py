@@ -3300,7 +3300,7 @@ async def _build_llm_context(
                 chunk_tracking_log.append("?0/0")
 
         if chunk_tracking_log:
-            logger.info(f"chunks: {' '.join(chunk_tracking_log)}")
+            logger.info(f"chunks S+F/O: {' '.join(chunk_tracking_log)}")
 
     entities_str = "\n".join(
         json.dumps(entity, ensure_ascii=False) for entity in entities_context
