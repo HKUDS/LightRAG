@@ -90,6 +90,9 @@ const GraphLabels = () => {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true)
 
+    // Clear legend cache to ensure legend is re-generated on refresh
+    useGraphStore.getState().setTypeColorMap(new Map<string, string>())
+
     try {
       const currentLabel = label
 

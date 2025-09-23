@@ -14,19 +14,66 @@ import seedrandom from 'seedrandom'
 const TYPE_SYNONYMS: Record<string, string> = {
   'unknown': 'unknown',
   '未知': 'unknown',
-  'other': 'unknown',
 
-  'category': 'category',
-  '类别': 'category',
-  'type': 'category',
-  '分类': 'category',
+  'other': 'other',
+  '其它': 'other',
+
+  'concept': 'concept',
+  'object': 'concept',
+  'type': 'concept',
+  'category': 'concept',
+  'model': 'concept',
+  'project': 'concept',
+  'condition': 'concept',
+  '概念': 'concept',
+  '对象': 'concept',
+  '类别': 'concept',
+  '分类': 'concept',
+  '模型': 'concept',
+  '项目': 'concept',
+  '条件': 'concept',
+
+  'method': 'method',
+  'process': 'method',
+  '方法': 'method',
+  '过程': 'method', 
+
+  'artifact': 'artifact',
+  'equipment': 'artifact',
+  'device': 'artifact',
+  'stuff': 'artifact',
+  '人工制品': 'artifact',
+  '人造物品': 'artifact',
+  '设备': 'artifact',
+  '装备': 'artifact',
+  '物品': 'artifact',
+
+  'naturalobject': 'naturalobject',
+  'natural': 'naturalobject',
+  '自然对象': 'naturalobject',
+  '自然物体': 'naturalobject',
+  '自然现象': 'naturalobject',
+  '物体': 'naturalobject',
+  '现象': 'naturalobject',
+
+  'data': 'data',
+  '数据': 'data',
+
+  'content': 'content',
+  'book': 'content',
+  'video': 'content',
+  '内容': 'content',
+  '作品': 'content',
+  '书籍': 'content',
+  '视频': 'content',
 
   'organization': 'organization',
-  '组织': 'organization',
   'org': 'organization',
   'company': 'organization',
+  '组织': 'organization',
   '公司': 'organization',
   '机构': 'organization',
+  '组织机构': 'organization',
 
   'event': 'event',
   '事件': 'event',
@@ -34,9 +81,9 @@ const TYPE_SYNONYMS: Record<string, string> = {
   '活动': 'event',
 
   'person': 'person',
-  '人物': 'person',
   'people': 'person',
   'human': 'person',
+  '人物': 'person',
   '人': 'person',
 
   'animal': 'animal',
@@ -61,20 +108,10 @@ const TYPE_SYNONYMS: Record<string, string> = {
   'tech': 'technology',
   '科技': 'technology',
 
-  'equipment': 'equipment',
-  '设备': 'equipment',
-  'device': 'equipment',
-  '装备': 'equipment',
-
   'weapon': 'weapon',
   '武器': 'weapon',
   'arms': 'weapon',
   '军火': 'weapon',
-
-  'object': 'object',
-  '物品': 'object',
-  'stuff': 'object',
-  '物体': 'object',
 
   'group': 'group',
   '群组': 'group',
@@ -82,21 +119,24 @@ const TYPE_SYNONYMS: Record<string, string> = {
   '社区': 'group'
 };
 
-// 节点类型到颜色的映射
+// node type to color mapping
 const NODE_TYPE_COLORS: Record<string, string> = {
-  'unknown': '#f4d371', // Yellow
-  'category': '#e3493b', // GoogleRed
+  'unknown': '#b0b0b0', // Yellow
+  'other': '#f4d371', // Yellow
+  'concept': '#e3493b', // GoogleRed
+  'group': '#ec407a', // red
+  'method': '#b71c1c', // red
   'organization': '#0f705d', // Green
   'event': '#00bfa0', // Turquoise
   'person': '#4169E1', // RoyalBlue
   'animal': '#84a3e1', // SkyBlue
   'geo': '#ff99cc', // Pale Pink
   'location': '#cf6d17', // Carrot
-  'technology': '#b300b3', // Purple
-  'equipment': '#2F4F4F', // DarkSlateGray
-  'weapon': '#4421af', // DeepPurple
-  'object': '#00cc00', // Green
-  'group': '#0f558a', // NavyBlue
+  'data': '#b300b3', // Purple
+  'technology': '#2F4F4F', // DarkSlateGray
+  'content': '#4421af', // DeepPurple
+  'naturalobject': '#00cc00', // Green
+  'artifact': '#0f558a', // NavyBlue
 };
 
 // Extended colors pool - Used for unknown node types
@@ -121,17 +161,20 @@ const getNodeColorByType = (nodeType: string | undefined): string => {
   const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown';
   const typeColorMap = useGraphStore.getState().typeColorMap;
 
-  // Return previous color if already mapped
-  if (typeColorMap.has(normalizedType)) {
-    return typeColorMap.get(normalizedType) || defaultColor;
-  }
-
+  // First try to find standard type
   const standardType = TYPE_SYNONYMS[normalizedType];
+  
+  // Check cache using standard type if available, otherwise use normalized type
+  const cacheKey = standardType || normalizedType;
+  if (typeColorMap.has(cacheKey)) {
+    return typeColorMap.get(cacheKey) || defaultColor;
+  }
+  
   if (standardType) {
     const color = NODE_TYPE_COLORS[standardType];
-    // Update color mapping
+    // Store using standard type name as key
     const newMap = new Map(typeColorMap);
-    newMap.set(normalizedType, color);
+    newMap.set(standardType, color);
     useGraphStore.setState({ typeColorMap: newMap });
     return color;
   }
@@ -148,7 +191,7 @@ const getNodeColorByType = (nodeType: string | undefined): string => {
   const unusedColor = EXTENDED_COLORS.find(color => !usedExtendedColors.has(color));
   const newColor = unusedColor || defaultColor;
 
-  // Update color mapping
+  // Update color mapping - use normalized type for unknown types
   const newMap = new Map(typeColorMap);
   newMap.set(normalizedType, newColor);
   useGraphStore.setState({ typeColorMap: newMap });
