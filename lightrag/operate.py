@@ -3971,7 +3971,7 @@ async def _find_related_text_unit_from_relations(
         total_relation_chunks += len(sorted_chunks)
 
     logger.info(
-        f"Find {total_relation_chunks} additional chunks in {len(relations_with_chunks)} relations (duplicated {len(removed_entity_chunk_ids)})"
+        f"Find {total_relation_chunks} additional chunks in {len(relations_with_chunks)} relations (deduplicated {len(removed_entity_chunk_ids)})"
     )
 
     # Step 4: Apply the selected chunk selection algorithm
