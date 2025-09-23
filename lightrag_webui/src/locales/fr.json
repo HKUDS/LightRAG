@@ -196,6 +196,11 @@
       "concept": "Concept",
       "naturalobject": "Objet naturel",
       "method": "Méthode",
+      "creature": "Créature",
+      "plant": "Plante",
+      "disease": "Maladie",
+      "drug": "Médicament",
+      "food": "Nourriture",
       "other": "Autre"
     },
     "sideBar": {

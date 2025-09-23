@@ -196,6 +196,11 @@
       "concept": "概念",
       "naturalobject": "自然物品",
       "method": "方法",
+      "creature": "生物神怪",
+      "plant": "植物",
+      "disease": "疾病",
+      "drug": "藥物",
+      "food": "食物",
       "other": "其他"
     },
     "sideBar": {

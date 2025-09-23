@@ -196,6 +196,11 @@
       "concept": "مفهوم",
       "naturalobject": "كائن طبيعي",
       "method": "عملية",
+      "creature": "مخلوق",
+      "plant": "نبات",
+      "disease": "مرض",
+      "drug": "دواء",
+      "food": "طعام",
       "other": "أخرى"
     },
     "sideBar": {
