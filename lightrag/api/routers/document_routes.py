@@ -1329,6 +1329,13 @@ async def pipeline_index_files(
     """
     if not file_paths:
         return
+
+    # Set ingestion context if using dual LLM wrapper
+    from lightrag.api.lightrag_server import DualModelLLMWrapper
+    if hasattr(rag, 'llm_model_func') and isinstance(rag.llm_model_func, DualModelLLMWrapper):
+        rag.llm_model_func.set_ingestion_context(True)
+        logger.debug("Set ingestion context for file processing")
+
     try:
         enqueued = False
 
@@ -1349,6 +1356,11 @@ async def pipeline_index_files(
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
         logger.error(traceback.format_exc())
+    finally:
+        # Reset ingestion context
+        if hasattr(rag, 'llm_model_func') and isinstance(rag.llm_model_func, DualModelLLMWrapper):
+            rag.llm_model_func.set_ingestion_context(False)
+            logger.debug("Reset ingestion context after file processing")
 
 
 async def pipeline_index_texts(
@@ -1373,10 +1385,23 @@ async def pipeline_index_texts(
                 file_sources.append("unknown_source")
                 for _ in range(len(file_sources), len(texts))
             ]
-    await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
-    )
-    await rag.apipeline_process_enqueue_documents()
+
+    # Set ingestion context if using dual LLM wrapper
+    from lightrag.api.lightrag_server import DualModelLLMWrapper
+    if hasattr(rag, 'llm_model_func') and isinstance(rag.llm_model_func, DualModelLLMWrapper):
+        rag.llm_model_func.set_ingestion_context(True)
+        logger.debug("Set ingestion context for document processing")
+
+    try:
+        await rag.apipeline_enqueue_documents(
+            input=texts, file_paths=file_sources, track_id=track_id
+        )
+        await rag.apipeline_process_enqueue_documents()
+    finally:
+        # Reset ingestion context
+        if hasattr(rag, 'llm_model_func') and isinstance(rag.llm_model_func, DualModelLLMWrapper):
+            rag.llm_model_func.set_ingestion_context(False)
+            logger.debug("Reset ingestion context after document processing")
 
 
 async def run_scanning_process(
