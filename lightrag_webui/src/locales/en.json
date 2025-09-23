@@ -270,6 +270,8 @@
       "llmBinding": "LLM Binding",
       "llmBindingHost": "LLM Endpoint",
       "llmModel": "LLM Model",
+      "ingestionModel": "Ingestion Model",
+      "queryModel": "Query Model",
       "embeddingConfig": "Embedding Configuration",
       "embeddingBinding": "Embedding Binding",
       "embeddingBindingHost": "Embedding Endpoint",

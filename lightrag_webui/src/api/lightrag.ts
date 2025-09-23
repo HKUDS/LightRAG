@@ -32,6 +32,8 @@ export type LightragStatus = {
     llm_binding: string
     llm_binding_host: string
     llm_model: string
+    ingestion_llm_model: string
+    query_llm_model: string
     embedding_binding: string
     embedding_binding_host: string
     embedding_model: string
@@ -225,6 +227,16 @@ export type AuthStatusResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+}
+
+export type ConfigResponse = {
+  models: {
+    ingestion: string
+    query: string
+    embedding: string
+  }
+  llm_binding: string
+  embedding_binding: string
 }
 
 export type PipelineStatusResponse = {
@@ -669,6 +681,11 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_mode: 'enabled'
     };
   }
+}
+
+export const getConfig = async (): Promise<ConfigResponse> => {
+  const response = await axiosInstance.get('/config')
+  return response.data
 }
 
 export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {

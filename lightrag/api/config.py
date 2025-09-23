@@ -244,6 +244,74 @@ def parse_args() -> argparse.Namespace:
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
     )
 
+    # Dual LLM Configuration - Ingestion LLM Settings
+    parser.add_argument(
+        "--ingestion-llm-binding",
+        type=str,
+        default=get_env_value("INGESTION_LLM_BINDING", None),
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "openai-ollama",
+            "azure_openai",
+            "aws_bedrock",
+        ],
+        help="LLM binding type for document ingestion (defaults to --llm-binding)",
+    )
+    parser.add_argument(
+        "--ingestion-llm-model",
+        type=str,
+        default=get_env_value("INGESTION_LLM_MODEL", None),
+        help="LLM model for document ingestion (defaults to --llm-model)",
+    )
+    parser.add_argument(
+        "--ingestion-llm-binding-host",
+        type=str,
+        default=get_env_value("INGESTION_LLM_BINDING_HOST", None),
+        help="LLM binding host for ingestion (defaults to --llm-binding-host)",
+    )
+    parser.add_argument(
+        "--ingestion-llm-binding-api-key",
+        type=str,
+        default=get_env_value("INGESTION_LLM_BINDING_API_KEY", None),
+        help="LLM binding API key for ingestion (defaults to --llm-binding-api-key)",
+    )
+
+    # Dual LLM Configuration - Query LLM Settings
+    parser.add_argument(
+        "--query-llm-binding",
+        type=str,
+        default=get_env_value("QUERY_LLM_BINDING", None),
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "openai-ollama",
+            "azure_openai",
+            "aws_bedrock",
+        ],
+        help="LLM binding type for query operations (defaults to --llm-binding)",
+    )
+    parser.add_argument(
+        "--query-llm-model",
+        type=str,
+        default=get_env_value("QUERY_LLM_MODEL", None),
+        help="LLM model for query operations (defaults to --llm-model)",
+    )
+    parser.add_argument(
+        "--query-llm-binding-host",
+        type=str,
+        default=get_env_value("QUERY_LLM_BINDING_HOST", None),
+        help="LLM binding host for queries (defaults to --llm-binding-host)",
+    )
+    parser.add_argument(
+        "--query-llm-binding-api-key",
+        type=str,
+        default=get_env_value("QUERY_LLM_BINDING_API_KEY", None),
+        help="LLM binding API key for queries (defaults to --llm-binding-api-key)",
+    )
+
     # Conditionally add binding options defined in binding_options module
     # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
     # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
@@ -311,6 +379,29 @@ def parse_args() -> argparse.Namespace:
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"
         args.embedding_binding = "ollama"
+
+    # Set defaults for dual LLM configuration (fallback to main LLM settings)
+    if not args.ingestion_llm_binding:
+        args.ingestion_llm_binding = args.llm_binding
+    if not args.ingestion_llm_model:
+        args.ingestion_llm_model = get_env_value("INGESTION_LLM_MODEL", get_env_value("LLM_MODEL", "mistral-nemo:latest"))
+    if not args.ingestion_llm_binding_host:
+        args.ingestion_llm_binding_host = get_env_value(
+            "LLM_BINDING_HOST", get_default_host(args.ingestion_llm_binding)
+        )
+    if not args.ingestion_llm_binding_api_key:
+        args.ingestion_llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
+
+    if not args.query_llm_binding:
+        args.query_llm_binding = args.llm_binding
+    if not args.query_llm_model:
+        args.query_llm_model = get_env_value("QUERY_LLM_MODEL", get_env_value("LLM_MODEL", "mistral-nemo:latest"))
+    if not args.query_llm_binding_host:
+        args.query_llm_binding_host = get_env_value(
+            "LLM_BINDING_HOST", get_default_host(args.query_llm_binding)
+        )
+    if not args.query_llm_binding_api_key:
+        args.query_llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
 
     # Ollama ctx_num
     args.ollama_num_ctx = get_env_value("OLLAMA_NUM_CTX", 32768, int)
