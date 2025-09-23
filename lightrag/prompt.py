@@ -15,10 +15,10 @@ You are a Project Management Knowledge Graph Specialist responsible for extracti
 
 ---Instructions---
 1.  **Entity Extraction & Output:**
-    *   **ID-Based Identification:** For entities with IDs (user_id, project.id, issue.id, sprint.id), ALWAYS use the ID as the primary entity_name. This ensures consistent entity tracking across events.
+    *   **ID-Based Identification:** For entities with IDs, ALWAYS use a prefixed format as the primary entity_name: type:id (e.g., user:admin_celion, project:10008, issue:10039, sprint:5). This ensures consistent entity tracking across events.
     *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The unique identifier (ID or username) if available, otherwise the display name. For users use user_id/username, for projects use project.id, for issues use issue.id, for sprints use sprint.id.
-        *   `entity_type`: Categorize using: `{entity_types}`. Common types for project management: `User`, `Project`, `Issue`, `Sprint`, `Epic`, `Component`, `Team`, `Status`, `Priority`, `Event`. If none apply, use `Other`.
+        *   `entity_name`: The prefixed unique identifier format: type:id. Examples: user:admin_celion, project:10008, issue:10039, sprint:5, epic:10000, component:32, status:10003, priority:3, team:engineering, issue_type:10000.
+        *   `entity_type`: Categorize using: `{entity_types}`. Common types for project management: `User`, `Project`, `Issue`, `Sprint`, `Epic`, `Component`, `Team`, `Status`, `Priority`, `Event`, `IssueType`. If none apply, use `Other`.
         *   `entity_description`: Comprehensive description including display names, roles, status, timestamps, and all relevant attributes from the event data. Include webhook event type and timestamp for context.
     *   **Output Format - Entities:** Output 4 fields delimited by `{tuple_delimiter}` on a single line:
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
@@ -33,8 +33,8 @@ You are a Project Management Knowledge Graph Specialist responsible for extracti
         *   Issue-Status relationships (has_status, transitioned_to)
         *   Temporal relationships (created_at, updated_at, completed_at)
     *   **Relationship Details:** For each relationship:
-        *   `source_entity`: The ID-based name of the source entity
-        *   `target_entity`: The ID-based name of the target entity
+        *   `source_entity`: The prefixed entity name of the source entity (e.g., user:admin_celion, project:10008)
+        *   `target_entity`: The prefixed entity name of the target entity (e.g., issue:10039, sprint:5)
         *   `relationship_keywords`: Keywords describing the relationship type. Use specific project management terms like: created, assigned, reported, leads, member_of, belongs_to, transitioned, blocked_by, depends_on, parent_of, child_of
         *   `relationship_description`: Detailed description including timestamp, event context, and any additional metadata
     *   **Output Format - Relationships:** Output 5 fields delimited by `{tuple_delimiter}` on a single line:
@@ -60,7 +60,7 @@ You are a Project Management Knowledge Graph Specialist responsible for extracti
     *   Use it strictly as a field separator
 
 6.  **Priority Rules for Project Management:**
-    *   ALWAYS prioritize IDs over display names for entity_name
+    *   ALWAYS use prefixed format for entity_name: type:id (e.g., user:admin, project:123, issue:456, component:32)
     *   ALWAYS create bidirectional relationships where appropriate
     *   ALWAYS include timestamps in descriptions when available
     *   ALWAYS extract custom fields and their values
@@ -68,11 +68,15 @@ You are a Project Management Knowledge Graph Specialist responsible for extracti
     *   NEVER merge entities with different IDs even if they have similar display names
 
 7.  **Output Order:**
-    *   Output entities first (Users, Projects, Issues, Sprints, Events, etc.)
+    *   Output entities first (Users, Projects, Issues, Sprints, Events, Components, Teams, Status, Priority, IssueType)
     *   Then output relationships in order of importance:
         *   User-Project relationships
         *   User-Issue relationships
         *   Issue-Project relationships
+        *   Issue-Sprint relationships
+        *   Issue-Status relationships
+        *   Issue-Priority relationships
+        *   Issue-IssueType relationships
         *   Other relationships
 
 8.  **Language:** Output in `{language}`. Keep IDs, keys, and technical terms in their original form.
@@ -95,7 +99,7 @@ PROMPTS["entity_extraction_user_prompt"] = """---Task---
 Extract entities and relationships from the Jira webhook events or project management data.
 
 ---Instructions---
-1.  **ID Priority:** Always use IDs (user_id, project.id, issue.id) as entity names when available
+1.  **ID Priority:** Always use prefixed IDs as entity names (user:id, project:id, issue:id, component:id, etc.)
 2.  **Comprehensive Extraction:** Extract ALL entities and relationships, including temporal and event-based ones
 3.  **Output Format:** Follow the exact format specified in the system prompt
 4.  **Completion Signal:** Output `{completion_delimiter}` as the final line
@@ -148,12 +152,12 @@ PROMPTS["entity_extraction_examples"] = [
 ```
 
 <Output>
-entity{tuple_delimiter}10008{tuple_delimiter}Project{tuple_delimiter}Project NVM (key: NVM, id: 10008) created on 2025-09-18 10:19:15. Project lead is Administrator (admin_celion). Assignee type is unassigned.
-entity{tuple_delimiter}admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion (key: JIRAUSER10000, display: Administrator, email: admin@celion.io) is the project lead for project NVM.
-entity{tuple_delimiter}project_created_20250918_101915{tuple_delimiter}Event{tuple_delimiter}Project creation event occurred at 2025-09-18 10:19:15 for project NVM (10008) initiated by admin_celion.
-relation{tuple_delimiter}admin_celion{tuple_delimiter}10008{tuple_delimiter}leads, manages{tuple_delimiter}User admin_celion is assigned as the project lead for project 10008 (NVM) as of 2025-09-18 10:19:15.
-relation{tuple_delimiter}admin_celion{tuple_delimiter}project_created_20250918_101915{tuple_delimiter}initiated, triggered{tuple_delimiter}User admin_celion triggered the project creation event at 2025-09-18 10:19:15.
-relation{tuple_delimiter}project_created_20250918_101915{tuple_delimiter}10008{tuple_delimiter}created, instantiated{tuple_delimiter}The project creation event at 2025-09-18 10:19:15 resulted in the creation of project 10008 (NVM).
+entity{tuple_delimiter}project:10008{tuple_delimiter}Project{tuple_delimiter}Project NVM (key: NVM, id: 10008) created on 2025-09-18 10:19:15. Project lead is Administrator (admin_celion). Assignee type is unassigned.
+entity{tuple_delimiter}user:admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion (key: JIRAUSER10000, display: Administrator, email: admin@celion.io) is the project lead for project NVM.
+entity{tuple_delimiter}event:project_created_20250918_101915{tuple_delimiter}Event{tuple_delimiter}Project creation event occurred at 2025-09-18 10:19:15 for project NVM (10008) initiated by admin_celion.
+relation{tuple_delimiter}user:admin_celion{tuple_delimiter}project:10008{tuple_delimiter}leads, manages{tuple_delimiter}User admin_celion is assigned as the project lead for project 10008 (NVM) as of 2025-09-18 10:19:15.
+relation{tuple_delimiter}user:admin_celion{tuple_delimiter}event:project_created_20250918_101915{tuple_delimiter}initiated, triggered{tuple_delimiter}User admin_celion triggered the project creation event at 2025-09-18 10:19:15.
+relation{tuple_delimiter}event:project_created_20250918_101915{tuple_delimiter}project:10008{tuple_delimiter}created, instantiated{tuple_delimiter}The project creation event at 2025-09-18 10:19:15 resulted in the creation of project 10008 (NVM).
 {completion_delimiter}
 
 """,
@@ -219,18 +223,22 @@ relation{tuple_delimiter}project_created_20250918_101915{tuple_delimiter}10008{t
 ```
 
 <Output>
-entity{tuple_delimiter}10039{tuple_delimiter}Issue{tuple_delimiter}Epic issue (id: 10039, key: NVM-TASK-1-5WNCFU) created on 2025-09-18 10:23:46. Summary: AAB. Type: Epic. Priority: Medium. Status: To Do. Created and reported by Administrator (admin_celion).
-entity{tuple_delimiter}admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion (key: JIRAUSER10000, display: Administrator, email: admin@celion.io, timezone: Asia/Tashkent, active: true) created and reported issue 10039.
-entity{tuple_delimiter}10008{tuple_delimiter}Project{tuple_delimiter}Software project NVM (id: 10008, key: NVM) contains issue 10039.
-entity{tuple_delimiter}10003{tuple_delimiter}Status{tuple_delimiter}Status "To Do" (id: 10003, category: new) is the current status of issue 10039.
-entity{tuple_delimiter}issue_created_20250918_102346{tuple_delimiter}Event{tuple_delimiter}Issue creation event at 2025-09-18 10:23:46 for Epic 10039 in project 10008 by user admin_celion.
-relation{tuple_delimiter}admin_celion{tuple_delimiter}10039{tuple_delimiter}created, authored{tuple_delimiter}User admin_celion created issue 10039 (NVM-TASK-1-5WNCFU) at 2025-09-18 10:23:46.
-relation{tuple_delimiter}admin_celion{tuple_delimiter}10039{tuple_delimiter}reported{tuple_delimiter}User admin_celion is the reporter for issue 10039.
-relation{tuple_delimiter}10039{tuple_delimiter}10008{tuple_delimiter}belongs_to, part_of{tuple_delimiter}Issue 10039 belongs to project 10008 (NVM).
-relation{tuple_delimiter}10039{tuple_delimiter}10003{tuple_delimiter}has_status{tuple_delimiter}Issue 10039 currently has status 10003 (To Do).
-relation{tuple_delimiter}admin_celion{tuple_delimiter}issue_created_20250918_102346{tuple_delimiter}triggered, initiated{tuple_delimiter}User admin_celion triggered the issue creation event at 2025-09-18 10:23:46.
-relation{tuple_delimiter}issue_created_20250918_102346{tuple_delimiter}10039{tuple_delimiter}created, instantiated{tuple_delimiter}The issue creation event resulted in the creation of issue 10039.
-relation{tuple_delimiter}issue_created_20250918_102346{tuple_delimiter}10008{tuple_delimiter}affected, modified{tuple_delimiter}The issue creation event affected project 10008 by adding a new issue.
+entity{tuple_delimiter}issue:10039{tuple_delimiter}Issue{tuple_delimiter}Epic issue (id: 10039, key: NVM-TASK-1-5WNCFU) created on 2025-09-18 10:23:46. Summary: AAB. Type: Epic. Priority: Medium. Status: To Do. Created and reported by Administrator (admin_celion).
+entity{tuple_delimiter}user:admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion (key: JIRAUSER10000, display: Administrator, email: admin@celion.io, timezone: Asia/Tashkent, active: true) created and reported issue 10039.
+entity{tuple_delimiter}project:10008{tuple_delimiter}Project{tuple_delimiter}Software project NVM (id: 10008, key: NVM) contains issue 10039.
+entity{tuple_delimiter}status:10003{tuple_delimiter}Status{tuple_delimiter}Status "To Do" (id: 10003, category: new) is the current status of issue 10039.
+entity{tuple_delimiter}issue_type:10000{tuple_delimiter}IssueType{tuple_delimiter}Issue type Epic (id: 10000, subtask: false) used for issue 10039.
+entity{tuple_delimiter}priority:3{tuple_delimiter}Priority{tuple_delimiter}Priority Medium (id: 3) assigned to issue 10039.
+entity{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}Event{tuple_delimiter}Issue creation event at 2025-09-18 10:23:46 for Epic 10039 in project 10008 by user admin_celion.
+relation{tuple_delimiter}user:admin_celion{tuple_delimiter}issue:10039{tuple_delimiter}created, authored{tuple_delimiter}User admin_celion created issue 10039 (NVM-TASK-1-5WNCFU) at 2025-09-18 10:23:46.
+relation{tuple_delimiter}user:admin_celion{tuple_delimiter}issue:10039{tuple_delimiter}reported{tuple_delimiter}User admin_celion is the reporter for issue 10039.
+relation{tuple_delimiter}issue:10039{tuple_delimiter}project:10008{tuple_delimiter}belongs_to, part_of{tuple_delimiter}Issue 10039 belongs to project 10008 (NVM).
+relation{tuple_delimiter}issue:10039{tuple_delimiter}status:10003{tuple_delimiter}has_status{tuple_delimiter}Issue 10039 currently has status 10003 (To Do).
+relation{tuple_delimiter}issue:10039{tuple_delimiter}issue_type:10000{tuple_delimiter}has_type{tuple_delimiter}Issue 10039 is of type Epic (10000).
+relation{tuple_delimiter}issue:10039{tuple_delimiter}priority:3{tuple_delimiter}has_priority{tuple_delimiter}Issue 10039 has Medium priority (3).
+relation{tuple_delimiter}user:admin_celion{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}triggered, initiated{tuple_delimiter}User admin_celion triggered the issue creation event at 2025-09-18 10:23:46.
+relation{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}issue:10039{tuple_delimiter}created, instantiated{tuple_delimiter}The issue creation event resulted in the creation of issue 10039.
+relation{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}project:10008{tuple_delimiter}affected, modified{tuple_delimiter}The issue creation event affected project 10008 by adding a new issue.
 {completion_delimiter}
 
 """,
@@ -263,19 +271,19 @@ relation{tuple_delimiter}issue_created_20250918_102346{tuple_delimiter}10008{tup
 ```
 
 <Output>
-entity{tuple_delimiter}5{tuple_delimiter}Sprint{tuple_delimiter}Sprint 5 - Q1 Goals (id: 5) started on 2025-09-18 14:30:00, ending 2025-10-02 14:30:00. State: active. Origin board: 2. Contains 3 issues.
-entity{tuple_delimiter}10008{tuple_delimiter}Project{tuple_delimiter}Project NVM (id: 10008, key: NVM) running Sprint 5.
-entity{tuple_delimiter}10039{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-1-5WNCFU (id: 10039) included in Sprint 5.
-entity{tuple_delimiter}10040{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-2-ABC123 (id: 10040) included in Sprint 5.
-entity{tuple_delimiter}10041{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-3-XYZ789 (id: 10041) included in Sprint 5.
-entity{tuple_delimiter}admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion initiated sprint start event.
-entity{tuple_delimiter}sprint_started_20250918_143000{tuple_delimiter}Event{tuple_delimiter}Sprint start event at 2025-09-18 14:30:00 for Sprint 5 in project 10008.
-relation{tuple_delimiter}5{tuple_delimiter}10008{tuple_delimiter}belongs_to, runs_in{tuple_delimiter}Sprint 5 belongs to project 10008 (NVM).
-relation{tuple_delimiter}10039{tuple_delimiter}5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10039 is included in Sprint 5 starting 2025-09-18.
-relation{tuple_delimiter}10040{tuple_delimiter}5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10040 is included in Sprint 5 starting 2025-09-18.
-relation{tuple_delimiter}10041{tuple_delimiter}5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10041 is included in Sprint 5 starting 2025-09-18.
-relation{tuple_delimiter}admin_celion{tuple_delimiter}sprint_started_20250918_143000{tuple_delimiter}initiated, triggered{tuple_delimiter}User admin_celion triggered the sprint start event.
-relation{tuple_delimiter}sprint_started_20250918_143000{tuple_delimiter}5{tuple_delimiter}started, activated{tuple_delimiter}The sprint start event activated Sprint 5.
+entity{tuple_delimiter}sprint:5{tuple_delimiter}Sprint{tuple_delimiter}Sprint 5 - Q1 Goals (id: 5) started on 2025-09-18 14:30:00, ending 2025-10-02 14:30:00. State: active. Origin board: 2. Contains 3 issues.
+entity{tuple_delimiter}project:10008{tuple_delimiter}Project{tuple_delimiter}Project NVM (id: 10008, key: NVM) running Sprint 5.
+entity{tuple_delimiter}issue:10039{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-1-5WNCFU (id: 10039) included in Sprint 5.
+entity{tuple_delimiter}issue:10040{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-2-ABC123 (id: 10040) included in Sprint 5.
+entity{tuple_delimiter}issue:10041{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-3-XYZ789 (id: 10041) included in Sprint 5.
+entity{tuple_delimiter}user:admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion initiated sprint start event.
+entity{tuple_delimiter}event:sprint_started_20250918_143000{tuple_delimiter}Event{tuple_delimiter}Sprint start event at 2025-09-18 14:30:00 for Sprint 5 in project 10008.
+relation{tuple_delimiter}sprint:5{tuple_delimiter}project:10008{tuple_delimiter}belongs_to, runs_in{tuple_delimiter}Sprint 5 belongs to project 10008 (NVM).
+relation{tuple_delimiter}issue:10039{tuple_delimiter}sprint:5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10039 is included in Sprint 5 starting 2025-09-18.
+relation{tuple_delimiter}issue:10040{tuple_delimiter}sprint:5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10040 is included in Sprint 5 starting 2025-09-18.
+relation{tuple_delimiter}issue:10041{tuple_delimiter}sprint:5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10041 is included in Sprint 5 starting 2025-09-18.
+relation{tuple_delimiter}user:admin_celion{tuple_delimiter}event:sprint_started_20250918_143000{tuple_delimiter}initiated, triggered{tuple_delimiter}User admin_celion triggered the sprint start event.
+relation{tuple_delimiter}event:sprint_started_20250918_143000{tuple_delimiter}sprint:5{tuple_delimiter}started, activated{tuple_delimiter}The sprint start event activated Sprint 5.
 {completion_delimiter}
 
 """,
