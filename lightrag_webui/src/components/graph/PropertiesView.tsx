@@ -244,7 +244,7 @@ const PropertyRow = ({
       <span className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</span>:
       <Text
         className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
-        tooltipClassName="max-w-80 -translate-x-13"
+        tooltipClassName="max-w-96 -translate-x-13"
         text={formattedValue}
         tooltip={formattedTooltip}
         side="left"
