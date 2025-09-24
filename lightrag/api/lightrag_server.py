@@ -2,7 +2,9 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 import os
 import logging
 import logging.config
@@ -244,6 +246,35 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
+
+    # Add custom validation error handler for /query/data endpoint
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        # Check if this is a request to /query/data endpoint
+        if request.url.path.endswith("/query/data"):
+            # Extract error details
+            error_details = []
+            for error in exc.errors():
+                field_path = " -> ".join(str(loc) for loc in error["loc"])
+                error_details.append(f"{field_path}: {error['msg']}")
+
+            error_message = "; ".join(error_details)
+
+            # Return in the expected format for /query/data
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "failure",
+                    "message": f"Validation error: {error_message}",
+                    "data": {},
+                    "metadata": {},
+                },
+            )
+        else:
+            # For other endpoints, return the default FastAPI validation error
+            return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     def get_cors_origins():
         """Get allowed origins from global_args

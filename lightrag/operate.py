@@ -30,7 +30,8 @@ from .utils import (
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
     fix_tuple_delimiter_corruption,
-    _convert_to_user_format,
+    convert_to_user_format,
+    generate_reference_list_from_chunks,
 )
 from .base import (
     BaseGraphStorage,
@@ -2279,6 +2280,12 @@ async def kg_query(
     return_raw_data: bool = False,
 ) -> str | AsyncIterator[str] | dict[str, Any]:
     if not query:
+        if return_raw_data:
+            return {
+                "status": "failure",
+                "message": "Query string is empty.",
+                "data": {},
+            }
         return PROMPTS["fail_response"]
 
     if query_param.model_func:
@@ -2306,10 +2313,14 @@ async def kg_query(
     cached_result = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
-    if cached_result is not None:
+    if (
+        cached_result is not None
+        and not return_raw_data
+        and not query_param.only_need_context
+        and not query_param.only_need_prompt
+    ):
         cached_response, _ = cached_result  # Extract content, ignore timestamp
-        if not query_param.only_need_context and not query_param.only_need_prompt:
-            return cached_response
+        return cached_response
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2328,6 +2339,12 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
+            if return_raw_data:
+                return {
+                    "status": "failure",
+                    "message": "Both high_level_keywords and low_level_keywords are empty",
+                    "data": {},
+                }
             return PROMPTS["fail_response"]
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
@@ -2356,9 +2373,16 @@ async def kg_query(
             )
             return raw_data
         else:
-            raise RuntimeError(
-                "Failed to build query context for raw data. Expected a tuple, but got a different type."
-            )
+            if not context_result:
+                return {
+                    "status": "failure",
+                    "message": "Query return empty data set.",
+                    "data": {},
+                }
+            else:
+                raise ValueError(
+                    "Fail to build raw data query result. Invalid return from _build_query_context"
+                )
 
     # Build context (normal flow)
     context = await _build_query_context(
@@ -2870,7 +2894,6 @@ async def _apply_token_truncation(
 
         entities_context.append(
             {
-                "id": f"EN{i + 1}",
                 "entity": entity_name,
                 "type": entity.get("entity_type", "UNKNOWN"),
                 "description": entity.get("description", "UNKNOWN"),
@@ -2898,7 +2921,6 @@ async def _apply_token_truncation(
 
         relations_context.append(
             {
-                "id": f"RE{i + 1}",
                 "entity1": entity1,
                 "entity2": entity2,
                 "description": relation.get("description", "UNKNOWN"),
@@ -2956,26 +2978,19 @@ async def _apply_token_truncation(
     filtered_entities = []
     filtered_entity_id_to_original = {}
     if entities_context:
-        entity_name_to_id = {e["entity"]: e["id"] for e in entities_context}
-        final_entity_names = set(entity_name_to_id.keys())
+        final_entity_names = {e["entity"] for e in entities_context}
         seen_nodes = set()
         for entity in final_entities:
             name = entity.get("entity_name")
             if name in final_entity_names and name not in seen_nodes:
-                entity_with_id = entity.copy()
-                entity_with_id["id"] = entity_name_to_id.get(name)
-
-                filtered_entities.append(entity_with_id)
-                filtered_entity_id_to_original[name] = entity_with_id
+                filtered_entities.append(entity)
+                filtered_entity_id_to_original[name] = entity
                 seen_nodes.add(name)
 
     filtered_relations = []
     filtered_relation_id_to_original = {}
     if relations_context:
-        relation_pair_to_id = {
-            (r["entity1"], r["entity2"]): r["id"] for r in relations_context
-        }
-        final_relation_pairs = set(relation_pair_to_id.keys())
+        final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
         seen_edges = set()
         for relation in final_relations:
             src, tgt = relation.get("src_id"), relation.get("tgt_id")
@@ -2984,11 +2999,8 @@ async def _apply_token_truncation(
 
             pair = (src, tgt)
             if pair in final_relation_pairs and pair not in seen_edges:
-                relation_with_id = relation.copy()
-                relation_with_id["id"] = relation_pair_to_id.get(pair)
-
-                filtered_relations.append(relation_with_id)
-                filtered_relation_id_to_original[pair] = relation_with_id
+                filtered_relations.append(relation)
+                filtered_relation_id_to_original[pair] = relation
                 seen_edges.add(pair)
 
     return {
@@ -3121,47 +3133,23 @@ async def _build_llm_context(
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
-        logger.warning("No tokenizer found, building context without token limits")
+        logger.error("Missing tokenizer, cannot build LLM context")
 
-        # Build basic context without token processing
-        entities_str = "\n".join(
-            json.dumps(entity, ensure_ascii=False) for entity in entities_context
-        )
-        relations_str = "\n".join(
-            json.dumps(relation, ensure_ascii=False) for relation in relations_context
-        )
-
-        text_units_context = []
-        for i, chunk in enumerate(merged_chunks):
-            text_units_context.append(
-                {
-                    "id": i + 1,
-                    "content": chunk["content"],
-                    "file_path": chunk.get("file_path", "unknown_source"),
-                }
+        if return_raw_data:
+            # Return empty raw data structure when no entities/relations
+            empty_raw_data = convert_to_user_format(
+                [],
+                [],
+                [],
+                [],
+                query_param.mode,
             )
-
-        text_units_str = json.dumps(text_units_context, ensure_ascii=False)
-
-        return f"""-----Entities(KG)-----
-
-```json
-{entities_str}
-```
-
------Relationships(KG)-----
-
-```json
-{relations_str}
-```
-
------Document Chunks(DC)-----
-
-```json
-{text_units_str}
-```
-
-"""
+            empty_raw_data["status"] = "failure"
+            empty_raw_data["message"] = "Missing tokenizer, cannot build LLM context."
+            return None, empty_raw_data
+        else:
+            logger.error("Tokenizer not found in global configuration.")
+            return None
 
     # Get token limits
     max_total_tokens = getattr(
@@ -3198,8 +3186,11 @@ async def _build_llm_context(
 -----Document Chunks(DC)-----
 
 ```json
-[]
 ```
+
+-----Refrence Document List-----
+
+The reference documents list in Document Chunks(DC) is as follows (reference_id in square brackets):
 
 """
         kg_context = kg_context_template.format(
@@ -3252,13 +3243,18 @@ async def _build_llm_context(
             chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
         )
 
+        # Generate reference list from truncated chunks using the new common function
+        reference_list, truncated_chunks = generate_reference_list_from_chunks(
+            truncated_chunks
+        )
+
         # Rebuild text_units_context with truncated chunks
+        # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
         for i, chunk in enumerate(truncated_chunks):
             text_units_context.append(
                 {
-                    "id": chunk["id"],
+                    "reference_id": chunk["reference_id"],
                     "content": chunk["content"],
-                    "file_path": chunk.get("file_path", "unknown_source"),
                 }
             )
 
@@ -3274,12 +3270,15 @@ async def _build_llm_context(
     if not entities_context and not relations_context:
         if return_raw_data:
             # Return empty raw data structure when no entities/relations
-            empty_raw_data = _convert_to_user_format(
+            empty_raw_data = convert_to_user_format(
+                [],
                 [],
                 [],
                 [],
                 query_param.mode,
             )
+            empty_raw_data["status"] = "failure"
+            empty_raw_data["message"] = "Query returned empty dataset."
             return None, empty_raw_data
         else:
             return None
@@ -3311,6 +3310,11 @@ async def _build_llm_context(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
+    reference_list_str = "\n\n".join(
+        f"[{ref['reference_id']}] {ref['file_path']}"
+        for ref in reference_list
+        if ref["reference_id"]
+    )
 
     result = f"""-----Entities(KG)-----
 
@@ -3330,6 +3334,12 @@ async def _build_llm_context(
 {text_units_str}
 ```
 
+-----Refrence Document List-----
+
+Document Chunks (DC) reference documents : (Each entry begins with [reference_id])
+
+{reference_list_str}
+
 """
 
     # If final data is requested, return both context and complete data structure
@@ -3337,10 +3347,11 @@ async def _build_llm_context(
         logger.debug(
             f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
         )
-        final_data = _convert_to_user_format(
+        final_data = convert_to_user_format(
             entities_context,
             relations_context,
             truncated_chunks,
+            reference_list,
             query_param.mode,
             entity_id_to_original,
             relation_id_to_original,
@@ -3365,7 +3376,7 @@ async def _build_query_context(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
     return_raw_data: bool = False,
-) -> str | tuple[str, dict[str, Any]]:
+) -> str | None | tuple[str, dict[str, Any]]:
     """
     Main query context building function using the new 4-stage architecture:
     1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
@@ -3448,7 +3459,11 @@ async def _build_query_context(
         hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
         ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
 
-        # Add complete metadata to raw_data
+        # Add complete metadata to raw_data (preserve existing metadata including query_mode)
+        if "metadata" not in raw_data:
+            raw_data["metadata"] = {}
+
+        # Update keywords while preserving existing metadata
         raw_data["metadata"]["keywords"] = {
             "high_level": hl_keywords_list,
             "low_level": ll_keywords_list,
@@ -4092,6 +4107,18 @@ async def naive_query(
     system_prompt: str | None = None,
     return_raw_data: bool = False,
 ) -> str | AsyncIterator[str] | dict[str, Any]:
+    if not query:
+        if return_raw_data:
+            # Return empty raw data structure when query is empty
+            empty_raw_data = {
+                "status": "failure",
+                "message": "Query string is empty.",
+                "data": {},
+            }
+            return empty_raw_data
+        else:
+            return PROMPTS["fail_response"]
+
     if query_param.model_func:
         use_model_func = query_param.model_func
     else:
@@ -4123,26 +4150,35 @@ async def naive_query(
             return cached_response
 
     tokenizer: Tokenizer = global_config["tokenizer"]
+    if not tokenizer:
+        if return_raw_data:
+            # Return empty raw data structure when tokenizer is missing
+            empty_raw_data = {
+                "status": "failure",
+                "message": "Tokenizer not found in global configuration.",
+                "data": {},
+            }
+            return empty_raw_data
+        else:
+            logger.error("Tokenizer not found in global configuration.")
+            return PROMPTS["fail_response"]
 
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
-        # Build empty raw data for consistency
-        empty_raw_data = {
-            "entities": [],  # naive mode has no entities
-            "relationships": [],  # naive mode has no relationships
-            "chunks": [],
-            "metadata": {
-                "query_mode": "naive",
-                "keywords": {"high_level": [], "low_level": []},
-            },
-        }
-
         # If only raw data is requested, return it directly
         if return_raw_data:
+            empty_raw_data = convert_to_user_format(
+                [],  # naive mode has no entities
+                [],  # naive mode has no relationships
+                [],  # no chunks
+                [],  # no references
+                "naive",
+            )
+            empty_raw_data["message"] = "No relevant document chunks found."
             return empty_raw_data
-
-        return PROMPTS["fail_response"]
+        else:
+            return PROMPTS["fail_response"]
 
     # Calculate dynamic token limit for chunks
     # Get token limits from query_param (with fallback to global_config)
@@ -4197,43 +4233,55 @@ async def naive_query(
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
 
-    logger.info(f"Final context: {len(processed_chunks)} chunks")
+    # Generate reference list from processed chunks using the new common function
+    reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
+        processed_chunks
+    )
+
+    logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
     # If only raw data is requested, return it directly
     if return_raw_data:
-        # Build raw data structure for naive mode using processed chunks
-        raw_data = _convert_to_user_format(
+        # Build raw data structure for naive mode using processed chunks with reference IDs
+        raw_data = convert_to_user_format(
             [],  # naive mode has no entities
             [],  # naive mode has no relationships
-            processed_chunks,
+            processed_chunks_with_ref_ids,
+            reference_list,
             "naive",
         )
 
         # Add complete metadata for naive mode
+        if "metadata" not in raw_data:
+            raw_data["metadata"] = {}
         raw_data["metadata"]["keywords"] = {
             "high_level": [],  # naive mode has no keyword extraction
             "low_level": [],  # naive mode has no keyword extraction
         }
         raw_data["metadata"]["processing_info"] = {
             "total_chunks_found": len(chunks),
-            "final_chunks_count": len(processed_chunks),
+            "final_chunks_count": len(processed_chunks_with_ref_ids),
         }
 
         return raw_data
 
-    # Build text_units_context from processed chunks
+    # Build text_units_context from processed chunks with reference IDs
     text_units_context = []
-    for i, chunk in enumerate(processed_chunks):
+    for i, chunk in enumerate(processed_chunks_with_ref_ids):
         text_units_context.append(
             {
-                "id": chunk["id"],
+                "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
-                "file_path": chunk.get("file_path", "unknown_source"),
             }
         )
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
+    )
+    reference_list_str = "\n\n".join(
+        f"[{ref['reference_id']}] {ref['file_path']}"
+        for ref in reference_list
+        if ref["reference_id"]
     )
 
     if query_param.only_need_context and not query_param.only_need_prompt:
@@ -4243,6 +4291,10 @@ async def naive_query(
 ```json
 {text_units_str}
 ```
+
+-----Refrence Document List-----
+
+{reference_list_str}
 
 """
     user_query = (

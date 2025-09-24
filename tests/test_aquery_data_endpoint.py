@@ -2,6 +2,11 @@
 """
 Test script: Demonstrates usage of aquery_data FastAPI endpoint
 Query content: Who is the author of LightRAG
+
+Updated to handle the new data format where:
+- Response includes status, message, data, and metadata fields at top level
+- Actual query results (entities, relationships, chunks, references) are nested under 'data' field
+- Includes backward compatibility with legacy format
 """
 
 import requests
@@ -80,17 +85,37 @@ def test_aquery_data_endpoint():
 def print_query_results(data: Dict[str, Any]):
     """Format and print query results"""
 
-    entities = data.get("entities", [])
-    relationships = data.get("relationships", [])
-    chunks = data.get("chunks", [])
-    metadata = data.get("metadata", {})
+    # Check for new data format with status and message
+    status = data.get("status", "unknown")
+    message = data.get("message", "")
+
+    print(f"\n📋 Query Status: {status}")
+    if message:
+        print(f"📋 Message: {message}")
+
+    # Handle new nested data format
+    query_data = data.get("data", {})
+
+    # Fallback to old format if new format is not present
+    if not query_data and any(
+        key in data for key in ["entities", "relationships", "chunks"]
+    ):
+        print("   (Using legacy data format)")
+        query_data = data
+
+    entities = query_data.get("entities", [])
+    relationships = query_data.get("relationships", [])
+    chunks = query_data.get("chunks", [])
+    references = query_data.get("references", [])
 
     print("\n📊 Query result statistics:")
     print(f"   Entity count: {len(entities)}")
     print(f"   Relationship count: {len(relationships)}")
     print(f"   Text chunk count: {len(chunks)}")
+    print(f"   Reference count: {len(references)}")
 
-    # Print metadata
+    # Print metadata (now at top level in new format)
+    metadata = data.get("metadata", {})
     if metadata:
         print("\n🔍 Query metadata:")
         print(f"   Query mode: {metadata.get('query_mode', 'unknown')}")
@@ -118,12 +143,14 @@ def print_query_results(data: Dict[str, Any]):
             entity_type = entity.get("entity_type", "Unknown")
             description = entity.get("description", "No description")
             file_path = entity.get("file_path", "Unknown source")
+            reference_id = entity.get("reference_id", "No reference")
 
             print(f"   {i+1}. {entity_name} ({entity_type})")
             print(
                 f"      Description: {description[:100]}{'...' if len(description) > 100 else ''}"
             )
             print(f"      Source: {file_path}")
+            print(f"      Reference ID: {reference_id}")
             print()
 
     # Print relationship information
@@ -135,6 +162,7 @@ def print_query_results(data: Dict[str, Any]):
             description = rel.get("description", "No description")
             keywords = rel.get("keywords", "No keywords")
             file_path = rel.get("file_path", "Unknown source")
+            reference_id = rel.get("reference_id", "No reference")
 
             print(f"   {i+1}. {src} → {tgt}")
             print(f"      Keywords: {keywords}")
@@ -142,6 +170,7 @@ def print_query_results(data: Dict[str, Any]):
                 f"      Description: {description[:100]}{'...' if len(description) > 100 else ''}"
             )
             print(f"      Source: {file_path}")
+            print(f"      Reference ID: {reference_id}")
             print()
 
     # Print text chunk information
@@ -151,12 +180,24 @@ def print_query_results(data: Dict[str, Any]):
             content = chunk.get("content", "No content")
             file_path = chunk.get("file_path", "Unknown source")
             chunk_id = chunk.get("chunk_id", "Unknown ID")
+            reference_id = chunk.get("reference_id", "No reference")
 
             print(f"   {i+1}. Text chunk ID: {chunk_id}")
             print(f"      Source: {file_path}")
+            print(f"      Reference ID: {reference_id}")
             print(
                 f"      Content: {content[:200]}{'...' if len(content) > 200 else ''}"
             )
+            print()
+
+    # Print references information (new in updated format)
+    if references:
+        print("📚 References:")
+        for i, ref in enumerate(references):
+            reference_id = ref.get("reference_id", "Unknown ID")
+            file_path = ref.get("file_path", "Unknown source")
+            print(f"   {i+1}. Reference ID: {reference_id}")
+            print(f"      File Path: {file_path}")
             print()
 
     print("=" * 60)
