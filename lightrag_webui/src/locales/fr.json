@@ -337,9 +337,9 @@
     },
     "graphLabels": {
       "selectTooltip": "Obtenir le sous-graphe d'un nœud (étiquette)",
-      "noLabels": "Aucun nœud trouvé",
-      "label": "Étiquette",
-      "placeholder": "Interroger le sous-graphe de nœuds...",
+      "noLabels": "Aucun nœud correspondant trouvé",
+      "label": "Rechercher le nom du nœud",
+      "placeholder": "Rechercher le nom du nœud...",
       "andOthers": "Et {{count}} autres",
       "refreshGlobalTooltip": "Actualiser les données du graphe global et réinitialiser l'historique de recherche",
       "refreshCurrentLabelTooltip": "Actualiser les données du graphe de la page actuelle",

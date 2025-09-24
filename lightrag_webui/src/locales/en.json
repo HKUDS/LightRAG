@@ -337,9 +337,9 @@
     },
     "graphLabels": {
       "selectTooltip": "Get subgraph of a node (label)",
-      "noLabels": "No nodes found",
-      "label": "Label",
-      "placeholder": "Query node subgraph...",
+      "noLabels": "No matching nodes found",
+      "label": "Search node name",
+      "placeholder": "Search node name...",
       "andOthers": "And {count} others",
       "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
