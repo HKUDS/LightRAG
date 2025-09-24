@@ -137,7 +137,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
 
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self, query: str, top_k: int, query_embedding: list[float] = None, metadata_filter: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         # Use provided embedding or compute it
         if query_embedding is not None:
