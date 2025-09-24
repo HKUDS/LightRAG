@@ -351,6 +351,12 @@
     "chatMessage": {
       "copyTooltip": "Copier dans le presse-papiers",
       "copyError": "Échec de la copie du texte dans le presse-papiers",
+      "copyEmpty": "Aucun contenu à copier",
+      "copySuccess": "Contenu copié dans le presse-papiers",
+      "copySuccessLegacy": "Contenu copié (méthode héritée)",
+      "copySuccessManual": "Contenu copié (méthode manuelle)",
+      "copyFailed": "Échec de la copie du contenu",
+      "copyManualInstruction": "Veuillez sélectionner et copier le texte manuellement",
       "thinking": "Réflexion en cours...",
       "thinkingTime": "Temps de réflexion {{time}}s",
       "thinkingInProgress": "Réflexion en cours..."

@@ -351,6 +351,12 @@
     "chatMessage": {
       "copyTooltip": "複製到剪貼簿",
       "copyError": "複製文字到剪貼簿失敗",
+      "copyEmpty": "沒有內容可複製",
+      "copySuccess": "內容已複製到剪貼簿",
+      "copySuccessLegacy": "內容已複製（傳統方法）",
+      "copySuccessManual": "內容已複製（手動方法）",
+      "copyFailed": "複製內容失敗",
+      "copyManualInstruction": "請手動選取並複製文字",
       "thinking": "正在思考...",
       "thinkingTime": "思考用時 {{time}} 秒",
       "thinkingInProgress": "思考進行中..."

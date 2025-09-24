@@ -351,6 +351,12 @@
     "chatMessage": {
       "copyTooltip": "نسخ إلى الحافظة",
       "copyError": "فشل نسخ النص إلى الحافظة",
+      "copyEmpty": "لا يوجد محتوى للنسخ",
+      "copySuccess": "تم نسخ المحتوى إلى الحافظة",
+      "copySuccessLegacy": "تم نسخ المحتوى (الطريقة التقليدية)",
+      "copySuccessManual": "تم نسخ المحتوى (الطريقة اليدوية)",
+      "copyFailed": "فشل نسخ المحتوى",
+      "copyManualInstruction": "يرجى تحديد ونسخ النص يدوياً",
       "thinking": "جاري التفكير...",
       "thinkingTime": "وقت التفكير {{time}} ثانية",
       "thinkingInProgress": "التفكير قيد التقدم..."
