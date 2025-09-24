@@ -1,12 +1,12 @@
-import { ReactNode, useCallback, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
+import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
 import { Message } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
-import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
+import rehypeRaw from 'rehype-raw'
 import remarkMath from 'remark-math'
 import mermaid from 'mermaid'
 
@@ -14,7 +14,7 @@ import mermaid from 'mermaid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
-import { LoaderIcon, CopyIcon, ChevronDownIcon } from 'lucide-react'
+import { LoaderIcon, ChevronDownIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 export type MessageWithError = Message & {
@@ -69,15 +69,6 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     }
     loadKaTeX()
   }, [])
-  const handleCopyMarkdown = useCallback(async () => {
-    if (message.content) {
-      try {
-        await navigator.clipboard.writeText(message.content)
-      } catch (err) {
-        console.error(t('chat.copyError'), err)
-      }
-    }
-  }, [message, t]) // Added t to dependency array
 
   const mainMarkdownComponents = useMemo(() => ({
     code: (props: any) => (
@@ -136,7 +127,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           </div>
           {/* Show thinking content when expanded and content exists, even during thinking process */}
           {isThinkingExpanded && finalThinkingContent && finalThinkingContent.trim() !== '' && (
-            <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2">
+            <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2 [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500">
               {isThinking && (
                 <div className="mb-2 text-xs text-gray-400 dark:text-gray-500 italic">
                   {t('retrievePanel.chatMessage.thinkingInProgress', 'Thinking in progress...')}
@@ -145,6 +136,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[
+                  rehypeRaw,
                   ...(katexPlugin ? [[katexPlugin, { errorColor: theme === 'dark' ? '#ef4444' : '#dc2626', throwOnError: false, displayMode: false }] as any] : []),
                   rehypeReact
                 ]}
@@ -161,9 +153,10 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
       {finalDisplayContent && (
         <div className="relative">
           <ReactMarkdown
-            className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
+            className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500"
             remarkPlugins={[remarkGfm, remarkMath]}
             rehypePlugins={[
+              rehypeRaw,
               ...(katexPlugin ? [[
                 katexPlugin,
                 {
@@ -179,17 +172,6 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           >
             {finalDisplayContent}
           </ReactMarkdown>
-          {message.role === 'assistant' && finalDisplayContent && finalDisplayContent.length > 0 && (
-            <Button
-              onClick={handleCopyMarkdown}
-              className="absolute right-0 bottom-0 size-6 rounded-md opacity-20 transition-opacity hover:opacity-100"
-              tooltip={t('retrievePanel.chatMessage.copyTooltip')}
-              variant="default"
-              size="icon"
-            >
-              <CopyIcon className="size-4" /> {/* Explicit size */}
-            </Button>
-          )}
         </div>
       )}
       {(() => {

@@ -9,7 +9,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon } from 'lucide-react'
+import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { QueryMode } from '@/api/lightrag'
 
@@ -587,6 +587,30 @@ export default function RetrievalTesting() {
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
 
+  // Handle copying message content
+  const handleCopyMessage = useCallback(async (message: MessageWithError) => {
+    let contentToCopy = '';
+
+    if (message.role === 'user') {
+      // User messages: copy original content
+      contentToCopy = message.content || '';
+    } else {
+      // Assistant messages: prefer processed display content, fallback to original content
+      const finalDisplayContent = message.displayContent !== undefined
+        ? message.displayContent
+        : (message.content || '');
+      contentToCopy = finalDisplayContent;
+    }
+
+    if (contentToCopy.trim()) {
+      try {
+        await navigator.clipboard.writeText(contentToCopy)
+      } catch (err) {
+        console.error(t('chat.copyError'), err)
+      }
+    }
+  }, [t])
+
   return (
     <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
       <div className="flex grow flex-col gap-4">
@@ -611,9 +635,31 @@ export default function RetrievalTesting() {
                   return (
                     <div
                       key={message.id} // Use stable ID for key
-                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} items-end gap-2`}
                     >
-                      {<ChatMessage message={message} />}
+                      {message.role === 'user' && (
+                        <Button
+                          onClick={() => handleCopyMessage(message)}
+                          className="mb-2 size-6 rounded-md opacity-60 transition-opacity hover:opacity-100 shrink-0"
+                          tooltip={t('retrievePanel.chatMessage.copyTooltip')}
+                          variant="ghost"
+                          size="icon"
+                        >
+                          <CopyIcon className="size-4" />
+                        </Button>
+                      )}
+                      <ChatMessage message={message} />
+                      {message.role === 'assistant' && (
+                        <Button
+                          onClick={() => handleCopyMessage(message)}
+                          className="mb-2 size-6 rounded-md opacity-60 transition-opacity hover:opacity-100 shrink-0"
+                          tooltip={t('retrievePanel.chatMessage.copyTooltip')}
+                          variant="ghost"
+                          size="icon"
+                        >
+                          <CopyIcon className="size-4" />
+                        </Button>
+                      )}
                     </div>
                   );
                 })

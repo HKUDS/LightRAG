@@ -185,9 +185,11 @@ const GraphLabels = () => {
         renderOption={(item) => <div style={{ whiteSpace: 'pre' }}>{item}</div>}
         getOptionValue={(item) => item}
         getDisplayValue={(item) => <div style={{ whiteSpace: 'pre' }}>{item}</div>}
-        notFound={<div className="py-6 text-center text-sm">No labels found</div>}
-        label={t('graphPanel.graphLabels.label')}
+        notFound={<div className="py-6 text-center text-sm">{t('graphPanel.graphLabels.noLabels')}</div>}
+        ariaLabel={t('graphPanel.graphLabels.label')}
         placeholder={t('graphPanel.graphLabels.placeholder')}
+        searchPlaceholder={t('graphPanel.graphLabels.placeholder')}
+        noResultsMessage={t('graphPanel.graphLabels.noLabels')}
         value={label !== null ? label : '*'}
         onChange={(newLabel) => {
           const currentLabel = useSettingsStore.getState().queryLabel;
