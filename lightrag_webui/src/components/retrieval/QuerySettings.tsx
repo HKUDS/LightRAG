@@ -402,7 +402,7 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <Checkbox
-                  className="mr-1 cursor-pointer"
+                  className="mr-10 cursor-pointer"
                   id="enable_rerank"
                   checked={querySettings.enable_rerank}
                   onCheckedChange={(checked) => handleChange('enable_rerank', checked)}
@@ -423,7 +423,7 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <Checkbox
-                  className="mr-1 cursor-pointer"
+                  className="mr-10 cursor-pointer"
                   id="only_need_context"
                   checked={querySettings.only_need_context}
                   onCheckedChange={(checked) => {
@@ -449,7 +449,7 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <Checkbox
-                  className="mr-1 cursor-pointer"
+                  className="mr-10 cursor-pointer"
                   id="only_need_prompt"
                   checked={querySettings.only_need_prompt}
                   onCheckedChange={(checked) => {
@@ -475,7 +475,7 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <Checkbox
-                  className="mr-1 cursor-pointer"
+                  className="mr-10 cursor-pointer"
                   id="stream"
                   checked={querySettings.stream}
                   onCheckedChange={(checked) => handleChange('stream', checked)}
