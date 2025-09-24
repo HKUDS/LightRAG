@@ -374,7 +374,7 @@
       "parametersTitle": "参数",
       "parametersDescription": "配置查询参数",
       "queryMode": "查询模式",
-      "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索\n• Bypass：直接传递查询到LLM，不进行检索",
+      "queryModeTooltip": "选择检索策略：\n• Naive：传统文本块向量检索\n• Local：侧重实体检索\n• Global：侧重关系检索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳过检索,把历史会话与当前问题送LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

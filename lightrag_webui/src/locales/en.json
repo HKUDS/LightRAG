@@ -374,7 +374,7 @@
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
-      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval\n• Bypass: Passes query directly to LLM without retrieval",
+      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
