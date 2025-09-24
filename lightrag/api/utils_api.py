@@ -218,8 +218,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.log_level}")
     ASCIIColors.white("    ├─ Verbose Debug: ", end="")
     ASCIIColors.yellow(f"{args.verbose}")
-    ASCIIColors.white("    ├─ History Turns: ", end="")
-    ASCIIColors.yellow(f"{args.history_turns}")
     ASCIIColors.white("    ├─ API Key: ", end="")
     ASCIIColors.yellow("Set" if args.key else "Not Set")
     ASCIIColors.white("    └─ JWT Auth: ", end="")

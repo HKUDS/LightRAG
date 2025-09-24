@@ -78,16 +78,6 @@ class QueryRequest(BaseModel):
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
-    history_turns: Optional[int] = Field(
-        ge=0,
-        default=None,
-        description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
-    )
-
-    ids: list[str] | None = Field(
-        default=None, description="List of ids to filter the results."
-    )
-
     user_prompt: Optional[str] = Field(
         default=None,
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
