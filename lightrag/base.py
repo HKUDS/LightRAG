@@ -18,7 +18,7 @@ from typing import (
     Union,
 )
 from .utils import EmbeddingFunc
-from .types import KnowledgeGraph
+from .types import KnowledgeGraph, MetadataFilter
 from .constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_TOP_K,
@@ -40,42 +40,7 @@ from .constants import (
 load_dotenv(dotenv_path=".env", override=False)
 
 
-@dataclass
-class MetadataFilter:
-    """
-    Represents a logical expression for metadata filtering.
 
-    Args:
-        operator: "AND", "OR", or "NOT"
-        operands: List of either simple key-value pairs or nested MetadataFilter objects
-    """
-    operator: str
-    operands: List[Union[Dict[str, Any], 'MetadataFilter']] = None
-
-    def __post_init__(self):
-        if self.operands is None:
-            self.operands = []
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary representation."""
-        return {
-            "operator": self.operator,
-            "operands": [
-                operand.to_dict() if isinstance(operand, MetadataFilter) else operand
-                for operand in self.operands
-            ]
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'MetadataFilter':
-        """Create from dictionary representation."""
-        operands = []
-        for operand in data.get("operands", []):
-            if isinstance(operand, dict) and "operator" in operand:
-                operands.append(cls.from_dict(operand))
-            else:
-                operands.append(operand)
-        return cls(operator=data.get("operator", "AND"), operands=operands)
 
 
 
@@ -266,7 +231,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self, query: str, top_k: int, query_embedding: list[float] = None, metadata_filter: MetadataFilter | None = None
     ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results.
 

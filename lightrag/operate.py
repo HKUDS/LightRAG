@@ -41,7 +41,6 @@ from .base import (
     QueryParam,
     QueryResult,
     QueryContextResult,
-    MetadataFilter
 )
 from .prompt import PROMPTS
 from .constants import (
@@ -2409,6 +2408,7 @@ async def kg_query(
         query_param.ll_keywords or [],
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_param.metadata_filter,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -2720,7 +2720,7 @@ async def _get_vector_context(
         cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
         results = await chunks_vdb.query(
-            query, top_k=search_top_k, query_embedding=query_embedding
+            query, top_k=search_top_k, query_embedding=query_embedding, metadata_filter=query_param.metadata_filter
         )
         if not results:
             logger.info(
@@ -2737,6 +2737,7 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    "metadata": result.get("metadata")
                 }
                 valid_chunks.append(chunk_with_metadata)
 
@@ -3561,7 +3562,8 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+
+    results = await entities_vdb.query(query, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter)
 
     if not len(results):
         return [], []
@@ -3570,21 +3572,13 @@ async def _get_node_data(
     node_ids = [r["entity_name"] for r in results]
 
 
-    # TODO update method to take in the metadata_filter dataclass
-    node_kg_ids = []
-    if hasattr(knowledge_graph_inst, "get_nodes_by_metadata_filter"):
-        node_kg_ids = await asyncio.gather(
-            knowledge_graph_inst.get_nodes_by_metadata_filter(QueryParam.metadata_filter)
-        )
-
-    filtered_node_ids = (
-        [nid for nid in node_ids if nid in node_kg_ids] if node_kg_ids else node_ids
-    )
+    # Extract all entity IDs from your results list
+    node_ids = [r["entity_name"] for r in results]
 
     # Call the batch node retrieval and degree functions concurrently.
     nodes_dict, degrees_dict = await asyncio.gather(
-        knowledge_graph_inst.get_nodes_batch(filtered_node_ids),
-        knowledge_graph_inst.node_degrees_batch(filtered_node_ids),
+        knowledge_graph_inst.get_nodes_batch(node_ids),
+        knowledge_graph_inst.node_degrees_batch(node_ids),
     )
 
     # Now, if you need the node data and degree in order:
@@ -3849,7 +3843,7 @@ async def _get_edge_data(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    results = await relationships_vdb.query(keywords, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter)
 
     if not len(results):
         return [], []
