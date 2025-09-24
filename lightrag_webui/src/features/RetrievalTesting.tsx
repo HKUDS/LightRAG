@@ -11,6 +11,8 @@ import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
 import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+import { copyToClipboard } from '@/utils/clipboard'
 import type { QueryMode } from '@/api/lightrag'
 
 // Helper function to generate unique IDs with browser compatibility
@@ -587,7 +589,7 @@ export default function RetrievalTesting() {
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
 
-  // Handle copying message content
+  // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(async (message: MessageWithError) => {
     let contentToCopy = '';
 
@@ -602,12 +604,50 @@ export default function RetrievalTesting() {
       contentToCopy = finalDisplayContent;
     }
 
-    if (contentToCopy.trim()) {
-      try {
-        await navigator.clipboard.writeText(contentToCopy)
-      } catch (err) {
-        console.error(t('chat.copyError'), err)
+    if (!contentToCopy.trim()) {
+      toast.error(t('retrievePanel.chatMessage.copyEmpty', 'No content to copy'));
+      return;
+    }
+
+    try {
+      const result = await copyToClipboard(contentToCopy);
+
+      if (result.success) {
+        // Show success message with method used
+        const methodMessages: Record<string, string> = {
+          'clipboard-api': t('retrievePanel.chatMessage.copySuccess', 'Content copied to clipboard'),
+          'execCommand': t('retrievePanel.chatMessage.copySuccessLegacy', 'Content copied (legacy method)'),
+          'manual-select': t('retrievePanel.chatMessage.copySuccessManual', 'Content copied (manual method)'),
+          'fallback': t('retrievePanel.chatMessage.copySuccess', 'Content copied to clipboard')
+        };
+
+        toast.success(methodMessages[result.method] || t('retrievePanel.chatMessage.copySuccess', 'Content copied to clipboard'));
+      } else {
+        // Show error with fallback instructions
+        if (result.method === 'fallback') {
+          toast.error(
+            result.error || t('retrievePanel.chatMessage.copyFailed', 'Failed to copy content'),
+            {
+              description: t('retrievePanel.chatMessage.copyManualInstruction', 'Please select and copy the text manually')
+            }
+          );
+        } else {
+          toast.error(
+            t('retrievePanel.chatMessage.copyFailed', 'Failed to copy content'),
+            {
+              description: result.error
+            }
+          );
+        }
       }
+    } catch (err) {
+      console.error('Clipboard operation failed:', err);
+      toast.error(
+        t('retrievePanel.chatMessage.copyError', 'Copy operation failed'),
+        {
+          description: err instanceof Error ? err.message : 'Unknown error occurred'
+        }
+      );
     }
   }, [t])
 
