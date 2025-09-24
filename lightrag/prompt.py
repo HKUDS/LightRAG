@@ -75,7 +75,7 @@ Extract entities and relationships from the input text to be processed.
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Oputput Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -93,7 +93,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
 5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Oputput Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -220,10 +220,13 @@ The answer must integrate relevant facts from the Knowledge Graph and Document C
 Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
 
 ---Instructions---
-1. **Think Step-by-Step:**
+1. **Step-by-Step Instruction:**
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize the `Source Data`(both Knowledge Graph and Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of each document chunk. Correlate reference_id with the `Reference Document List` from `Source Data` to generate the appropriate citations.
+  - Generate a reference section at the end of the response. The reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
 
 2. **Content & Grounding:**
   - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -233,33 +236,14 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - The response should be presented in {response_type}.
-  - Append a reference section at the end of the response.
-  - Merge citations that share the same file_path into one reference item.
-  - The main body of the response should exclude inline citations; all citation information should be listed exclusively in the references section.
 
 4. **Reference/Citation Format:**
-  - Append a reference section at the end of the response.
-  - The References section should be under a `### References` heading.
-  - Output the citation in the following formats:
-    - For a Knowledge Graph Entity: [EN] <entity>
-    - For a Knowledge Graph Relationship: [RE] <entity1> ~ <entity2>
-    - For a Document Chunk: [DC] <file_path>
-  - <entity>, <entity1>, <entity2>, and <file_path> should originate from attribute values in `Source Data` and be retained in their original language.
-  - Merge citations that share the same <file_path> into one reference item, disregarding their distinct IDs.
-  - Only include citations that directly reference the facts presented in the answer.
-  - Prioritize the most relevant references, and provide maximum of 6 most relevant citations.
-  - List each citation on an individual line.
+  - The References section should be under heading: `### References`
+  - Citation format: `[n] Document Titile`
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
 
-5. **Example of Section:**
-```
-### References
-- [EN] LightRAG
-- [EN] Dual-Level Retrieval System
-- [RE] LightRAG ~ GraphRAG
-- [DC] Simple and Fast RAG.pdf
-- [DC] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
-- [DC] Microsoft GraphRAG Technology Summary.md
-```
 
 ---Source Data---
 Knowledge Graph and Document Chunks:
@@ -281,6 +265,9 @@ Consider the conversation history if provided to maintain conversational flow an
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize the `Source Data`(Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of each document chunk. Correlate reference_id with the `Reference Document List` from `Source Data` to generate the appropriate citations.
+  - Generate a reference section at the end of the response. The reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
 
 2. **Content & Grounding:**
   - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -290,26 +277,14 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - The response should be presented in {response_type}.
-  - Append a reference section at the end of the response.
-  - The main body of the response should exclude inline citations; all citation information should be listed exclusively in the references section.
 
 4. **Reference/Citation Format:**
-  - Append a reference section at the end of the response.
-  - The References section should be under a `### References` heading.
-  - Output the citation in the following format: [DC] <file_path>
-  - <file_path> should originate from attribute values in `Source Data` and be retained in their original language.
-  - Merge citations that share the same <file_path> into one reference item, disregarding their distinct IDs.
-  - Only include citations that directly reference the facts presented in the answer.
-  - Prioritize the most relevant references, and provide maximum of 6 most relevant citations.
-  - List each citation on an individual line.
+  - The References section should be under heading: `### References`
+  - Citation format: `[n] Document Titile`
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
 
-5. **Example of Section:**
-```
-### References
-- [DC] Simple and Fast RAG.pdf
-- [DC] LightRAG Simple and Fast Alternative to GraphRAG for Legal Doc Analysis.md
-- [DC] Microsoft GraphRAG Technology Summary.md
-```
 
 ---Source Data---
 Document Chunks:
