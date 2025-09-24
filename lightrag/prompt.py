@@ -237,9 +237,10 @@ Consider the conversation history if provided to maintain conversational flow an
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - The response should be presented in {response_type}.
   - For inline citations, employ the footnote syntax `[^1]`. The caret (`^`) is mandatory to designate it as a footnote, and the numeral enclosed within the brackets must precisely match the `reference_id` of the corresponding document chunk.
-  - For multiple inline citations, enclose all corresponding footnote IDs within a single set of brackets and separate them with commas. For example: `[^1,2,3]`.
+  - For multiple inline citations, enclose all corresponding footnote IDs within a single set of brackets and separate them with commas. A single caret (`^`) is required to precede the opening bracket for the entire group.
+  - Inline citation examples are provided as follows: `[^2]`, `[^1,3]`, `[^1,2,3]`, `[^2,4,5]`
 
-4. **Reference/Citation Format:**
+4. **References Section Format:**
   - The References section should be under heading: `### References`
   - Citation format: `* [n] Document Titile`
   - The Document Title in the citation must retain its original language.
@@ -289,9 +290,10 @@ Consider the conversation history if provided to maintain conversational flow an
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - The response should be presented in {response_type}.
   - For inline citations, employ the footnote syntax `[^1]`. The caret (`^`) is mandatory to designate it as a footnote, and the numeral enclosed within the brackets must precisely match the `reference_id` of the corresponding document chunk.
-  - For multiple inline citations, enclose all corresponding footnote IDs within a single set of brackets and separate them with commas. For example: `[^1,2,3]`.
+  - For multiple inline citations, enclose all corresponding footnote IDs within a single set of brackets and separate them with commas. A single caret (`^`) is required to precede the opening bracket for the entire group.
+  - Inline citation examples are provided as follows: `[^2]`, `[^1,3]`, `[^1,2,3]`, `[^2,4,5]`
 
-4. **Reference/Citation Format:**
+4. **References Section Format:**
   - The References section should be under heading: `### References`
   - Citation format: `* [n] Document Titile`
   - The Document Title in the citation must retain its original language.
