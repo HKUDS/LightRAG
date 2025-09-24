@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
+import rehypeRaw from 'rehype-raw'
 import remarkMath from 'remark-math'
 import mermaid from 'mermaid'
 
@@ -126,7 +127,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           </div>
           {/* Show thinking content when expanded and content exists, even during thinking process */}
           {isThinkingExpanded && finalThinkingContent && finalThinkingContent.trim() !== '' && (
-            <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2">
+            <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2 [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500">
               {isThinking && (
                 <div className="mb-2 text-xs text-gray-400 dark:text-gray-500 italic">
                   {t('retrievePanel.chatMessage.thinkingInProgress', 'Thinking in progress...')}
@@ -135,6 +136,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[
+                  rehypeRaw,
                   ...(katexPlugin ? [[katexPlugin, { errorColor: theme === 'dark' ? '#ef4444' : '#dc2626', throwOnError: false, displayMode: false }] as any] : []),
                   rehypeReact
                 ]}
@@ -151,9 +153,10 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
       {finalDisplayContent && (
         <div className="relative">
           <ReactMarkdown
-            className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
+            className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500"
             remarkPlugins={[remarkGfm, remarkMath]}
             rehypePlugins={[
+              rehypeRaw,
               ...(katexPlugin ? [[
                 katexPlugin,
                 {
