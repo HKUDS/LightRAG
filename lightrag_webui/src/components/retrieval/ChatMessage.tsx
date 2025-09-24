@@ -1,7 +1,6 @@
-import { ReactNode, useCallback, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
+import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
 import { Message } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
-import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 
 import ReactMarkdown from 'react-markdown'
@@ -14,7 +13,7 @@ import mermaid from 'mermaid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
-import { LoaderIcon, CopyIcon, ChevronDownIcon } from 'lucide-react'
+import { LoaderIcon, ChevronDownIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 export type MessageWithError = Message & {
@@ -69,15 +68,6 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     }
     loadKaTeX()
   }, [])
-  const handleCopyMarkdown = useCallback(async () => {
-    if (message.content) {
-      try {
-        await navigator.clipboard.writeText(message.content)
-      } catch (err) {
-        console.error(t('chat.copyError'), err)
-      }
-    }
-  }, [message, t]) // Added t to dependency array
 
   const mainMarkdownComponents = useMemo(() => ({
     code: (props: any) => (
@@ -179,17 +169,6 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           >
             {finalDisplayContent}
           </ReactMarkdown>
-          {message.role === 'assistant' && finalDisplayContent && finalDisplayContent.length > 0 && (
-            <Button
-              onClick={handleCopyMarkdown}
-              className="absolute right-0 bottom-0 size-6 rounded-md opacity-20 transition-opacity hover:opacity-100"
-              tooltip={t('retrievePanel.chatMessage.copyTooltip')}
-              variant="default"
-              size="icon"
-            >
-              <CopyIcon className="size-4" /> {/* Explicit size */}
-            </Button>
-          )}
         </div>
       )}
       {(() => {
