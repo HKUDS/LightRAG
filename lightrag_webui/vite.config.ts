@@ -19,6 +19,8 @@ export default defineConfig({
     emptyOutDir: true,
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
+      // Handle circular dependencies and module initialization
+      external: [],
       output: {
         // Manual chunking strategy
         manualChunks: {
@@ -42,6 +44,7 @@ export default defineConfig({
           'markdown-vendor': [
             'react-markdown',
             'rehype-react',
+            'rehype-raw',
             'remark-gfm',
             'remark-math',
             'react-syntax-highlighter'
