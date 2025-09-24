@@ -215,8 +215,9 @@ export const GraphSearchInput = ({
       onFocus={(id) => {
         if (id !== messageId && onFocus) onFocus(id ? { id, type: 'nodes' } : null)
       }}
-      label={'item'}
+      ariaLabel={t('graphPanel.search.placeholder')}
       placeholder={t('graphPanel.search.placeholder')}
+      noResultsMessage={t('graphPanel.search.placeholder')}
     />
   )
 }

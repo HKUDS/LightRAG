@@ -41,8 +41,8 @@ export interface AsyncSearchProps<T> {
   onChange: (value: string) => void
   /** Callback when focus changes */
   onFocus: (value: string) => void
-  /** Label for the select field */
-  label: string
+  /** Accessibility label for the search field */
+  ariaLabel?: string
   /** Placeholder text when no selection */
   placeholder?: string
   /** Disable the entire select */
@@ -67,7 +67,7 @@ export function AsyncSearch<T>({
   getOptionValue,
   notFound,
   loadingSkeleton,
-  label,
+  ariaLabel,
   placeholder = 'Select...',
   value,
   onChange,
@@ -179,6 +179,7 @@ export function AsyncSearch<T>({
             placeholder={placeholder}
             value={searchTerm}
             className="max-h-8"
+            aria-label={ariaLabel}
             onFocus={handleFocus}
             onValueChange={(value) => {
               setSearchTerm(value)
@@ -198,7 +199,7 @@ export function AsyncSearch<T>({
             !error &&
             options.length === 0 &&
             (notFound || (
-              <CommandEmpty>{noResultsMessage ?? `No ${label.toLowerCase()} found.`}</CommandEmpty>
+              <CommandEmpty>{noResultsMessage || 'No results found.'}</CommandEmpty>
             ))}
           <CommandGroup>
             {options.map((option, idx) => (

@@ -43,10 +43,12 @@ export interface AsyncSelectProps<T> {
   value: string
   /** Callback when selection changes */
   onChange: (value: string) => void
-  /** Label for the select field */
-  label: string
+  /** Accessibility label for the select field */
+  ariaLabel?: string
   /** Placeholder text when no selection */
   placeholder?: string
+  /** Display text for search placeholder */
+  searchPlaceholder?: string
   /** Disable the entire select */
   disabled?: boolean
   /** Custom width for the popover *
@@ -76,8 +78,9 @@ export function AsyncSelect<T>({
   getDisplayValue,
   notFound,
   loadingSkeleton,
-  label,
+  ariaLabel,
   placeholder = 'Select...',
+  searchPlaceholder,
   value,
   onChange,
   disabled = false,
@@ -200,6 +203,7 @@ export function AsyncSelect<T>({
           variant="outline"
           role="combobox"
           aria-expanded={open}
+          aria-label={ariaLabel}
           className={cn(
             'justify-between',
             disabled && 'cursor-not-allowed opacity-50',
@@ -223,7 +227,7 @@ export function AsyncSelect<T>({
         <Command shouldFilter={false}>
           <div className="relative w-full border-b">
             <CommandInput
-              placeholder={`Search ${label.toLowerCase()}...`}
+              placeholder={searchPlaceholder || 'Search...'}
               value={searchTerm}
               onValueChange={(value) => {
                 setSearchTerm(value)
@@ -244,7 +248,7 @@ export function AsyncSelect<T>({
               options.length === 0 &&
               (notFound || (
                 <CommandEmpty>
-                  {noResultsMessage ?? `No ${label.toLowerCase()} found.`}
+                  {noResultsMessage || 'No results found.'}
                 </CommandEmpty>
               ))}
             <CommandGroup>
