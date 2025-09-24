@@ -351,6 +351,12 @@
     "chatMessage": {
       "copyTooltip": "Copy to clipboard",
       "copyError": "Failed to copy text to clipboard",
+      "copyEmpty": "No content to copy",
+      "copySuccess": "Content copied to clipboard",
+      "copySuccessLegacy": "Content copied (legacy method)",
+      "copySuccessManual": "Content copied (manual method)",
+      "copyFailed": "Failed to copy content",
+      "copyManualInstruction": "Please select and copy the text manually",
       "thinking": "Thinking...",
       "thinkingTime": "Thinking time {{time}}s",
       "thinkingInProgress": "Thinking in progress..."
