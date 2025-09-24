@@ -8,80 +8,53 @@ PROMPTS: dict[str, Any] = {}
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
-PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
-
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Project Management Knowledge Graph Specialist responsible for extracting entities, relationships, and generating memories from Jira webhook events and structured project management data.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
 
 ---Instructions---
 1.  **Entity Extraction & Output:**
-    *   **ID-Based Identification:** For entities with IDs, ALWAYS use a prefixed format as the primary entity_name: type:id (e.g., user:admin_celion, project:10008, issue:10039, sprint:5). This ensures consistent entity tracking across events.
+    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
     *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The prefixed unique identifier format: type:id. Examples: user:admin_celion, project:10008, issue:10039, sprint:5, epic:10000, component:32, status:10003, priority:3, team:engineering, issue_type:10000.
-        *   `entity_type`: Categorize using: `{entity_types}`. Common types for project management: `User`, `Project`, `Issue`, `Sprint`, `Epic`, `Component`, `Team`, `Status`, `Priority`, `Event`, `IssueType`. If none apply, use `Other`.
-        *   `entity_description`: Comprehensive description including display names, roles, status, timestamps, and all relevant attributes from the event data. Include webhook event type and timestamp for context.
-    *   **Output Format - Entities:** Output 4 fields delimited by `{tuple_delimiter}` on a single line:
+        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
+        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
 
 2.  **Relationship Extraction & Output:**
-    *   **Direct Connections:** Extract ALL relationships between entities, focusing on:
-        *   User-Project relationships (created, leads, member_of)
-        *   User-Issue relationships (created, assigned_to, reported, watched)
-        *   Issue-Project relationships (belongs_to, part_of)
-        *   Issue-Sprint relationships (included_in, planned_for)
-        *   Issue-Epic relationships (child_of, related_to)
-        *   Issue-Status relationships (has_status, transitioned_to)
-        *   Temporal relationships (created_at, updated_at, completed_at)
-    *   **Relationship Details:** For each relationship:
-        *   `source_entity`: The prefixed entity name of the source entity (e.g., user:admin_celion, project:10008)
-        *   `target_entity`: The prefixed entity name of the target entity (e.g., issue:10039, sprint:5)
-        *   `relationship_keywords`: Keywords describing the relationship type. Use specific project management terms like: created, assigned, reported, leads, member_of, belongs_to, transitioned, blocked_by, depends_on, parent_of, child_of
-        *   `relationship_description`: Detailed description including timestamp, event context, and any additional metadata
-    *   **Output Format - Relationships:** Output 5 fields delimited by `{tuple_delimiter}` on a single line:
+    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
+        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
+    *   **Relationship Details:** For each binary relationship, extract the following fields:
+        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
+        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
 
-3.  **Memory Generation:**
-    *   Generate concise, informative memories that capture the significance of each event
-    *   Memories should focus on:
-        *   What happened (action/event type)
-        *   Who was involved (user IDs)
-        *   What was affected (project/issue/sprint IDs)
-        *   When it occurred (timestamp)
-        *   Key changes or outcomes
-    *   Output memories as relationships between entities and temporal events
+3.  **Delimiter Usage Protocol:**
+    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
+    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
+    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
 
-4.  **Event Processing:**
-    *   Extract webhook event type as an entity of type `Event`
-    *   Create relationships between the event and all affected entities
-    *   Preserve all IDs, keys, and timestamps in entity descriptions
+4.  **Relationship Direction & Duplication:**
+    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+    *   Avoid outputting duplicate relationships.
 
-5.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` is a complete atomic marker and must not be filled with content
-    *   Use it strictly as a field separator
+5.  **Output Order & Prioritization:**
+    *   Output all extracted entities first, followed by all extracted relationships.
+    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
 
-6.  **Priority Rules for Project Management:**
-    *   ALWAYS use prefixed format for entity_name: type:id (e.g., user:admin, project:123, issue:456, component:32)
-    *   ALWAYS create bidirectional relationships where appropriate
-    *   ALWAYS include timestamps in descriptions when available
-    *   ALWAYS extract custom fields and their values
-    *   NEVER skip relationships between users and their created/assigned items
-    *   NEVER merge entities with different IDs even if they have similar display names
+6.  **Context & Objectivity:**
+    *   Ensure all entity names and descriptions are written in the **third person**.
+    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
 
-7.  **Output Order:**
-    *   Output entities first (Users, Projects, Issues, Sprints, Events, Components, Teams, Status, Priority, IssueType)
-    *   Then output relationships in order of importance:
-        *   User-Project relationships
-        *   User-Issue relationships
-        *   Issue-Project relationships
-        *   Issue-Sprint relationships
-        *   Issue-Status relationships
-        *   Issue-Priority relationships
-        *   Issue-IssueType relationships
-        *   Other relationships
+7.  **Language & Proper Nouns:**
+    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
-8.  **Language:** Output in `{language}`. Keep IDs, keys, and technical terms in their original form.
-
-9.  **Completion Signal:** Output `{completion_delimiter}` after all extraction is complete.
+8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
 
 ---Examples---
 {examples}
@@ -96,14 +69,13 @@ Text:
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the Jira webhook events or project management data.
+Extract entities and relationships from the input text to be processed.
 
 ---Instructions---
-1.  **ID Priority:** Always use prefixed IDs as entity names (user:id, project:id, issue:id, component:id, etc.)
-2.  **Comprehensive Extraction:** Extract ALL entities and relationships, including temporal and event-based ones
-3.  **Output Format:** Follow the exact format specified in the system prompt
-4.  **Completion Signal:** Output `{completion_delimiter}` as the final line
-5.  **Language:** Ensure output is in {language}, keeping IDs and technical terms unchanged
+1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
+2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
+4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -112,16 +84,16 @@ PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
 Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
 
 ---Instructions---
-1.  **Strict Adherence to System Format:** Follow all format requirements for entity and relationship lists
+1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
 2.  **Focus on Corrections/Additions:**
-    *   Do NOT re-output correctly extracted entities and relationships
-    *   Extract any missed entities or relationships
-    *   Re-output corrected versions of incorrectly formatted items
-3.  **ID Priority:** Ensure all entities use IDs as names when available
-4.  **Output Format - Entities:** 4 fields delimited by `{tuple_delimiter}`, starting with `entity`
-5.  **Output Format - Relationships:** 5 fields delimited by `{tuple_delimiter}`, starting with `relation`
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line
-7.  **Language:** Output in {language}, keeping IDs and technical terms unchanged
+    *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+    *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
+    *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
+3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
+4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
+5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
+7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -129,190 +101,99 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 PROMPTS["entity_extraction_examples"] = [
     """<Input Text>
 ```
-{{
-  "timestamp": "2025-09-18 10:19:15",
-  "webhookEvent": "project_created",
-  "project": {{
-    "id": 10008,
-    "key": "NVM",
-    "name": "NVM",
-    "projectLead": {{
-      "name": "admin_celion",
-      "key": "JIRAUSER10000",
-      "emailAddress": "admin@celion.io",
-      "displayName": "Administrator"
-    }},
-    "assigneeType": "admin.assignee.type.unassigned"
-  }},
-  "project.id": "10008",
-  "project.key": "NVM",
-  "user_id": "admin_celion",
-  "user_key": "JIRAUSER10000"
-}}
+while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
+
+Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
+
+The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
+
+It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
 ```
 
 <Output>
-entity{tuple_delimiter}project:10008{tuple_delimiter}Project{tuple_delimiter}Project NVM (key: NVM, id: 10008) created on 2025-09-18 10:19:15. Project lead is Administrator (admin_celion). Assignee type is unassigned.
-entity{tuple_delimiter}user:admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion (key: JIRAUSER10000, display: Administrator, email: admin@celion.io) is the project lead for project NVM.
-entity{tuple_delimiter}event:project_created_20250918_101915{tuple_delimiter}Event{tuple_delimiter}Project creation event occurred at 2025-09-18 10:19:15 for project NVM (10008) initiated by admin_celion.
-relation{tuple_delimiter}user:admin_celion{tuple_delimiter}project:10008{tuple_delimiter}leads, manages{tuple_delimiter}User admin_celion is assigned as the project lead for project 10008 (NVM) as of 2025-09-18 10:19:15.
-relation{tuple_delimiter}user:admin_celion{tuple_delimiter}event:project_created_20250918_101915{tuple_delimiter}initiated, triggered{tuple_delimiter}User admin_celion triggered the project creation event at 2025-09-18 10:19:15.
-relation{tuple_delimiter}event:project_created_20250918_101915{tuple_delimiter}project:10008{tuple_delimiter}created, instantiated{tuple_delimiter}The project creation event at 2025-09-18 10:19:15 resulted in the creation of project 10008 (NVM).
+entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
+entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
+entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
+entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
+entity{tuple_delimiter}The Device{tuple_delimiter}equiment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
+relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
+relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
+relation{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.
+relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.
 {completion_delimiter}
 
 """,
     """<Input Text>
 ```
-{{
-  "timestamp": "2025-09-18 10:23:46",
-  "webhookEvent": "jira:issue_created",
-  "issue_event_type_name": "issue_created",
-  "user": {{
-    "name": "admin_celion",
-    "key": "JIRAUSER10000",
-    "emailAddress": "admin@celion.io",
-    "displayName": "Administrator",
-    "active": true,
-    "timeZone": "Asia/Tashkent"
-  }},
-  "issue": {{
-    "id": "10039",
-    "key": "NVM-TASK-1-5WNCFU",
-    "fields": {{
-      "issuetype": {{
-        "id": "10000",
-        "name": "Epic",
-        "subtask": false
-      }},
-      "project": {{
-        "id": "10008",
-        "key": "NVM",
-        "name": "NVM",
-        "projectTypeKey": "software"
-      }},
-      "priority": {{
-        "name": "Medium",
-        "id": "3"
-      }},
-      "status": {{
-        "name": "To Do",
-        "id": "10003",
-        "statusCategory": {{
-          "id": 2,
-          "key": "new",
-          "name": "To Do"
-        }}
-      }},
-      "summary": "AAB",
-      "creator": {{
-        "name": "admin_celion",
-        "key": "JIRAUSER10000",
-        "displayName": "Administrator"
-      }},
-      "reporter": {{
-        "name": "admin_celion",
-        "key": "JIRAUSER10000",
-        "displayName": "Administrator"
-      }}
-    }}
-  }},
-  "project.id": "10008",
-  "issue.id": "10039",
-  "user_id": "admin_celion"
-}}
+Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
+
+Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
+
+Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
+
+Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
 ```
 
 <Output>
-entity{tuple_delimiter}issue:10039{tuple_delimiter}Issue{tuple_delimiter}Epic issue (id: 10039, key: NVM-TASK-1-5WNCFU) created on 2025-09-18 10:23:46. Summary: AAB. Type: Epic. Priority: Medium. Status: To Do. Created and reported by Administrator (admin_celion).
-entity{tuple_delimiter}user:admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion (key: JIRAUSER10000, display: Administrator, email: admin@celion.io, timezone: Asia/Tashkent, active: true) created and reported issue 10039.
-entity{tuple_delimiter}project:10008{tuple_delimiter}Project{tuple_delimiter}Software project NVM (id: 10008, key: NVM) contains issue 10039.
-entity{tuple_delimiter}status:10003{tuple_delimiter}Status{tuple_delimiter}Status "To Do" (id: 10003, category: new) is the current status of issue 10039.
-entity{tuple_delimiter}issue_type:10000{tuple_delimiter}IssueType{tuple_delimiter}Issue type Epic (id: 10000, subtask: false) used for issue 10039.
-entity{tuple_delimiter}priority:3{tuple_delimiter}Priority{tuple_delimiter}Priority Medium (id: 3) assigned to issue 10039.
-entity{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}Event{tuple_delimiter}Issue creation event at 2025-09-18 10:23:46 for Epic 10039 in project 10008 by user admin_celion.
-relation{tuple_delimiter}user:admin_celion{tuple_delimiter}issue:10039{tuple_delimiter}created, authored{tuple_delimiter}User admin_celion created issue 10039 (NVM-TASK-1-5WNCFU) at 2025-09-18 10:23:46.
-relation{tuple_delimiter}user:admin_celion{tuple_delimiter}issue:10039{tuple_delimiter}reported{tuple_delimiter}User admin_celion is the reporter for issue 10039.
-relation{tuple_delimiter}issue:10039{tuple_delimiter}project:10008{tuple_delimiter}belongs_to, part_of{tuple_delimiter}Issue 10039 belongs to project 10008 (NVM).
-relation{tuple_delimiter}issue:10039{tuple_delimiter}status:10003{tuple_delimiter}has_status{tuple_delimiter}Issue 10039 currently has status 10003 (To Do).
-relation{tuple_delimiter}issue:10039{tuple_delimiter}issue_type:10000{tuple_delimiter}has_type{tuple_delimiter}Issue 10039 is of type Epic (10000).
-relation{tuple_delimiter}issue:10039{tuple_delimiter}priority:3{tuple_delimiter}has_priority{tuple_delimiter}Issue 10039 has Medium priority (3).
-relation{tuple_delimiter}user:admin_celion{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}triggered, initiated{tuple_delimiter}User admin_celion triggered the issue creation event at 2025-09-18 10:23:46.
-relation{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}issue:10039{tuple_delimiter}created, instantiated{tuple_delimiter}The issue creation event resulted in the creation of issue 10039.
-relation{tuple_delimiter}event:issue_created_20250918_102346{tuple_delimiter}project:10008{tuple_delimiter}affected, modified{tuple_delimiter}The issue creation event affected project 10008 by adding a new issue.
+entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.
+entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.
+entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.
+entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets.
+entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
+entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
+entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
+entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
+relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
+relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
+relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
+relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
 {completion_delimiter}
 
 """,
     """<Input Text>
 ```
-{{
-  "timestamp": "2025-09-18 14:30:00",
-  "webhookEvent": "sprint_started",
-  "sprint": {{
-    "id": 5,
-    "name": "Sprint 5 - Q1 Goals",
-    "state": "active",
-    "startDate": "2025-09-18T14:30:00.000Z",
-    "endDate": "2025-10-02T14:30:00.000Z",
-    "originBoardId": 2
-  }},
-  "project": {{
-    "id": "10008",
-    "key": "NVM"
-  }},
-  "issues": [
-    {{"id": "10039", "key": "NVM-TASK-1-5WNCFU"}},
-    {{"id": "10040", "key": "NVM-TASK-2-ABC123"}},
-    {{"id": "10041", "key": "NVM-TASK-3-XYZ789"}}
-  ],
-  "user_id": "admin_celion",
-  "sprint.id": "5",
-  "project.id": "10008"
-}}
+At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
 ```
 
 <Output>
-entity{tuple_delimiter}sprint:5{tuple_delimiter}Sprint{tuple_delimiter}Sprint 5 - Q1 Goals (id: 5) started on 2025-09-18 14:30:00, ending 2025-10-02 14:30:00. State: active. Origin board: 2. Contains 3 issues.
-entity{tuple_delimiter}project:10008{tuple_delimiter}Project{tuple_delimiter}Project NVM (id: 10008, key: NVM) running Sprint 5.
-entity{tuple_delimiter}issue:10039{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-1-5WNCFU (id: 10039) included in Sprint 5.
-entity{tuple_delimiter}issue:10040{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-2-ABC123 (id: 10040) included in Sprint 5.
-entity{tuple_delimiter}issue:10041{tuple_delimiter}Issue{tuple_delimiter}Issue NVM-TASK-3-XYZ789 (id: 10041) included in Sprint 5.
-entity{tuple_delimiter}user:admin_celion{tuple_delimiter}User{tuple_delimiter}User admin_celion initiated sprint start event.
-entity{tuple_delimiter}event:sprint_started_20250918_143000{tuple_delimiter}Event{tuple_delimiter}Sprint start event at 2025-09-18 14:30:00 for Sprint 5 in project 10008.
-relation{tuple_delimiter}sprint:5{tuple_delimiter}project:10008{tuple_delimiter}belongs_to, runs_in{tuple_delimiter}Sprint 5 belongs to project 10008 (NVM).
-relation{tuple_delimiter}issue:10039{tuple_delimiter}sprint:5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10039 is included in Sprint 5 starting 2025-09-18.
-relation{tuple_delimiter}issue:10040{tuple_delimiter}sprint:5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10040 is included in Sprint 5 starting 2025-09-18.
-relation{tuple_delimiter}issue:10041{tuple_delimiter}sprint:5{tuple_delimiter}included_in, planned_for{tuple_delimiter}Issue 10041 is included in Sprint 5 starting 2025-09-18.
-relation{tuple_delimiter}user:admin_celion{tuple_delimiter}event:sprint_started_20250918_143000{tuple_delimiter}initiated, triggered{tuple_delimiter}User admin_celion triggered the sprint start event.
-relation{tuple_delimiter}event:sprint_started_20250918_143000{tuple_delimiter}sprint:5{tuple_delimiter}started, activated{tuple_delimiter}The sprint start event activated Sprint 5.
+entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
+entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
+entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
+entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
+entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
+entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
+relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
+relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
+relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
+relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
 {completion_delimiter}
 
 """,
 ]
 
 PROMPTS["summarize_entity_descriptions"] = """---Role---
-You are a Project Management Knowledge Graph Specialist, proficient in data curation and synthesis for Jira and project management systems.
+You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
 
 ---Task---
-Your task is to synthesize multiple descriptions of a project management entity or relation into a single, comprehensive, and cohesive summary that preserves all IDs, timestamps, and project context.
+Your task is to synthesize a list of descriptions of a given entity or relation into a single, comprehensive, and cohesive summary.
 
 ---Instructions---
-1. Input Format: The description list is provided in JSON format. Each JSON object represents a single description on a new line.
-2. Output Format: Plain text summary in multiple paragraphs without additional formatting or comments.
-3. ID Preservation: ALWAYS maintain original IDs (user_id, project.id, issue.id) as primary identifiers.
-4. Comprehensiveness: Integrate ALL key information including:
-   - All IDs, keys, and unique identifiers
-   - Timestamps and date ranges
-   - Status changes and transitions
-   - User associations and roles
-   - Project hierarchies and relationships
-5. Context: Write from objective third-person perspective, explicitly mentioning entity IDs and names.
+1. Input Format: The description list is provided in JSON format. Each JSON object (representing a single description) appears on a new line within the `Description List` section.
+2. Output Format: The merged description will be returned as plain text, presented in multiple paragraphs, without any additional formatting or extraneous comments before or after the summary.
+3. Comprehensiveness: The summary must integrate all key information from *every* provided description. Do not omit any important facts or details.
+4. Context: Ensure the summary is written from an objective, third-person perspective; explicitly mention the name of the entity or relation for full clarity and context.
+5. Context & Objectivity:
+  - Write the summary from an objective, third-person perspective.
+  - Explicitly mention the full name of the entity or relation at the beginning of the summary to ensure immediate clarity and context.
 6. Conflict Handling:
-   - Check if conflicts arise from different entities sharing similar display names but different IDs
-   - If distinct entities, summarize each separately noting their unique IDs
-   - For temporal conflicts (e.g., status changes), present chronologically with timestamps
-7. Memory Integration: Include event memories showing what actions occurred, when, and by whom.
-8. Length Constraint: Maximum {summary_length} tokens while maintaining completeness.
-9. Language: Output in {language}. Keep IDs, keys, and technical terms in original form.
+  - In cases of conflicting or inconsistent descriptions, first determine if these conflicts arise from multiple, distinct entities or relationships that share the same name.
+  - If distinct entities/relations are identified, summarize each one *separately* within the overall output.
+  - If conflicts within a single entity/relation (e.g., historical discrepancies) exist, attempt to reconcile them or present both viewpoints with noted uncertainty.
+7. Length Constraint:The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
+8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
+  - The entire output must be written in {language}.
+  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
 ---Input---
 {description_type} Name: {description_name}
@@ -331,57 +212,100 @@ PROMPTS["fail_response"] = (
 )
 
 PROMPTS["rag_response"] = """---Role---
-
-You are a helpful assistant responding to queries about project management data, including Jira issues, sprints, users, and project activities stored in a Knowledge Graph.
+You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided `Source Data`.
 
 ---Goal---
+Generate a comprehensive, well-structured answer to the user query.
+The answer must integrate relevant facts from the Knowledge Graph and Document Chunks found in the `Source Data`.
+Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
 
-Generate a concise response based on the Knowledge Base, focusing on project management entities and their relationships. Provide actionable insights about project status, team activities, and issue tracking.
+---Instructions---
+1. **Step-by-Step Instruction:**
+  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
+  - Scrutinize the `Source Data`(both Knowledge Graph and Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of each document chunk. Correlate reference_id with the `Reference Document List` from `Source Data` to generate the appropriate citations.
+  - Generate a reference section at the end of the response. The reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
 
----Knowledge Graph and Document Chunks---
+2. **Content & Grounding:**
+  - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
+  - If the answer cannot be found in the `Source Data`, state that you do not have enough information to answer. Do not attempt to guess.
+
+3. **Formatting & Language:**
+  - The response MUST be in the same language as the user query.
+  - Use Markdown for clear formatting (e.g., headings, bold, lists).
+  - The response should be presented in {response_type}.
+
+4. **Reference/Citation Format:**
+  - The References section should be under heading: `### References`
+  - Citation format: `[n] Document Titile`
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
+
+
+---Source Data---
+Knowledge Graph and Document Chunks:
 
 {context_data}
 
----Response Guidelines---
-1. **Content & Adherence:**
-  - Focus on project management metrics: issue counts, sprint progress, user assignments, project timelines
-  - Use IDs as primary references (e.g., "User admin_celion", "Project 10008", "Issue 10039")
-  - Include timestamps and dates for temporal context
-  - If insufficient information, state what specific project data is missing
+"""
 
-2. **Formatting & Language:**
-  - Format using markdown with sections for different entity types (Projects, Issues, Users, Sprints)
-  - Include tables for issue lists or sprint summaries when appropriate
-  - Response language must match the user's question
-  - Target format and length: {response_type}
+PROMPTS["naive_rag_response"] = """---Role---
+You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided `Source Data`.
 
-3. **Citations / References:**
-  - Under "References" section, cite maximum 5 sources
-  - Use formats:
-    - For entities: `[KG] <entity_type>:<entity_id>` (e.g., `[KG] Project:10008`)
-    - For relationships: `[KG] User:admin_celion ~ Issue:10039`
-    - For documents: `[DC] <file_path_or_document_name>`
+---Goal---
+Generate a comprehensive, well-structured answer to the user query.
+The answer must integrate relevant facts from the Document Chunks found in the `Source Data`.
+Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
 
----User Context---
-- Additional user prompt: {user_prompt}
+---Instructions---
+1. **Think Step-by-Step:**
+  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
+  - Scrutinize the `Source Data`(Document Chunks). Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of each document chunk. Correlate reference_id with the `Reference Document List` from `Source Data` to generate the appropriate citations.
+  - Generate a reference section at the end of the response. The reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
 
----Response---
+2. **Content & Grounding:**
+  - Strictly adhere to the provided context from the `Source Data`; DO NOT invent, assume, or infer any information not explicitly stated.
+  - If the answer cannot be found in the `Source Data`, state that you do not have enough information to answer. Do not attempt to guess.
+
+3. **Formatting & Language:**
+  - The response MUST be in the same language as the user query.
+  - Use Markdown for clear formatting (e.g., headings, bold, lists).
+  - The response should be presented in {response_type}.
+
+4. **Reference/Citation Format:**
+  - The References section should be under heading: `### References`
+  - Citation format: `[n] Document Titile`
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
+
+
+---Source Data---
+Document Chunks:
+
+{content_data}
+
 """
 
 PROMPTS["keywords_extraction"] = """---Role---
-You are an expert keyword extractor specializing in project management queries for a RAG system focused on Jira data and project tracking.
+You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
 
 ---Goal---
-Extract keywords to effectively retrieve project management entities and relationships:
-1. **high_level_keywords**: Project management concepts, workflows, methodologies, team dynamics
-2. **low_level_keywords**: Specific IDs, usernames, project keys, issue numbers, sprint names, status values
+Given a user query, your task is to extract two distinct types of keywords:
+1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked.
+2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
 
 ---Instructions & Constraints---
-1. **Output Format**: Valid JSON only, no additional text or markdown
-2. **ID Recognition**: Extract any patterns resembling IDs (numbers like 10008, keys like NVM, usernames like admin_celion)
-3. **Project Terms**: Recognize Jira-specific terms (Epic, Sprint, Backlog, Story Points, etc.)
-4. **Temporal Keywords**: Extract time-related terms (Q1, Sprint 5, 2025-09-18, yesterday, this week)
-5. **Handle Edge Cases**: Return empty lists for vague queries
+1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), or any other text before or after the JSON. It will be parsed directly by a JSON parser.
+2. **Source of Truth**: All keywords must be explicitly derived from the user query, with both high-level and low-level keyword categories are required to contain content.
+3. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", you should extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
+4. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), you must return a JSON object with empty lists for both keyword types.
 
 ---Examples---
 {examples}
@@ -395,69 +319,35 @@ Output:"""
 PROMPTS["keywords_extraction_examples"] = [
     """Example 1:
 
-Query: "Show me all issues assigned to admin_celion in project 10008"
+Query: "How does international trade influence global economic stability?"
 
 Output:
-{{
-  "high_level_keywords": ["Issues assigned", "User assignments", "Project issues"],
-  "low_level_keywords": ["admin_celion", "10008", "assigned issues"]
-}}
+{
+  "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
+  "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
+}
 
 """,
     """Example 2:
 
-Query: "What is the status of Sprint 5 and which epics are included?"
+Query: "What are the environmental consequences of deforestation on biodiversity?"
 
 Output:
-{{
-  "high_level_keywords": ["Sprint status", "Sprint progress", "Epic inclusion"],
-  "low_level_keywords": ["Sprint 5", "5", "epics", "sprint state", "active sprint"]
-}}
+{
+  "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
+  "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
+}
 
 """,
     """Example 3:
 
-Query: "List all high priority bugs created this week in NVM project"
+Query: "What is the role of education in reducing poverty?"
 
 Output:
-{{
-  "high_level_keywords": ["Bug tracking", "Priority filtering", "Recent issues", "Project bugs"],
-  "low_level_keywords": ["NVM", "high priority", "bugs", "this week", "created date"]
-}}
+{
+  "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
+  "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
+}
 
 """,
 ]
-
-PROMPTS["naive_rag_response"] = """---Role---
-
-You are a helpful assistant responding to queries about project management documents and data chunks.
-
----Goal---
-
-Generate a response based on Document Chunks containing project management information, focusing on actionable insights and project metrics.
-
----Document Chunks(DC)---
-{content_data}
-
----RESPONSE GUIDELINES---
-**1. Content & Adherence:**
-- Extract project management insights: timelines, assignments, blockers, progress
-- Maintain ID consistency when referencing entities
-- Present chronological order for events and status changes
-- State if critical project information is missing
-
-**2. Formatting & Language:**
-- Use markdown with clear project sections
-- Include bullet points for issue lists
-- Match user's language
-- Target format and length: {response_type}
-
-**3. Citations / References:**
-- Under "References" section, cite maximum 5 sources
-- Format: `[DC] <file_path_or_document_name>`
-
----USER CONTEXT---
-- Additional user prompt: {user_prompt}
-
----Response---
-Output:"""
