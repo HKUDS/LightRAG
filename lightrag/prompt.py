@@ -236,9 +236,6 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - The response should be presented in {response_type}.
-  - For inline citations, employ the footnote syntax `[^1]`. The caret (`^`) is mandatory to designate it as a footnote, and the numeral enclosed within the brackets must precisely match the `reference_id` of the corresponding document chunk.
-  - For multiple inline citations, enclose all corresponding footnote IDs within a single set of brackets and separate them with commas. A single caret (`^`) is required to precede the opening bracket for the entire group.
-  - Inline citation examples are provided as follows: `[^2]`, `[^1,3]`, `[^1,2,3]`, `[^2,4,5]`
 
 4. **References Section Format:**
   - The References section should be under heading: `### References`
@@ -247,10 +244,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
 
-5. **Reference/Citation Example:**
+5. **Reference Section Example:**
 ```
-Multiple studies support this view[^1,2,3].
-
 ### References
 * [1] Document Title One
 * [2] Document Title Two
@@ -289,9 +284,6 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST be in the same language as the user query.
   - Use Markdown for clear formatting (e.g., headings, bold, lists).
   - The response should be presented in {response_type}.
-  - For inline citations, employ the footnote syntax `[^1]`. The caret (`^`) is mandatory to designate it as a footnote, and the numeral enclosed within the brackets must precisely match the `reference_id` of the corresponding document chunk.
-  - For multiple inline citations, enclose all corresponding footnote IDs within a single set of brackets and separate them with commas. A single caret (`^`) is required to precede the opening bracket for the entire group.
-  - Inline citation examples are provided as follows: `[^2]`, `[^1,3]`, `[^1,2,3]`, `[^2,4,5]`
 
 4. **References Section Format:**
   - The References section should be under heading: `### References`
@@ -300,10 +292,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
 
-5. **Reference/Citation Example:**
+5. **Reference Section Example:**
 ```
-Multiple studies support this view[^1,2,3].
-
 ### References
 * [1] Document Title One
 * [2] Document Title Two
