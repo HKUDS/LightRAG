@@ -3,6 +3,7 @@ import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
+import UserPromptInputWithHistory from '@/components/ui/UserPromptInputWithHistory'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
@@ -20,10 +21,15 @@ import { RotateCcw } from 'lucide-react'
 export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
+  const userPromptHistory = useSettingsStore((state) => state.userPromptHistory)
 
   const handleChange = useCallback((key: keyof QueryRequest, value: any) => {
     useSettingsStore.getState().updateQuerySettings({ [key]: value })
   }, [])
+
+  const handleSelectFromHistory = useCallback((prompt: string) => {
+    handleChange('user_prompt', prompt)
+  }, [handleChange])
 
   // Default values for reset functionality
   const defaultValues = useMemo(() => ({
@@ -62,14 +68,41 @@ export default function QuerySettings() {
   )
 
   return (
-    <Card className="flex shrink-0 flex-col min-w-[220px]">
+    <Card className="flex shrink-0 flex-col w-[280px]">
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
         <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
-          <div className="absolute inset-0 flex flex-col gap-2 overflow-auto px-2 pr-3">
+          <div className="absolute inset-0 flex flex-col gap-2 overflow-auto px-2 pr-2">
+            {/* User Prompt - Moved to top for better dropdown space */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="user_prompt" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.userPrompt')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.userPromptTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div>
+                <UserPromptInputWithHistory
+                  id="user_prompt"
+                  value={querySettings.user_prompt || ''}
+                  onChange={(value) => handleChange('user_prompt', value)}
+                  onSelectFromHistory={handleSelectFromHistory}
+                  history={userPromptHistory}
+                  placeholder={t('retrievePanel.querySettings.userPromptPlaceholder')}
+                  className="h-9"
+                />
+              </div>
+            </>
+
             {/* Query Mode */}
             <>
               <TooltipProvider>
@@ -349,32 +382,6 @@ export default function QuerySettings() {
                 <ResetButton
                   onClick={() => handleReset('max_total_tokens')}
                   title="Reset to default"
-                />
-              </div>
-            </>
-
-
-            {/* User Prompt */}
-            <>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label htmlFor="user_prompt" className="ml-1 cursor-help">
-                      {t('retrievePanel.querySettings.userPrompt')}
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">
-                    <p>{t('retrievePanel.querySettings.userPromptTooltip')}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-              <div>
-                <Input
-                  id="user_prompt"
-                  value={querySettings.user_prompt}
-                  onChange={(e) => handleChange('user_prompt', e.target.value)}
-                  placeholder={t('retrievePanel.querySettings.userPromptPlaceholder')}
-                  className="h-9"
                 />
               </div>
             </>

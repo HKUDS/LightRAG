@@ -313,6 +313,11 @@ export default function RetrievalTesting() {
       // Prepare query parameters
       const state = useSettingsStore.getState()
 
+      // Add user prompt to history if it exists and is not empty
+      if (state.querySettings.user_prompt && state.querySettings.user_prompt.trim()) {
+        state.addUserPromptToHistory(state.querySettings.user_prompt.trim())
+      }
+
       // Determine the effective mode
       const effectiveMode = modeOverride || state.querySettings.mode
 
