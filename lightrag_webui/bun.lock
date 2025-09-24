@@ -59,6 +59,7 @@
         "tailwind-merge": "^3.0.2",
         "tailwind-scrollbar": "^4.0.1",
         "typography": "^0.16.24",
+        "unist-util-visit": "^5.0.0",
         "zustand": "^5.0.3",
       },
       "devDependencies": {

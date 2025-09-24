@@ -47,7 +47,8 @@ export default defineConfig({
             'rehype-raw',
             'remark-gfm',
             'remark-math',
-            'react-syntax-highlighter'
+            'react-syntax-highlighter',
+            'unist-util-visit'
           ]
         },
         // Ensure consistent chunk naming format
