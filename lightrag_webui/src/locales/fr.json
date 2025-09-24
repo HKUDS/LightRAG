@@ -196,6 +196,11 @@
       "concept": "Concept",
       "naturalobject": "Objet naturel",
       "method": "Méthode",
+      "creature": "Créature",
+      "plant": "Plante",
+      "disease": "Maladie",
+      "drug": "Médicament",
+      "food": "Nourriture",
       "other": "Autre"
     },
     "sideBar": {
@@ -327,16 +332,18 @@
       }
     },
     "search": {
-      "placeholder": "Rechercher des nœuds...",
+      "placeholder": "Rechercher des nœuds dans la page...",
       "message": "Et {{count}} autres"
     },
     "graphLabels": {
-      "selectTooltip": "Sélectionner l'étiquette de la requête",
-      "noLabels": "Aucune étiquette trouvée",
+      "selectTooltip": "Obtenir le sous-graphe d'un nœud (étiquette)",
+      "noLabels": "Aucun nœud trouvé",
       "label": "Étiquette",
-      "placeholder": "Rechercher des étiquettes...",
+      "placeholder": "Interroger le sous-graphe de nœuds...",
       "andOthers": "Et {{count}} autres",
-      "refreshTooltip": "Réinitialiser les données du graphe et l'historique de recherche (requis après modification des documents)"
+      "refreshGlobalTooltip": "Actualiser les données du graphe global et réinitialiser l'historique de recherche",
+      "refreshCurrentLabelTooltip": "Actualiser les données du graphe de la page actuelle",
+      "refreshingTooltip": "Actualisation des données en cours..."
     },
     "emptyGraph": "Vide (Essayez de recharger)"
   },

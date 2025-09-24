@@ -196,6 +196,11 @@
       "concept": "Concept",
       "naturalobject": "Natural Object",
       "method": "Method",
+      "creature": "Creature",
+      "plant": "Plant",
+      "disease": "Disease",
+      "drug": "Drug",
+      "food": "Food",
       "other": "Other"
     },
     "sideBar": {
@@ -327,16 +332,18 @@
       }
     },
     "search": {
-      "placeholder": "Search nodes...",
+      "placeholder": "Search nodes in page...",
       "message": "And {count} others"
     },
     "graphLabels": {
-      "selectTooltip": "Select query label",
-      "noLabels": "No labels found",
+      "selectTooltip": "Get subgraph of a node (label)",
+      "noLabels": "No nodes found",
       "label": "Label",
-      "placeholder": "Search labels...",
+      "placeholder": "Query node subgraph...",
       "andOthers": "And {count} others",
-      "refreshTooltip": "Reset graph data and search history (required after document changes)"
+      "refreshGlobalTooltip": "Refresh global graph data and reset search history",
+      "refreshCurrentLabelTooltip": "Refresh current page graph data",
+      "refreshingTooltip": "Refreshing data..."
     },
     "emptyGraph": "Empty(Try Reload Again)"
   },

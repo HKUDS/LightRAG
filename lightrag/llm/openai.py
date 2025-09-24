@@ -317,6 +317,11 @@ async def openai_complete_if_cache(
                     if content is None and reasoning_content is None:
                         continue
 
+                # Ensure COT is properly closed if still active after stream ends
+                if enable_cot and cot_active:
+                    yield "</think>"
+                    cot_active = False
+
                 # After streaming is complete, track token usage
                 if token_tracker and final_chunk_usage:
                     # Use actual usage from the API
@@ -332,6 +337,16 @@ async def openai_complete_if_cache(
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
             except Exception as e:
+                # Ensure COT is properly closed before handling exception
+                if enable_cot and cot_active:
+                    try:
+                        yield "</think>"
+                        cot_active = False
+                    except Exception as close_error:
+                        logger.warning(
+                            f"Failed to close COT tag during exception handling: {close_error}"
+                        )
+
                 logger.error(f"Error in stream response: {str(e)}")
                 # Try to clean up resources if possible
                 if (
@@ -350,6 +365,16 @@ async def openai_complete_if_cache(
                 await openai_async_client.close()
                 raise
             finally:
+                # Final safety check for unclosed COT tags
+                if enable_cot and cot_active:
+                    try:
+                        yield "</think>"
+                        cot_active = False
+                    except Exception as final_close_error:
+                        logger.warning(
+                            f"Failed to close COT tag in finally block: {final_close_error}"
+                        )
+
                 # Ensure resources are released even if no exception occurs
                 if (
                     iteration_started

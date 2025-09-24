@@ -1,3 +1,4 @@
+import Textarea from '@/components/ui/Textarea'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -21,6 +22,66 @@ const generateUniqueId = () => {
   // Fallback to timestamp + random string for browsers without crypto.randomUUID
   return `id-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 };
+
+// Robust COT parsing function to handle multiple think blocks and edge cases
+const parseCOTContent = (content: string) => {
+  const thinkStartTag = '<think>'
+  const thinkEndTag = '</think>'
+
+  // Find all <think> and </think> tag positions
+  const startMatches: number[] = []
+  const endMatches: number[] = []
+
+  let startIndex = 0
+  while ((startIndex = content.indexOf(thinkStartTag, startIndex)) !== -1) {
+    startMatches.push(startIndex)
+    startIndex += thinkStartTag.length
+  }
+
+  let endIndex = 0
+  while ((endIndex = content.indexOf(thinkEndTag, endIndex)) !== -1) {
+    endMatches.push(endIndex)
+    endIndex += thinkEndTag.length
+  }
+
+  // Analyze COT state
+  const hasThinkStart = startMatches.length > 0
+  const hasThinkEnd = endMatches.length > 0
+  const isThinking = hasThinkStart && (startMatches.length > endMatches.length)
+
+  let thinkingContent = ''
+  let displayContent = content
+
+  if (hasThinkStart) {
+    if (hasThinkEnd && startMatches.length === endMatches.length) {
+      // Complete thinking blocks: extract the last complete thinking content
+      const lastStartIndex = startMatches[startMatches.length - 1]
+      const lastEndIndex = endMatches[endMatches.length - 1]
+
+      if (lastEndIndex > lastStartIndex) {
+        thinkingContent = content.substring(
+          lastStartIndex + thinkStartTag.length,
+          lastEndIndex
+        ).trim()
+
+        // Remove all thinking blocks, keep only the final display content
+        displayContent = content.substring(lastEndIndex + thinkEndTag.length).trim()
+      }
+    } else if (isThinking) {
+      // Currently thinking: extract current thinking content
+      const lastStartIndex = startMatches[startMatches.length - 1]
+      thinkingContent = content.substring(lastStartIndex + thinkStartTag.length)
+      displayContent = ''
+    }
+  }
+
+  return {
+    isThinking,
+    thinkingContent,
+    displayContent,
+    hasValidThinkBlock: hasThinkStart && hasThinkEnd && startMatches.length === endMatches.length
+  }
+}
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
@@ -56,28 +117,24 @@ export default function RetrievalTesting() {
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [inputError, setInputError] = useState('') // Error message for input
-  // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
-  const shouldFollowScrollRef = useRef(true)
-  const thinkingStartTime = useRef<number | null>(null)
-  const thinkingProcessed = useRef(false)
-  // Reference to track if user interaction is from the form area
-  const isFormInteractionRef = useRef(false)
-  // Reference to track if scroll was triggered programmatically
-  const programmaticScrollRef = useRef(false)
-  // Reference to track if we're currently receiving a streaming response
-  const isReceivingResponseRef = useRef(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
-  // Add cleanup effect for memory leak prevention
-  useEffect(() => {
-    // Component cleanup - reset timer state to prevent memory leaks
-    return () => {
-      if (thinkingStartTime.current) {
-        thinkingStartTime.current = null;
-      }
-    };
-  }, []);
+  // Smart switching logic: use Input for single line, Textarea for multi-line
+  const hasMultipleLines = inputValue.includes('\n')
+
+  // Enhanced event handlers for smart switching
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    setInputValue(e.target.value)
+    if (inputError) setInputError('')
+  }, [inputError])
+
+  // Unified height adjustment function for textarea
+  const adjustTextareaHeight = useCallback((element: HTMLTextAreaElement) => {
+    requestAnimationFrame(() => {
+      element.style.height = 'auto'
+      element.style.height = Math.min(element.scrollHeight, 120) + 'px'
+    })
+  }, [])
 
   // Scroll to bottom function - restored smooth scrolling with better handling
   const scrollToBottom = useCallback(() => {
@@ -169,6 +226,13 @@ export default function RetrievalTesting() {
       setInputValue('')
       setIsLoading(true)
 
+      // Reset input height to minimum after clearing input
+      if (inputRef.current) {
+        if ('style' in inputRef.current) {
+          inputRef.current.style.height = '40px'
+        }
+      }
+
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
         assistantMessage.content += chunk
@@ -178,40 +242,28 @@ export default function RetrievalTesting() {
           thinkingStartTime.current = Date.now()
         }
 
-        // Real-time parsing for streaming
-        const thinkStartTag = '<think>'
-        const thinkEndTag = '</think>'
-        const thinkStartIndex = assistantMessage.content.indexOf(thinkStartTag)
-        const thinkEndIndex = assistantMessage.content.indexOf(thinkEndTag)
+        // Use the new robust COT parsing function
+        const cotResult = parseCOTContent(assistantMessage.content)
 
-        if (thinkStartIndex !== -1) {
-          if (thinkEndIndex !== -1) {
-            // Thinking has finished for this chunk
-            assistantMessage.isThinking = false
+        // Update thinking state
+        assistantMessage.isThinking = cotResult.isThinking
 
-            // Only calculate time and extract thinking content once
-            if (!thinkingProcessed.current) {
-              if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
-                const duration = (Date.now() - thinkingStartTime.current) / 1000
-                assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
-              }
-              assistantMessage.thinkingContent = assistantMessage.content
-                .substring(thinkStartIndex + thinkStartTag.length, thinkEndIndex)
-                .trim()
-              thinkingProcessed.current = true
-            }
-
-            // Always update display content as content after </think> may grow
-            assistantMessage.displayContent = assistantMessage.content.substring(thinkEndIndex + thinkEndTag.length).trim()
-          } else {
-            // Still thinking - update thinking content in real-time
-            assistantMessage.isThinking = true
-            assistantMessage.thinkingContent = assistantMessage.content.substring(thinkStartIndex + thinkStartTag.length)
-            assistantMessage.displayContent = ''
+        // Only calculate time and extract thinking content once when thinking is complete
+        if (cotResult.hasValidThinkBlock && !thinkingProcessed.current) {
+          if (thinkingStartTime.current && !assistantMessage.thinkingTime) {
+            const duration = (Date.now() - thinkingStartTime.current) / 1000
+            assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
           }
+          thinkingProcessed.current = true
+        }
+
+        // Update content based on parsing results
+        assistantMessage.thinkingContent = cotResult.thinkingContent
+        // Only fallback to full content if not in a thinking state.
+        if (cotResult.isThinking) {
+          assistantMessage.displayContent = ''
         } else {
-          assistantMessage.isThinking = false
-          assistantMessage.displayContent = assistantMessage.content
+          assistantMessage.displayContent = cotResult.displayContent || assistantMessage.content
         }
 
         // Detect if the assistant message contains a complete mermaid code block
@@ -258,13 +310,25 @@ export default function RetrievalTesting() {
 
       // Prepare query parameters
       const state = useSettingsStore.getState()
+
+      // Determine the effective mode
+      const effectiveMode = modeOverride || state.querySettings.mode
+
+      // Determine effective history turns with bypass override
+      const configuredHistoryTurns = state.querySettings.history_turns || 0
+      const effectiveHistoryTurns = (effectiveMode === 'bypass' && configuredHistoryTurns === 0)
+        ? 3
+        : configuredHistoryTurns
+
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
-        conversation_history: prevMessages
-          .filter((m) => m.isError !== true)
-          .slice(-(state.querySettings.history_turns || 0) * 2)
-          .map((m) => ({ role: m.role, content: m.content })),
+        conversation_history: effectiveHistoryTurns > 0
+          ? prevMessages
+            .filter((m) => m.isError !== true)
+            .slice(-effectiveHistoryTurns * 2)
+            .map((m) => ({ role: m.role, content: m.content }))
+          : [],
         ...(modeOverride ? { mode: modeOverride } : {})
       }
 
@@ -295,17 +359,30 @@ export default function RetrievalTesting() {
 
         // Enhanced cleanup with error handling to prevent memory leaks
         try {
-          // Final calculation for thinking time, only if not already calculated
-          if (assistantMessage.thinkingContent && thinkingStartTime.current && !assistantMessage.thinkingTime) {
+          // Final COT state validation and cleanup
+          const finalCotResult = parseCOTContent(assistantMessage.content)
+
+          // Force set final state - stream ended so thinking must be false
+          assistantMessage.isThinking = false
+
+          // If we have a complete thinking block but time wasn't calculated, do final calculation
+          if (finalCotResult.hasValidThinkBlock && thinkingStartTime.current && !assistantMessage.thinkingTime) {
             const duration = (Date.now() - thinkingStartTime.current) / 1000
             assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
           }
+
+          // Ensure display content is correctly set based on final parsing
+          if (finalCotResult.displayContent !== undefined) {
+            assistantMessage.displayContent = finalCotResult.displayContent
+          }
+
         } catch (error) {
-          console.error('Error calculating thinking time:', error)
+          console.error('Error in final COT state validation:', error)
+          // Force reset state on error
+          assistantMessage.isThinking = false
         } finally {
           // Ensure cleanup happens regardless of errors
-          assistantMessage.isThinking = false;
-          thinkingStartTime.current = null;
+          thinkingStartTime.current = null
         }
 
         // Save history with error handling
@@ -320,6 +397,111 @@ export default function RetrievalTesting() {
     },
     [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
   )
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && e.shiftKey) {
+      // Shift+Enter: Insert newline
+      e.preventDefault()
+      const target = e.target as HTMLInputElement | HTMLTextAreaElement
+      const start = target.selectionStart || 0
+      const end = target.selectionEnd || 0
+      const newValue = inputValue.slice(0, start) + '\n' + inputValue.slice(end)
+      setInputValue(newValue)
+
+      // Set cursor position after the newline and adjust height if needed
+      setTimeout(() => {
+        if (target.setSelectionRange) {
+          target.setSelectionRange(start + 1, start + 1)
+        }
+
+        // Manually trigger height adjustment for textarea after component switch
+        if (inputRef.current && inputRef.current.tagName === 'TEXTAREA') {
+          adjustTextareaHeight(inputRef.current as HTMLTextAreaElement)
+        }
+      }, 0)
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter: Submit form
+      e.preventDefault()
+      handleSubmit(e as any)
+    }
+  }, [inputValue, handleSubmit, adjustTextareaHeight])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    // Get pasted text content
+    const pastedText = e.clipboardData.getData('text')
+
+    // Check if it contains newlines
+    if (pastedText.includes('\n')) {
+      e.preventDefault() // Prevent default paste behavior
+
+      // Get current cursor position
+      const target = e.target as HTMLInputElement | HTMLTextAreaElement
+      const start = target.selectionStart || 0
+      const end = target.selectionEnd || 0
+
+      // Build new value
+      const newValue = inputValue.slice(0, start) + pastedText + inputValue.slice(end)
+
+      // Update state (this will trigger component switch to Textarea)
+      setInputValue(newValue)
+
+      // Set cursor position to end of pasted content
+      setTimeout(() => {
+        if (inputRef.current && inputRef.current.setSelectionRange) {
+          const newCursorPosition = start + pastedText.length
+          inputRef.current.setSelectionRange(newCursorPosition, newCursorPosition)
+        }
+      }, 0)
+    }
+    // If no newlines, let default paste behavior continue
+  }, [inputValue])
+
+  // Effect to handle component switching and maintain focus
+  useEffect(() => {
+    if (inputRef.current) {
+      // When component type changes, restore focus and cursor position
+      const currentElement = inputRef.current
+      const cursorPosition = currentElement.selectionStart || inputValue.length
+
+      // Use requestAnimationFrame to ensure DOM update is complete
+      requestAnimationFrame(() => {
+        currentElement.focus()
+        if (currentElement.setSelectionRange) {
+          currentElement.setSelectionRange(cursorPosition, cursorPosition)
+        }
+      })
+    }
+  }, [hasMultipleLines, inputValue.length]) // Include inputValue.length dependency
+
+  // Effect to adjust textarea height when switching to multi-line mode
+  useEffect(() => {
+    if (hasMultipleLines && inputRef.current && inputRef.current.tagName === 'TEXTAREA') {
+      adjustTextareaHeight(inputRef.current as HTMLTextAreaElement)
+    }
+  }, [hasMultipleLines, inputValue, adjustTextareaHeight])
+
+  // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
+  const shouldFollowScrollRef = useRef(true)
+  const thinkingStartTime = useRef<number | null>(null)
+  const thinkingProcessed = useRef(false)
+  // Reference to track if user interaction is from the form area
+  const isFormInteractionRef = useRef(false)
+  // Reference to track if scroll was triggered programmatically
+  const programmaticScrollRef = useRef(false)
+  // Reference to track if we're currently receiving a streaming response
+  const isReceivingResponseRef = useRef(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+  // Add cleanup effect for memory leak prevention
+  useEffect(() => {
+    // Component cleanup - reset timer state to prevent memory leaks
+    return () => {
+      if (thinkingStartTime.current) {
+        thinkingStartTime.current = null;
+      }
+    };
+  }, []);
 
   // Add event listeners to detect when user manually interacts with the container
   useEffect(() => {
@@ -441,7 +623,16 @@ export default function RetrievalTesting() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex shrink-0 items-center gap-2">
+        <form
+          onSubmit={handleSubmit}
+          className="flex shrink-0 items-center gap-2"
+          autoComplete="on"
+          method="post"
+          action="#"
+          role="search"
+        >
+          {/* Hidden submit button to ensure form meets HTML standards */}
+          <input type="submit" style={{ display: 'none' }} tabIndex={-1} />
           <Button
             type="button"
             variant="outline"
@@ -456,17 +647,47 @@ export default function RetrievalTesting() {
             <label htmlFor="query-input" className="sr-only">
               {t('retrievePanel.retrieval.placeholder')}
             </label>
-            <Input
-              id="query-input"
-              className="w-full"
-              value={inputValue}
-              onChange={(e) => {
-                setInputValue(e.target.value)
-                if (inputError) setInputError('')
-              }}
-              placeholder={t('retrievePanel.retrieval.placeholder')}
-              disabled={isLoading}
-            />
+            {hasMultipleLines ? (
+              <Textarea
+                ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+                id="query-input"
+                autoComplete="on"
+                className="w-full min-h-[40px] max-h-[120px] overflow-y-auto"
+                value={inputValue}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder={t('retrievePanel.retrieval.placeholder')}
+                disabled={isLoading}
+                rows={1}
+                style={{
+                  resize: 'none',
+                  height: 'auto',
+                  minHeight: '40px',
+                  maxHeight: '120px'
+                }}
+                onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
+                  const target = e.target as HTMLTextAreaElement
+                  requestAnimationFrame(() => {
+                    target.style.height = 'auto'
+                    target.style.height = Math.min(target.scrollHeight, 120) + 'px'
+                  })
+                }}
+              />
+            ) : (
+              <Input
+                ref={inputRef as React.RefObject<HTMLInputElement>}
+                id="query-input"
+                autoComplete="on"
+                className="w-full"
+                value={inputValue}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder={t('retrievePanel.retrieval.placeholder')}
+                disabled={isLoading}
+              />
+            )}
             {/* Error message below input */}
             {inputError && (
               <div className="absolute left-0 top-full mt-1 text-xs text-red-500">{inputError}</div>

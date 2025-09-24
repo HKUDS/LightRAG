@@ -2455,7 +2455,14 @@ async def process_chunks_unified(
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
         )
 
-    return unique_chunks
+    # 5. add id field to each chunk
+    final_chunks = []
+    for i, chunk in enumerate(unique_chunks):
+        chunk_with_id = chunk.copy()
+        chunk_with_id["id"] = f"DC{i + 1}"
+        final_chunks.append(chunk_with_id)
+
+    return final_chunks
 
 
 def build_file_path(already_file_paths, data_list, target):
@@ -2713,10 +2720,11 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         )
 
 
-def _convert_to_user_format(
+def convert_to_user_format(
     entities_context: list[dict],
     relations_context: list[dict],
-    final_chunks: list[dict],
+    chunks: list[dict],
+    references: list[dict],
     query_mode: str,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
@@ -2801,8 +2809,9 @@ def _convert_to_user_format(
 
     # Convert chunks format (chunks already contain complete data)
     formatted_chunks = []
-    for i, chunk in enumerate(final_chunks):
+    for i, chunk in enumerate(chunks):
         chunk_data = {
+            "reference_id": chunk.get("reference_id", ""),
             "content": chunk.get("content", ""),
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
@@ -2810,7 +2819,7 @@ def _convert_to_user_format(
         formatted_chunks.append(chunk_data)
 
     logger.debug(
-        f"[_convert_to_user_format] Formatted {len(formatted_chunks)}/{len(final_chunks)} chunks"
+        f"[convert_to_user_format] Formatted {len(formatted_chunks)}/{len(chunks)} chunks"
     )
 
     # Build basic metadata (metadata details will be added by calling functions)
@@ -2823,8 +2832,79 @@ def _convert_to_user_format(
     }
 
     return {
-        "entities": formatted_entities,
-        "relationships": formatted_relationships,
-        "chunks": formatted_chunks,
+        "status": "success",
+        "message": "Query processed successfully",
+        "data": {
+            "entities": formatted_entities,
+            "relationships": formatted_relationships,
+            "chunks": formatted_chunks,
+            "references": references,
+        },
         "metadata": metadata,
     }
+
+
+def generate_reference_list_from_chunks(
+    chunks: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """
+    Generate reference list from chunks, prioritizing by occurrence frequency.
+
+    This function extracts file_paths from chunks, counts their occurrences,
+    sorts by frequency and first appearance order, creates reference_id mappings,
+    and builds a reference_list structure.
+
+    Args:
+        chunks: List of chunk dictionaries with file_path information
+
+    Returns:
+        tuple: (reference_list, updated_chunks_with_reference_ids)
+            - reference_list: List of dicts with reference_id and file_path
+            - updated_chunks_with_reference_ids: Original chunks with reference_id field added
+    """
+    if not chunks:
+        return [], []
+
+    # 1. Extract all valid file_paths and count their occurrences
+    file_path_counts = {}
+    for chunk in chunks:
+        file_path = chunk.get("file_path", "")
+        if file_path and file_path != "unknown_source":
+            file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
+
+    # 2. Sort file paths by frequency (descending), then by first appearance order
+    # Create a list of (file_path, count, first_index) tuples
+    file_path_with_indices = []
+    seen_paths = set()
+    for i, chunk in enumerate(chunks):
+        file_path = chunk.get("file_path", "")
+        if file_path and file_path != "unknown_source" and file_path not in seen_paths:
+            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
+            seen_paths.add(file_path)
+
+    # Sort by count (descending), then by first appearance index (ascending)
+    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
+    unique_file_paths = [item[0] for item in sorted_file_paths]
+
+    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
+    file_path_to_ref_id = {}
+    for i, file_path in enumerate(unique_file_paths):
+        file_path_to_ref_id[file_path] = str(i + 1)
+
+    # 4. Add reference_id field to each chunk
+    updated_chunks = []
+    for chunk in chunks:
+        chunk_copy = chunk.copy()
+        file_path = chunk_copy.get("file_path", "")
+        if file_path and file_path != "unknown_source":
+            chunk_copy["reference_id"] = file_path_to_ref_id[file_path]
+        else:
+            chunk_copy["reference_id"] = ""
+        updated_chunks.append(chunk_copy)
+
+    # 5. Build reference_list
+    reference_list = []
+    for i, file_path in enumerate(unique_file_paths):
+        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
+
+    return reference_list, updated_chunks

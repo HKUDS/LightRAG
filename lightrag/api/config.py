@@ -206,13 +206,6 @@ def parse_args() -> argparse.Namespace:
         help="Default workspace for all storage",
     )
 
-    parser.add_argument(
-        "--auto-scan-at-startup",
-        action="store_true",
-        default=False,
-        help="Enable automatic scanning when the program starts",
-    )
-
     # Server workers configuration
     parser.add_argument(
         "--workers",

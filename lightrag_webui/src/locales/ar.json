@@ -196,6 +196,11 @@
       "concept": "مفهوم",
       "naturalobject": "كائن طبيعي",
       "method": "عملية",
+      "creature": "مخلوق",
+      "plant": "نبات",
+      "disease": "مرض",
+      "drug": "دواء",
+      "food": "طعام",
       "other": "أخرى"
     },
     "sideBar": {
@@ -327,16 +332,18 @@
       }
     },
     "search": {
-      "placeholder": "ابحث في العقد...",
+      "placeholder": "ابحث في العقد في الصفحة...",
       "message": "و {{count}} آخرون"
     },
     "graphLabels": {
-      "selectTooltip": "حدد تسمية الاستعلام",
-      "noLabels": "لم يتم العثور على تسميات",
+      "selectTooltip": "الحصول على الرسم البياني الفرعي لعقدة (تسمية)",
+      "noLabels": "لم يتم العثور على عقد",
       "label": "التسمية",
-      "placeholder": "ابحث في التسميات...",
+      "placeholder": "الاستعلام عن الرسم البياني الفرعي للعقدة...",
       "andOthers": "و {{count}} آخرون",
-      "refreshTooltip": "إعادة تعيين بيانات الرسم البياني وسجل البحث (مطلوب بعد تغيير المستندات)"
+      "refreshGlobalTooltip": "تحديث بيانات الرسم البياني العالمي وإعادة تعيين سجل البحث",
+      "refreshCurrentLabelTooltip": "تحديث بيانات الرسم البياني للصفحة الحالية",
+      "refreshingTooltip": "جارٍ تحديث البيانات..."
     },
     "emptyGraph": "فارغ (حاول إعادة التحميل)"
   },

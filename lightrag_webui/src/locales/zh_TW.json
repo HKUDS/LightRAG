@@ -194,8 +194,13 @@
       "data": "資料",
       "artifact": "人工製品",
       "concept": "概念",
-      "naturalobject": "自然物件",
+      "naturalobject": "自然物品",
       "method": "方法",
+      "creature": "生物神怪",
+      "plant": "植物",
+      "disease": "疾病",
+      "drug": "藥物",
+      "food": "食物",
       "other": "其他"
     },
     "sideBar": {
@@ -327,16 +332,18 @@
       }
     },
     "search": {
-      "placeholder": "搜尋節點...",
+      "placeholder": "頁面內搜尋節點...",
       "message": "還有 {count} 個"
     },
     "graphLabels": {
-      "selectTooltip": "選擇查詢標籤",
-      "noLabels": "未找到標籤",
+      "selectTooltip": "獲取節點(標籤)子圖",
+      "noLabels": "未找到節點",
       "label": "標籤",
-      "placeholder": "搜尋標籤...",
+      "placeholder": "查詢節點子圖...",
       "andOthers": "還有 {count} 個",
-      "refreshTooltip": "重設圖形資料和搜尋歷史(文件變化後需重設)"
+      "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
+      "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
+      "refreshingTooltip": "正在重新整理資料..."
     },
     "emptyGraph": "無數據(請重載圖形數據)"
   },
