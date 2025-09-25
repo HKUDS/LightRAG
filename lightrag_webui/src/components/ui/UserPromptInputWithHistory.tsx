@@ -117,7 +117,7 @@ export default function UserPromptInputWithHistory({
   const handleDeleteHistoryItem = useCallback((index: number, e: React.MouseEvent) => {
     e.stopPropagation() // Prevent triggering item selection
     onDeleteFromHistory?.(index)
-    
+
     // Handle boundary cases
     if (history.length === 1) {
       // Deleting the last item, close dropdown

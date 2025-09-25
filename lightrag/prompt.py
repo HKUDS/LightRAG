@@ -239,7 +239,7 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. **References Section Format:**
   - The References section should be under heading: `### References`
-  - Citation format: `* [n] Document Titile`
+  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) immediately after the opening square bracket (`[`).
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
@@ -287,7 +287,7 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. **References Section Format:**
   - The References section should be under heading: `### References`
-  - Citation format: `* [n] Document Titile`
+  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) immediately after the opening square bracket (`[`).
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
