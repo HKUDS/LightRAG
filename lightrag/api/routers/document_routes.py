@@ -1810,7 +1810,7 @@ def create_document_routes(
         """
         # Use the existing pipeline to enqueue the file
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, metadata
         )
 
         if success:
@@ -1819,7 +1819,7 @@ def create_document_routes(
             logger.error("Failed to enqueue file with metadata")
 
         # Trigger the pipeline processing
-        await rag.apipeline_process_enqueue_documents(metadata=metadata)
+        await rag.apipeline_process_enqueue_documents()
 
         return success, returned_track_id
 
