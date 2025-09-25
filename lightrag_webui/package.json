@@ -8,6 +8,9 @@
     "build": "bunx --bun vite build",
     "lint": "eslint .",
     "preview": "bunx --bun vite preview",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
     "dev-no-bun": "vite",
     "build-no-bun": "vite build --emptyOutDir",
     "preview-no-bun": "vite preview"
