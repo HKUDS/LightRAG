@@ -25,6 +25,7 @@ DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
+    "Creature",
     "Organization",
     "Location",
     "Event",
@@ -48,7 +49,8 @@ DEFAULT_MAX_TOTAL_TOKENS = 30000
 DEFAULT_COSINE_THRESHOLD = 0.2
 DEFAULT_RELATED_CHUNK_NUMBER = 5
 DEFAULT_KG_CHUNK_PICK_METHOD = "VECTOR"
-# Deprated: history message have negtive effect on query performance
+
+# TODO: Deprated. All conversation_history messages is send to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults

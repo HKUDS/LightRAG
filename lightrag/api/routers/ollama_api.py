@@ -510,12 +510,6 @@ class OllamaAPI:
                 if user_prompt is not None:
                     param_dict["user_prompt"] = user_prompt
 
-                if (
-                    hasattr(self.rag, "args")
-                    and self.rag.args.history_turns is not None
-                ):
-                    param_dict["history_turns"] = self.rag.args.history_turns
-
                 query_param = QueryParam(**param_dict)
 
                 if request.stream:

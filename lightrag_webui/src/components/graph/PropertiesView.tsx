@@ -206,6 +206,18 @@ const PropertyRow = ({
     return translation === translationKey ? name : translation
   }
 
+  // Utility function to convert <SEP> to newlines
+  const formatValueWithSeparators = (value: any): string => {
+    if (typeof value === 'string') {
+      return value.replace(/<SEP>/g, ';\n')
+    }
+    return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  }
+
+  // Format the value to convert <SEP> to newlines
+  const formattedValue = formatValueWithSeparators(value)
+  const formattedTooltip = tooltip || formatValueWithSeparators(value)
+
   // Use EditablePropertyRow for editable fields (description, entity_id and keywords)
   if (isEditable && (name === 'description' || name === 'entity_id' || name === 'keywords')) {
     return (
@@ -232,9 +244,9 @@ const PropertyRow = ({
       <span className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</span>:
       <Text
         className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
-        tooltipClassName="max-w-80 -translate-x-13"
-        text={value}
-        tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
+        tooltipClassName="max-w-96 -translate-x-13"
+        text={formattedValue}
+        tooltip={formattedTooltip}
         side="left"
         onClick={onClick}
       />

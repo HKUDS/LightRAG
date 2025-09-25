@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
-from ..utils_api import get_combined_auth_dependency
+from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
 from ascii_colors import trace_exception
@@ -18,7 +18,7 @@ router = APIRouter(tags=["query"])
 
 class QueryRequest(BaseModel):
     query: str = Field(
-        min_length=1,
+        min_length=3,
         description="The query text",
     )
 
@@ -78,16 +78,6 @@ class QueryRequest(BaseModel):
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
-    history_turns: Optional[int] = Field(
-        ge=0,
-        default=None,
-        description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
-    )
-
-    ids: list[str] | None = Field(
-        default=None, description="List of ids to filter the results."
-    )
-
     user_prompt: Optional[str] = Field(
         default=None,
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
@@ -135,14 +125,10 @@ class QueryResponse(BaseModel):
 
 
 class QueryDataResponse(BaseModel):
-    entities: List[Dict[str, Any]] = Field(
-        description="Retrieved entities from knowledge graph"
-    )
-    relationships: List[Dict[str, Any]] = Field(
-        description="Retrieved relationships from knowledge graph"
-    )
-    chunks: List[Dict[str, Any]] = Field(
-        description="Retrieved text chunks from documents"
+    status: str = Field(description="Query execution status")
+    message: str = Field(description="Status message")
+    data: Dict[str, Any] = Field(
+        description="Query result data containing entities, relationships, chunks, and references"
     )
     metadata: Dict[str, Any] = Field(
         description="Query metadata including mode, keywords, and processing information"
@@ -253,8 +239,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             request (QueryRequest): The request object containing the query parameters.
 
         Returns:
-            QueryDataResponse: A Pydantic model containing structured data with entities,
-                             relationships, chunks, and metadata.
+            QueryDataResponse: A Pydantic model containing structured data with status,
+                             message, data (entities, relationships, chunks, references),
+                             and metadata.
 
         Raises:
             HTTPException: Raised when an error occurs during the request handling process,
@@ -264,40 +251,15 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             param = request.to_query_params(False)  # No streaming for data endpoint
             response = await rag.aquery_data(request.query, param=param)
 
-            # The aquery_data method returns a dict with entities, relationships, chunks, and metadata
+            # aquery_data returns the new format with status, message, data, and metadata
             if isinstance(response, dict):
-                # Ensure all required fields exist and are lists/dicts
-                entities = response.get("entities", [])
-                relationships = response.get("relationships", [])
-                chunks = response.get("chunks", [])
-                metadata = response.get("metadata", {})
-
-                # Validate data types
-                if not isinstance(entities, list):
-                    entities = []
-                if not isinstance(relationships, list):
-                    relationships = []
-                if not isinstance(chunks, list):
-                    chunks = []
-                if not isinstance(metadata, dict):
-                    metadata = {}
-
-                return QueryDataResponse(
-                    entities=entities,
-                    relationships=relationships,
-                    chunks=chunks,
-                    metadata=metadata,
-                )
+                return QueryDataResponse(**response)
             else:
-                # Fallback for unexpected response format
+                # Handle unexpected response format
                 return QueryDataResponse(
-                    entities=[],
-                    relationships=[],
-                    chunks=[],
-                    metadata={
-                        "error": "Unexpected response format",
-                        "raw_response": str(response),
-                    },
+                    status="failure",
+                    message="Invalid response type",
+                    data={},
                 )
         except Exception as e:
             trace_exception(e)

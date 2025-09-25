@@ -132,13 +132,13 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # TODO: Deprecated - history message have negtive effect on query performance
+    # History mesages is only send to LLM for context, not used for retrieval
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    # TODO: Deprecated - history message have negtive effect on query performance
+    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
@@ -629,6 +629,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges: List of edges to be deleted, each edge is a (source, target) tuple
         """
 
+    # TODO: deprecated
     @abstractmethod
     async def get_all_labels(self) -> list[str]:
         """Get all labels in the graph.
@@ -669,6 +670,29 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             A list of all edges, where each edge is a dictionary of its properties
+        """
+
+    @abstractmethod
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+
+    @abstractmethod
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """Search labels with fuzzy matching
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching labels sorted by relevance
         """
 
 
@@ -757,6 +781,18 @@ class DocStatusStorage(BaseKVStorage, ABC):
 
         Returns:
             Dictionary mapping status names to counts
+        """
+
+    @abstractmethod
+    async def get_doc_by_file_path(self, file_path: str) -> dict[str, Any] | None:
+        """Get document by file path
+
+        Args:
+            file_path: The file path to search for
+
+        Returns:
+            dict[str, Any] | None: Document data if found, None otherwise
+            Returns the same format as get_by_ids method
         """
 
 

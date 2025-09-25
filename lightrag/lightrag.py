@@ -59,7 +59,7 @@ from lightrag.kg.shared_storage import (
     get_data_init_lock,
 )
 
-from .base import (
+from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
@@ -72,8 +72,8 @@ from .base import (
     DeletionResult,
     OllamaServerInfos,
 )
-from .namespace import NameSpace
-from .operate import (
+from lightrag.namespace import NameSpace
+from lightrag.operate import (
     chunking_by_token_size,
     extract_entities,
     merge_nodes_and_edges,
@@ -81,8 +81,8 @@ from .operate import (
     naive_query,
     _rebuild_knowledge_from_chunks,
 )
-from .constants import GRAPH_FIELD_SEP
-from .utils import (
+from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
     EmbeddingFunc,
@@ -94,9 +94,10 @@ from .utils import (
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
+    convert_to_user_format,
     logger,
 )
-from .types import KnowledgeGraph
+from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
 from .duplicate import LightRAGDeduplicationService
 
@@ -2170,11 +2171,104 @@ class LightRAG:
         returning the final processed entities, relationships, and chunks data that would be sent to LLM.
 
         Args:
-            query: Query text.
-            param: Query parameters (same as aquery).
+            query: Query text for retrieval.
+            param: Query parameters controlling retrieval behavior (same as aquery).
 
         Returns:
-            dict[str, Any]: Structured data result with entities, relationships, chunks, and metadata
+            dict[str, Any]: Structured data result in the following format:
+
+            **Success Response:**
+            ```python
+            {
+                "status": "success",
+                "message": "Query executed successfully",
+                "data": {
+                    "entities": [
+                        {
+                            "entity_name": str,      # Entity identifier
+                            "entity_type": str,      # Entity category/type
+                            "description": str,      # Entity description
+                            "source_id": str,        # Source chunk references
+                            "file_path": str,        # Origin file path
+                            "created_at": str,       # Creation timestamp
+                            "reference_id": str      # Reference identifier for citations
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "src_id": str,           # Source entity name
+                            "tgt_id": str,           # Target entity name
+                            "description": str,      # Relationship description
+                            "keywords": str,         # Relationship keywords
+                            "weight": float,         # Relationship strength
+                            "source_id": str,        # Source chunk references
+                            "file_path": str,        # Origin file path
+                            "created_at": str,       # Creation timestamp
+                            "reference_id": str      # Reference identifier for citations
+                        }
+                    ],
+                    "chunks": [
+                        {
+                            "content": str,          # Document chunk content
+                            "file_path": str,        # Origin file path
+                            "chunk_id": str,         # Unique chunk identifier
+                            "reference_id": str      # Reference identifier for citations
+                        }
+                    ],
+                    "references": [
+                        {
+                            "reference_id": str,     # Reference identifier
+                            "file_path": str         # Corresponding file path
+                        }
+                    ]
+                },
+                "metadata": {
+                    "query_mode": str,           # Query mode used ("local", "global", "hybrid", "mix", "naive", "bypass")
+                    "keywords": {
+                        "high_level": List[str], # High-level keywords extracted
+                        "low_level": List[str]   # Low-level keywords extracted
+                    },
+                    "processing_info": {
+                        "total_entities_found": int,        # Total entities before truncation
+                        "total_relations_found": int,       # Total relations before truncation
+                        "entities_after_truncation": int,   # Entities after token truncation
+                        "relations_after_truncation": int,  # Relations after token truncation
+                        "merged_chunks_count": int,          # Chunks before final processing
+                        "final_chunks_count": int            # Final chunks in result
+                    }
+                }
+            }
+            ```
+
+            **Query Mode Differences:**
+            - **local**: Focuses on entities and their related chunks based on low-level keywords
+            - **global**: Focuses on relationships and their connected entities based on high-level keywords
+            - **hybrid**: Combines local and global results using round-robin merging
+            - **mix**: Includes knowledge graph data plus vector-retrieved document chunks
+            - **naive**: Only vector-retrieved chunks, entities and relationships arrays are empty
+            - **bypass**: All data arrays are empty, used for direct LLM queries
+
+            ** processing_info is optional and may not be present in all responses, especially when query result is empty**
+
+            **Failure Response:**
+            ```python
+            {
+                "status": "failure",
+                "message": str,  # Error description
+                "data": {}       # Empty data object
+            }
+            ```
+
+            **Common Failure Cases:**
+            - Empty query string
+            - Both high-level and low-level keywords are empty
+            - Query returns empty dataset
+            - Missing tokenizer or system configuration errors
+
+        Note:
+            The function adapts to the new data format from convert_to_user_format where
+            actual data is nested under the 'data' field, with 'status' and 'message'
+            fields at the top level.
         """
         global_config = asdict(self)
 
@@ -2206,23 +2300,30 @@ class LightRAG:
             )
         elif param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
-            # bypass mode returns empty data
-            final_data = {
-                "entities": [],
-                "relationships": [],
-                "chunks": [],
-                "metadata": {
-                    "query_mode": "bypass",
-                    "keywords": {"high_level": [], "low_level": []},
-                },
-            }
+            # bypass mode returns empty data using convert_to_user_format
+            final_data = convert_to_user_format(
+                [],  # no entities
+                [],  # no relationships
+                [],  # no chunks
+                [],  # no references
+                "bypass",
+            )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
 
-        # Log final result counts
-        entities_count = len(final_data.get("entities", []))
-        relationships_count = len(final_data.get("relationships", []))
-        chunks_count = len(final_data.get("chunks", []))
+        # Log final result counts - adapt to new data format from convert_to_user_format
+        if isinstance(final_data, dict) and "data" in final_data:
+            # New format: data is nested under 'data' field
+            data_section = final_data["data"]
+            entities_count = len(data_section.get("entities", []))
+            relationships_count = len(data_section.get("relationships", []))
+            chunks_count = len(data_section.get("chunks", []))
+        else:
+            # Fallback for other formats
+            entities_count = len(final_data.get("entities", []))
+            relationships_count = len(final_data.get("relationships", []))
+            chunks_count = len(final_data.get("chunks", []))
+
         logger.debug(
             f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
         )
@@ -2719,7 +2820,7 @@ class LightRAG:
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
-        from .utils_graph import adelete_by_entity
+        from lightrag.utils_graph import adelete_by_entity
 
         return await adelete_by_entity(
             self.chunk_entity_relation_graph,
@@ -2752,7 +2853,7 @@ class LightRAG:
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
-        from .utils_graph import adelete_by_relation
+        from lightrag.utils_graph import adelete_by_relation
 
         return await adelete_by_relation(
             self.chunk_entity_relation_graph,
@@ -2803,7 +2904,7 @@ class LightRAG:
         self, entity_name: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of an entity"""
-        from .utils_graph import get_entity_info
+        from lightrag.utils_graph import get_entity_info
 
         return await get_entity_info(
             self.chunk_entity_relation_graph,
@@ -2816,7 +2917,7 @@ class LightRAG:
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of a relationship"""
-        from .utils_graph import get_relation_info
+        from lightrag.utils_graph import get_relation_info
 
         return await get_relation_info(
             self.chunk_entity_relation_graph,
@@ -2841,7 +2942,7 @@ class LightRAG:
         Returns:
             Dictionary containing updated entity information
         """
-        from .utils_graph import aedit_entity
+        from lightrag.utils_graph import aedit_entity
 
         return await aedit_entity(
             self.chunk_entity_relation_graph,
@@ -2875,7 +2976,7 @@ class LightRAG:
         Returns:
             Dictionary containing updated relation information
         """
-        from .utils_graph import aedit_relation
+        from lightrag.utils_graph import aedit_relation
 
         return await aedit_relation(
             self.chunk_entity_relation_graph,
@@ -2908,7 +3009,7 @@ class LightRAG:
         Returns:
             Dictionary containing created entity information
         """
-        from .utils_graph import acreate_entity
+        from lightrag.utils_graph import acreate_entity
 
         return await acreate_entity(
             self.chunk_entity_relation_graph,
@@ -2939,7 +3040,7 @@ class LightRAG:
         Returns:
             Dictionary containing created relation information
         """
-        from .utils_graph import acreate_relation
+        from lightrag.utils_graph import acreate_relation
 
         return await acreate_relation(
             self.chunk_entity_relation_graph,
@@ -2985,7 +3086,7 @@ class LightRAG:
         Returns:
             Dictionary containing the merged entity information
         """
-        from .utils_graph import amerge_entities
+        from lightrag.utils_graph import amerge_entities
 
         return await amerge_entities(
             self.chunk_entity_relation_graph,
@@ -3029,7 +3130,7 @@ class LightRAG:
                 - table: Print formatted tables to console
             include_vector_data: Whether to include data from the vector database.
         """
-        from .utils import aexport_data as utils_aexport_data
+        from lightrag.utils import aexport_data as utils_aexport_data
 
         await utils_aexport_data(
             self.chunk_entity_relation_graph,

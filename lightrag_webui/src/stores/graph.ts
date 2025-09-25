@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
-import { getGraphLabels } from '@/api/lightrag'
 import MiniSearch from 'minisearch'
 
 export type RawNodeType = {
@@ -84,7 +83,6 @@ interface GraphState {
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
   sigmaInstance: any | null
-  allDatabaseLabels: string[]
 
   searchEngine: MiniSearch | null
 
@@ -113,11 +111,12 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
-  setAllDatabaseLabels: (labels: string[]) => void
-  fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
 
-  // 搜索引擎方法
+  // Legend color mapping methods
+  setTypeColorMap: (typeColorMap: Map<string, string>) => void
+
+  // Search engine methods
   setSearchEngine: (engine: MiniSearch | null) => void
   resetSearchEngine: () => void
 
@@ -160,7 +159,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   rawGraph: null,
   sigmaGraph: null,
   sigmaInstance: null,
-  allDatabaseLabels: ['*'],
 
   typeColorMap: new Map<string, string>(),
 
@@ -205,21 +203,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
     // Replace graph instance, no need to keep WebGL context
     set({ sigmaGraph });
-  },
-
-  setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
-
-  fetchAllDatabaseLabels: async () => {
-    try {
-      console.log('Fetching all database labels...');
-      const labels = await getGraphLabels();
-      set({ allDatabaseLabels: ['*', ...labels] });
-      return;
-    } catch (error) {
-      console.error('Failed to fetch all database labels:', error);
-      set({ allDatabaseLabels: ['*'] });
-      throw error;
-    }
   },
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),

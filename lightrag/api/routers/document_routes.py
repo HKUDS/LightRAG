@@ -745,6 +745,60 @@ class DocumentManager:
         return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
 
 
+def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
+    """
+    Validate file path security to prevent Path Traversal attacks.
+
+    Args:
+        file_path_str: The file path string to validate
+        base_dir: The base directory that the file must be within
+
+    Returns:
+        Path: Safe file path if valid, None if unsafe or invalid
+    """
+    if not file_path_str or not file_path_str.strip():
+        return None
+
+    try:
+        # Clean the file path string
+        clean_path_str = file_path_str.strip()
+
+        # Check for obvious path traversal patterns before processing
+        # This catches both Unix (..) and Windows (..\) style traversals
+        if ".." in clean_path_str:
+            # Additional check for Windows-style backslash traversal
+            if (
+                "\\..\\" in clean_path_str
+                or clean_path_str.startswith("..\\")
+                or clean_path_str.endswith("\\..")
+            ):
+                # logger.warning(
+                #     f"Security violation: Windows path traversal attempt detected - {file_path_str}"
+                # )
+                return None
+
+        # Normalize path separators (convert backslashes to forward slashes)
+        # This helps handle Windows-style paths on Unix systems
+        normalized_path = clean_path_str.replace("\\", "/")
+
+        # Create path object and resolve it (handles symlinks and relative paths)
+        candidate_path = (base_dir / normalized_path).resolve()
+        base_dir_resolved = base_dir.resolve()
+
+        # Check if the resolved path is within the base directory
+        if not candidate_path.is_relative_to(base_dir_resolved):
+            # logger.warning(
+            #     f"Security violation: Path traversal attempt detected - {file_path_str}"
+            # )
+            return None
+
+        return candidate_path
+
+    except (OSError, ValueError, Exception) as e:
+        logger.warning(f"Invalid file path detected: {file_path_str} - {str(e)}")
+        return None
+
+
 def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str:
     """Generate a unique filename in the target directory by adding numeric suffixes if needed
 
@@ -1341,9 +1395,37 @@ async def run_scanning_process(
         logger.info(f"Found {total_files} files to index.")
 
         if new_files:
-            # Process all files at once with track_id
-            await pipeline_index_files(rag, new_files, track_id)
-            logger.info(f"Scanning process completed: {total_files} files Processed.")
+            # Check for files with PROCESSED status and filter them out
+            valid_files = []
+            processed_files = []
+
+            for file_path in new_files:
+                filename = file_path.name
+                existing_doc_data = await rag.doc_status.get_doc_by_file_path(filename)
+
+                if existing_doc_data and existing_doc_data.get("status") == "processed":
+                    # File is already PROCESSED, skip it with warning
+                    processed_files.append(filename)
+                    logger.warning(f"Skipping already processed file: {filename}")
+                else:
+                    # File is new or in non-PROCESSED status, add to processing list
+                    valid_files.append(file_path)
+
+            # Process valid files (new files + non-PROCESSED status files)
+            if valid_files:
+                await pipeline_index_files(rag, valid_files, track_id)
+                if processed_files:
+                    logger.info(
+                        f"Scanning process completed: {len(valid_files)} files Processed {len(processed_files)} skipped."
+                    )
+                else:
+                    logger.info(
+                        f"Scanning process completed: {len(valid_files)} files Processed."
+                    )
+            else:
+                logger.info(
+                    "No files to process after filtering already processed files."
+                )
         else:
             # No new files to index, check if there are any documents in the queue
             logger.info(
@@ -1429,51 +1511,37 @@ async def background_delete_documents(
                     ):
                         try:
                             deleted_files = []
-                            # check and delete files from input_dir directory
-                            file_path = doc_manager.input_dir / result.file_path
-                            if file_path.exists():
-                                try:
-                                    file_path.unlink()
-                                    deleted_files.append(file_path.name)
-                                    file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
-                                    logger.info(file_delete_msg)
-                                    async with pipeline_status_lock:
-                                        pipeline_status["latest_message"] = (
-                                            file_delete_msg
-                                        )
-                                        pipeline_status["history_messages"].append(
-                                            file_delete_msg
-                                        )
-                                except Exception as file_error:
-                                    file_error_msg = f"Failed to delete input_dir file {result.file_path}: {str(file_error)}"
-                                    logger.debug(file_error_msg)
-                                    async with pipeline_status_lock:
-                                        pipeline_status["latest_message"] = (
-                                            file_error_msg
-                                        )
-                                        pipeline_status["history_messages"].append(
-                                            file_error_msg
-                                        )
+                            # SECURITY FIX: Use secure path validation to prevent arbitrary file deletion
+                            safe_file_path = validate_file_path_security(
+                                result.file_path, doc_manager.input_dir
+                            )
 
-                            # Also check and delete files from __enqueued__ directory
-                            enqueued_dir = doc_manager.input_dir / "__enqueued__"
-                            if enqueued_dir.exists():
-                                # Look for files with the same name or similar names (with numeric suffixes)
-                                base_name = Path(result.file_path).stem
-                                extension = Path(result.file_path).suffix
-
-                                # Search for exact match and files with numeric suffixes
-                                for enqueued_file in enqueued_dir.glob(
-                                    f"{base_name}*{extension}"
-                                ):
+                            if safe_file_path is None:
+                                # Security violation detected - log and skip file deletion
+                                security_msg = f"Security violation: Unsafe file path detected for deletion - {result.file_path}"
+                                logger.warning(security_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = security_msg
+                                    pipeline_status["history_messages"].append(
+                                        security_msg
+                                    )
+                            else:
+                                # check and delete files from input_dir directory
+                                if safe_file_path.exists():
                                     try:
-                                        enqueued_file.unlink()
-                                        deleted_files.append(enqueued_file.name)
-                                        logger.info(
-                                            f"Successfully deleted enqueued file: {enqueued_file.name}"
-                                        )
-                                    except Exception as enqueued_error:
-                                        file_error_msg = f"Failed to delete enqueued file {enqueued_file.name}: {str(enqueued_error)}"
+                                        safe_file_path.unlink()
+                                        deleted_files.append(safe_file_path.name)
+                                        file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
+                                        logger.info(file_delete_msg)
+                                        async with pipeline_status_lock:
+                                            pipeline_status["latest_message"] = (
+                                                file_delete_msg
+                                            )
+                                            pipeline_status["history_messages"].append(
+                                                file_delete_msg
+                                            )
+                                    except Exception as file_error:
+                                        file_error_msg = f"Failed to delete input_dir file {result.file_path}: {str(file_error)}"
                                         logger.debug(file_error_msg)
                                         async with pipeline_status_lock:
                                             pipeline_status["latest_message"] = (
@@ -1483,8 +1551,47 @@ async def background_delete_documents(
                                                 file_error_msg
                                             )
 
+                                # Also check and delete files from __enqueued__ directory
+                                enqueued_dir = doc_manager.input_dir / "__enqueued__"
+                                if enqueued_dir.exists():
+                                    # SECURITY FIX: Validate that the file path is safe before processing
+                                    # Only proceed if the original path validation passed
+                                    base_name = Path(result.file_path).stem
+                                    extension = Path(result.file_path).suffix
+
+                                    # Search for exact match and files with numeric suffixes
+                                    for enqueued_file in enqueued_dir.glob(
+                                        f"{base_name}*{extension}"
+                                    ):
+                                        # Additional security check: ensure enqueued file is within enqueued directory
+                                        safe_enqueued_path = (
+                                            validate_file_path_security(
+                                                enqueued_file.name, enqueued_dir
+                                            )
+                                        )
+                                        if safe_enqueued_path is not None:
+                                            try:
+                                                enqueued_file.unlink()
+                                                deleted_files.append(enqueued_file.name)
+                                                logger.info(
+                                                    f"Successfully deleted enqueued file: {enqueued_file.name}"
+                                                )
+                                            except Exception as enqueued_error:
+                                                file_error_msg = f"Failed to delete enqueued file {enqueued_file.name}: {str(enqueued_error)}"
+                                                logger.debug(file_error_msg)
+                                                async with pipeline_status_lock:
+                                                    pipeline_status[
+                                                        "latest_message"
+                                                    ] = file_error_msg
+                                                    pipeline_status[
+                                                        "history_messages"
+                                                    ].append(file_error_msg)
+                                        else:
+                                            security_msg = f"Security violation: Unsafe enqueued file path detected - {enqueued_file.name}"
+                                            logger.warning(security_msg)
+
                             if deleted_files == []:
-                                file_error_msg = f"File deletion skipped, missing file: {result.file_path}"
+                                file_error_msg = f"File deletion skipped, missing or unsafe file: {result.file_path}"
                                 logger.warning(file_error_msg)
                                 async with pipeline_status_lock:
                                     pipeline_status["latest_message"] = file_error_msg
@@ -1618,8 +1725,19 @@ def create_document_routes(
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
 
+            # Check if filename already exists in doc_status storage
+            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+            if existing_doc_data:
+                # Get document status information for error message
+                status = existing_doc_data.get("status", "unknown")
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
+                    track_id="",
+                )
+
             file_path = doc_manager.input_dir / safe_filename
-            # Check if file already exists
+            # Check if file already exists in file system
             if file_path.exists():
                 return InsertResponse(
                     status="duplicated",
@@ -1669,6 +1787,24 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Check if file_source already exists in doc_status storage
+            if (
+                request.file_source
+                and request.file_source.strip()
+                and request.file_source != "unknown_source"
+            ):
+                existing_doc_data = await rag.doc_status.get_doc_by_file_path(
+                    request.file_source
+                )
+                if existing_doc_data:
+                    # Get document status information for error message
+                    status = existing_doc_data.get("status", "unknown")
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
+                        track_id="",
+                    )
+
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
@@ -1715,6 +1851,26 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
+            # Check if any file_sources already exist in doc_status storage
+            if request.file_sources:
+                for file_source in request.file_sources:
+                    if (
+                        file_source
+                        and file_source.strip()
+                        and file_source != "unknown_source"
+                    ):
+                        existing_doc_data = await rag.doc_status.get_doc_by_file_path(
+                            file_source
+                        )
+                        if existing_doc_data:
+                            # Get document status information for error message
+                            status = existing_doc_data.get("status", "unknown")
+                            return InsertResponse(
+                                status="duplicated",
+                                message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
+                                track_id="",
+                            )
+
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
