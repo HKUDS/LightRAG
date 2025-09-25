@@ -31,6 +31,12 @@ export default function QuerySettings() {
     handleChange('user_prompt', prompt)
   }, [handleChange])
 
+  const handleDeleteFromHistory = useCallback((index: number) => {
+    const newHistory = [...userPromptHistory]
+    newHistory.splice(index, 1)
+    useSettingsStore.getState().setUserPromptHistory(newHistory)
+  }, [userPromptHistory])
+
   // Default values for reset functionality
   const defaultValues = useMemo(() => ({
     mode: 'mix' as QueryMode,
@@ -96,6 +102,7 @@ export default function QuerySettings() {
                   value={querySettings.user_prompt || ''}
                   onChange={(value) => handleChange('user_prompt', value)}
                   onSelectFromHistory={handleSelectFromHistory}
+                  onDeleteFromHistory={handleDeleteFromHistory}
                   history={userPromptHistory}
                   placeholder={t('retrievePanel.querySettings.userPromptPlaceholder')}
                   className="h-9"

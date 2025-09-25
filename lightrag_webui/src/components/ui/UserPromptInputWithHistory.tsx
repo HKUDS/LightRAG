@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import Input from './Input'
 
@@ -11,6 +11,7 @@ interface UserPromptInputWithHistoryProps {
   id?: string
   history: string[]
   onSelectFromHistory: (prompt: string) => void
+  onDeleteFromHistory?: (index: number) => void
 }
 
 export default function UserPromptInputWithHistory({
@@ -20,7 +21,8 @@ export default function UserPromptInputWithHistory({
   className,
   id,
   history,
-  onSelectFromHistory
+  onSelectFromHistory,
+  onDeleteFromHistory
 }: UserPromptInputWithHistoryProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(-1)
@@ -111,6 +113,25 @@ export default function UserPromptInputWithHistory({
     setIsHovered(false)
   }
 
+  // Handle delete history item with boundary cases
+  const handleDeleteHistoryItem = useCallback((index: number, e: React.MouseEvent) => {
+    e.stopPropagation() // Prevent triggering item selection
+    onDeleteFromHistory?.(index)
+    
+    // Handle boundary cases
+    if (history.length === 1) {
+      // Deleting the last item, close dropdown
+      setIsOpen(false)
+      setSelectedIndex(-1)
+    } else if (selectedIndex === index) {
+      // Deleting currently selected item, adjust selection
+      setSelectedIndex(prev => prev > 0 ? prev - 1 : -1)
+    } else if (selectedIndex > index) {
+      // Deleting item before selected item, adjust index
+      setSelectedIndex(prev => prev - 1)
+    }
+  }, [onDeleteFromHistory, history.length, selectedIndex])
+
   return (
     <div className="relative" ref={dropdownRef} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
       <div className="relative">
@@ -144,23 +165,36 @@ export default function UserPromptInputWithHistory({
 
       {/* Dropdown */}
       {isOpen && history.length > 0 && (
-        <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md shadow-lg max-h-60 overflow-auto min-w-0">
+        <div className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md shadow-lg max-h-60 overflow-auto min-w-0">
           {history.map((prompt, index) => (
-            <button
+            <div
               key={index}
-              type="button"
-              onClick={() => handleDropdownItemClick(prompt)}
               className={cn(
-                'w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors',
+                'flex items-center justify-between pl-3 pr-1 py-2 text-sm hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
                 'border-b border-gray-100 dark:border-gray-700 last:border-b-0',
-                'focus:outline-none focus:bg-gray-100 dark:focus:bg-gray-700',
+                'focus-within:bg-gray-100 dark:focus-within:bg-gray-700',
                 selectedIndex === index && 'bg-gray-100 dark:bg-gray-700'
               )}
             >
-              <div className="truncate" title={prompt}>
+              <button
+                type="button"
+                onClick={() => handleDropdownItemClick(prompt)}
+                className="flex-1 text-left truncate focus:outline-none mr-0"
+                title={prompt}
+              >
                 {prompt}
-              </div>
-            </button>
+              </button>
+              {onDeleteFromHistory && (
+                <button
+                  type="button"
+                  onClick={(e) => handleDeleteHistoryItem(index, e)}
+                  className="flex-shrink-0 p-0 rounded hover:bg-red-100 dark:hover:bg-red-900 transition-colors focus:outline-none ml-auto"
+                  title="Delete this history item"
+                >
+                  <X className="h-3 w-3 text-gray-400 hover:text-red-500" />
+                </button>
+              )}
+            </div>
           ))}
         </div>
       )}
