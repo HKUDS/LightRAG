@@ -2282,7 +2282,7 @@ async def kg_query(
 ) -> QueryResult:
     """
     Execute knowledge graph query and return unified QueryResult object.
-    
+
     Args:
         query: Query string
         knowledge_graph_inst: Knowledge graph storage instance
@@ -2294,21 +2294,21 @@ async def kg_query(
         hashing_kv: Cache storage
         system_prompt: System prompt
         chunks_vdb: Document chunks vector database
-    
+
     Returns:
         QueryResult: Unified query result object containing:
             - content: Non-streaming response text content
             - response_iterator: Streaming response iterator
             - raw_data: Complete structured data (including references and metadata)
             - is_streaming: Whether this is a streaming result
-        
+
         Based on different query_param settings, different fields will be populated:
         - only_need_context=True: content contains context string
         - only_need_prompt=True: content contains complete prompt
         - stream=True: response_iterator contains streaming response, raw_data contains complete data
         - default: content contains LLM response text, raw_data contains complete data
     """
-    
+
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
 
@@ -2386,8 +2386,7 @@ async def kg_query(
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(
-            content=context_result.context,
-            raw_data=context_result.raw_data
+            content=context_result.context, raw_data=context_result.raw_data
         )
 
     # Build system prompt
@@ -2405,10 +2404,7 @@ async def kg_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(
-            content=prompt_content,
-            raw_data=context_result.raw_data
-        )
+        return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
 
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -2466,16 +2462,13 @@ async def kg_query(
                 ),
             )
 
-        return QueryResult(
-            content=response,
-            raw_data=context_result.raw_data
-        )
+        return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
         # Streaming response (AsyncIterator)
         return QueryResult(
             response_iterator=response,
             raw_data=context_result.raw_data,
-            is_streaming=True
+            is_streaming=True,
         )
 
 
@@ -3375,7 +3368,7 @@ async def _build_query_context(
     """
     Main query context building function using the new 4-stage architecture:
     1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
-    
+
     Returns unified QueryContextResult containing both context and raw_data.
     """
 
@@ -3477,11 +3470,8 @@ async def _build_query_context(
     logger.debug(
         f"[_build_query_context] Raw data entities: {len(raw_data.get('data', {}).get('entities', []))}, relationships: {len(raw_data.get('data', {}).get('relationships', []))}, chunks: {len(raw_data.get('data', {}).get('chunks', []))}"
     )
-    
-    return QueryContextResult(
-        context=context,
-        raw_data=raw_data
-    )
+
+    return QueryContextResult(context=context, raw_data=raw_data)
 
 
 async def _get_node_data(
@@ -4090,7 +4080,7 @@ async def naive_query(
 ) -> QueryResult:
     """
     Execute naive query and return unified QueryResult object.
-    
+
     Args:
         query: Query string
         chunks_vdb: Document chunks vector database
@@ -4098,7 +4088,7 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
-    
+
     Returns:
         QueryResult: Unified query result object containing:
             - content: Non-streaming response text content
@@ -4106,7 +4096,7 @@ async def naive_query(
             - raw_data: Complete structured data (including references and metadata)
             - is_streaming: Whether this is a streaming result
     """
-    
+
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
 
@@ -4157,10 +4147,7 @@ async def naive_query(
             "naive",
         )
         empty_raw_data["message"] = "No relevant document chunks found."
-        return QueryResult(
-            content=PROMPTS["fail_response"],
-            raw_data=empty_raw_data
-        )
+        return QueryResult(content=PROMPTS["fail_response"], raw_data=empty_raw_data)
 
     # Calculate dynamic token limit for chunks
     max_total_tokens = getattr(
@@ -4275,10 +4262,7 @@ async def naive_query(
 """
 
     if query_param.only_need_context and not query_param.only_need_prompt:
-        return QueryResult(
-            content=context_content,
-            raw_data=raw_data
-        )
+        return QueryResult(content=context_content, raw_data=raw_data)
 
     user_query = (
         "\n\n".join([query, query_param.user_prompt])
@@ -4294,10 +4278,7 @@ async def naive_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(
-            content=prompt_content,
-            raw_data=raw_data
-        )
+        return QueryResult(content=prompt_content, raw_data=raw_data)
 
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
@@ -4354,14 +4335,9 @@ async def naive_query(
                 ),
             )
 
-        return QueryResult(
-            content=response,
-            raw_data=raw_data
-        )
+        return QueryResult(content=response, raw_data=raw_data)
     else:
         # Streaming response (AsyncIterator)
         return QueryResult(
-            response_iterator=response,
-            raw_data=raw_data,
-            is_streaming=True
+            response_iterator=response, raw_data=raw_data, is_streaming=True
         )

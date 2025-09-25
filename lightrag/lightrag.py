@@ -2077,7 +2077,7 @@ class LightRAG:
         global_config = asdict(self)
 
         query_result = None
-        
+
         if param.mode in ["local", "global", "hybrid", "mix"]:
             query_result = await kg_query(
                 query.strip(),
@@ -2118,13 +2118,13 @@ class LightRAG:
             query_result = QueryResult(
                 content=response if not param.stream else None,
                 response_iterator=response if param.stream else None,
-                is_streaming=param.stream
+                is_streaming=param.stream,
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
-        
+
         await self._query_done()
-        
+
         # Return appropriate response based on streaming mode
         if query_result.is_streaming:
             return query_result.response_iterator
@@ -2266,7 +2266,7 @@ class LightRAG:
         )
 
         query_result = None
-        
+
         if data_param.mode in ["local", "global", "hybrid", "mix"]:
             logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
             query_result = await kg_query(
@@ -2301,10 +2301,7 @@ class LightRAG:
                 [],  # no references
                 "bypass",
             )
-            query_result = QueryResult(
-                content="",
-                raw_data=empty_raw_data
-            )
+            query_result = QueryResult(content="", raw_data=empty_raw_data)
         else:
             raise ValueError(f"Unknown mode {data_param.mode}")
 

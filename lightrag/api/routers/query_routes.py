@@ -198,7 +198,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     async def query_text_stream(request: QueryRequest):
         """
         This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
-        
+
         The streaming response includes:
         1. Reference list (sent first as a single message, if include_references=True)
         2. LLM response content (streamed as multiple chunks)
@@ -224,18 +224,22 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 if request.include_references:
                     try:
                         # Use aquery_data to get reference list independently
-                        data_param = request.to_query_params(False)  # Non-streaming for data
-                        data_result = await rag.aquery_data(request.query, param=data_param)
+                        data_param = request.to_query_params(
+                            False
+                        )  # Non-streaming for data
+                        data_result = await rag.aquery_data(
+                            request.query, param=data_param
+                        )
                         if isinstance(data_result, dict) and "data" in data_result:
                             reference_list = data_result["data"].get("references", [])
                     except Exception as e:
                         logging.warning(f"Failed to get reference list: {str(e)}")
                         reference_list = []
-                
+
                 # Send reference list first (if requested)
                 if request.include_references:
                     yield f"{json.dumps({'references': reference_list})}\n"
-                
+
                 # Then stream the response content
                 if isinstance(response, str):
                     # If it's a string, send it all at once
