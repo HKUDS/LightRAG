@@ -122,6 +122,7 @@ export default function UserPromptInputWithHistory({
           onKeyDown={handleKeyDown}
           onClick={handleInputClick}
           placeholder={placeholder}
+          autoComplete="off"
           className={cn(isHovered && history.length > 0 ? 'pr-5' : 'pr-2', 'w-full', className)}
         />
         {isHovered && history.length > 0 && (
