@@ -138,7 +138,13 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
                 remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
                 rehypePlugins={[
                   rehypeRaw,
-                  ...(katexPlugin ? [[katexPlugin, { errorColor: theme === 'dark' ? '#ef4444' : '#dc2626', throwOnError: false, displayMode: false }] as any] : []),
+                  ...(katexPlugin ? [[katexPlugin, {
+                    errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                    throwOnError: false,
+                    displayMode: false,
+                    strict: false,
+                    trust: true
+                  }] as any] : []),
                   rehypeReact
                 ]}
                 skipHtml={false}
@@ -167,7 +173,9 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
                 {
                   errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
                   throwOnError: false,
-                  displayMode: false
+                  displayMode: false,
+                  strict: false,
+                  trust: true
                 }
               ] as any] : []),
               rehypeReact
