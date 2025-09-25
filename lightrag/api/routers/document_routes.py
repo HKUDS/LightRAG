@@ -207,6 +207,60 @@ class InsertTextsRequest(BaseModel):
         }
 
 
+class UpdateTextByPathRequest(BaseModel):
+    """Request model for updating a text document by its file_path
+
+    Attributes:
+        file_path: The existing document's file_path to locate and delete before re-inserting
+        text: The new text content to process for this file_path
+    """
+
+    file_path: str = Field(description="Existing document file_path to update")
+    text: str = Field(description="New text content to process for this file_path")
+
+    @field_validator("file_path", "text", mode="after")
+    @classmethod
+    def _strip_nonempty(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("Value cannot be empty")
+        return v.strip()
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "file_path": "uploads/note-123.txt",
+                "text": "This is the refreshed content of the document.",
+            }
+        }
+
+
+class UpdateTextByIdRequest(BaseModel):
+    """Request model for updating a text document by its doc_id
+
+    Attributes:
+        doc_id: The existing document's ID to delete before re-inserting
+        text: The new text content to process for this document
+    """
+
+    doc_id: str = Field(description="Existing document ID to update")
+    text: str = Field(description="New text content to process for this document")
+
+    @field_validator("doc_id", "text", mode="after")
+    @classmethod
+    def _strip_nonempty(cls, v: str) -> str:
+        if not v or not isinstance(v, str) or not v.strip():
+            raise ValueError("Value cannot be empty")
+        return v.strip()
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "doc_id": "doc_abc123",
+                "text": "This is the refreshed content of the document.",
+            }
+        }
+
+
 class InsertResponse(BaseModel):
     """Response model for document insertion operations
 
@@ -602,6 +656,71 @@ class PaginatedDocsResponse(BaseModel):
                     "PROCESSED": 130,
                     "FAILED": 5,
                 },
+            }
+        }
+
+
+class SearchDocumentsRequest(BaseModel):
+    """Request model for searching specific documents by various criteria
+
+    Provide at least one of: id/ids or file_path/file_paths or track_id or content_summary/created_at range.
+    Optionally filter by status.
+    """
+
+    id: Optional[str] = Field(default=None, description="Single document ID")
+    ids: Optional[List[str]] = Field(default=None, description="List of document IDs")
+    file_path: Optional[str] = Field(default=None, description="Exact file path to match")
+    file_paths: Optional[List[str]] = Field(
+        default=None, description="List of exact file paths to match"
+    )
+    track_id: Optional[str] = Field(
+        default=None, description="Track ID to retrieve documents for"
+    )
+    # New flexible search fields
+    content_summary: Optional[str] = Field(
+        default=None,
+        description="Case-insensitive substring to search within content summary",
+    )
+    created_at_from: Optional[str] = Field(
+        default=None,
+        description="Start of created_at time range (inclusive), ISO 8601 string",
+    )
+    created_at_to: Optional[str] = Field(
+        default=None,
+        description="End of created_at time range (inclusive), ISO 8601 string",
+    )
+    status_filter: Optional[DocStatus] = Field(
+        default=None, description="Filter results by processing status"
+    )
+
+    @field_validator("id", "file_path", "content_summary", "created_at_from", "created_at_to", mode="after")
+    @classmethod
+    def _strip_single(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            v = v.strip()
+            return v or None
+        return v
+
+    @field_validator("ids", "file_paths", mode="after")
+    @classmethod
+    def _normalize_list(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        cleaned = [s.strip() for s in v if isinstance(s, str) and s.strip()]
+        return cleaned or None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "ids": ["doc_123", "doc_456"],
+                "file_paths": [
+                    "docs/research_paper.pdf",
+                    "uploads/notes.txt",
+                ],
+                "content_summary": "machine learning",
+                "created_at_from": "2025-01-01T00:00:00Z",
+                "created_at_to": "2025-12-31T23:59:59Z",
+                "status_filter": "processed",
             }
         }
 
@@ -1892,6 +2011,179 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.post(
+        "/update_text_by_path",
+        response_model=InsertResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Update an existing text document by file_path (delete then reprocess new text)",
+    )
+    async def update_text_by_path(
+        request: UpdateTextByPathRequest, background_tasks: BackgroundTasks
+    ) -> InsertResponse:
+        """
+        Update a text document identified by its file_path:
+        1) Locate the document by file_path and obtain its doc_id
+        2) Delete the existing document (synchronously, waiting for completion)
+        3) Enqueue processing of the new text with the same file_path as file_source
+
+        Returns an InsertResponse with a new track_id for monitoring the reprocessing job.
+        """
+        try:
+            # Respect the same guard used by deletion endpoints
+            if not rag.enable_llm_cache_for_entity_extract:
+                return InsertResponse(
+                    status="failure",
+                    message="Operation not allowed when LLM cache for entity extraction is disabled.",
+                    track_id="",
+                )
+
+            from lightrag.kg.shared_storage import get_namespace_data
+
+            pipeline_status = await get_namespace_data("pipeline_status")
+            if pipeline_status.get("busy", False):
+                return InsertResponse(
+                    status="failure",
+                    message="Cannot update document while pipeline is busy",
+                    track_id="",
+                )
+
+            file_path = request.file_path
+            # 1) Try to get the document directly by file_path
+            existing_doc_data = await rag.doc_status.get_doc_by_file_path(file_path)
+
+            # Fallback: some storages might not return id in value; find by scanning
+            doc_id: Optional[str] = None
+            if existing_doc_data:
+                doc_id = existing_doc_data.get("id") or existing_doc_data.get("doc_id")
+
+            if not doc_id:
+                # Scan paginated docs to match file_path -> id
+                page = 1
+                page_size = 200
+                seen_all = False
+                while not seen_all and not doc_id:
+                    (page_docs, total_count) = await rag.doc_status.get_docs_paginated(
+                        status_filter=None,
+                        page=page,
+                        page_size=page_size,
+                        sort_field="updated_at",
+                        sort_direction="desc",
+                    )
+                    if not page_docs:
+                        break
+                    for _doc_id, doc in page_docs:
+                        if (doc.file_path or "") == file_path:
+                            doc_id = _doc_id
+                            break
+                    page += 1
+                    if (page - 1) * page_size >= total_count:
+                        seen_all = True
+
+            if not doc_id:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document with file_path '{file_path}' not found",
+                )
+
+            # 2) Delete the existing document synchronously
+            deletion_result = await rag.adelete_by_doc_id(doc_id)
+            if getattr(deletion_result, "status", "fail") != "success":
+                raise HTTPException(
+                    status_code=getattr(deletion_result, "status_code", 500),
+                    detail=getattr(deletion_result, "message", "Deletion failed"),
+                )
+
+            # 3) Enqueue processing of the new text content
+            track_id = generate_track_id("update")
+            background_tasks.add_task(
+                pipeline_index_texts,
+                rag,
+                [request.text],
+                file_sources=[file_path],
+                track_id=track_id,
+            )
+
+            return InsertResponse(
+                status="success",
+                message=(
+                    "Update started: previous document deleted and new text scheduled for processing."
+                ),
+                track_id=track_id,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error /documents/update_text_by_path: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/update_text_by_id",
+        response_model=InsertResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Update an existing text document by doc_id (delete then reprocess new text)",
+    )
+    async def update_text_by_id(
+        request: UpdateTextByIdRequest, background_tasks: BackgroundTasks
+    ) -> InsertResponse:
+        try:
+            if not rag.enable_llm_cache_for_entity_extract:
+                return InsertResponse(
+                    status="failure",
+                    message="Operation not allowed when LLM cache for entity extraction is disabled.",
+                    track_id="",
+                )
+
+            from lightrag.kg.shared_storage import get_namespace_data
+
+            pipeline_status = await get_namespace_data("pipeline_status")
+            if pipeline_status.get("busy", False):
+                return InsertResponse(
+                    status="failure",
+                    message="Cannot update document while pipeline is busy",
+                    track_id="",
+                )
+
+            doc_id = request.doc_id
+            raw = await rag.doc_status.get_by_id(doc_id)
+            if raw is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document with id '{doc_id}' not found",
+                )
+
+            file_source = (raw.get("file_path") or "")
+
+            deletion_result = await rag.adelete_by_doc_id(doc_id)
+            if getattr(deletion_result, "status", "fail") != "success":
+                raise HTTPException(
+                    status_code=getattr(deletion_result, "status_code", 500),
+                    detail=getattr(deletion_result, "message", "Deletion failed"),
+                )
+
+            track_id = generate_track_id("update")
+            background_tasks.add_task(
+                pipeline_index_texts,
+                rag,
+                [request.text],
+                file_sources=[file_source],
+                track_id=track_id,
+            )
+
+            return InsertResponse(
+                status="success",
+                message=(
+                    "Update started: previous document deleted and new text scheduled for processing."
+                ),
+                track_id=track_id,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error /documents/update_text_by_id: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
@@ -2221,7 +2513,7 @@ def create_document_routes(
                             chunks_count=doc_status.chunks_count,
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
-                            file_path=doc_status.file_path,
+                            file_path=doc_status.file_path or "",
                         )
                     )
             return response
@@ -2476,7 +2768,7 @@ def create_document_routes(
                         chunks_count=doc_status.chunks_count,
                         error_msg=doc_status.error_msg,
                         metadata=doc_status.metadata,
-                        file_path=doc_status.file_path,
+                        file_path=doc_status.file_path or "",
                     )
                 )
 
@@ -2496,6 +2788,237 @@ def create_document_routes(
             raise
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/search",
+        response_model=List[DocStatusResponse],
+        dependencies=[Depends(combined_auth)],
+        summary="Search and retrieve documents by ID(s), file path(s), or track ID",
+    )
+    async def search_documents(request: SearchDocumentsRequest) -> List[DocStatusResponse]:
+        """
+        Search and retrieve one or more documents by providing identifiers.
+
+        Provide any combination of:
+        - id / ids: document IDs
+        - file_path / file_paths: exact file path matches
+        - track_id: retrieve all documents associated with a track ID
+
+        Optionally, filter results by status.
+
+        Returns a flat list of documents (DocStatusResponse). If nothing matches, returns an empty list.
+        """
+        try:
+            # Validate input
+            if not any(
+                [
+                    request.id,
+                    request.ids,
+                    request.file_path,
+                    request.file_paths,
+                    request.track_id,
+                    request.content_summary,
+                    request.created_at_from,
+                    request.created_at_to,
+                ]
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Provide at least one of: id/ids, file_path/file_paths, track_id, "
+                        "content_summary, created_at_from or created_at_to"
+                    ),
+                )
+
+            # Helper to convert raw dict data (from get_by_id) to response
+            def to_response_from_raw(doc_id: str, data: dict) -> DocStatusResponse:
+                return DocStatusResponse(
+                    id=doc_id,
+                    content_summary=data.get("content_summary", ""),
+                    content_length=data.get("content_length", 0),
+                    status=data.get("status"),
+                    created_at=format_datetime(data.get("created_at")),
+                    updated_at=format_datetime(data.get("updated_at")),
+                    track_id=data.get("track_id"),
+                    chunks_count=data.get("chunks_count"),
+                    error_msg=data.get("error_msg"),
+                    metadata=data.get("metadata", {}),
+                    file_path=(data.get("file_path") or ""),
+                )
+
+            def _norm_status(x: Any) -> str:
+                try:
+                    from lightrag.base import DocStatus as _DocStatus
+                except Exception:
+                    _DocStatus = DocStatus
+                if isinstance(x, _DocStatus):
+                    return x.value
+                return str(x)
+
+            results: dict[str, DocStatusResponse] = {}
+
+            # 1) Fetch by track_id first (if provided)
+            if request.track_id:
+                track_docs = await rag.aget_docs_by_track_id(request.track_id)
+                for doc_id, doc in track_docs.items():
+                    # Optional status filter
+                    if request.status_filter is not None and _norm_status(doc.status) != _norm_status(
+                        request.status_filter
+                    ):
+                        continue
+                    results[doc_id] = DocStatusResponse(
+                        id=doc_id,
+                        content_summary=doc.content_summary,
+                        content_length=doc.content_length,
+                        status=doc.status,
+                        created_at=format_datetime(doc.created_at),
+                        updated_at=format_datetime(doc.updated_at),
+                        track_id=doc.track_id,
+                        chunks_count=doc.chunks_count,
+                        error_msg=doc.error_msg,
+                        metadata=doc.metadata,
+                        file_path=doc.file_path or "",
+                    )
+
+            # 2) Fetch by id / ids
+            id_set: set[str] = set()
+            if request.id:
+                id_set.add(request.id)
+            if request.ids:
+                id_set.update(request.ids)
+
+            for doc_id in id_set:
+                raw = await rag.doc_status.get_by_id(doc_id)
+                if raw is None:
+                    continue
+                # Optional status filter
+                if request.status_filter is not None and _norm_status(raw.get("status")) != _norm_status(
+                    request.status_filter
+                ):
+                    continue
+                results[doc_id] = to_response_from_raw(doc_id, raw)
+
+            # 3) Fetch by file_path / file_paths
+            file_paths: set[str] = set()
+            if request.file_path:
+                file_paths.add(request.file_path)
+            if request.file_paths:
+                file_paths.update(request.file_paths)
+
+            if file_paths:
+                # We need to map file_path -> id. Use paginated listing to find matches.
+                page = 1
+                page_size = 200
+                seen_all = False
+                target_paths = {p for p in file_paths if p}
+
+                while not seen_all and target_paths:
+                    (page_docs, total_count) = await rag.doc_status.get_docs_paginated(
+                        status_filter=None,
+                        page=page,
+                        page_size=page_size,
+                        sort_field="updated_at",
+                        sort_direction="desc",
+                    )
+
+                    if not page_docs:
+                        break
+
+                    for doc_id, doc in page_docs:
+                        if doc.file_path in target_paths:
+                            # Optional status filter
+                            if request.status_filter is not None and _norm_status(doc.status) != _norm_status(
+                                request.status_filter
+                            ):
+                                continue
+                            # Fetch full record by ID to keep consistent mapping
+                            raw = await rag.doc_status.get_by_id(doc_id)
+                            if raw is None:
+                                continue
+                            results[doc_id] = to_response_from_raw(doc_id, raw)
+                            # Remove found path to stop early when all matched
+                            if doc.file_path in target_paths:
+                                target_paths.remove(doc.file_path)
+
+                    # Iterate pages until we cover all or found all paths
+                    page += 1
+                    # Stop when we've covered all records
+                    if (page - 1) * page_size >= total_count:
+                        seen_all = True
+
+            # 4) Search by content_summary and/or created_at range
+            if request.content_summary or request.created_at_from or request.created_at_to:
+                # Prepare date filters
+                from datetime import datetime
+
+                def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+                    if not dt_str or not isinstance(dt_str, str):
+                        return None
+                    s = dt_str.replace("Z", "+00:00")
+                    try:
+                        return datetime.fromisoformat(s)
+                    except Exception:
+                        return None
+
+                dt_from = _parse_iso(request.created_at_from)
+                dt_to = _parse_iso(request.created_at_to)
+                cs_query = (request.content_summary or "").lower() if request.content_summary else None
+
+                page = 1
+                page_size = 200
+                seen_all = False
+
+                while not seen_all:
+                    (page_docs, total_count) = await rag.doc_status.get_docs_paginated(
+                        status_filter=request.status_filter,
+                        page=page,
+                        page_size=page_size,
+                        sort_field="updated_at",
+                        sort_direction="desc",
+                    )
+
+                    if not page_docs:
+                        break
+
+                    for doc_id, doc in page_docs:
+                        # content summary match
+                        if cs_query is not None:
+                            if not (doc.content_summary or "").lower().__contains__(cs_query):
+                                continue
+                        # created_at bounds
+                        if dt_from is not None or dt_to is not None:
+                            doc_dt = _parse_iso(getattr(doc, "created_at", None))
+                            if doc_dt is None:
+                                # If we cannot parse doc date, treat as non-match when bounds specified
+                                continue
+                            if dt_from is not None and doc_dt < dt_from:
+                                continue
+                            if dt_to is not None and doc_dt > dt_to:
+                                continue
+                        # Fetch full record by ID for consistent mapping
+                        raw = await rag.doc_status.get_by_id(doc_id)
+                        if raw is None:
+                            continue
+                        results[doc_id] = to_response_from_raw(doc_id, raw)
+
+                    page += 1
+                    if (page - 1) * page_size >= total_count:
+                        seen_all = True
+
+            # Return flat list
+            # Keep a deterministic order by updated_at desc where possible
+            docs_list = list(results.values())
+            # Best-effort sort by updated_at desc (string ISO format sorts lexicographically)
+            docs_list.sort(key=lambda d: d.updated_at or "", reverse=True)
+
+            return docs_list
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error searching documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -2557,7 +3080,7 @@ def create_document_routes(
                         chunks_count=doc.chunks_count,
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
-                        file_path=doc.file_path,
+                        file_path=doc.file_path or "",
                     )
                 )
 
