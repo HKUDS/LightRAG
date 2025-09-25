@@ -39,6 +39,8 @@ from .base import (
     BaseVectorStorage,
     TextChunkSchema,
     QueryParam,
+    QueryResult,
+    QueryContextResult,
 )
 from .prompt import PROMPTS
 from .constants import (
@@ -2277,16 +2279,38 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: bool = False,
-) -> str | AsyncIterator[str] | dict[str, Any]:
+) -> QueryResult:
+    """
+    Execute knowledge graph query and return unified QueryResult object.
+
+    Args:
+        query: Query string
+        knowledge_graph_inst: Knowledge graph storage instance
+        entities_vdb: Entity vector database
+        relationships_vdb: Relationship vector database
+        text_chunks_db: Text chunks storage
+        query_param: Query parameters
+        global_config: Global configuration
+        hashing_kv: Cache storage
+        system_prompt: System prompt
+        chunks_vdb: Document chunks vector database
+
+    Returns:
+        QueryResult: Unified query result object containing:
+            - content: Non-streaming response text content
+            - response_iterator: Streaming response iterator
+            - raw_data: Complete structured data (including references and metadata)
+            - is_streaming: Whether this is a streaming result
+
+        Based on different query_param settings, different fields will be populated:
+        - only_need_context=True: content contains context string
+        - only_need_prompt=True: content contains complete prompt
+        - stream=True: response_iterator contains streaming response, raw_data contains complete data
+        - default: content contains LLM response text, raw_data contains complete data
+    """
+
     if not query:
-        if return_raw_data:
-            return {
-                "status": "failure",
-                "message": "Query string is empty.",
-                "data": {},
-            }
-        return PROMPTS["fail_response"]
+        return QueryResult(content=PROMPTS["fail_response"])
 
     if query_param.model_func:
         use_model_func = query_param.model_func
@@ -2315,12 +2339,11 @@ async def kg_query(
     )
     if (
         cached_result is not None
-        and not return_raw_data
         and not query_param.only_need_context
         and not query_param.only_need_prompt
     ):
         cached_response, _ = cached_result  # Extract content, ignore timestamp
-        return cached_response
+        return QueryResult(content=cached_response)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2339,53 +2362,13 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
-            if return_raw_data:
-                return {
-                    "status": "failure",
-                    "message": "Both high_level_keywords and low_level_keywords are empty",
-                    "data": {},
-                }
-            return PROMPTS["fail_response"]
+            return QueryResult(content=PROMPTS["fail_response"])
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
 
-    # If raw data is requested, get both context and raw data
-    if return_raw_data:
-        context_result = await _build_query_context(
-            query,
-            ll_keywords_str,
-            hl_keywords_str,
-            knowledge_graph_inst,
-            entities_vdb,
-            relationships_vdb,
-            text_chunks_db,
-            query_param,
-            chunks_vdb,
-            return_raw_data=True,
-        )
-
-        if isinstance(context_result, tuple):
-            context, raw_data = context_result
-            logger.debug(f"[kg_query] Context length: {len(context) if context else 0}")
-            logger.debug(
-                f"[kg_query] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
-            )
-            return raw_data
-        else:
-            if not context_result:
-                return {
-                    "status": "failure",
-                    "message": "Query return empty data set.",
-                    "data": {},
-                }
-            else:
-                raise ValueError(
-                    "Fail to build raw data query result. Invalid return from _build_query_context"
-                )
-
-    # Build context (normal flow)
-    context = await _build_query_context(
+    # Build query context (unified interface)
+    context_result = await _build_query_context(
         query,
         ll_keywords_str,
         hl_keywords_str,
@@ -2397,14 +2380,19 @@ async def kg_query(
         chunks_vdb,
     )
 
-    if query_param.only_need_context and not query_param.only_need_prompt:
-        return context if context is not None else PROMPTS["fail_response"]
-    if context is None:
-        return PROMPTS["fail_response"]
+    if context_result is None:
+        return QueryResult(content=PROMPTS["fail_response"])
 
+    # Return different content based on query parameters
+    if query_param.only_need_context and not query_param.only_need_prompt:
+        return QueryResult(
+            content=context_result.context, raw_data=context_result.raw_data
+        )
+
+    # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
-        context_data=context,
+        context_data=context_result.context,
         response_type=query_param.response_type,
     )
 
@@ -2415,8 +2403,10 @@ async def kg_query(
     )
 
     if query_param.only_need_prompt:
-        return "\n\n".join([sys_prompt, "---User Query---", user_query])
+        prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
+        return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
 
+    # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
@@ -2430,45 +2420,56 @@ async def kg_query(
         enable_cot=True,
         stream=query_param.stream,
     )
-    if isinstance(response, str) and len(response) > len(sys_prompt):
-        response = (
-            response.replace(sys_prompt, "")
-            .replace("user", "")
-            .replace("model", "")
-            .replace(query, "")
-            .replace("<system>", "")
-            .replace("</system>", "")
-            .strip()
-        )
 
-    if hashing_kv.global_config.get("enable_llm_cache"):
-        # Save to cache with query parameters
-        queryparam_dict = {
-            "mode": query_param.mode,
-            "response_type": query_param.response_type,
-            "top_k": query_param.top_k,
-            "chunk_top_k": query_param.chunk_top_k,
-            "max_entity_tokens": query_param.max_entity_tokens,
-            "max_relation_tokens": query_param.max_relation_tokens,
-            "max_total_tokens": query_param.max_total_tokens,
-            "hl_keywords": query_param.hl_keywords or [],
-            "ll_keywords": query_param.ll_keywords or [],
-            "user_prompt": query_param.user_prompt or "",
-            "enable_rerank": query_param.enable_rerank,
-        }
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                mode=query_param.mode,
-                cache_type="query",
-                queryparam=queryparam_dict,
-            ),
-        )
+    # Return unified result based on actual response type
+    if isinstance(response, str):
+        # Non-streaming response (string)
+        if len(response) > len(sys_prompt):
+            response = (
+                response.replace(sys_prompt, "")
+                .replace("user", "")
+                .replace("model", "")
+                .replace(query, "")
+                .replace("<system>", "")
+                .replace("</system>", "")
+                .strip()
+            )
 
-    return response
+        # Cache response
+        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+            queryparam_dict = {
+                "mode": query_param.mode,
+                "response_type": query_param.response_type,
+                "top_k": query_param.top_k,
+                "chunk_top_k": query_param.chunk_top_k,
+                "max_entity_tokens": query_param.max_entity_tokens,
+                "max_relation_tokens": query_param.max_relation_tokens,
+                "max_total_tokens": query_param.max_total_tokens,
+                "hl_keywords": query_param.hl_keywords or [],
+                "ll_keywords": query_param.ll_keywords or [],
+                "user_prompt": query_param.user_prompt or "",
+                "enable_rerank": query_param.enable_rerank,
+            }
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    mode=query_param.mode,
+                    cache_type="query",
+                    queryparam=queryparam_dict,
+                ),
+            )
+
+        return QueryResult(content=response, raw_data=context_result.raw_data)
+    else:
+        # Streaming response (AsyncIterator)
+        return QueryResult(
+            response_iterator=response,
+            raw_data=context_result.raw_data,
+            is_streaming=True,
+        )
 
 
 async def get_keywords_from_query(
@@ -3123,10 +3124,9 @@ async def _build_llm_context(
     query_param: QueryParam,
     global_config: dict[str, str],
     chunk_tracking: dict = None,
-    return_raw_data: bool = False,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
-) -> str | tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
@@ -3134,22 +3134,17 @@ async def _build_llm_context(
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
         logger.error("Missing tokenizer, cannot build LLM context")
-
-        if return_raw_data:
-            # Return empty raw data structure when no entities/relations
-            empty_raw_data = convert_to_user_format(
-                [],
-                [],
-                [],
-                [],
-                query_param.mode,
-            )
-            empty_raw_data["status"] = "failure"
-            empty_raw_data["message"] = "Missing tokenizer, cannot build LLM context."
-            return None, empty_raw_data
-        else:
-            logger.error("Tokenizer not found in global configuration.")
-            return None
+        # Return empty raw data structure when no tokenizer
+        empty_raw_data = convert_to_user_format(
+            [],
+            [],
+            [],
+            [],
+            query_param.mode,
+        )
+        empty_raw_data["status"] = "failure"
+        empty_raw_data["message"] = "Missing tokenizer, cannot build LLM context."
+        return "", empty_raw_data
 
     # Get token limits
     max_total_tokens = getattr(
@@ -3268,20 +3263,17 @@ The reference documents list in Document Chunks(DC) is as follows (reference_id 
 
     # not necessary to use LLM to generate a response
     if not entities_context and not relations_context:
-        if return_raw_data:
-            # Return empty raw data structure when no entities/relations
-            empty_raw_data = convert_to_user_format(
-                [],
-                [],
-                [],
-                [],
-                query_param.mode,
-            )
-            empty_raw_data["status"] = "failure"
-            empty_raw_data["message"] = "Query returned empty dataset."
-            return None, empty_raw_data
-        else:
-            return None
+        # Return empty raw data structure when no entities/relations
+        empty_raw_data = convert_to_user_format(
+            [],
+            [],
+            [],
+            [],
+            query_param.mode,
+        )
+        empty_raw_data["status"] = "failure"
+        empty_raw_data["message"] = "Query returned empty dataset."
+        return "", empty_raw_data
 
     # output chunks tracking infomations
     # format: <source><frequency>/<order> (e.g., E5/2 R2/1 C1/1)
@@ -3342,26 +3334,23 @@ Document Chunks (DC) reference documents : (Each entry begins with [reference_id
 
 """
 
-    # If final data is requested, return both context and complete data structure
-    if return_raw_data:
-        logger.debug(
-            f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
-        )
-        final_data = convert_to_user_format(
-            entities_context,
-            relations_context,
-            truncated_chunks,
-            reference_list,
-            query_param.mode,
-            entity_id_to_original,
-            relation_id_to_original,
-        )
-        logger.debug(
-            f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
-        )
-        return result, final_data
-    else:
-        return result
+    # Always return both context and complete data structure (unified approach)
+    logger.debug(
+        f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
+    )
+    final_data = convert_to_user_format(
+        entities_context,
+        relations_context,
+        truncated_chunks,
+        reference_list,
+        query_param.mode,
+        entity_id_to_original,
+        relation_id_to_original,
+    )
+    logger.debug(
+        f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+    )
+    return result, final_data
 
 
 # Now let's update the old _build_query_context to use the new architecture
@@ -3375,16 +3364,17 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: bool = False,
-) -> str | None | tuple[str, dict[str, Any]]:
+) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
     1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
+
+    Returns unified QueryContextResult containing both context and raw_data.
     """
 
     if not query:
         logger.warning("Query is empty, skipping context building")
-        return ""
+        return None
 
     # Stage 1: Pure search
     search_result = await _perform_kg_search(
@@ -3435,71 +3425,53 @@ async def _build_query_context(
         return None
 
     # Stage 4: Build final LLM context with dynamic token processing
+    # _build_llm_context now always returns tuple[str, dict]
+    context, raw_data = await _build_llm_context(
+        entities_context=truncation_result["entities_context"],
+        relations_context=truncation_result["relations_context"],
+        merged_chunks=merged_chunks,
+        query=query,
+        query_param=query_param,
+        global_config=text_chunks_db.global_config,
+        chunk_tracking=search_result["chunk_tracking"],
+        entity_id_to_original=truncation_result["entity_id_to_original"],
+        relation_id_to_original=truncation_result["relation_id_to_original"],
+    )
 
-    if return_raw_data:
-        # Convert keywords strings to lists
-        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
-        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
+    # Convert keywords strings to lists and add complete metadata to raw_data
+    hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
+    ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
 
-        # Get both context and final data - when return_raw_data=True, _build_llm_context always returns tuple
-        context, raw_data = await _build_llm_context(
-            entities_context=truncation_result["entities_context"],
-            relations_context=truncation_result["relations_context"],
-            merged_chunks=merged_chunks,
-            query=query,
-            query_param=query_param,
-            global_config=text_chunks_db.global_config,
-            chunk_tracking=search_result["chunk_tracking"],
-            return_raw_data=True,
-            entity_id_to_original=truncation_result["entity_id_to_original"],
-            relation_id_to_original=truncation_result["relation_id_to_original"],
-        )
+    # Add complete metadata to raw_data (preserve existing metadata including query_mode)
+    if "metadata" not in raw_data:
+        raw_data["metadata"] = {}
 
-        # Convert keywords strings to lists and add complete metadata to raw_data
-        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
-        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
+    # Update keywords while preserving existing metadata
+    raw_data["metadata"]["keywords"] = {
+        "high_level": hl_keywords_list,
+        "low_level": ll_keywords_list,
+    }
+    raw_data["metadata"]["processing_info"] = {
+        "total_entities_found": len(search_result.get("final_entities", [])),
+        "total_relations_found": len(search_result.get("final_relations", [])),
+        "entities_after_truncation": len(
+            truncation_result.get("filtered_entities", [])
+        ),
+        "relations_after_truncation": len(
+            truncation_result.get("filtered_relations", [])
+        ),
+        "merged_chunks_count": len(merged_chunks),
+        "final_chunks_count": len(raw_data.get("data", {}).get("chunks", [])),
+    }
 
-        # Add complete metadata to raw_data (preserve existing metadata including query_mode)
-        if "metadata" not in raw_data:
-            raw_data["metadata"] = {}
+    logger.debug(
+        f"[_build_query_context] Context length: {len(context) if context else 0}"
+    )
+    logger.debug(
+        f"[_build_query_context] Raw data entities: {len(raw_data.get('data', {}).get('entities', []))}, relationships: {len(raw_data.get('data', {}).get('relationships', []))}, chunks: {len(raw_data.get('data', {}).get('chunks', []))}"
+    )
 
-        # Update keywords while preserving existing metadata
-        raw_data["metadata"]["keywords"] = {
-            "high_level": hl_keywords_list,
-            "low_level": ll_keywords_list,
-        }
-        raw_data["metadata"]["processing_info"] = {
-            "total_entities_found": len(search_result.get("final_entities", [])),
-            "total_relations_found": len(search_result.get("final_relations", [])),
-            "entities_after_truncation": len(
-                truncation_result.get("filtered_entities", [])
-            ),
-            "relations_after_truncation": len(
-                truncation_result.get("filtered_relations", [])
-            ),
-            "merged_chunks_count": len(merged_chunks),
-            "final_chunks_count": len(raw_data.get("chunks", [])),
-        }
-
-        logger.debug(
-            f"[_build_query_context] Context length: {len(context) if context else 0}"
-        )
-        logger.debug(
-            f"[_build_query_context] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
-        )
-        return context, raw_data
-    else:
-        # Normal context building (existing logic)
-        context = await _build_llm_context(
-            entities_context=truncation_result["entities_context"],
-            relations_context=truncation_result["relations_context"],
-            merged_chunks=merged_chunks,
-            query=query,
-            query_param=query_param,
-            global_config=text_chunks_db.global_config,
-            chunk_tracking=search_result["chunk_tracking"],
-        )
-        return context
+    return QueryContextResult(context=context, raw_data=raw_data)
 
 
 async def _get_node_data(
@@ -4105,19 +4077,28 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
-    return_raw_data: bool = False,
-) -> str | AsyncIterator[str] | dict[str, Any]:
+) -> QueryResult:
+    """
+    Execute naive query and return unified QueryResult object.
+
+    Args:
+        query: Query string
+        chunks_vdb: Document chunks vector database
+        query_param: Query parameters
+        global_config: Global configuration
+        hashing_kv: Cache storage
+        system_prompt: System prompt
+
+    Returns:
+        QueryResult: Unified query result object containing:
+            - content: Non-streaming response text content
+            - response_iterator: Streaming response iterator
+            - raw_data: Complete structured data (including references and metadata)
+            - is_streaming: Whether this is a streaming result
+    """
+
     if not query:
-        if return_raw_data:
-            # Return empty raw data structure when query is empty
-            empty_raw_data = {
-                "status": "failure",
-                "message": "Query string is empty.",
-                "data": {},
-            }
-            return empty_raw_data
-        else:
-            return PROMPTS["fail_response"]
+        return QueryResult(content=PROMPTS["fail_response"])
 
     if query_param.model_func:
         use_model_func = query_param.model_func
@@ -4147,41 +4128,28 @@ async def naive_query(
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
         if not query_param.only_need_context and not query_param.only_need_prompt:
-            return cached_response
+            return QueryResult(content=cached_response)
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
-        if return_raw_data:
-            # Return empty raw data structure when tokenizer is missing
-            empty_raw_data = {
-                "status": "failure",
-                "message": "Tokenizer not found in global configuration.",
-                "data": {},
-            }
-            return empty_raw_data
-        else:
-            logger.error("Tokenizer not found in global configuration.")
-            return PROMPTS["fail_response"]
+        logger.error("Tokenizer not found in global configuration.")
+        return QueryResult(content=PROMPTS["fail_response"])
 
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
-        # If only raw data is requested, return it directly
-        if return_raw_data:
-            empty_raw_data = convert_to_user_format(
-                [],  # naive mode has no entities
-                [],  # naive mode has no relationships
-                [],  # no chunks
-                [],  # no references
-                "naive",
-            )
-            empty_raw_data["message"] = "No relevant document chunks found."
-            return empty_raw_data
-        else:
-            return PROMPTS["fail_response"]
+        # Build empty raw data structure for naive mode
+        empty_raw_data = convert_to_user_format(
+            [],  # naive mode has no entities
+            [],  # naive mode has no relationships
+            [],  # no chunks
+            [],  # no references
+            "naive",
+        )
+        empty_raw_data["message"] = "No relevant document chunks found."
+        return QueryResult(content=PROMPTS["fail_response"], raw_data=empty_raw_data)
 
     # Calculate dynamic token limit for chunks
-    # Get token limits from query_param (with fallback to global_config)
     max_total_tokens = getattr(
         query_param,
         "max_total_tokens",
@@ -4240,30 +4208,26 @@ async def naive_query(
 
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
-    # If only raw data is requested, return it directly
-    if return_raw_data:
-        # Build raw data structure for naive mode using processed chunks with reference IDs
-        raw_data = convert_to_user_format(
-            [],  # naive mode has no entities
-            [],  # naive mode has no relationships
-            processed_chunks_with_ref_ids,
-            reference_list,
-            "naive",
-        )
+    # Build raw data structure for naive mode using processed chunks with reference IDs
+    raw_data = convert_to_user_format(
+        [],  # naive mode has no entities
+        [],  # naive mode has no relationships
+        processed_chunks_with_ref_ids,
+        reference_list,
+        "naive",
+    )
 
-        # Add complete metadata for naive mode
-        if "metadata" not in raw_data:
-            raw_data["metadata"] = {}
-        raw_data["metadata"]["keywords"] = {
-            "high_level": [],  # naive mode has no keyword extraction
-            "low_level": [],  # naive mode has no keyword extraction
-        }
-        raw_data["metadata"]["processing_info"] = {
-            "total_chunks_found": len(chunks),
-            "final_chunks_count": len(processed_chunks_with_ref_ids),
-        }
-
-        return raw_data
+    # Add complete metadata for naive mode
+    if "metadata" not in raw_data:
+        raw_data["metadata"] = {}
+    raw_data["metadata"]["keywords"] = {
+        "high_level": [],  # naive mode has no keyword extraction
+        "low_level": [],  # naive mode has no keyword extraction
+    }
+    raw_data["metadata"]["processing_info"] = {
+        "total_chunks_found": len(chunks),
+        "final_chunks_count": len(processed_chunks_with_ref_ids),
+    }
 
     # Build text_units_context from processed chunks with reference IDs
     text_units_context = []
@@ -4284,8 +4248,7 @@ async def naive_query(
         if ref["reference_id"]
     )
 
-    if query_param.only_need_context and not query_param.only_need_prompt:
-        return f"""
+    context_content = f"""
 ---Document Chunks(DC)---
 
 ```json
@@ -4297,6 +4260,10 @@ async def naive_query(
 {reference_list_str}
 
 """
+
+    if query_param.only_need_context and not query_param.only_need_prompt:
+        return QueryResult(content=context_content, raw_data=raw_data)
+
     user_query = (
         "\n\n".join([query, query_param.user_prompt])
         if query_param.user_prompt
@@ -4310,7 +4277,8 @@ async def naive_query(
     )
 
     if query_param.only_need_prompt:
-        return "\n\n".join([sys_prompt, "---User Query---", user_query])
+        prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
+        return QueryResult(content=prompt_content, raw_data=raw_data)
 
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
@@ -4325,43 +4293,51 @@ async def naive_query(
         stream=query_param.stream,
     )
 
-    if isinstance(response, str) and len(response) > len(sys_prompt):
-        response = (
-            response[len(sys_prompt) :]
-            .replace(sys_prompt, "")
-            .replace("user", "")
-            .replace("model", "")
-            .replace(query, "")
-            .replace("<system>", "")
-            .replace("</system>", "")
-            .strip()
-        )
+    # Return unified result based on actual response type
+    if isinstance(response, str):
+        # Non-streaming response (string)
+        if len(response) > len(sys_prompt):
+            response = (
+                response[len(sys_prompt) :]
+                .replace(sys_prompt, "")
+                .replace("user", "")
+                .replace("model", "")
+                .replace(query, "")
+                .replace("<system>", "")
+                .replace("</system>", "")
+                .strip()
+            )
 
-    if hashing_kv.global_config.get("enable_llm_cache"):
-        # Save to cache with query parameters
-        queryparam_dict = {
-            "mode": query_param.mode,
-            "response_type": query_param.response_type,
-            "top_k": query_param.top_k,
-            "chunk_top_k": query_param.chunk_top_k,
-            "max_entity_tokens": query_param.max_entity_tokens,
-            "max_relation_tokens": query_param.max_relation_tokens,
-            "max_total_tokens": query_param.max_total_tokens,
-            "hl_keywords": query_param.hl_keywords or [],
-            "ll_keywords": query_param.ll_keywords or [],
-            "user_prompt": query_param.user_prompt or "",
-            "enable_rerank": query_param.enable_rerank,
-        }
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                mode=query_param.mode,
-                cache_type="query",
-                queryparam=queryparam_dict,
-            ),
-        )
+        # Cache response
+        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+            queryparam_dict = {
+                "mode": query_param.mode,
+                "response_type": query_param.response_type,
+                "top_k": query_param.top_k,
+                "chunk_top_k": query_param.chunk_top_k,
+                "max_entity_tokens": query_param.max_entity_tokens,
+                "max_relation_tokens": query_param.max_relation_tokens,
+                "max_total_tokens": query_param.max_total_tokens,
+                "hl_keywords": query_param.hl_keywords or [],
+                "ll_keywords": query_param.ll_keywords or [],
+                "user_prompt": query_param.user_prompt or "",
+                "enable_rerank": query_param.enable_rerank,
+            }
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    mode=query_param.mode,
+                    cache_type="query",
+                    queryparam=queryparam_dict,
+                ),
+            )
 
-    return response
+        return QueryResult(content=response, raw_data=raw_data)
+    else:
+        # Streaming response (AsyncIterator)
+        return QueryResult(
+            response_iterator=response, raw_data=raw_data, is_streaming=True
+        )

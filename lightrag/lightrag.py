@@ -71,6 +71,7 @@ from lightrag.base import (
     StoragesStatus,
     DeletionResult,
     OllamaServerInfos,
+    QueryResult,
 )
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
@@ -2075,8 +2076,10 @@ class LightRAG:
         # If a custom model is provided in param, temporarily update global config
         global_config = asdict(self)
 
+        query_result = None
+
         if param.mode in ["local", "global", "hybrid", "mix"]:
-            response = await kg_query(
+            query_result = await kg_query(
                 query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -2089,7 +2092,7 @@ class LightRAG:
                 chunks_vdb=self.chunks_vdb,
             )
         elif param.mode == "naive":
-            response = await naive_query(
+            query_result = await naive_query(
                 query.strip(),
                 self.chunks_vdb,
                 param,
@@ -2111,10 +2114,22 @@ class LightRAG:
                 enable_cot=True,
                 stream=param.stream,
             )
+            # Create QueryResult for bypass mode
+            query_result = QueryResult(
+                content=response if not param.stream else None,
+                response_iterator=response if param.stream else None,
+                is_streaming=param.stream,
+            )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
+
         await self._query_done()
-        return response
+
+        # Return appropriate response based on streaming mode
+        if query_result.is_streaming:
+            return query_result.response_iterator
+        else:
+            return query_result.content
 
     async def aquery_data(
         self,
@@ -2229,61 +2244,81 @@ class LightRAG:
         """
         global_config = asdict(self)
 
-        if param.mode in ["local", "global", "hybrid", "mix"]:
-            logger.debug(f"[aquery_data] Using kg_query for mode: {param.mode}")
-            final_data = await kg_query(
+        # Create a copy of param to avoid modifying the original
+        data_param = QueryParam(
+            mode=param.mode,
+            only_need_context=True,  # Skip LLM generation, only get context and data
+            only_need_prompt=False,
+            response_type=param.response_type,
+            stream=False,  # Data retrieval doesn't need streaming
+            top_k=param.top_k,
+            chunk_top_k=param.chunk_top_k,
+            max_entity_tokens=param.max_entity_tokens,
+            max_relation_tokens=param.max_relation_tokens,
+            max_total_tokens=param.max_total_tokens,
+            hl_keywords=param.hl_keywords,
+            ll_keywords=param.ll_keywords,
+            conversation_history=param.conversation_history,
+            history_turns=param.history_turns,
+            model_func=param.model_func,
+            user_prompt=param.user_prompt,
+            enable_rerank=param.enable_rerank,
+        )
+
+        query_result = None
+
+        if data_param.mode in ["local", "global", "hybrid", "mix"]:
+            logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
+            query_result = await kg_query(
                 query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
                 self.text_chunks,
-                param,
+                data_param,  # Use data_param with only_need_context=True
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
-                return_raw_data=True,  # Get final processed data
             )
-        elif param.mode == "naive":
-            logger.debug(f"[aquery_data] Using naive_query for mode: {param.mode}")
-            final_data = await naive_query(
+        elif data_param.mode == "naive":
+            logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
+            query_result = await naive_query(
                 query.strip(),
                 self.chunks_vdb,
-                param,
+                data_param,  # Use data_param with only_need_context=True
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
-                return_raw_data=True,  # Get final processed data
             )
-        elif param.mode == "bypass":
+        elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
             # bypass mode returns empty data using convert_to_user_format
-            final_data = convert_to_user_format(
+            empty_raw_data = convert_to_user_format(
                 [],  # no entities
                 [],  # no relationships
                 [],  # no chunks
                 [],  # no references
                 "bypass",
             )
+            query_result = QueryResult(content="", raw_data=empty_raw_data)
         else:
-            raise ValueError(f"Unknown mode {param.mode}")
+            raise ValueError(f"Unknown mode {data_param.mode}")
+
+        # Extract raw_data from QueryResult
+        final_data = query_result.raw_data if query_result else {}
 
         # Log final result counts - adapt to new data format from convert_to_user_format
-        if isinstance(final_data, dict) and "data" in final_data:
-            # New format: data is nested under 'data' field
+        if final_data and "data" in final_data:
             data_section = final_data["data"]
             entities_count = len(data_section.get("entities", []))
             relationships_count = len(data_section.get("relationships", []))
             chunks_count = len(data_section.get("chunks", []))
+            logger.debug(
+                f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
+            )
         else:
-            # Fallback for other formats
-            entities_count = len(final_data.get("entities", []))
-            relationships_count = len(final_data.get("relationships", []))
-            chunks_count = len(final_data.get("chunks", []))
-
-        logger.debug(
-            f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
-        )
+            logger.warning("[aquery_data] No data section found in query result")
 
         await self._query_done()
         return final_data

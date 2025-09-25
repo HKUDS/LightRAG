@@ -88,6 +88,11 @@ class QueryRequest(BaseModel):
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
     )
 
+    include_references: Optional[bool] = Field(
+        default=True,
+        description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
@@ -122,6 +127,10 @@ class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
     )
+    references: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Reference list (only included when include_references=True, /query/data always includes references.)",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -149,6 +158,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             request (QueryRequest): The request object containing the query parameters.
         Returns:
             QueryResponse: A Pydantic model containing the result of the query processing.
+                       If include_references=True, also includes reference list.
                        If a string is returned (e.g., cache hit), it's directly returned.
                        Otherwise, an async generator may be used to build the response.
 
@@ -160,15 +170,26 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             param = request.to_query_params(False)
             response = await rag.aquery(request.query, param=param)
 
-            # If response is a string (e.g. cache hit), return directly
-            if isinstance(response, str):
-                return QueryResponse(response=response)
+            # Get reference list if requested
+            reference_list = None
+            if request.include_references:
+                try:
+                    # Use aquery_data to get reference list independently
+                    data_result = await rag.aquery_data(request.query, param=param)
+                    if isinstance(data_result, dict) and "data" in data_result:
+                        reference_list = data_result["data"].get("references", [])
+                except Exception as e:
+                    logging.warning(f"Failed to get reference list: {str(e)}")
+                    reference_list = []
 
-            if isinstance(response, dict):
+            # Process response and return with optional references
+            if isinstance(response, str):
+                return QueryResponse(response=response, references=reference_list)
+            elif isinstance(response, dict):
                 result = json.dumps(response, indent=2)
-                return QueryResponse(response=result)
+                return QueryResponse(response=result, references=reference_list)
             else:
-                return QueryResponse(response=str(response))
+                return QueryResponse(response=str(response), references=reference_list)
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
@@ -178,12 +199,18 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
 
+        The streaming response includes:
+        1. Reference list (sent first as a single message, if include_references=True)
+        2. LLM response content (streamed as multiple chunks)
+
         Args:
             request (QueryRequest): The request object containing the query parameters.
-            optional_api_key (Optional[str], optional): An optional API key for authentication. Defaults to None.
 
         Returns:
-            StreamingResponse: A streaming response containing the RAG query results.
+            StreamingResponse: A streaming response containing:
+                - First message: {"references": [...]} - Complete reference list (if requested)
+                - Subsequent messages: {"response": "..."} - LLM response chunks
+                - Error messages: {"error": "..."} - If any errors occur
         """
         try:
             param = request.to_query_params(True)
@@ -192,6 +219,28 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             from fastapi.responses import StreamingResponse
 
             async def stream_generator():
+                # Get reference list if requested (default is True for backward compatibility)
+                reference_list = []
+                if request.include_references:
+                    try:
+                        # Use aquery_data to get reference list independently
+                        data_param = request.to_query_params(
+                            False
+                        )  # Non-streaming for data
+                        data_result = await rag.aquery_data(
+                            request.query, param=data_param
+                        )
+                        if isinstance(data_result, dict) and "data" in data_result:
+                            reference_list = data_result["data"].get("references", [])
+                    except Exception as e:
+                        logging.warning(f"Failed to get reference list: {str(e)}")
+                        reference_list = []
+
+                # Send reference list first (if requested)
+                if request.include_references:
+                    yield f"{json.dumps({'references': reference_list})}\n"
+
+                # Then stream the response content
                 if isinstance(response, str):
                     # If it's a string, send it all at once
                     yield f"{json.dumps({'response': response})}\n"

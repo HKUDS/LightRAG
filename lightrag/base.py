@@ -11,6 +11,10 @@ from typing import (
     TypedDict,
     TypeVar,
     Callable,
+    Optional,
+    Dict,
+    List,
+    AsyncIterator,
 )
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
@@ -156,6 +160,12 @@ class QueryParam:
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
+    """
+
+    include_references: bool = False
+    """If True, includes reference list in the response for supported endpoints.
+    This parameter controls whether the API response includes a references field
+    containing citation information for the retrieved content.
     """
 
 
@@ -814,3 +824,68 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+
+
+# Unified Query Result Data Structures for Reference List Support
+
+
+@dataclass
+class QueryResult:
+    """
+    Unified query result data structure for all query modes.
+
+    Attributes:
+        content: Text content for non-streaming responses
+        response_iterator: Streaming response iterator for streaming responses
+        raw_data: Complete structured data including references and metadata
+        is_streaming: Whether this is a streaming result
+    """
+
+    content: Optional[str] = None
+    response_iterator: Optional[AsyncIterator[str]] = None
+    raw_data: Optional[Dict[str, Any]] = None
+    is_streaming: bool = False
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """
+        Convenient property to extract reference list from raw_data.
+
+        Returns:
+            List[Dict[str, str]]: Reference list in format:
+            [{"reference_id": "1", "file_path": "/path/to/file.pdf"}, ...]
+        """
+        if self.raw_data:
+            return self.raw_data.get("data", {}).get("references", [])
+        return []
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """
+        Convenient property to extract metadata from raw_data.
+
+        Returns:
+            Dict[str, Any]: Query metadata including query_mode, keywords, etc.
+        """
+        if self.raw_data:
+            return self.raw_data.get("metadata", {})
+        return {}
+
+
+@dataclass
+class QueryContextResult:
+    """
+    Unified query context result data structure.
+
+    Attributes:
+        context: LLM context string
+        raw_data: Complete structured data including reference_list
+    """
+
+    context: str
+    raw_data: Dict[str, Any]
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """Convenient property to extract reference list from raw_data."""
+        return self.raw_data.get("data", {}).get("references", [])
