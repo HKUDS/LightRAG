@@ -11,7 +11,12 @@ import configparser
 import ssl
 import itertools
 
-from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge, MetadataFilter
+from lightrag.types import (
+    KnowledgeGraph,
+    KnowledgeGraphNode,
+    KnowledgeGraphEdge,
+    MetadataFilter,
+)
 
 from tenacity import (
     retry,
@@ -935,8 +940,9 @@ class PostgreSQLDB:
         try:
             await self.add_metadata_to_tables()
         except Exception as e:
-            logger.error(f"PostgreSQL, Failed to add metadata columns to existing tables: {e}")
-
+            logger.error(
+                f"PostgreSQL, Failed to add metadata columns to existing tables: {e}"
+            )
 
         # After all tables are created, attempt to migrate timestamp fields
         try:
@@ -1061,9 +1067,7 @@ class PostgreSQLDB:
                     )
 
             except Exception as e:
-                logger.warning(
-                    f"Failed to add metadata column to {table_name}: {e}"
-                )
+                logger.warning(f"Failed to add metadata column to {table_name}: {e}")
 
     async def _migrate_create_full_entities_relations_tables(self):
         """Create LIGHTRAG_FULL_ENTITIES and LIGHTRAG_FULL_RELATIONS tables if they don't exist"""
@@ -2092,7 +2096,9 @@ class PGVectorStorage(BaseVectorStorage):
                 sub_conditions = []
                 for operand in filter_obj.operands:
                     if isinstance(operand, dict):
-                        sub_conditions.append("(" + " AND ".join(build_conditions(operand)) + ")")
+                        sub_conditions.append(
+                            "(" + " AND ".join(build_conditions(operand)) + ")"
+                        )
                     elif isinstance(operand, MetadataFilter):
                         nested = recurse(operand)
                         if nested:
@@ -2123,7 +2129,11 @@ class PGVectorStorage(BaseVectorStorage):
 
     #################### query method ###############
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None, metadata_filter: MetadataFilter | None = None
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        metadata_filter: MetadataFilter | None = None,
     ) -> list[dict[str, Any]]:
         if query_embedding is not None:
             embedding = query_embedding
@@ -2135,7 +2145,10 @@ class PGVectorStorage(BaseVectorStorage):
 
         embedding_string = ",".join(map(str, embedding))
         metadata_filter_clause = self.build_metadata_filter_clause(metadata_filter)
-        sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string, metadata_filter_clause=metadata_filter_clause)
+        sql = SQL_TEMPLATES[self.namespace].format(
+            embedding_string=embedding_string,
+            metadata_filter_clause=metadata_filter_clause,
+        )
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
@@ -4844,69 +4857,38 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-                     WITH relevant_chunks AS (
-                        SELECT id as chunk_id
-                        FROM LIGHTRAG_VDB_CHUNKS
-                        WHERE ($4::varchar[] IS NULL OR full_doc_id = ANY ($4::varchar[]))
-                        {metadata_filter_clause}
-                    ),
-                    rc AS (
-                        SELECT array_agg(chunk_id) AS chunk_arr
-                        FROM relevant_chunks
-                    )
-                    SELECT r.source_id AS src_id,
-                           r.target_id AS tgt_id,
-                           EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                    FROM LIGHTRAG_VDB_RELATION r
-                    JOIN rc ON TRUE
-                    WHERE r.workspace = $1
-                      AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                      AND r.chunk_ids && (rc.chunk_arr::varchar[])
-                    ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
-                    LIMIT $3;
-                     """,
+                SELECT r.source_id AS src_id,
+                    r.target_id AS tgt_id,
+                    EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
+                FROM LIGHTRAG_VDB_RELATION r
+                JOIN LIGHTRAG_VDB_CHUNKS c ON r.chunk_ids && ARRAY[c.id]
+                WHERE r.workspace = $1
+                AND r.content_vector <=> '[{embedding_string}]'::vector < $2
+                {metadata_filter_clause}
+                ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                LIMIT $3;
+                """,
     "entities": """
-                WITH relevant_chunks AS (
-                    SELECT id as chunk_id
-                    FROM LIGHTRAG_VDB_CHUNKS
-                    WHERE ($4::varchar[] IS NULL OR full_doc_id = ANY ($4::varchar[]))
-                    {metadata_filter_clause}
-                ),
-                rc AS (
-                    SELECT array_agg(chunk_id) AS chunk_arr
-                    FROM relevant_chunks
-                )
                 SELECT e.entity_name,
-                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
+                    EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM LIGHTRAG_VDB_ENTITY e
-                JOIN rc ON TRUE
+                JOIN LIGHTRAG_VDB_CHUNKS c ON e.chunk_ids && ARRAY[c.id]
                 WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                  AND e.chunk_ids && (rc.chunk_arr::varchar[])
+                AND e.content_vector <=> '[{embedding_string}]'::vector < $2
+                {metadata_filter_clause}
                 ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
                 LIMIT $3;
                 """,
     "chunks": """
-              WITH relevant_chunks AS (
-                    SELECT id as chunk_id
-                    FROM LIGHTRAG_VDB_CHUNKS
-                    WHERE ($4::varchar[] IS NULL OR full_doc_id = ANY ($4::varchar[]))
-                    {metadata_filter_clause}
-                ),
-                rc AS (
-                    SELECT array_agg(chunk_id) AS chunk_arr
-                    FROM relevant_chunks
-                )
                 SELECT c.id,
-                       c.content,
-                       c.file_path,
-                       EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at,
-                       c.metadata
+                    c.content,
+                    c.file_path,
+                    EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at,
+                    c.metadata
                 FROM LIGHTRAG_VDB_CHUNKS c
-                JOIN rc ON TRUE
                 WHERE c.workspace = $1
-                  AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-                  AND c.id = ANY (rc.chunk_arr)
+                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
+                {metadata_filter_clause}
                 ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
                 LIMIT $3;
               """,
