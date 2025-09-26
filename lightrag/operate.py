@@ -2236,38 +2236,6 @@ async def extract_entities(
     return chunk_results
 
 
-@overload
-async def kg_query(
-    query: str,
-    knowledge_graph_inst: BaseGraphStorage,
-    entities_vdb: BaseVectorStorage,
-    relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage,
-    query_param: QueryParam,
-    global_config: dict[str, str],
-    hashing_kv: BaseKVStorage | None = None,
-    system_prompt: str | None = None,
-    chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: Literal[True] = False,
-) -> dict[str, Any]: ...
-
-
-@overload
-async def kg_query(
-    query: str,
-    knowledge_graph_inst: BaseGraphStorage,
-    entities_vdb: BaseVectorStorage,
-    relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage,
-    query_param: QueryParam,
-    global_config: dict[str, str],
-    hashing_kv: BaseKVStorage | None = None,
-    system_prompt: str | None = None,
-    chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: Literal[False] = False,
-) -> str | AsyncIterator[str]: ...
-
-
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2308,7 +2276,6 @@ async def kg_query(
         - stream=True: response_iterator contains streaming response, raw_data contains complete data
         - default: content contains LLM response text, raw_data contains complete data
     """
-
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
 
@@ -2318,32 +2285,6 @@ async def kg_query(
         use_model_func = global_config["llm_model_func"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
-
-    # Handle cache
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        query_param.hl_keywords or [],
-        query_param.ll_keywords or [],
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
-    )
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
-    )
-    if (
-        cached_result is not None
-        and not query_param.only_need_context
-        and not query_param.only_need_prompt
-    ):
-        cached_response, _ = cached_result  # Extract content, ignore timestamp
-        return QueryResult(content=cached_response)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2417,29 +2358,41 @@ async def kg_query(
         f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
 
-    response = await use_model_func(
-        user_query,
-        system_prompt=sys_prompt,
-        history_messages=query_param.conversation_history,
-        enable_cot=True,
-        stream=query_param.stream,
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
     )
 
-    # Return unified result based on actual response type
-    if isinstance(response, str):
-        # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    )
 
-        # Cache response
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        logger.info(
+            " == LLM cache == Query cache hit, using cached response as query result"
+        )
+        response = cached_response
+    else:
+        response = await use_model_func(
+            user_query,
+            system_prompt=sys_prompt,
+            history_messages=query_param.conversation_history,
+            enable_cot=True,
+            stream=query_param.stream,
+        )
+
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
                 "mode": query_param.mode,
@@ -2464,6 +2417,20 @@ async def kg_query(
                     cache_type="query",
                     queryparam=queryparam_dict,
                 ),
+            )
+
+    # Return unified result based on actual response type
+    if isinstance(response, str):
+        # Non-streaming response (string)
+        if len(response) > len(sys_prompt):
+            response = (
+                response.replace(sys_prompt, "")
+                .replace("user", "")
+                .replace("model", "")
+                .replace(query, "")
+                .replace("<system>", "")
+                .replace("</system>", "")
+                .strip()
             )
 
         return QueryResult(content=response, raw_data=context_result.raw_data)
@@ -4052,29 +4019,6 @@ async def naive_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    # Handle cache
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        query_param.hl_keywords or [],
-        query_param.ll_keywords or [],
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
-    )
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
-    )
-    if cached_result is not None:
-        cached_response, _ = cached_result  # Extract content, ignore timestamp
-        if not query_param.only_need_context and not query_param.only_need_prompt:
-            return QueryResult(content=cached_response)
-
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
@@ -4211,35 +4155,39 @@ async def naive_query(
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
-    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(
-        f"[naive_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
     )
-
-    response = await use_model_func(
-        user_query,
-        system_prompt=sys_prompt,
-        history_messages=query_param.conversation_history,
-        enable_cot=True,
-        stream=query_param.stream,
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        logger.info(
+            " == LLM cache == Query cache hit, using cached response as query result"
+        )
+        response = cached_response
+    else:
+        response = await use_model_func(
+            user_query,
+            system_prompt=sys_prompt,
+            history_messages=query_param.conversation_history,
+            enable_cot=True,
+            stream=query_param.stream,
+        )
 
-    # Return unified result based on actual response type
-    if isinstance(response, str):
-        # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response[len(sys_prompt) :]
-                .replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
-        # Cache response
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
                 "mode": query_param.mode,
@@ -4264,6 +4212,21 @@ async def naive_query(
                     cache_type="query",
                     queryparam=queryparam_dict,
                 ),
+            )
+
+    # Return unified result based on actual response type
+    if isinstance(response, str):
+        # Non-streaming response (string)
+        if len(response) > len(sys_prompt):
+            response = (
+                response[len(sys_prompt) :]
+                .replace(sys_prompt, "")
+                .replace("user", "")
+                .replace("model", "")
+                .replace(query, "")
+                .replace("<system>", "")
+                .replace("</system>", "")
+                .strip()
             )
 
         return QueryResult(content=response, raw_data=raw_data)

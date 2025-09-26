@@ -1102,7 +1102,9 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     if existing_cache:
         existing_content = existing_cache.get("return")
         if existing_content == cache_data.content:
-            logger.info(f"Cache content unchanged for {flattened_key}, skipping update")
+            logger.warning(
+                f"Cache duplication detected for {flattened_key}, skipping update"
+            )
             return
 
     # Create cache entry with flattened structure
