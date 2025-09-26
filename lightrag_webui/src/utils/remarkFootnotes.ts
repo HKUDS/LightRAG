@@ -27,10 +27,22 @@ export const remarkFootnotes: Plugin<[], Root> = () => {
           })
         }
 
+        // Check if there's another footnote immediately following this one
+        const nextIndex = startIndex + fullMatch.length
+        const remainingText = text.slice(nextIndex)
+        const hasConsecutiveFootnote = /^\[\^[^\]]+\]/.test(remainingText)
+
         // Add footnote reference as HTML with placeholder link
+        const footnoteHtml = `<sup><a href="#footnote-${id}" class="footnote-ref">${id}</a></sup>`
+
+        // Add spacing if there's a consecutive footnote
+        const htmlWithSpacing = hasConsecutiveFootnote
+          ? footnoteHtml + '&nbsp;'
+          : footnoteHtml
+
         replacements.push({
           type: 'html',
-          value: `<sup><a href="#footnote" class="footnote-ref">${id}</a></sup>`
+          value: htmlWithSpacing
         })
 
         lastIndex = startIndex + fullMatch.length
