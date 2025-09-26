@@ -152,44 +152,42 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     )
     async def query_text(request: QueryRequest):
         """
-        Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
+        This endpoint performs a RAG query with non-streaming response.
 
         Parameters:
             request (QueryRequest): The request object containing the query parameters.
         Returns:
             QueryResponse: A Pydantic model containing the result of the query processing.
                        If include_references=True, also includes reference list.
-                       If a string is returned (e.g., cache hit), it's directly returned.
-                       Otherwise, an async generator may be used to build the response.
 
         Raises:
             HTTPException: Raised when an error occurs during the request handling process,
                        with status code 500 and detail containing the exception message.
         """
         try:
-            param = request.to_query_params(False)
-            response = await rag.aquery(request.query, param=param)
+            param = request.to_query_params(
+                False
+            )  # Ensure stream=False for non-streaming endpoint
+            # Force stream=False for /query endpoint regardless of include_references setting
+            param.stream = False
 
-            # Get reference list if requested
-            reference_list = None
+            # Unified approach: always use aquery_llm for both cases
+            result = await rag.aquery_llm(request.query, param=param)
+
+            # Extract LLM response and references from unified result
+            llm_response = result.get("llm_response", {})
+            references = result.get("data", {}).get("references", [])
+
+            # Get the non-streaming response content
+            response_content = llm_response.get("content", "")
+            if not response_content:
+                response_content = "No relevant context found for the query."
+
+            # Return response with or without references based on request
             if request.include_references:
-                try:
-                    # Use aquery_data to get reference list independently
-                    data_result = await rag.aquery_data(request.query, param=param)
-                    if isinstance(data_result, dict) and "data" in data_result:
-                        reference_list = data_result["data"].get("references", [])
-                except Exception as e:
-                    logging.warning(f"Failed to get reference list: {str(e)}")
-                    reference_list = []
-
-            # Process response and return with optional references
-            if isinstance(response, str):
-                return QueryResponse(response=response, references=reference_list)
-            elif isinstance(response, dict):
-                result = json.dumps(response, indent=2)
-                return QueryResponse(response=result, references=reference_list)
+                return QueryResponse(response=response_content, references=references)
             else:
-                return QueryResponse(response=str(response), references=reference_list)
+                return QueryResponse(response=response_content, references=None)
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
@@ -197,7 +195,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     @router.post("/query/stream", dependencies=[Depends(combined_auth)])
     async def query_text_stream(request: QueryRequest):
         """
-        This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
+        This endpoint performs RAG query with streaming response.
+        Streaming can be turn off by setting stream=False in QueryRequest.
 
         The streaming response includes:
         1. Reference list (sent first as a single message, if include_references=True)
@@ -213,49 +212,42 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - Error messages: {"error": "..."} - If any errors occur
         """
         try:
-            param = request.to_query_params(True)
-            response = await rag.aquery(request.query, param=param)
+            param = request.to_query_params(
+                True
+            )  # Ensure stream=True for streaming endpoint
 
             from fastapi.responses import StreamingResponse
 
+            # Unified approach: always use aquery_llm for all cases
+            result = await rag.aquery_llm(request.query, param=param)
+
             async def stream_generator():
-                # Get reference list if requested (default is True for backward compatibility)
-                reference_list = []
-                if request.include_references:
-                    try:
-                        # Use aquery_data to get reference list independently
-                        data_param = request.to_query_params(
-                            False
-                        )  # Non-streaming for data
-                        data_result = await rag.aquery_data(
-                            request.query, param=data_param
-                        )
-                        if isinstance(data_result, dict) and "data" in data_result:
-                            reference_list = data_result["data"].get("references", [])
-                    except Exception as e:
-                        logging.warning(f"Failed to get reference list: {str(e)}")
-                        reference_list = []
+                # Extract references and LLM response from unified result
+                references = result.get("data", {}).get("references", [])
+                llm_response = result.get("llm_response", {})
 
-                # Send reference list first (if requested)
+                # Send reference list first if requested
                 if request.include_references:
-                    yield f"{json.dumps({'references': reference_list})}\n"
+                    yield f"{json.dumps({'references': references})}\n"
 
-                # Then stream the response content
-                if isinstance(response, str):
-                    # If it's a string, send it all at once
-                    yield f"{json.dumps({'response': response})}\n"
-                elif response is None:
-                    # Handle None response (e.g., when only_need_context=True but no context found)
-                    yield f"{json.dumps({'response': 'No relevant context found for the query.'})}\n"
+                # Then stream the LLM response content
+                if llm_response.get("is_streaming"):
+                    response_stream = llm_response.get("response_iterator")
+                    if response_stream:
+                        try:
+                            async for chunk in response_stream:
+                                if chunk:  # Only send non-empty content
+                                    yield f"{json.dumps({'response': chunk})}\n"
+                        except Exception as e:
+                            logging.error(f"Streaming error: {str(e)}")
+                            yield f"{json.dumps({'error': str(e)})}\n"
                 else:
-                    # If it's an async generator, send chunks one by one
-                    try:
-                        async for chunk in response:
-                            if chunk:  # Only send non-empty content
-                                yield f"{json.dumps({'response': chunk})}\n"
-                    except Exception as e:
-                        logging.error(f"Streaming error: {str(e)}")
-                        yield f"{json.dumps({'error': str(e)})}\n"
+                    # Non-streaming response (fallback)
+                    response_content = llm_response.get("content", "")
+                    if response_content:
+                        yield f"{json.dumps({'response': response_content})}\n"
+                    else:
+                        yield f"{json.dumps({'response': 'No relevant context found for the query.'})}\n"
 
             return StreamingResponse(
                 stream_generator(),
