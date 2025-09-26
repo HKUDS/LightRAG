@@ -222,7 +222,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             result = await rag.aquery_llm(request.query, param=param)
 
             async def stream_generator():
-
                 # Extract references and LLM response from unified result
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})

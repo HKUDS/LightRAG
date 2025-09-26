@@ -230,10 +230,9 @@ class LightragPathFilter(logging.Filter):
             path = record.args[2]
             status = record.args[4]
 
-            # Filter out successful GET requests to filtered paths
+            # Filter out successful GET/POST requests to filtered paths
             if (
-                method == "GET"
-                or method == "POST"
+                (method == "GET" or method == "POST")
                 and (status == 200 or status == 304)
                 and path in self.filtered_paths
             ):
