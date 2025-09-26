@@ -405,7 +405,7 @@
       "onlyNeedPromptTooltip": "如果為True，僅回傳產生的提示而不產生回應",
       "streamResponse": "串流回應",
       "streamResponseTooltip": "如果為True，啟用即時串流輸出回應",
-      "userPrompt": "用戶提示詞",
+      "userPrompt": "附加輸出提示詞",
       "userPromptTooltip": "向LLM提供額外的響應要求（與查詢內容無關，僅用於處理輸出）。",
       "userPromptPlaceholder": "輸入自定義提示詞（可選）",
       "enableRerank": "啟用重排",
