@@ -189,7 +189,7 @@ function App() {
             {/* Loading indicator in content area */}
             <div className="flex flex-1 items-center justify-center">
               <div className="text-center">
-                <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+                <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto"></div>
                 <p>Initializing...</p>
               </div>
             </div>

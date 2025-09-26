@@ -248,7 +248,7 @@ const GraphViewer = () => {
       {(isFetching || isThemeSwitching) && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
           <div className="text-center">
-            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto"></div>
             <p>{isThemeSwitching ? 'Switching Theme...' : 'Loading Graph Data...'}</p>
           </div>
         </div>
