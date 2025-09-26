@@ -218,9 +218,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             from fastapi.responses import StreamingResponse
 
+            # Unified approach: always use aquery_llm for all cases
+            result = await rag.aquery_llm(request.query, param=param)
+
             async def stream_generator():
-                # Unified approach: always use aquery_llm for all cases
-                result = await rag.aquery_llm(request.query, param=param)
 
                 # Extract references and LLM response from unified result
                 references = result.get("data", {}).get("references", [])
