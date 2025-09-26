@@ -2392,15 +2392,14 @@ async def kg_query(
     # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
+        user_prompt=f"```\n{query_param.user_prompt}\n```"
+        if query_param.user_prompt
+        else "n/a",
         context_data=context_result.context,
         response_type=query_param.response_type,
     )
 
-    user_query = (
-        "\n\n".join([query, query_param.user_prompt])
-        if query_param.user_prompt
-        else query
-    )
+    user_query = query
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
@@ -4264,17 +4263,16 @@ async def naive_query(
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(content=context_content, raw_data=raw_data)
 
-    user_query = (
-        "\n\n".join([query, query_param.user_prompt])
-        if query_param.user_prompt
-        else query
-    )
-
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
+        user_prompt=f"```\n{query_param.user_prompt}\n```"
+        if query_param.user_prompt
+        else "n/a",
         content_data=text_units_str,
         response_type=query_param.response_type,
     )
+
+    user_query = query
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])

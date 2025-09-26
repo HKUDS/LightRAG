@@ -243,6 +243,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
+  - Do not generate footnotes section or any text after the references.
 
 5. **Reference Section Example:**
 ```
@@ -251,6 +252,9 @@ Consider the conversation history if provided to maintain conversational flow an
 * [2] Document Title Two
 * [3] Document Title Three
 ```
+
+6. **Additional Instructions**: {user_prompt}
+
 
 ---Source Data---
 Knowledge Graph and Document Chunks:
@@ -291,6 +295,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
+  - Do not generate footnotes section or any text after the references.
 
 5. **Reference Section Example:**
 ```
@@ -299,6 +304,9 @@ Consider the conversation history if provided to maintain conversational flow an
 * [2] Document Title Two
 * [3] Document Title Three
 ```
+
+6. **Additional Instructions**: {user_prompt}
+
 
 ---Source Data---
 Document Chunks:
