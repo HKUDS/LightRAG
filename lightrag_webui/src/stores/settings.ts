@@ -220,9 +220,9 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Add to beginning
           newHistory.unshift(prompt)
 
-          // Keep only last 8 items
-          if (newHistory.length > 8) {
-            newHistory.splice(8)
+          // Keep only last 12 items
+          if (newHistory.length > 12) {
+            newHistory.splice(12)
           }
 
           return { userPromptHistory: newHistory }
