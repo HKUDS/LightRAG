@@ -282,13 +282,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **mix**: Integrates knowledge graph retrieval with vector search (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        **Key Features:**
-        - Non-streaming response for simple integration
-        - Optional reference citations for source attribution
-        - Flexible token control for response length management
-        - Conversation history support for multi-turn dialogues
-        - Multiple response format options
-
+        conversation_history parameteris sent to LLM only, does not affect retrieval results.
+        
         **Usage Examples:**
 
         Basic query:
@@ -473,14 +468,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **mix**: Integrated knowledge graph + vector retrieval (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        **Key Features**
-        - Dual-mode operation (streaming/non-streaming) in single endpoint
-        - Real-time response delivery for interactive applications
-        - Complete response option for batch processing
-        - Optional reference citations with source attribution
-        - Conversation history support for multi-turn dialogues
-        - Comprehensive error handling with graceful degradation
-        - Token control for response length management
+        conversation_history parameteris sent to LLM only, does not affect retrieval results.
 
         **Usage Examples**
 
