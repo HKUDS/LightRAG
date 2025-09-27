@@ -151,17 +151,16 @@ class QueryDataResponse(BaseModel):
 
 class StreamChunkResponse(BaseModel):
     """Response model for streaming chunks in NDJSON format"""
+
     references: Optional[List[Dict[str, str]]] = Field(
         default=None,
-        description="Reference list (only in first chunk when include_references=True)"
+        description="Reference list (only in first chunk when include_references=True)",
     )
     response: Optional[str] = Field(
-        default=None,
-        description="Response content chunk or complete response"
+        default=None, description="Response content chunk or complete response"
     )
     error: Optional[str] = Field(
-        default=None,
-        description="Error message if processing fails"
+        default=None, description="Error message if processing fails"
     )
 
 
@@ -169,8 +168,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
-        "/query", 
-        response_model=QueryResponse, 
+        "/query",
+        response_model=QueryResponse,
         dependencies=[Depends(combined_auth)],
         responses={
             200: {
@@ -182,7 +181,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             "properties": {
                                 "response": {
                                     "type": "string",
-                                    "description": "The generated response from the RAG system"
+                                    "description": "The generated response from the RAG system",
                                 },
                                 "references": {
                                     "type": "array",
@@ -190,13 +189,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         "type": "object",
                                         "properties": {
                                             "reference_id": {"type": "string"},
-                                            "file_path": {"type": "string"}
-                                        }
+                                            "file_path": {"type": "string"},
+                                        },
                                     },
-                                    "description": "Reference list (only included when include_references=True)"
-                                }
+                                    "description": "Reference list (only included when include_references=True)",
+                                },
                             },
-                            "required": ["response"]
+                            "required": ["response"],
                         },
                         "examples": {
                             "with_references": {
@@ -205,17 +204,23 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "value": {
                                     "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
                                     "references": [
-                                        {"reference_id": "1", "file_path": "/documents/ai_overview.pdf"},
-                                        {"reference_id": "2", "file_path": "/documents/machine_learning.txt"}
-                                    ]
-                                }
+                                        {
+                                            "reference_id": "1",
+                                            "file_path": "/documents/ai_overview.pdf",
+                                        },
+                                        {
+                                            "reference_id": "2",
+                                            "file_path": "/documents/machine_learning.txt",
+                                        },
+                                    ],
+                                },
                             },
                             "without_references": {
                                 "summary": "Response without references",
                                 "description": "Example response when include_references=False",
                                 "value": {
                                     "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving."
-                                }
+                                },
                             },
                             "different_modes": {
                                 "summary": "Different query modes",
@@ -225,12 +230,12 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                     "global_mode": "Provides broader context from relationship patterns",
                                     "hybrid_mode": "Combines local and global approaches",
                                     "naive_mode": "Simple vector similarity search",
-                                    "mix_mode": "Integrates knowledge graph and vector retrieval"
-                                }
-                            }
-                        }
+                                    "mix_mode": "Integrates knowledge graph and vector retrieval",
+                                },
+                            },
+                        },
                     }
-                }
+                },
             },
             400: {
                 "description": "Bad Request - Invalid input parameters",
@@ -238,15 +243,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {
-                                "detail": {"type": "string"}
-                            }
+                            "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
                             "detail": "Query text must be at least 3 characters long"
-                        }
+                        },
                     }
-                }
+                },
             },
             500: {
                 "description": "Internal Server Error - Query processing failed",
@@ -254,25 +257,23 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {
-                                "detail": {"type": "string"}
-                            }
+                            "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
                             "detail": "Failed to process query: LLM service unavailable"
-                        }
+                        },
                     }
-                }
-            }
-        }
+                },
+            },
+        },
     )
     async def query_text(request: QueryRequest):
         """
         Comprehensive RAG query endpoint with non-streaming response.
-        
+
         This endpoint performs Retrieval-Augmented Generation (RAG) queries using various modes
         to provide intelligent responses based on your knowledge base.
-        
+
         **Query Modes:**
         - **local**: Focuses on specific entities and their direct relationships
         - **global**: Analyzes broader patterns and relationships across the knowledge graph
@@ -280,16 +281,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **naive**: Simple vector similarity search without knowledge graph
         - **mix**: Integrates knowledge graph retrieval with vector search (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
-        
+
         **Key Features:**
         - Non-streaming response for simple integration
         - Optional reference citations for source attribution
         - Flexible token control for response length management
         - Conversation history support for multi-turn dialogues
         - Multiple response format options
-        
+
         **Usage Examples:**
-        
+
         Basic query:
         ```json
         {
@@ -297,7 +298,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "mode": "mix"
         }
         ```
-        
+
         Advanced query with references:
         ```json
         {
@@ -308,7 +309,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "top_k": 10
         }
         ```
-        
+
         Conversation with history:
         ```json
         {
@@ -336,7 +337,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - **references**: Source citations (if include_references=True)
 
         Raises:
-            HTTPException: 
+            HTTPException:
                 - 400: Invalid input parameters (e.g., query too short)
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
@@ -369,7 +370,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/query/stream", 
+        "/query/stream",
         dependencies=[Depends(combined_auth)],
         responses={
             200: {
@@ -380,37 +381,37 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             "type": "string",
                             "format": "ndjson",
                             "description": "Newline-delimited JSON (NDJSON) format used for both streaming and non-streaming responses. For streaming: multiple lines with separate JSON objects. For non-streaming: single line with complete JSON object.",
-                            "example": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"response": " a field of computer science"}\n{"response": " that focuses on creating intelligent machines."}'
+                            "example": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"response": " a field of computer science"}\n{"response": " that focuses on creating intelligent machines."}',
                         },
                         "examples": {
                             "streaming_with_references": {
                                 "summary": "Streaming mode with references (stream=true)",
                                 "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}'
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
                             },
                             "streaming_without_references": {
                                 "summary": "Streaming mode without references (stream=true)",
                                 "description": "Multiple NDJSON lines when stream=True and include_references=False. Only response chunks are sent.",
-                                "value": '{"response": "Machine learning is a subset of artificial intelligence"}\n{"response": " that enables computers to learn and improve from experience"}\n{"response": " without being explicitly programmed for every task."}'
+                                "value": '{"response": "Machine learning is a subset of artificial intelligence"}\n{"response": " that enables computers to learn and improve from experience"}\n{"response": " without being explicitly programmed for every task."}',
                             },
                             "non_streaming_with_references": {
                                 "summary": "Non-streaming mode with references (stream=false)",
                                 "description": "Single NDJSON line when stream=False and include_references=True. Complete response with references in one message.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/neural_networks.pdf"}], "response": "Neural networks are computational models inspired by biological neural networks that consist of interconnected nodes (neurons) organized in layers. They are fundamental to deep learning and can learn complex patterns from data through training processes."}'
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/neural_networks.pdf"}], "response": "Neural networks are computational models inspired by biological neural networks that consist of interconnected nodes (neurons) organized in layers. They are fundamental to deep learning and can learn complex patterns from data through training processes."}',
                             },
                             "non_streaming_without_references": {
                                 "summary": "Non-streaming mode without references (stream=false)",
                                 "description": "Single NDJSON line when stream=False and include_references=False. Complete response only.",
-                                "value": '{"response": "Deep learning is a subset of machine learning that uses neural networks with multiple layers (hence deep) to model and understand complex patterns in data. It has revolutionized fields like computer vision, natural language processing, and speech recognition."}'
+                                "value": '{"response": "Deep learning is a subset of machine learning that uses neural networks with multiple layers (hence deep) to model and understand complex patterns in data. It has revolutionized fields like computer vision, natural language processing, and speech recognition."}',
                             },
                             "error_response": {
                                 "summary": "Error during streaming",
                                 "description": "Error handling in NDJSON format when an error occurs during processing.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"error": "LLM service temporarily unavailable"}'
-                            }
-                        }
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"error": "LLM service temporarily unavailable"}',
+                            },
+                        },
                     }
-                }
+                },
             },
             400: {
                 "description": "Bad Request - Invalid input parameters",
@@ -418,15 +419,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {
-                                "detail": {"type": "string"}
-                            }
+                            "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
                             "detail": "Query text must be at least 3 characters long"
-                        }
+                        },
                     }
-                }
+                },
             },
             500: {
                 "description": "Internal Server Error - Query processing failed",
@@ -434,27 +433,25 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {
-                                "detail": {"type": "string"}
-                            }
+                            "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
                             "detail": "Failed to process streaming query: Knowledge graph unavailable"
-                        }
+                        },
                     }
-                }
-            }
-        }
+                },
+            },
+        },
     )
     async def query_text_stream(request: QueryRequest):
         """
         Advanced RAG query endpoint with flexible streaming and non-streaming response modes.
-        
+
         This endpoint provides the most flexible querying experience, supporting both real-time streaming
         and complete response delivery based on your integration needs.
-        
+
         **Response Modes:**
-        
+
         **Streaming Mode (stream=True, default):**
         - Real-time response delivery as content is generated
         - NDJSON format: each line is a separate JSON object
@@ -462,19 +459,19 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - Subsequent lines: `{"response": "content chunk"}`
         - Error handling: `{"error": "error message"}`
         - Perfect for chat interfaces and real-time applications
-        
+
         **Non-Streaming Mode (stream=False):**
         - Complete response delivered in a single message
         - NDJSON format: single line with complete content
         - Format: `{"references": [...], "response": "complete content"}`
         - Ideal for batch processing and simple integrations
-        
+
         **Response Format Details:**
         - **Content-Type**: `application/x-ndjson` (Newline-Delimited JSON)
         - **Structure**: Each line is an independent, valid JSON object
         - **Parsing**: Process line-by-line, each line is self-contained
         - **Headers**: Includes cache control and connection management
-        
+
         **Query Modes (same as /query endpoint):**
         - **local**: Entity-focused retrieval with direct relationships
         - **global**: Pattern analysis across the knowledge graph
@@ -482,7 +479,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **naive**: Vector similarity search only
         - **mix**: Integrated knowledge graph + vector retrieval (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
-        
+
         **Key Features:**
         - Dual-mode operation (streaming/non-streaming) in single endpoint
         - Real-time response delivery for interactive applications
@@ -491,9 +488,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - Conversation history support for multi-turn dialogues
         - Comprehensive error handling with graceful degradation
         - Token control for response length management
-        
+
         **Usage Examples:**
-        
+
         Real-time streaming query:
         ```json
         {
@@ -503,7 +500,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "include_references": true
         }
         ```
-        
+
         Complete response query:
         ```json
         {
@@ -513,7 +510,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "response_type": "Multiple Paragraphs"
         }
         ```
-        
+
         Conversation with context:
         ```json
         {
@@ -525,9 +522,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             ]
         }
         ```
-        
+
         **Response Processing:**
-        
+
         For streaming responses, process each line:
         ```python
         async for line in response.iter_lines():
@@ -542,7 +539,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 # Handle error
                 error_message = data["error"]
         ```
-        
+
         For non-streaming responses:
         ```python
         line = await response.text()
@@ -550,7 +547,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         complete_response = data["response"]
         references = data.get("references", [])
         ```
-        
+
         **Error Handling:**
         - Streaming errors are delivered as `{"error": "message"}` lines
         - Non-streaming errors raise HTTP exceptions
@@ -578,10 +575,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                   - Complete response: `{"references": [...], "response": "complete content"}`
 
         Raises:
-            HTTPException: 
+            HTTPException:
                 - 400: Invalid input parameters (e.g., query too short, invalid mode)
                 - 500: Internal processing error (e.g., LLM service unavailable)
-                
+
         Note:
             This endpoint is ideal for applications requiring flexible response delivery.
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
@@ -657,11 +654,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "status": {
                                     "type": "string",
                                     "enum": ["success", "failure"],
-                                    "description": "Query execution status"
+                                    "description": "Query execution status",
                                 },
                                 "message": {
                                     "type": "string",
-                                    "description": "Status message describing the result"
+                                    "description": "Status message describing the result",
                                 },
                                 "data": {
                                     "type": "object",
@@ -676,10 +673,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "description": {"type": "string"},
                                                     "source_id": {"type": "string"},
                                                     "file_path": {"type": "string"},
-                                                    "reference_id": {"type": "string"}
-                                                }
+                                                    "reference_id": {"type": "string"},
+                                                },
                                             },
-                                            "description": "Retrieved entities from knowledge graph"
+                                            "description": "Retrieved entities from knowledge graph",
                                         },
                                         "relationships": {
                                             "type": "array",
@@ -693,10 +690,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "weight": {"type": "number"},
                                                     "source_id": {"type": "string"},
                                                     "file_path": {"type": "string"},
-                                                    "reference_id": {"type": "string"}
-                                                }
+                                                    "reference_id": {"type": "string"},
+                                                },
                                             },
-                                            "description": "Retrieved relationships from knowledge graph"
+                                            "description": "Retrieved relationships from knowledge graph",
                                         },
                                         "chunks": {
                                             "type": "array",
@@ -706,10 +703,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "content": {"type": "string"},
                                                     "file_path": {"type": "string"},
                                                     "chunk_id": {"type": "string"},
-                                                    "reference_id": {"type": "string"}
-                                                }
+                                                    "reference_id": {"type": "string"},
+                                                },
                                             },
-                                            "description": "Retrieved text chunks from vector database"
+                                            "description": "Retrieved text chunks from vector database",
                                         },
                                         "references": {
                                             "type": "array",
@@ -717,13 +714,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "type": "object",
                                                 "properties": {
                                                     "reference_id": {"type": "string"},
-                                                    "file_path": {"type": "string"}
-                                                }
+                                                    "file_path": {"type": "string"},
+                                                },
                                             },
-                                            "description": "Reference list for citation purposes"
-                                        }
+                                            "description": "Reference list for citation purposes",
+                                        },
                                     },
-                                    "description": "Structured retrieval data containing entities, relationships, chunks, and references"
+                                    "description": "Structured retrieval data containing entities, relationships, chunks, and references",
                                 },
                                 "metadata": {
                                     "type": "object",
@@ -732,25 +729,41 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         "keywords": {
                                             "type": "object",
                                             "properties": {
-                                                "high_level": {"type": "array", "items": {"type": "string"}},
-                                                "low_level": {"type": "array", "items": {"type": "string"}}
-                                            }
+                                                "high_level": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"},
+                                                },
+                                                "low_level": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"},
+                                                },
+                                            },
                                         },
                                         "processing_info": {
                                             "type": "object",
                                             "properties": {
-                                                "total_entities_found": {"type": "integer"},
-                                                "total_relations_found": {"type": "integer"},
-                                                "entities_after_truncation": {"type": "integer"},
-                                                "relations_after_truncation": {"type": "integer"},
-                                                "final_chunks_count": {"type": "integer"}
-                                            }
-                                        }
+                                                "total_entities_found": {
+                                                    "type": "integer"
+                                                },
+                                                "total_relations_found": {
+                                                    "type": "integer"
+                                                },
+                                                "entities_after_truncation": {
+                                                    "type": "integer"
+                                                },
+                                                "relations_after_truncation": {
+                                                    "type": "integer"
+                                                },
+                                                "final_chunks_count": {
+                                                    "type": "integer"
+                                                },
+                                            },
+                                        },
                                     },
-                                    "description": "Query metadata including mode, keywords, and processing information"
-                                }
+                                    "description": "Query metadata including mode, keywords, and processing information",
+                                },
                             },
-                            "required": ["status", "message", "data", "metadata"]
+                            "required": ["status", "message", "data", "metadata"],
                         },
                         "examples": {
                             "successful_local_mode": {
@@ -767,7 +780,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "description": "Computational models inspired by biological neural networks",
                                                 "source_id": "chunk-123",
                                                 "file_path": "/documents/ai_basics.pdf",
-                                                "reference_id": "1"
+                                                "reference_id": "1",
                                             }
                                         ],
                                         "relationships": [
@@ -779,7 +792,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "weight": 0.85,
                                                 "source_id": "chunk-123",
                                                 "file_path": "/documents/ai_basics.pdf",
-                                                "reference_id": "1"
+                                                "reference_id": "1",
                                             }
                                         ],
                                         "chunks": [
@@ -787,28 +800,35 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "content": "Neural networks are computational models that mimic the way biological neural networks work...",
                                                 "file_path": "/documents/ai_basics.pdf",
                                                 "chunk_id": "chunk-123",
-                                                "reference_id": "1"
+                                                "reference_id": "1",
                                             }
                                         ],
                                         "references": [
-                                            {"reference_id": "1", "file_path": "/documents/ai_basics.pdf"}
-                                        ]
+                                            {
+                                                "reference_id": "1",
+                                                "file_path": "/documents/ai_basics.pdf",
+                                            }
+                                        ],
                                     },
                                     "metadata": {
                                         "query_mode": "local",
                                         "keywords": {
                                             "high_level": ["neural", "networks"],
-                                            "low_level": ["computation", "model", "algorithm"]
+                                            "low_level": [
+                                                "computation",
+                                                "model",
+                                                "algorithm",
+                                            ],
                                         },
                                         "processing_info": {
                                             "total_entities_found": 5,
                                             "total_relations_found": 3,
                                             "entities_after_truncation": 1,
                                             "relations_after_truncation": 1,
-                                            "final_chunks_count": 1
-                                        }
-                                    }
-                                }
+                                            "final_chunks_count": 1,
+                                        },
+                                    },
+                                },
                             },
                             "global_mode": {
                                 "summary": "Global mode data retrieval",
@@ -827,22 +847,29 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "weight": 0.92,
                                                 "source_id": "chunk-456",
                                                 "file_path": "/documents/ai_overview.pdf",
-                                                "reference_id": "2"
+                                                "reference_id": "2",
                                             }
                                         ],
                                         "chunks": [],
                                         "references": [
-                                            {"reference_id": "2", "file_path": "/documents/ai_overview.pdf"}
-                                        ]
+                                            {
+                                                "reference_id": "2",
+                                                "file_path": "/documents/ai_overview.pdf",
+                                            }
+                                        ],
                                     },
                                     "metadata": {
                                         "query_mode": "global",
                                         "keywords": {
-                                            "high_level": ["artificial", "intelligence", "overview"],
-                                            "low_level": []
-                                        }
-                                    }
-                                }
+                                            "high_level": [
+                                                "artificial",
+                                                "intelligence",
+                                                "overview",
+                                            ],
+                                            "low_level": [],
+                                        },
+                                    },
+                                },
                             },
                             "naive_mode": {
                                 "summary": "Naive mode data retrieval",
@@ -858,25 +885,25 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "content": "Deep learning is a subset of machine learning that uses neural networks with multiple layers...",
                                                 "file_path": "/documents/deep_learning.pdf",
                                                 "chunk_id": "chunk-789",
-                                                "reference_id": "3"
+                                                "reference_id": "3",
                                             }
                                         ],
                                         "references": [
-                                            {"reference_id": "3", "file_path": "/documents/deep_learning.pdf"}
-                                        ]
+                                            {
+                                                "reference_id": "3",
+                                                "file_path": "/documents/deep_learning.pdf",
+                                            }
+                                        ],
                                     },
                                     "metadata": {
                                         "query_mode": "naive",
-                                        "keywords": {
-                                            "high_level": [],
-                                            "low_level": []
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                                        "keywords": {"high_level": [], "low_level": []},
+                                    },
+                                },
+                            },
+                        },
                     }
-                }
+                },
             },
             400: {
                 "description": "Bad Request - Invalid input parameters",
@@ -884,15 +911,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {
-                                "detail": {"type": "string"}
-                            }
+                            "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
                             "detail": "Query text must be at least 3 characters long"
-                        }
+                        },
                     }
-                }
+                },
             },
             500: {
                 "description": "Internal Server Error - Data retrieval failed",
@@ -900,35 +925,33 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {
-                                "detail": {"type": "string"}
-                            }
+                            "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
                             "detail": "Failed to retrieve data: Knowledge graph unavailable"
-                        }
+                        },
                     }
-                }
-            }
-        }
+                },
+            },
+        },
     )
     async def query_data(request: QueryRequest):
         """
         Advanced data retrieval endpoint for structured RAG analysis.
-        
+
         This endpoint provides raw retrieval results without LLM generation, perfect for:
         - **Data Analysis**: Examine what information would be used for RAG
         - **System Integration**: Get structured data for custom processing
         - **Debugging**: Understand retrieval behavior and quality
         - **Research**: Analyze knowledge graph structure and relationships
-        
+
         **Key Features:**
         - No LLM generation - pure data retrieval
         - Complete structured output with entities, relationships, and chunks
         - Always includes references for citation
         - Detailed metadata about processing and keywords
         - Compatible with all query modes and parameters
-        
+
         **Query Mode Behaviors:**
         - **local**: Returns entities and their direct relationships + related chunks
         - **global**: Returns relationship patterns across the knowledge graph
@@ -936,16 +959,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **naive**: Returns only vector-retrieved text chunks (no knowledge graph)
         - **mix**: Integrates knowledge graph data with vector-retrieved chunks
         - **bypass**: Returns empty data arrays (used for direct LLM queries)
-        
+
         **Data Structure:**
         - **entities**: Knowledge graph entities with descriptions and metadata
         - **relationships**: Connections between entities with weights and descriptions
         - **chunks**: Text segments from documents with source information
         - **references**: Citation information mapping reference IDs to file paths
         - **metadata**: Processing information, keywords, and query statistics
-        
+
         **Usage Examples:**
-        
+
         Analyze entity relationships:
         ```json
         {
@@ -954,7 +977,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "top_k": 10
         }
         ```
-        
+
         Explore global patterns:
         ```json
         {
@@ -963,7 +986,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "max_relation_tokens": 2000
         }
         ```
-        
+
         Vector similarity search:
         ```json
         {
@@ -972,13 +995,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "chunk_top_k": 5
         }
         ```
-        
+
         **Response Analysis:**
         - **Empty arrays**: Normal for certain modes (e.g., naive mode has no entities/relationships)
         - **Processing info**: Shows retrieval statistics and token usage
         - **Keywords**: High-level and low-level keywords extracted from query
         - **Reference mapping**: Links all data back to source documents
-        
+
         Args:
             request (QueryRequest): The request object containing query parameters:
                 - **query**: The search query to analyze (min 3 characters)
@@ -997,10 +1020,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - **metadata**: Query processing information and statistics
 
         Raises:
-            HTTPException: 
+            HTTPException:
                 - 400: Invalid input parameters (e.g., query too short, invalid mode)
                 - 500: Internal processing error (e.g., knowledge graph unavailable)
-                
+
         Note:
             This endpoint always includes references regardless of the include_references parameter,
             as structured data analysis typically requires source attribution.
