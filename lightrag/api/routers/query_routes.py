@@ -269,7 +269,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     )
     async def query_text(request: QueryRequest):
         """
-        Comprehensive RAG query endpoint with non-streaming response.
+        Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
         This endpoint performs Retrieval-Augmented Generation (RAG) queries using various modes
         to provide intelligent responses based on your knowledge base.
@@ -445,34 +445,27 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     )
     async def query_text_stream(request: QueryRequest):
         """
-        Advanced RAG query endpoint with flexible streaming and non-streaming response modes.
+        Advanced RAG query endpoint with flexible streaming response.
 
         This endpoint provides the most flexible querying experience, supporting both real-time streaming
         and complete response delivery based on your integration needs.
 
         **Response Modes:**
-
-        **Streaming Mode (stream=True, default):**
         - Real-time response delivery as content is generated
         - NDJSON format: each line is a separate JSON object
         - First line: `{"references": [...]}` (if include_references=True)
         - Subsequent lines: `{"response": "content chunk"}`
         - Error handling: `{"error": "error message"}`
-        - Perfect for chat interfaces and real-time applications
 
-        **Non-Streaming Mode (stream=False):**
-        - Complete response delivered in a single message
-        - NDJSON format: single line with complete content
-        - Format: `{"references": [...], "response": "complete content"}`
-        - Ideal for batch processing and simple integrations
+        > If stream parameter is False, or the query hit LLM cache, complete response delivered in a single streaming message.
 
-        **Response Format Details:**
+        **Response Format Details**
         - **Content-Type**: `application/x-ndjson` (Newline-Delimited JSON)
         - **Structure**: Each line is an independent, valid JSON object
         - **Parsing**: Process line-by-line, each line is self-contained
         - **Headers**: Includes cache control and connection management
 
-        **Query Modes (same as /query endpoint):**
+        **Query Modes (same as /query endpoint)**
         - **local**: Entity-focused retrieval with direct relationships
         - **global**: Pattern analysis across the knowledge graph
         - **hybrid**: Combined local and global strategies
@@ -480,7 +473,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **mix**: Integrated knowledge graph + vector retrieval (recommended)
         - **bypass**: Direct LLM query without knowledge retrieval
 
-        **Key Features:**
+        **Key Features**
         - Dual-mode operation (streaming/non-streaming) in single endpoint
         - Real-time response delivery for interactive applications
         - Complete response option for batch processing
@@ -489,7 +482,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - Comprehensive error handling with graceful degradation
         - Token control for response length management
 
-        **Usage Examples:**
+        **Usage Examples**
 
         Real-time streaming query:
         ```json
@@ -525,27 +518,18 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         **Response Processing:**
 
-        For streaming responses, process each line:
         ```python
         async for line in response.iter_lines():
             data = json.loads(line)
             if "references" in data:
                 # Handle references (first message)
                 references = data["references"]
-            elif "response" in data:
+            if "response" in data:
                 # Handle content chunk
                 content_chunk = data["response"]
-            elif "error" in data:
+            if "error" in data:
                 # Handle error
                 error_message = data["error"]
-        ```
-
-        For non-streaming responses:
-        ```python
-        line = await response.text()
-        data = json.loads(line.strip())
-        complete_response = data["response"]
-        references = data.get("references", [])
         ```
 
         **Error Handling:**
