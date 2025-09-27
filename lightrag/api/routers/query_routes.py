@@ -283,7 +283,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - **bypass**: Direct LLM query without knowledge retrieval
 
         conversation_history parameteris sent to LLM only, does not affect retrieval results.
-        
+
         **Usage Examples:**
 
         Basic query:
