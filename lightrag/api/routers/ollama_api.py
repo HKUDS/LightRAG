@@ -499,7 +499,7 @@ class OllamaAPI:
                 prompt_tokens = estimate_tokens(cleaned_query)
 
                 param_dict = {
-                    "mode": mode,
+                    "mode": mode.value,
                     "stream": request.stream,
                     "only_need_context": only_need_context,
                     "conversation_history": conversation_history,

@@ -2322,6 +2322,8 @@ class LightRAG:
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
+        logger.debug(f"[aquery_llm] Query param: {param}")
+
         global_config = asdict(self)
 
         try:
