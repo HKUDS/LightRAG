@@ -1436,7 +1436,7 @@ class LightRAG:
                     pipeline_status["history_messages"].append(log_message)
                     break
 
-                log_message = f"Processing {len(to_process_docs)} document(s)"
+                log_message = f"Processing {len(to_process_docs)} document(s) with ingestion model: {getattr(self, '_ingestion_llm_model', 'unknown')}"
                 logger.info(log_message)
 
                 # Update pipeline_status, batchs now represents the total number of files to be processed
