@@ -18,6 +18,16 @@ import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/pris
 import { LoaderIcon, ChevronDownIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+// KaTeX configuration options interface
+interface KaTeXOptions {
+  errorColor?: string;
+  throwOnError?: boolean;
+  displayMode?: boolean;
+  strict?: boolean;
+  trust?: boolean;
+  errorCallback?: (error: string, latex: string) => void;
+}
+
 export type MessageWithError = Message & {
   id: string // Unique identifier for stable React keys
   isError?: boolean
@@ -38,7 +48,7 @@ export type MessageWithError = Message & {
 export const ChatMessage = ({ message }: { message: MessageWithError }) => { // Remove isComplete prop
   const { t } = useTranslation()
   const { theme } = useTheme()
-  const [katexPlugin, setKatexPlugin] = useState<any>(null)
+  const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
   // Directly use props passed from the parent.
@@ -64,26 +74,55 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
-        const [{ default: rehypeKatex }] = await Promise.all([
-          import('rehype-katex'),
-          import('katex/dist/katex.min.css')
-        ])
-        setKatexPlugin(() => rehypeKatex)
+        const { default: rehypeKatex } = await import('rehype-katex');
+        setKatexPlugin(() => rehypeKatex);
       } catch (error) {
-        console.error('Failed to load KaTeX:', error)
+        console.error('Failed to load KaTeX plugin:', error);
+        // Set to null to ensure we don't try to use a failed plugin
+        setKatexPlugin(null);
       }
-    }
-    loadKaTeX()
-  }, [])
+    };
+    
+    loadKaTeX();
+  }, []);
 
   const mainMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (
-      <CodeHighlight
-        {...props}
-        renderAsDiagram={message.mermaidRendered ?? false}
-        messageRole={message.role}
-      />
-    ),
+    code: (props: any) => {
+      const { inline, className, children, ...restProps } = props;
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : undefined;
+
+      // Handle math blocks ($$...$$) - provide better container and styling
+      if (language === 'math' && !inline) {
+        return (
+          <div className="katex-display-wrapper my-4 overflow-x-auto">
+            <div className="text-current">{children}</div>
+          </div>
+        );
+      }
+
+      // Handle inline math ($...$) - ensure proper inline display
+      if (language === 'math' && inline) {
+        return (
+          <span className="katex-inline-wrapper">
+            <span className="text-current">{children}</span>
+          </span>
+        );
+      }
+
+      // Handle all other code (inline and block)
+      return (
+        <CodeHighlight
+          inline={inline}
+          className={className}
+          {...restProps}
+          renderAsDiagram={message.mermaidRendered ?? false}
+          messageRole={message.role}
+        >
+          {children}
+        </CodeHighlight>
+      );
+    },
     p: ({ children }: { children?: ReactNode }) => <div className="my-2">{children}</div>,
     h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
     h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
@@ -148,7 +187,14 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
                     throwOnError: false,
                     displayMode: false,
                     strict: false,
-                    trust: true
+                    trust: true,
+                    // Add silent error handling to avoid console noise
+                    errorCallback: (error: string, latex: string) => {
+                      // Only show detailed errors in development environment
+                      if (process.env.NODE_ENV === 'development') {
+                        console.warn('KaTeX rendering error in thinking content:', error, 'for LaTeX:', latex);
+                      }
+                    }
                   }] as any] : []),
                   rehypeReact
                 ]}
@@ -182,7 +228,14 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
                   throwOnError: false,
                   displayMode: false,
                   strict: false,
-                  trust: true
+                  trust: true,
+                  // Add silent error handling to avoid console noise
+                  errorCallback: (error: string, latex: string) => {
+                    // Only show detailed errors in development environment
+                    if (process.env.NODE_ENV === 'development') {
+                      console.warn('KaTeX rendering error in main content:', error, 'for LaTeX:', latex);
+                    }
+                  }
                 }
               ] as any] : []),
               rehypeReact
