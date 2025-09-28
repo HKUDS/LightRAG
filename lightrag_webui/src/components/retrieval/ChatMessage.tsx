@@ -27,6 +27,11 @@ export type MessageWithError = Message & {
    * Used to persist the rendering state across updates and prevent flickering.
    */
   mermaidRendered?: boolean
+  /**
+   * Indicates if the LaTeX formulas in this message are complete and ready for rendering.
+   * Used to prevent red error text during streaming of incomplete LaTeX formulas.
+   */
+  latexRendered?: boolean
 }
 
 // Restore original component definition and export
@@ -138,7 +143,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
                 remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
                 rehypePlugins={[
                   rehypeRaw,
-                  ...(katexPlugin ? [[katexPlugin, {
+                  ...((katexPlugin && (message.latexRendered ?? true)) ? [[katexPlugin, {
                     errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
                     throwOnError: false,
                     displayMode: false,
@@ -168,7 +173,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
             remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
             rehypePlugins={[
               rehypeRaw,
-              ...(katexPlugin ? [[
+              ...((katexPlugin && (message.latexRendered ?? true)) ? [[
                 katexPlugin,
                 {
                   errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
