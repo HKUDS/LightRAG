@@ -237,6 +237,7 @@ class Question(Base):
     options: Mapped[dict] = mapped_column(JSON, nullable=False)
     correct_answers: Mapped[dict] = mapped_column(JSON, nullable=False)
     difficulty_level: Mapped[Optional[str]] = mapped_column(String(100))
+    type: Mapped[str] = mapped_column(Text, nullable=False)
     tags: Mapped[Optional[dict]] = mapped_column(JSON)
     source: Mapped[str] = mapped_column(Text, nullable=False)
     isApproved: Mapped[int] = mapped_column(default=0)

@@ -36,6 +36,7 @@ from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.workspace_routes import create_workspace_routes
 from lightrag.api.routers.session_routes import create_session_routes
 from lightrag.api.routers.chat_routes import create_chat_routes
+from lightrag.api.routers.question_routes import create_question_routes
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -90,7 +91,7 @@ class InstanceManager:
             self,
             max_instances: int = 100,
             root_dir: str = "./rag_storage",
-            input_dir: str = "./input",
+            input_dir: str = "./rag_storage/input",
             **lightrag_kwargs: Any,
     ):
         self._cache: LRUCache[str, InstanceBundle] = LRUCache(maxsize=max_instances)
@@ -574,6 +575,7 @@ def create_multi_workspace_app(args):
     app.include_router(create_workspace_routes(api_key))
     app.include_router(create_session_routes(api_key))
     app.include_router(create_chat_routes(api_key))
+    app.include_router(create_question_routes(api_key))
 
     @app.get("/")
     async def redirect_to_webui():

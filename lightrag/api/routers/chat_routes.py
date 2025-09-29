@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, Optional, List
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Header
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,7 +30,6 @@ from ..models import ChatMessage, ChatSession, ChatRole, User, Project
 
 # LightRAG in-process access (same pattern as query/session/workspace)
 from lightrag import LightRAG
-from lightrag.base import QueryParam
 
 # ---------- LLM + prompts (embedded helpers) ----------
 from dotenv import load_dotenv
@@ -46,8 +45,12 @@ from ..prompts import (
     INTENT_DETECTION_PROMPT,
     QUERY_INTERPRETATION_PROMPT,
     BASIC_CHAT_STATELESS_PROMPT,
-    QUESTION_GENERATION_PROMPT,
+    MCQ_GENERATION_PROMPT,
+    ASSIGNMENT_GENERATION_PROMPT
 )
+
+from .query_routes import QueryRequest
+from .question_routes import create_questions
 
 # LLM instances (env-driven)
 llm = ChatOpenAI(
@@ -162,10 +165,45 @@ class _Question(BaseModel):
     difficulty_level: str
     tags: List[str]
     source: str
+    type: str = "mcq"
+
+class _Assignment(BaseModel):
+    question: str
+    difficulty_level: str
+    tags: List[str]
+    source: str
 
 class _GQResponse(BaseModel):
     questions: List[_Question]
     message: str
+
+class _GAResponse(BaseModel):
+    questions: List[_Assignment]
+    message: str
+
+async def _run_rag_query_like_endpoint(
+    rag,
+    text: str,
+    overrides: dict | None = None,
+    stream: bool = False,
+) -> str:
+    """
+    Mirror the /query endpoint behavior in-process.
+    - Builds QueryRequest -> to_query_params(stream) -> rag.aquery(...)
+    - Normalizes return to string (JSON-serialized if dict)
+    """
+    qr_kwargs = {"query": text}
+    if overrides:
+        qr_kwargs.update(overrides)
+    qr = QueryRequest(**qr_kwargs)
+    qparam = qr.to_query_params(stream)
+    res = await rag.aquery(qr.query, param=qparam)
+
+    if isinstance(res, str):
+        return res
+    if isinstance(res, dict):
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    return str(res)
 
 async def create_questions_controller(payload, db: Session) -> _GQResponse:
     try:
@@ -176,14 +214,27 @@ async def create_questions_controller(payload, db: Session) -> _GQResponse:
         memory = load_memory(session.memory_state)
         chat_history = stringify_memory(memory)
 
-        prompt = QUESTION_GENERATION_PROMPT.format(
-            question_count=payload.question_count,
-            history=chat_history,
-            difficulty_level=payload.difficulty_level,
-            search_result=payload.search_result,
-            command=payload.command,
-            instructions=payload.instructions,
-        )
+        question_type = "mcq"
+        if payload.type is not None:
+            question_type = payload.type
+        
+        if question_type == "mcq":
+            prompt = MCQ_GENERATION_PROMPT.format(
+                question_count=payload.question_count,
+                history=chat_history,
+                difficulty_level=payload.difficulty_level,
+                search_result=payload.search_result,
+                command=payload.command,
+                instructions=payload.instructions,
+            )
+        elif question_type == "assignment":
+            prompt = ASSIGNMENT_GENERATION_PROMPT.format(
+                question_count=payload.question_count,
+                difficulty_level=payload.difficulty_level,
+                graph_context=payload.search_result,
+                user_instructions=payload.command,
+                project_instructions=payload.instructions,
+            )
         structured_llm = generation_llm.with_structured_output(_GQResponse)
         response = await structured_llm.ainvoke(prompt)
 
@@ -222,20 +273,6 @@ async def get_chat_controller(payload, db: Session) -> str:
         logging.error(f"Error in get_chat_controller: {e!r}")
         raise
 
-# ---------- RAG integration helpers ----------
-async def _get_rag(request: Request, user_id: str, workspace_id: str) -> LightRAG:
-    """Obtain/create LightRAG instance via app.state.instance_manager."""
-    try:
-        manager = request.app.state.instance_manager
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Instance manager not available: {e}")
-    try:
-        rag, _ = await manager.get_instance(user_id, workspace_id)
-        return rag
-    except Exception as e:
-        trace_exception(e)
-        raise HTTPException(status_code=500, detail=f"Failed to initialize LightRAG instance: {e}")
-
 def _serialize_output(system_output: Any) -> str:
     if system_output is None or system_output == "":
         return ""
@@ -250,7 +287,10 @@ try:
 except ImportError:
     httpx = None
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(
+    prefix="/chat",
+    tags=["chat"]
+)
 
 # ---------- API Schemas ----------
 class SendMessageRequest(BaseModel):
@@ -291,6 +331,39 @@ class HealthErr(BaseModel):
     status: str = "error"
     message: str
 
+class GenerateRequest(BaseModel):
+    session_id: str
+    question_type: str
+    questions_count: str
+    difficulty_level: str
+    project_instructions: str
+    user_instructions: str
+
+class GenerateResponse(BaseModel):
+    message: str
+    questions: List[Any]
+
+async def get_rag(
+    request: Request,
+    x_workspace: Optional[str] = Header(default=None, alias="X-Workspace"),
+    q_workspace: Optional[str] = Query(default=None, alias="workspace"),
+) -> LightRAG:
+    """
+        Resolve (rag, doc_manager) per request using the InstanceManager stored in app.state.
+        - user_id is derived from the bearer token via auth_handler.
+        - workspace priority: X-Workspace header > ?workspace= query > global_args.workspace > "".
+    """
+    # Add logic to fetch workspace and user_id for creation / fetching of valid rag instance
+    auth_header = request.headers.get("authorization")
+
+    user_id = "test_user"
+
+    workspace = x_workspace or q_workspace or "default"
+
+    manager = request.app.state.instance_manager
+    rag, _ = await manager.get_instance(user_id, workspace)
+    return rag
+
 # ---------- Router factory ----------
 def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
     combined_auth = get_combined_auth_dependency(api_key)
@@ -317,7 +390,7 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
             messages=[MessageOut.model_validate(r) for r in rows],
         )
 
-    # POST /chat/
+    # POST /chat
     @router.post(
         "/",
         response_model=SendMessageResponse,
@@ -328,6 +401,7 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
         request: Request,
         payload: SendMessageRequest,
         db: Session = Depends(get_db),
+        rag: LightRAG = Depends(get_rag)
     ):
         # Validate references
         if db.get(User, payload.user_id) is None:
@@ -335,7 +409,9 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
         sess = db.get(ChatSession, payload.session_id)
         if sess is None:
             raise HTTPException(status_code=400, detail="Invalid session_id: session not found.")
-        if db.get(Project, payload.project_id) is None:
+        
+        project = db.get(Project, payload.project_id)
+        if project is None:
             raise HTTPException(status_code=400, detail="Invalid project_id: project not found.")
 
         # Insert the user's message
@@ -386,23 +462,15 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
                 )
                 question = qi.question
 
-                # RAG global search
-                rag = await _get_rag(request, user_id=payload.user_id, workspace_id=payload.project_id)
-                qparam = QueryParam(
-                    mode="global",
-                    top_k=10,
-                    max_token_for_text_unit=4000,
-                    max_token_for_global_context=4000,
-                    max_token_for_local_context=4000,
+                system_message = await _run_rag_query_like_endpoint(
+                    rag,
+                    text=question,
+                    overrides={
+                        "mode": "global",
+                        "top_k": 10,
+                    },
                     stream=False,
                 )
-                rag_res = await rag.aquery(question, param=qparam)
-                if isinstance(rag_res, str):
-                    system_message = rag_res
-                elif isinstance(rag_res, dict):
-                    system_message = json.dumps(rag_res, indent=2, ensure_ascii=False)
-                else:
-                    system_message = str(rag_res)
 
             elif intent == "generate_questions":
                 qi = await get_query_interpretation_controller(
@@ -414,18 +482,24 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
                 command = qi.command
                 difficulty_level = qi.difficulty_level
 
-                # RAG context-only retrieval
-                rag = await _get_rag(request, user_id=payload.user_id, workspace_id=payload.project_id)
-                qparam = QueryParam(
-                    mode="mix",
-                    only_need_context=True,
-                    top_k=10,
-                    max_token_for_text_unit=4000,
-                    max_token_for_global_context=4000,
-                    max_token_for_local_context=4000,
+                context_only = await _run_rag_query_like_endpoint(
+                    rag,
+                    text=question,
+                    overrides={
+                        "mode": "mix",
+                        "only_need_context": True,
+                        "top_k": 10,
+                    },
                     stream=False,
                 )
-                rag_res = await rag.aquery(question, param=qparam)
+
+                project_instructions = ""
+
+                try:
+                    raw_instr = getattr(project, "instructions", None)
+                    project_instructions = raw_instr if isinstance(raw_instr, str) else (json.dumps(raw_instr) if raw_instr is not None else "")
+                except Exception:
+                    project_instructions = ""
 
                 cq_payload = type(
                     "CQPayload",
@@ -434,15 +508,31 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
                         "session_id": payload.session_id,
                         "question_count": str(question_count),
                         "difficulty_level": str(difficulty_level),
-                        "search_result": rag_res if isinstance(rag_res, str) else json.dumps(rag_res, ensure_ascii=False),
+                        "search_result": context_only,
                         "command": str(command),
-                        "instructions": "",
+                        "instructions": project_instructions,
+                        "type": "mcq"
                     },
                 )
                 gq = await create_questions_controller(cq_payload, db)
                 system_message = gq.message
                 system_output = gq.questions
+                try:
+                    if system_output:
+                        qdicts = [q.model_dump() if hasattr(q, "model_dump") else dict(q) for q in system_output]
 
+                        for q in qdicts:
+                            q["type"] = "mcq"
+
+                        create_questions(
+                            db,
+                            user_id=payload.user_id,
+                            session_id=payload.session_id,
+                            project_id=payload.project_id,
+                            questions=qdicts,
+                        )
+                except Exception as e:
+                    logging.error("[DB] Failed to store questions: %r", e)
             else:
                 # Fallback to basic chat
                 bc_payload = type("ChatPayload", (), {"session_id": payload.session_id, "user_message": payload.user_message})
@@ -484,5 +574,58 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
             user_created_at=user_created_at,
             system_created_at=system_created_at,
         )
+    
+    @router.post(
+        "/generate",
+        response_model=GenerateResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Generate content with AI",
+    )
+    async def generate_content(
+        payload: GenerateRequest,
+        rag: LightRAG = Depends(get_rag),
+        db: Session = Depends(get_db)  
+    ):
+        try:
+            question_type = (payload.question_type or "").strip().lower()
+            if question_type not in {"mcq", "assignment"}:
+                raise HTTPException(status_code=400, detail="question_type must be 'mcq' or 'assignment'.")
+            
+            qi = await get_query_interpretation_controller(
+                    type("QIPayload", (), {"user_message": payload.user_instructions, "session_id": payload.session_id}),
+                    db,
+                )
+            query = qi.question
+
+            context_only = await _run_rag_query_like_endpoint(
+                rag,
+                text=query,
+                overrides={
+                    "mode": "mix",
+                    "only_need_context": True,
+                    "top_k": 20,
+                },
+                stream=False,
+            )
+            
+            if question_type == "assignment":
+                prompt = ASSIGNMENT_GENERATION_PROMPT.format(
+                    question_count=payload.questions_count,
+                    difficulty_level=payload.difficulty_level,
+                    graph_context=context_only or "",
+                    user_instructions=payload.user_instructions or "",
+                    project_instructions=payload.project_instructions or "",
+                )
+            
+            structured_llm = generation_llm.with_structured_output(_GAResponse)
+            response = await structured_llm.ainvoke(prompt)
+
+            return response
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.error("Error in /chat/generate: %r", e)
+            raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
 
     return router

@@ -45,7 +45,7 @@ local_neo4jWorkDir/
 neo4jWorkDir/
 
 # Data & Storage
-inputs/
+input/
 rag_storage/
 examples/input/
 examples/output/

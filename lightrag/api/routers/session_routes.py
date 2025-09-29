@@ -10,11 +10,11 @@ from __future__ import annotations
 import os
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy import select, update, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -54,21 +54,22 @@ def count_tokens(text: str) -> int:
     return len(tiktoken_model.encode(text))
 
 
-def load_memory(serialized_json: Optional[str]) -> ConversationBufferMemory:
-    """Rebuild ConversationBufferMemory from stored JSON (if any)."""
-    memory = ConversationBufferMemory(return_messages=True)
-    if serialized_json:
-        try:
-            for m in json.loads(serialized_json):
-                if m.get("type") == "human":
-                    memory.chat_memory.add_user_message(HumanMessage(content=m["content"]))
-                elif m.get("type") == "ai":
-                    memory.chat_memory.add_ai_message(AIMessage(content=m["content"]))
-                elif m.get("type") == "system":
-                    memory.chat_memory.messages.append(SystemMessage(content=m["content"]))
-        except Exception as e:
-            logging.warning(f"Failed to load memory: {e}")
-    return memory
+def load_memory(serialized: Optional[Union[str, List[dict[str, Any]]]]) -> ConversationBufferMemory:
+    mem = ConversationBufferMemory(return_messages=True)
+    if not serialized:
+        return mem
+    try:
+        items = serialized if isinstance(serialized, list) else json.loads(serialized)
+        for m in items:
+            if m.get("type") == "human":
+                mem.chat_memory.add_user_message(HumanMessage(content=m["content"]))
+            elif m.get("type") == "ai":
+                mem.chat_memory.add_ai_message(AIMessage(content=m["content"]))
+            elif m.get("type") == "system":
+                mem.chat_memory.messages.append(SystemMessage(content=m["content"]))
+    except Exception as e:
+        logging.warning(f"Failed to load memory: {e}")
+    return mem
 
 
 def stringify_memory(memory: ConversationBufferMemory) -> str:
@@ -84,8 +85,9 @@ def stringify_memory(memory: ConversationBufferMemory) -> str:
     return "\n".join(lines)
 
 
-def dump_memory(memory: ConversationBufferMemory) -> str:
-    return json.dumps([m.dict() for m in memory.chat_memory.messages])
+def dump_memory(memory: ConversationBufferMemory) -> List[dict]:
+    # return a Python list (SQLAlchemy JSON will store as array)
+    return [m.dict() for m in memory.chat_memory.messages]
 
 
 async def summarize_memory_controller_new(
@@ -160,13 +162,30 @@ class SessionIdBody(BaseModel):
 
 class SessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
     id: str
     topic: Optional[str] = None
     user_id: str
     project_id: str
-    memory_state: Optional[Dict[str, Any]] = None
+    memory_state: Optional[List[dict[str, Any]]] = None
     created_at: Any
     last_active_at: Any
+
+    @field_validator("memory_state", mode="before")
+    @classmethod
+    def _coerce_memory(cls, v):
+        if v is None or isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else []
+            except Exception:
+                return []
+        # if DB row is a dict (older shape), wrap in a list
+        if isinstance(v, dict):
+            return [v]
+        return v
 
 
 class ApiSuccess(BaseModel):
@@ -251,12 +270,12 @@ def create_session_routes(api_key: Optional[str] = None) -> APIRouter:
         rows = db.execute(stmt).scalars().all()
         return SessionListResponse(success=True, sessions=[SessionOut.model_validate(r) for r in rows])
 
-    # GET "/user/{user_id}/project/{project_id}"
+    # GET "/user/{user_id}/workspace/{project_id}"
     @router.get(
-        "/user/{user_id}/project/{project_id}",
+        "/user/{user_id}/workspace/{project_id}",
         response_model=SessionListResponse,
         dependencies=[Depends(combined_auth)],
-        summary="Get sessions by user and project (limit 30)",
+        summary="Get sessions by user and workspace (limit 30)",
     )
     async def get_sessions_by_project_id(
         user_id: str = Path(...),

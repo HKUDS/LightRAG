@@ -30,6 +30,32 @@ from lightrag.utils import generate_track_id
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
+import asyncio
+
+import trafilatura
+
+def read_link(path: str) -> Optional[str]:
+    try:
+        downloaded = trafilatura.fetch_url(path)
+
+        if not downloaded:
+            return ""
+
+        text = trafilatura.extract(
+            downloaded, output_format="txt")
+
+        if text:
+            return text
+        return ""
+
+    except Exception as e:
+        print(f"Error reading link {path}: {e}", flush=True)
+        return ""
+
+
+async def aread_link(path: str) -> Optional[str]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, read_link, path)
 
 # Function to format datetime to ISO format string with timezone information
 def format_datetime(dt: Any) -> Optional[str]:
@@ -209,6 +235,32 @@ class InsertTextsRequest(BaseModel):
             }
         }
 
+class InsertLinksRequest(BaseModel):
+    """Request model for inserting file paths
+
+    Attributes:
+        links: List of links to be inserted into the RAG system
+    """
+
+    links: list[str] = Field(
+        min_length=1,
+        description="The web links to insert",
+    )
+
+    @field_validator("links", mode="after")
+    @classmethod
+    def strip_paths_after(cls, links: list[str]) -> list[str]:
+        return [file_path.strip() for file_path in links]
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "links": [
+                    "https://en.wikipedia.org/wiki/Wikimedia_Commons",
+                    "https://en.wikipedia.org/wiki/Wikimedia_Commons#History",
+                ],
+            }
+        }
 
 class InsertResponse(BaseModel):
     """Response model for document insertion operations
@@ -1774,6 +1826,52 @@ def create_document_routes(
             )
         except Exception as e:
             logger.error(f"Error /documents/texts: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    @router.post(
+        "/links",
+        response_model=InsertResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def insert_links(
+        request: InsertLinksRequest,
+        background_tasks: BackgroundTasks,
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager),
+    ):
+        try:
+            rag, doc_manager = pair
+
+            # Fetch pages concurrently
+            fetched_texts = await asyncio.gather(*(aread_link(u) for u in request.links))
+
+            # Keep only items with non-empty content and align sources
+            pairs = [(t.strip(), u) for t, u in zip(fetched_texts, request.links) if t and t.strip()]
+            if not pairs:
+                raise HTTPException(status_code=400, detail="No extractable content found in provided links.")
+
+            texts, sources = zip(*pairs)
+
+            # Generate a tracking id and pass it through
+            track_id = generate_track_id("links")
+
+            background_tasks.add_task(
+                pipeline_index_texts,
+                rag,
+                list(texts),
+                file_sources=list(sources),
+                track_id=track_id,
+            )
+
+            status = "success" if len(pairs) == len(request.links) else "partial_success"
+            msg = f"Links received ({len(pairs)}/{len(request.links)} with content). Processing will continue in background."
+
+            return InsertResponse(status=status, message=msg, track_id=track_id)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error /documents/links: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
