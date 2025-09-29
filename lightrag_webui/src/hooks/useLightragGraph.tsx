@@ -338,7 +338,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
       const source = nodeIdMap[edge.source]
       const target = nodeIdMap[edge.target]
-      if (source !== undefined && source !== undefined) {
+      if (source !== undefined && target !== undefined) {
         const sourceNode = rawData.nodes[source]
         const targetNode = rawData.nodes[target]
         if (!sourceNode) {
