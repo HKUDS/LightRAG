@@ -82,7 +82,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
         setKatexPlugin(null);
       }
     };
-    
+
     loadKaTeX();
   }, []);
 
