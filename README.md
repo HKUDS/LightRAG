@@ -442,6 +442,81 @@ rag = LightRAG(
 </details>
 
 <details>
+<summary> <b>Using LiteLLM (100+ Providers)</b> </summary>
+
+**Overview**
+
+LiteLLM provides a unified interface to 100+ LLM providers including OpenAI, Anthropic, Cohere, Azure, AWS Bedrock, Google VertexAI, HuggingFace, Ollama, Together AI, and many more. This is the recommended way for maximum flexibility.
+
+See `examples/lightrag_litellm_demo.py` for a complete example.
+
+```python
+from lightrag.llm.litellm import litellm_complete_if_cache, litellm_embed
+from lightrag.utils import EmbeddingFunc
+
+async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+    return await litellm_complete_if_cache(
+        model="gpt-4o-mini",  # or "anthropic/claude-3-sonnet", "ollama/llama2", etc.
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs
+    )
+
+async def embedding_func(texts: list[str]):
+    return await litellm_embed(
+        texts=texts,
+        model="text-embedding-3-small",  # or other embedding models
+    )
+
+# Initialize LightRAG with LiteLLM
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=EmbeddingFunc(
+        embedding_dim=1536,
+        max_token_size=8192,
+        func=embedding_func,
+    ),
+)
+```
+
+**Supported Model Formats:**
+- OpenAI: `"gpt-4o"`, `"gpt-4o-mini"`, `"gpt-3.5-turbo"`
+- Anthropic: `"anthropic/claude-3-sonnet-20240229"`, `"anthropic/claude-3-opus-20240229"`
+- Cohere: `"cohere/command-r-plus"`, `"cohere/command-r"`
+- Azure: `"azure/your-deployment-name"`
+- Bedrock: `"bedrock/anthropic.claude-v2"`
+- Ollama: `"ollama/llama2"`, `"ollama/mistral"`
+- And 100+ more providers!
+
+**Using LiteLLM Proxy:**
+```python
+# Point to your LiteLLM proxy server
+async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+    return await litellm_complete_if_cache(
+        model="gpt-4o-mini",
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_base="http://localhost:4000",  # Your LiteLLM proxy
+        api_key="your-proxy-key",
+        **kwargs
+    )
+```
+
+**Features:**
+- ✅ Unified interface for 100+ providers
+- ✅ Streaming support
+- ✅ Token usage tracking
+- ✅ Automatic retries and fallbacks
+- ✅ Cost tracking
+- ✅ Load balancing
+- ✅ Observability (Langfuse, Opik, etc.)
+
+</details>
+
+<details>
 <summary> <b>Using Ollama Models</b> </summary>
 **Overview**
 
