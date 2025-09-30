@@ -273,6 +273,7 @@ if __name__ == "__main__":
 | **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
 | **summary_context_size** | `int` | 合并实体关系摘要时送给LLM的最大令牌数 | `10000`（由环境变量 SUMMARY_MAX_CONTEXT 设置） |
 | **summary_max_tokens** | `int` | 合并实体关系描述的最大令牌数长度 | `500`（由环境变量 SUMMARY_MAX_TOKENS 设置） |
+| **max_gleaning** | `int` | 是否进行额外的重复提取，以纠正之前错失的提取结果 | `1`（由环境变量 MAX_GLEANING 设置） |
 | **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
 | **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
