@@ -39,8 +39,6 @@ from .base import (
     BaseVectorStorage,
     TextChunkSchema,
     QueryParam,
-    QueryResult,
-    QueryContextResult,
 )
 from .prompt import PROMPTS
 from .constants import (
@@ -2236,6 +2234,7 @@ async def extract_entities(
     return chunk_results
 
 
+@overload
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2247,37 +2246,47 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
-) -> QueryResult:
-    """
-    Execute knowledge graph query and return unified QueryResult object.
+    return_raw_data: Literal[True] = False,
+) -> dict[str, Any]: ...
 
-    Args:
-        query: Query string
-        knowledge_graph_inst: Knowledge graph storage instance
-        entities_vdb: Entity vector database
-        relationships_vdb: Relationship vector database
-        text_chunks_db: Text chunks storage
-        query_param: Query parameters
-        global_config: Global configuration
-        hashing_kv: Cache storage
-        system_prompt: System prompt
-        chunks_vdb: Document chunks vector database
 
-    Returns:
-        QueryResult: Unified query result object containing:
-            - content: Non-streaming response text content
-            - response_iterator: Streaming response iterator
-            - raw_data: Complete structured data (including references and metadata)
-            - is_streaming: Whether this is a streaming result
+@overload
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: Literal[False] = False,
+) -> str | AsyncIterator[str]: ...
 
-        Based on different query_param settings, different fields will be populated:
-        - only_need_context=True: content contains context string
-        - only_need_prompt=True: content contains complete prompt
-        - stream=True: response_iterator contains streaming response, raw_data contains complete data
-        - default: content contains LLM response text, raw_data contains complete data
-    """
+
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: bool = False,
+) -> str | AsyncIterator[str] | dict[str, Any]:
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        if return_raw_data:
+            return {
+                "status": "failure",
+                "message": "Query string is empty.",
+                "data": {},
+            }
+        return PROMPTS["fail_response"]
 
     if query_param.model_func:
         use_model_func = query_param.model_func
@@ -2285,6 +2294,33 @@ async def kg_query(
         use_model_func = global_config["llm_model_func"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
+
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+    )
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
+    )
+    if (
+        cached_result is not None
+        and not return_raw_data
+        and not query_param.only_need_context
+        and not query_param.only_need_prompt
+    ):
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        return cached_response
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2303,13 +2339,53 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
-            return QueryResult(content=PROMPTS["fail_response"])
+            if return_raw_data:
+                return {
+                    "status": "failure",
+                    "message": "Both high_level_keywords and low_level_keywords are empty",
+                    "data": {},
+                }
+            return PROMPTS["fail_response"]
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
 
-    # Build query context (unified interface)
-    context_result = await _build_query_context(
+    # If raw data is requested, get both context and raw data
+    if return_raw_data:
+        context_result = await _build_query_context(
+            query,
+            ll_keywords_str,
+            hl_keywords_str,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+            chunks_vdb,
+            return_raw_data=True,
+        )
+
+        if isinstance(context_result, tuple):
+            context, raw_data = context_result
+            logger.debug(f"[kg_query] Context length: {len(context) if context else 0}")
+            logger.debug(
+                f"[kg_query] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
+            )
+            return raw_data
+        else:
+            if not context_result:
+                return {
+                    "status": "failure",
+                    "message": "Query return empty data set.",
+                    "data": {},
+                }
+            else:
+                raise ValueError(
+                    "Fail to build raw data query result. Invalid return from _build_query_context"
+                )
+
+    # Build context (normal flow)
+    context = await _build_query_context(
         query,
         ll_keywords_str,
         hl_keywords_str,
@@ -2321,126 +2397,78 @@ async def kg_query(
         chunks_vdb,
     )
 
-    if context_result is None:
-        return QueryResult(content=PROMPTS["fail_response"])
-
-    # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
-        return QueryResult(
-            content=context_result.context, raw_data=context_result.raw_data
-        )
+        return context if context is not None else PROMPTS["fail_response"]
+    if context is None:
+        return PROMPTS["fail_response"]
 
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
-    response_type = (
-        query_param.response_type
-        if query_param.response_type
-        else "Multiple Paragraphs"
-    )
-
-    # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
-        response_type=response_type,
-        user_prompt=user_prompt,
-        context_data=context_result.context,
+        context_data=context,
+        response_type=query_param.response_type,
     )
 
-    user_query = query
+    user_query = (
+        "\n\n".join([query, query_param.user_prompt])
+        if query_param.user_prompt
+        else query
+    )
 
     if query_param.only_need_prompt:
-        prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
+        return "\n\n".join([sys_prompt, "---User Query---", user_query])
 
-    # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(
         f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
 
-    # Handle cache
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        hl_keywords_str,
-        ll_keywords_str,
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
+    response = await use_model_func(
+        user_query,
+        system_prompt=sys_prompt,
+        history_messages=query_param.conversation_history,
+        enable_cot=True,
+        stream=query_param.stream,
     )
-
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
-    )
-
-    if cached_result is not None:
-        cached_response, _ = cached_result  # Extract content, ignore timestamp
-        logger.info(
-            " == LLM cache == Query cache hit, using cached response as query result"
-        )
-        response = cached_response
-    else:
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
+    if isinstance(response, str) and len(response) > len(sys_prompt):
+        response = (
+            response.replace(sys_prompt, "")
+            .replace("user", "")
+            .replace("model", "")
+            .replace(query, "")
+            .replace("<system>", "")
+            .replace("</system>", "")
+            .strip()
         )
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
-            queryparam_dict = {
-                "mode": query_param.mode,
-                "response_type": query_param.response_type,
-                "top_k": query_param.top_k,
-                "chunk_top_k": query_param.chunk_top_k,
-                "max_entity_tokens": query_param.max_entity_tokens,
-                "max_relation_tokens": query_param.max_relation_tokens,
-                "max_total_tokens": query_param.max_total_tokens,
-                "hl_keywords": hl_keywords_str,
-                "ll_keywords": ll_keywords_str,
-                "user_prompt": query_param.user_prompt or "",
-                "enable_rerank": query_param.enable_rerank,
-            }
-            await save_to_cache(
-                hashing_kv,
-                CacheData(
-                    args_hash=args_hash,
-                    content=response,
-                    prompt=query,
-                    mode=query_param.mode,
-                    cache_type="query",
-                    queryparam=queryparam_dict,
-                ),
-            )
-
-    # Return unified result based on actual response type
-    if isinstance(response, str):
-        # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
-        return QueryResult(content=response, raw_data=context_result.raw_data)
-    else:
-        # Streaming response (AsyncIterator)
-        return QueryResult(
-            response_iterator=response,
-            raw_data=context_result.raw_data,
-            is_streaming=True,
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache with query parameters
+        queryparam_dict = {
+            "mode": query_param.mode,
+            "response_type": query_param.response_type,
+            "top_k": query_param.top_k,
+            "chunk_top_k": query_param.chunk_top_k,
+            "max_entity_tokens": query_param.max_entity_tokens,
+            "max_relation_tokens": query_param.max_relation_tokens,
+            "max_total_tokens": query_param.max_total_tokens,
+            "hl_keywords": query_param.hl_keywords or [],
+            "ll_keywords": query_param.ll_keywords or [],
+            "user_prompt": query_param.user_prompt or "",
+            "enable_rerank": query_param.enable_rerank,
+        }
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                mode=query_param.mode,
+                cache_type="query",
+                queryparam=queryparam_dict,
+            ),
         )
+
+    return response
 
 
 async def get_keywords_from_query(
@@ -2491,6 +2519,8 @@ async def extract_keywords_only(
     args_hash = compute_args_hash(
         param.mode,
         text,
+        param.hl_keywords or [],
+        param.ll_keywords or [],
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -2566,6 +2596,8 @@ async def extract_keywords_only(
                 "max_entity_tokens": param.max_entity_tokens,
                 "max_relation_tokens": param.max_relation_tokens,
                 "max_total_tokens": param.max_total_tokens,
+                "hl_keywords": param.hl_keywords or [],
+                "ll_keywords": param.ll_keywords or [],
                 "user_prompt": param.user_prompt or "",
                 "enable_rerank": param.enable_rerank,
             }
@@ -2610,9 +2642,21 @@ async def _get_vector_context(
         search_top_k = query_param.chunk_top_k or query_param.top_k
         cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
+        # Perform vector search first, then filter by document IDs
+        if query_param.ids:
+            logger.info(f"[CHUNK FILTERING] Filtering chunks by document IDs: {query_param.ids}")
+            logger.debug(f"[CHUNK FILTERING] Performing vector search then filtering by full_doc_id")
+        else:
+            logger.debug(f"[CHUNK FILTERING] Performing normal vector search (no document ID filter)")
+        
+        # Always use query method - get_by_ids() expects chunk IDs, not document IDs
         results = await chunks_vdb.query(
             query, top_k=search_top_k, query_embedding=query_embedding
         )
+        
+        if query_param.ids and results:
+            logger.info(f"[CHUNK FILTERING] Retrieved {len(results)} chunks, now filtering by document IDs")
+        
         if not results:
             logger.info(
                 f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
@@ -2620,17 +2664,39 @@ async def _get_vector_context(
             return []
 
         valid_chunks = []
-        for result in results:
+        logger.debug(f"[CHUNK FILTERING] Processing {len(results)} chunk results")
+        
+        for i, result in enumerate(results):
             if "content" in result:
+                chunk_id = result.get("id", f"chunk_{i}")
+                full_doc_id = result.get("full_doc_id", "unknown")
+                
+                # Apply document ID filtering if specified
+                if query_param.ids:
+                    logger.debug(f"[CHUNK FILTERING] Chunk '{chunk_id}' belongs to document '{full_doc_id}'")
+                    
+                    if full_doc_id and full_doc_id in query_param.ids:
+                        logger.debug(f"[CHUNK FILTERING] ✅ Chunk '{chunk_id}' included (doc '{full_doc_id}' in target list)")
+                    else:
+                        logger.debug(f"[CHUNK FILTERING] ❌ Chunk '{chunk_id}' excluded (doc '{full_doc_id}' not in target list)")
+                        continue
+                
                 chunk_with_metadata = {
                     "content": result["content"],
                     "created_at": result.get("created_at", None),
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
-                    "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    "chunk_id": chunk_id,  # Add chunk_id for deduplication
+                    "full_doc_id": full_doc_id,  # Include document ID for reference
                 }
                 valid_chunks.append(chunk_with_metadata)
+                logger.debug(f"[CHUNK FILTERING] Added chunk '{chunk_id}' to valid chunks")
+            else:
+                logger.debug(f"[CHUNK FILTERING] Skipping result {i} - no content field")
 
+        if query_param.ids:
+            logger.info(f"[CHUNK FILTERING] Document ID filtering: {len(valid_chunks)} chunks remain from {len(results)} original chunks")
+        
         logger.info(
             f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
         )
@@ -2652,6 +2718,13 @@ async def _perform_kg_search(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
 ) -> dict[str, Any]:
+    # Document filtering debug information
+    if query_param.ids:
+        logger.info(f"🎯 [DOCUMENT FILTER] Starting search with document ID filtering: {query_param.ids}")
+        logger.info(f"🎯 [DOCUMENT FILTER] Query mode: {query_param.mode}, top_k: {query_param.top_k}")
+        logger.info(f"🎯 [DOCUMENT FILTER] Keywords - Low level: {ll_keywords}, High level: {hl_keywords}")
+    else:
+        logger.debug(f"[SEARCH] Starting search without document filtering - mode: {query_param.mode}")
     """
     Pure search logic that retrieves raw entities, relations, and vector chunks.
     No token truncation or formatting - just raw search results.
@@ -2695,6 +2768,7 @@ async def _perform_kg_search(
             knowledge_graph_inst,
             entities_vdb,
             query_param,
+            text_chunks_db,
         )
 
     elif query_param.mode == "global" and len(hl_keywords) > 0:
@@ -2703,6 +2777,7 @@ async def _perform_kg_search(
             knowledge_graph_inst,
             relationships_vdb,
             query_param,
+            text_chunks_db,
         )
 
     else:  # hybrid or mix mode
@@ -2712,6 +2787,7 @@ async def _perform_kg_search(
                 knowledge_graph_inst,
                 entities_vdb,
                 query_param,
+                text_chunks_db,
             )
         if len(hl_keywords) > 0:
             global_relations, global_entities = await _get_edge_data(
@@ -2719,6 +2795,7 @@ async def _perform_kg_search(
                 knowledge_graph_inst,
                 relationships_vdb,
                 query_param,
+                text_chunks_db,
             )
 
         # Get vector chunks for mix mode
@@ -3091,9 +3168,10 @@ async def _build_llm_context(
     query_param: QueryParam,
     global_config: dict[str, str],
     chunk_tracking: dict = None,
+    return_raw_data: bool = False,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
-) -> tuple[str, dict[str, Any]]:
+) -> str | tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
@@ -3101,17 +3179,22 @@ async def _build_llm_context(
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
         logger.error("Missing tokenizer, cannot build LLM context")
-        # Return empty raw data structure when no tokenizer
-        empty_raw_data = convert_to_user_format(
-            [],
-            [],
-            [],
-            [],
-            query_param.mode,
-        )
-        empty_raw_data["status"] = "failure"
-        empty_raw_data["message"] = "Missing tokenizer, cannot build LLM context."
-        return "", empty_raw_data
+
+        if return_raw_data:
+            # Return empty raw data structure when no entities/relations
+            empty_raw_data = convert_to_user_format(
+                [],
+                [],
+                [],
+                [],
+                query_param.mode,
+            )
+            empty_raw_data["status"] = "failure"
+            empty_raw_data["message"] = "Missing tokenizer, cannot build LLM context."
+            return None, empty_raw_data
+        else:
+            logger.error("Tokenizer not found in global configuration.")
+            return None
 
     # Get token limits
     max_total_tokens = getattr(
@@ -3120,78 +3203,108 @@ async def _build_llm_context(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
-    sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
-    )
-
-    kg_context_template = PROMPTS["kg_query_context"]
-    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
-    response_type = (
-        query_param.response_type
-        if query_param.response_type
-        else "Multiple Paragraphs"
-    )
-
-    entities_str = "\n".join(
-        json.dumps(entity, ensure_ascii=False) for entity in entities_context
-    )
-    relations_str = "\n".join(
-        json.dumps(relation, ensure_ascii=False) for relation in relations_context
-    )
-
-    # Calculate preliminary kg context tokens
-    pre_kg_context = kg_context_template.format(
-        entities_str=entities_str,
-        relations_str=relations_str,
-        text_chunks_str="",
-        reference_list_str="",
-    )
-    kg_context_tokens = len(tokenizer.encode(pre_kg_context))
-
-    # Calculate preliminary system prompt tokens
-    pre_sys_prompt = sys_prompt_template.format(
-        context_data="",  # Empty for overhead calculation
-        response_type=response_type,
-        user_prompt=user_prompt,
-    )
-    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
-
-    # Calculate available tokens for text chunks
-    query_tokens = len(tokenizer.encode(query))
-    buffer_tokens = 200  # reserved for reference list and safety buffer
-    available_chunk_tokens = max_total_tokens - (
-        sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
-    )
-
-    logger.debug(
-        f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
-    )
-
-    # Apply token truncation to chunks using the dynamic limit
-    truncated_chunks = await process_chunks_unified(
-        query=query,
-        unique_chunks=merged_chunks,
-        query_param=query_param,
-        global_config=global_config,
-        source_type=query_param.mode,
-        chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
-    )
-
-    # Generate reference list from truncated chunks using the new common function
-    reference_list, truncated_chunks = generate_reference_list_from_chunks(
-        truncated_chunks
-    )
-
-    # Rebuild text_units_context with truncated chunks
-    # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
     text_units_context = []
-    for i, chunk in enumerate(truncated_chunks):
-        text_units_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
+    truncated_chunks = []
+
+    if merged_chunks:
+        # Calculate dynamic token limit for text chunks
+        entities_str = "\n".join(
+            json.dumps(entity, ensure_ascii=False) for entity in entities_context
+        )
+        relations_str = "\n".join(
+            json.dumps(relation, ensure_ascii=False) for relation in relations_context
+        )
+
+        # Calculate base context tokens (entities + relations + template)
+        kg_context_template = """-----Entities(KG)-----
+
+```json
+{entities_str}
+```
+
+-----Relationships(KG)-----
+
+```json
+{relations_str}
+```
+
+-----Document Chunks(DC)-----
+
+```json
+```
+
+-----Refrence Document List-----
+
+The reference documents list in Document Chunks(DC) is as follows (reference_id in square brackets):
+
+"""
+        kg_context = kg_context_template.format(
+            entities_str=entities_str, relations_str=relations_str
+        )
+        kg_context_tokens = len(tokenizer.encode(kg_context))
+
+        # Calculate system prompt template overhead
+        user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+        response_type = (
+            query_param.response_type
+            if query_param.response_type
+            else "Multiple Paragraphs"
+        )
+
+        # Get the system prompt template from PROMPTS or global_config
+        sys_prompt_template = global_config.get(
+            "system_prompt_template", PROMPTS["rag_response"]
+        )
+
+        # Create sample system prompt for overhead calculation
+        sample_sys_prompt = sys_prompt_template.format(
+            context_data="",  # Empty for overhead calculation
+            response_type=response_type,
+            user_prompt=user_prompt,
+        )
+        sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
+
+        # Total system prompt overhead = template + query tokens
+        query_tokens = len(tokenizer.encode(query))
+        sys_prompt_overhead = sys_prompt_template_tokens + query_tokens
+
+        buffer_tokens = 100  # Safety buffer as requested
+
+        # Calculate available tokens for text chunks
+        used_tokens = kg_context_tokens + sys_prompt_overhead + buffer_tokens
+        available_chunk_tokens = max_total_tokens - used_tokens
+
+        logger.debug(
+            f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        )
+
+        # Apply token truncation to chunks using the dynamic limit
+        truncated_chunks = await process_chunks_unified(
+            query=query,
+            unique_chunks=merged_chunks,
+            query_param=query_param,
+            global_config=global_config,
+            source_type=query_param.mode,
+            chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
+        )
+
+        # Generate reference list from truncated chunks using the new common function
+        reference_list, truncated_chunks = generate_reference_list_from_chunks(
+            truncated_chunks
+        )
+
+        # Rebuild text_units_context with truncated chunks
+        # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
+        for i, chunk in enumerate(truncated_chunks):
+            text_units_context.append(
+                {
+                    "reference_id": chunk["reference_id"],
+                    "content": chunk["content"],
+                }
+            )
+
+        logger.debug(
+            f"Final chunk processing: {len(merged_chunks)} -> {len(text_units_context)} (chunk available tokens: {available_chunk_tokens})"
         )
 
     logger.info(
@@ -3200,17 +3313,20 @@ async def _build_llm_context(
 
     # not necessary to use LLM to generate a response
     if not entities_context and not relations_context:
-        # Return empty raw data structure when no entities/relations
-        empty_raw_data = convert_to_user_format(
-            [],
-            [],
-            [],
-            [],
-            query_param.mode,
-        )
-        empty_raw_data["status"] = "failure"
-        empty_raw_data["message"] = "Query returned empty dataset."
-        return "", empty_raw_data
+        if return_raw_data:
+            # Return empty raw data structure when no entities/relations
+            empty_raw_data = convert_to_user_format(
+                [],
+                [],
+                [],
+                [],
+                query_param.mode,
+            )
+            empty_raw_data["status"] = "failure"
+            empty_raw_data["message"] = "Query returned empty dataset."
+            return None, empty_raw_data
+        else:
+            return None
 
     # output chunks tracking infomations
     # format: <source><frequency>/<order> (e.g., E5/2 R2/1 C1/1)
@@ -3230,39 +3346,67 @@ async def _build_llm_context(
         if chunk_tracking_log:
             logger.info(f"chunks S+F/O: {' '.join(chunk_tracking_log)}")
 
+    entities_str = "\n".join(
+        json.dumps(entity, ensure_ascii=False) for entity in entities_context
+    )
+    relations_str = "\n".join(
+        json.dumps(relation, ensure_ascii=False) for relation in relations_context
+    )
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
-    reference_list_str = "\n".join(
+    reference_list_str = "\n\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list
         if ref["reference_id"]
     )
 
-    result = kg_context_template.format(
-        entities_str=entities_str,
-        relations_str=relations_str,
-        text_chunks_str=text_units_str,
-        reference_list_str=reference_list_str,
-    )
+    result = f"""-----Entities(KG)-----
 
-    # Always return both context and complete data structure (unified approach)
-    logger.debug(
-        f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
-    )
-    final_data = convert_to_user_format(
-        entities_context,
-        relations_context,
-        truncated_chunks,
-        reference_list,
-        query_param.mode,
-        entity_id_to_original,
-        relation_id_to_original,
-    )
-    logger.debug(
-        f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
-    )
-    return result, final_data
+```json
+{entities_str}
+```
+
+-----Relationships(KG)-----
+
+```json
+{relations_str}
+```
+
+-----Document Chunks(DC)-----
+
+```json
+{text_units_str}
+```
+
+-----Refrence Document List-----
+
+Document Chunks (DC) reference documents : (Each entry begins with [reference_id])
+
+{reference_list_str}
+
+"""
+
+    # If final data is requested, return both context and complete data structure
+    if return_raw_data:
+        logger.debug(
+            f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
+        )
+        final_data = convert_to_user_format(
+            entities_context,
+            relations_context,
+            truncated_chunks,
+            reference_list,
+            query_param.mode,
+            entity_id_to_original,
+            relation_id_to_original,
+        )
+        logger.debug(
+            f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+        )
+        return result, final_data
+    else:
+        return result
 
 
 # Now let's update the old _build_query_context to use the new architecture
@@ -3276,17 +3420,16 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
-) -> QueryContextResult | None:
+    return_raw_data: bool = False,
+) -> str | None | tuple[str, dict[str, Any]]:
     """
     Main query context building function using the new 4-stage architecture:
     1. Search -> 2. Truncate -> 3. Merge chunks -> 4. Build LLM context
-
-    Returns unified QueryContextResult containing both context and raw_data.
     """
 
     if not query:
         logger.warning("Query is empty, skipping context building")
-        return None
+        return ""
 
     # Stage 1: Pure search
     search_result = await _perform_kg_search(
@@ -3329,57 +3472,79 @@ async def _build_query_context(
         query_embedding=search_result["query_embedding"],
     )
 
-    if not merged_chunks:
+    if (
+        not merged_chunks
+        and not truncation_result["entities_context"]
+        and not truncation_result["relations_context"]
+    ):
         return None
 
     # Stage 4: Build final LLM context with dynamic token processing
-    # _build_llm_context now always returns tuple[str, dict]
-    context, raw_data = await _build_llm_context(
-        entities_context=truncation_result["entities_context"],
-        relations_context=truncation_result["relations_context"],
-        merged_chunks=merged_chunks,
-        query=query,
-        query_param=query_param,
-        global_config=text_chunks_db.global_config,
-        chunk_tracking=search_result["chunk_tracking"],
-        entity_id_to_original=truncation_result["entity_id_to_original"],
-        relation_id_to_original=truncation_result["relation_id_to_original"],
-    )
 
-    # Convert keywords strings to lists and add complete metadata to raw_data
-    hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
-    ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
+    if return_raw_data:
+        # Convert keywords strings to lists
+        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
+        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
 
-    # Add complete metadata to raw_data (preserve existing metadata including query_mode)
-    if "metadata" not in raw_data:
-        raw_data["metadata"] = {}
+        # Get both context and final data - when return_raw_data=True, _build_llm_context always returns tuple
+        context, raw_data = await _build_llm_context(
+            entities_context=truncation_result["entities_context"],
+            relations_context=truncation_result["relations_context"],
+            merged_chunks=merged_chunks,
+            query=query,
+            query_param=query_param,
+            global_config=text_chunks_db.global_config,
+            chunk_tracking=search_result["chunk_tracking"],
+            return_raw_data=True,
+            entity_id_to_original=truncation_result["entity_id_to_original"],
+            relation_id_to_original=truncation_result["relation_id_to_original"],
+        )
 
-    # Update keywords while preserving existing metadata
-    raw_data["metadata"]["keywords"] = {
-        "high_level": hl_keywords_list,
-        "low_level": ll_keywords_list,
-    }
-    raw_data["metadata"]["processing_info"] = {
-        "total_entities_found": len(search_result.get("final_entities", [])),
-        "total_relations_found": len(search_result.get("final_relations", [])),
-        "entities_after_truncation": len(
-            truncation_result.get("filtered_entities", [])
-        ),
-        "relations_after_truncation": len(
-            truncation_result.get("filtered_relations", [])
-        ),
-        "merged_chunks_count": len(merged_chunks),
-        "final_chunks_count": len(raw_data.get("data", {}).get("chunks", [])),
-    }
+        # Convert keywords strings to lists and add complete metadata to raw_data
+        hl_keywords_list = hl_keywords.split(", ") if hl_keywords else []
+        ll_keywords_list = ll_keywords.split(", ") if ll_keywords else []
 
-    logger.debug(
-        f"[_build_query_context] Context length: {len(context) if context else 0}"
-    )
-    logger.debug(
-        f"[_build_query_context] Raw data entities: {len(raw_data.get('data', {}).get('entities', []))}, relationships: {len(raw_data.get('data', {}).get('relationships', []))}, chunks: {len(raw_data.get('data', {}).get('chunks', []))}"
-    )
+        # Add complete metadata to raw_data (preserve existing metadata including query_mode)
+        if "metadata" not in raw_data:
+            raw_data["metadata"] = {}
 
-    return QueryContextResult(context=context, raw_data=raw_data)
+        # Update keywords while preserving existing metadata
+        raw_data["metadata"]["keywords"] = {
+            "high_level": hl_keywords_list,
+            "low_level": ll_keywords_list,
+        }
+        raw_data["metadata"]["processing_info"] = {
+            "total_entities_found": len(search_result.get("final_entities", [])),
+            "total_relations_found": len(search_result.get("final_relations", [])),
+            "entities_after_truncation": len(
+                truncation_result.get("filtered_entities", [])
+            ),
+            "relations_after_truncation": len(
+                truncation_result.get("filtered_relations", [])
+            ),
+            "merged_chunks_count": len(merged_chunks),
+            "final_chunks_count": len(raw_data.get("chunks", [])),
+        }
+
+        logger.debug(
+            f"[_build_query_context] Context length: {len(context) if context else 0}"
+        )
+        logger.debug(
+            f"[_build_query_context] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
+        )
+        return context, raw_data
+    else:
+        # Normal context building (existing logic)
+        context = await _build_llm_context(
+            entities_context=truncation_result["entities_context"],
+            relations_context=truncation_result["relations_context"],
+            merged_chunks=merged_chunks,
+            query=query,
+            query_param=query_param,
+            global_config=text_chunks_db.global_config,
+            chunk_tracking=search_result["chunk_tracking"],
+        )
+        return context
 
 
 async def _get_node_data(
@@ -3387,6 +3552,7 @@ async def _get_node_data(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     query_param: QueryParam,
+    text_chunks_db: BaseKVStorage = None,
 ):
     # get similar entities
     logger.info(
@@ -3394,6 +3560,87 @@ async def _get_node_data(
     )
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
+
+    # Apply document ID filtering for entity search
+    if query_param.ids and results and text_chunks_db:
+        logger.info(f"Filtering {len(results)} entities by document IDs: {query_param.ids}")
+        from lightrag.base import GRAPH_FIELD_SEP
+        
+        # Create a set for faster lookup
+        target_doc_ids = set(query_param.ids)
+        filtered_results = []
+        
+        for i, result in enumerate(results):
+            entity_name = result.get("entity_name", "unknown")
+            source_id = result.get("source_id", "")
+            entity_matches_filter = False
+            
+            logger.debug(f"[Entity {i+1}/{len(results)}] Processing entity '{entity_name}' with source_id: {source_id[:100]}...")
+            
+            if source_id:
+                # Extract chunk IDs from source_id (they're separated by GRAPH_FIELD_SEP)
+                chunk_ids = source_id.split(GRAPH_FIELD_SEP) if GRAPH_FIELD_SEP in source_id else [source_id]
+                logger.debug(f"[Entity '{entity_name}'] Extracted {len(chunk_ids)} chunk IDs: {chunk_ids[:3]}...")
+                
+                try:
+                    # Look up actual chunks to get their document IDs
+                    chunk_lookup_list = chunk_ids[:10]  # Limit for performance
+                    logger.debug(f"[Entity '{entity_name}'] Looking up {len(chunk_lookup_list)} chunks for document mapping")
+                    
+                    chunk_data_list = await text_chunks_db.get_by_ids(chunk_lookup_list)
+                    logger.debug(f"[Entity '{entity_name}'] Retrieved {len([c for c in chunk_data_list if c])} valid chunk records")
+                    
+                    for j, chunk_data in enumerate(chunk_data_list):
+                        if chunk_data and isinstance(chunk_data, dict):
+                            full_doc_id = chunk_data.get("full_doc_id", "")
+                            chunk_id = chunk_data.get("id", f"chunk_{j}")
+                            logger.debug(f"[Entity '{entity_name}'] Chunk '{chunk_id}' belongs to document '{full_doc_id}'")
+                            
+                            if full_doc_id in target_doc_ids:
+                                logger.info(f"[Entity '{entity_name}'] ✅ MATCH FOUND! Document '{full_doc_id}' in target list")
+                                entity_matches_filter = True
+                                break
+                        else:
+                            logger.debug(f"[Entity '{entity_name}'] Chunk {j} is None or invalid")
+                    
+                    # Fallback: Check if document ID appears in file_path or source_id
+                    if not entity_matches_filter:
+                        logger.debug(f"[Entity '{entity_name}'] No direct chunk matches, trying fallback heuristic")
+                        file_path = result.get("file_path", "")
+                        logger.debug(f"[Entity '{entity_name}'] Checking file_path: '{file_path}' and source_id for document ID patterns")
+                        
+                        for doc_id in target_doc_ids:
+                            if doc_id in file_path or doc_id in source_id:
+                                logger.info(f"[Entity '{entity_name}'] ✅ FALLBACK MATCH! Document '{doc_id}' found in metadata")
+                                entity_matches_filter = True
+                                break
+                        
+                        if not entity_matches_filter:
+                            logger.debug(f"[Entity '{entity_name}'] ❌ No matches found in fallback check")
+                                
+                except Exception as e:
+                    logger.warning(f"[Entity '{entity_name}'] ⚠️ Error during chunk lookup: {e}")
+                    logger.debug(f"[Entity '{entity_name}'] Falling back to simple heuristic check")
+                    # Fallback to simple heuristic
+                    file_path = result.get("file_path", "")
+                    for doc_id in target_doc_ids:
+                        if doc_id in file_path or doc_id in source_id:
+                            logger.info(f"[Entity '{entity_name}'] ✅ EXCEPTION FALLBACK MATCH! Document '{doc_id}' found")
+                            entity_matches_filter = True
+                            break
+            else:
+                # If no source_id, include entity (fallback for manual entries)
+                logger.debug(f"[Entity '{entity_name}'] No source_id found, including entity (manual entry)")
+                entity_matches_filter = True
+            
+            if entity_matches_filter:
+                logger.debug(f"[Entity '{entity_name}'] ✅ INCLUDED in filtered results")
+                filtered_results.append(result)
+            else:
+                logger.debug(f"[Entity '{entity_name}'] ❌ EXCLUDED from results")
+        
+        logger.info(f"Entity filtering: {len(filtered_results)} entities remain after document ID filter")
+        results = filtered_results
 
     if not len(results):
         return [], []
@@ -3664,12 +3911,97 @@ async def _get_edge_data(
     knowledge_graph_inst: BaseGraphStorage,
     relationships_vdb: BaseVectorStorage,
     query_param: QueryParam,
+    text_chunks_db: BaseKVStorage = None,
 ):
     logger.info(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    # Apply document ID filtering for relationship search
+    if query_param.ids and text_chunks_db:
+        logger.info(f"[RELATIONSHIP FILTERING] Filtering relationships by document IDs: {query_param.ids}")
+        results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+        logger.debug(f"[RELATIONSHIP FILTERING] Retrieved {len(results)} relationships before filtering")
+        
+        # Filter results to only include relationships from specified documents
+        from lightrag.base import GRAPH_FIELD_SEP
+        target_doc_ids = set(query_param.ids)
+        filtered_results = []
+        
+        for i, result in enumerate(results):
+            src_id = result.get("src_id", "unknown")
+            tgt_id = result.get("tgt_id", "unknown")
+            source_id = result.get("source_id", "")
+            
+            logger.debug(f"[RELATIONSHIP FILTERING] Processing relationship '{src_id}'-'{tgt_id}' with source_id: {source_id[:100]}...")
+            
+            relationship_matches_filter = False
+            if source_id:
+                # Extract chunk IDs from source_id (they're separated by GRAPH_FIELD_SEP)
+                chunk_ids = source_id.split(GRAPH_FIELD_SEP) if GRAPH_FIELD_SEP in source_id else [source_id]
+                logger.debug(f"[RELATIONSHIP FILTERING] Extracted {len(chunk_ids)} chunk IDs: {chunk_ids[:3]}...")
+                
+                try:
+                    # Look up actual chunks to get their document IDs
+                    chunk_lookup_list = chunk_ids[:10]  # Limit for performance
+                    logger.debug(f"[RELATIONSHIP FILTERING] Looking up {len(chunk_lookup_list)} chunks for document mapping")
+                    
+                    chunk_data_list = await text_chunks_db.get_by_ids(chunk_lookup_list)
+                    logger.debug(f"[RELATIONSHIP FILTERING] Retrieved {len([c for c in chunk_data_list if c])} valid chunk records")
+                    
+                    for j, chunk_data in enumerate(chunk_data_list):
+                        if chunk_data and isinstance(chunk_data, dict):
+                            full_doc_id = chunk_data.get("full_doc_id", "")
+                            chunk_id = chunk_data.get("id", f"chunk_{j}")
+                            logger.debug(f"[RELATIONSHIP FILTERING] Chunk '{chunk_id}' belongs to document '{full_doc_id}'")
+                            
+                            if full_doc_id in target_doc_ids:
+                                logger.info(f"[RELATIONSHIP FILTERING] ✅ MATCH FOUND! Relationship '{src_id}'-'{tgt_id}' via document '{full_doc_id}'")
+                                relationship_matches_filter = True
+                                break
+                        else:
+                            logger.debug(f"[RELATIONSHIP FILTERING] Chunk {j} is None or invalid")
+                    
+                    # Fallback: Check if document ID appears in file_path or source_id
+                    if not relationship_matches_filter:
+                        logger.debug(f"[RELATIONSHIP FILTERING] No direct chunk matches, trying fallback heuristic")
+                        file_path = result.get("file_path", "")
+                        logger.debug(f"[RELATIONSHIP FILTERING] Checking file_path: '{file_path}' and source_id for document ID patterns")
+                        
+                        for doc_id in target_doc_ids:
+                            if doc_id in file_path or doc_id in source_id:
+                                logger.info(f"[RELATIONSHIP FILTERING] ✅ FALLBACK MATCH! Relationship '{src_id}'-'{tgt_id}' found document '{doc_id}' in metadata")
+                                relationship_matches_filter = True
+                                break
+                        
+                        if not relationship_matches_filter:
+                            logger.debug(f"[RELATIONSHIP FILTERING] ❌ No matches found in fallback check for '{src_id}'-'{tgt_id}'")
+                            
+                except Exception as e:
+                    logger.warning(f"[RELATIONSHIP FILTERING] ⚠️ Error during chunk lookup for relationship '{src_id}'-'{tgt_id}': {e}")
+                    logger.debug(f"[RELATIONSHIP FILTERING] Falling back to simple heuristic check")
+                    # Fallback to simple heuristic
+                    file_path = result.get("file_path", "")
+                    for doc_id in target_doc_ids:
+                        if doc_id in file_path or doc_id in source_id:
+                            logger.info(f"[RELATIONSHIP FILTERING] ✅ EXCEPTION FALLBACK MATCH! Relationship '{src_id}'-'{tgt_id}' found document '{doc_id}'")
+                            relationship_matches_filter = True
+                            break
+            else:
+                logger.debug(f"[RELATIONSHIP FILTERING] No source_id for relationship '{src_id}'-'{tgt_id}', including by default")
+                relationship_matches_filter = True
+            
+            if relationship_matches_filter:
+                logger.debug(f"[RELATIONSHIP FILTERING] ✅ INCLUDED relationship '{src_id}'-'{tgt_id}' in filtered results")
+                filtered_results.append(result)
+            else:
+                logger.debug(f"[RELATIONSHIP FILTERING] ❌ EXCLUDED relationship '{src_id}'-'{tgt_id}' from results")
+        
+        logger.info(f"[RELATIONSHIP FILTERING] Relationship filtering: {len(filtered_results)} relationships remain after document ID filter")
+        results = filtered_results
+    else:
+        logger.debug(f"[RELATIONSHIP FILTERING] No document ID filter applied, using all query results")
+        results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
         return [], []
@@ -3985,28 +4317,19 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
-) -> QueryResult:
-    """
-    Execute naive query and return unified QueryResult object.
-
-    Args:
-        query: Query string
-        chunks_vdb: Document chunks vector database
-        query_param: Query parameters
-        global_config: Global configuration
-        hashing_kv: Cache storage
-        system_prompt: System prompt
-
-    Returns:
-        QueryResult: Unified query result object containing:
-            - content: Non-streaming response text content
-            - response_iterator: Streaming response iterator
-            - raw_data: Complete structured data (including references and metadata)
-            - is_streaming: Whether this is a streaming result
-    """
-
+    return_raw_data: bool = False,
+) -> str | AsyncIterator[str] | dict[str, Any]:
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        if return_raw_data:
+            # Return empty raw data structure when query is empty
+            empty_raw_data = {
+                "status": "failure",
+                "message": "Query string is empty.",
+                "data": {},
+            }
+            return empty_raw_data
+        else:
+            return PROMPTS["fail_response"]
 
     if query_param.model_func:
         use_model_func = query_param.model_func
@@ -4015,26 +4338,62 @@ async def naive_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+    )
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
+    )
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        if not query_param.only_need_context and not query_param.only_need_prompt:
+            return cached_response
+
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
-        logger.error("Tokenizer not found in global configuration.")
-        return QueryResult(content=PROMPTS["fail_response"])
+        if return_raw_data:
+            # Return empty raw data structure when tokenizer is missing
+            empty_raw_data = {
+                "status": "failure",
+                "message": "Tokenizer not found in global configuration.",
+                "data": {},
+            }
+            return empty_raw_data
+        else:
+            logger.error("Tokenizer not found in global configuration.")
+            return PROMPTS["fail_response"]
 
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
-        # Build empty raw data structure for naive mode
-        empty_raw_data = convert_to_user_format(
-            [],  # naive mode has no entities
-            [],  # naive mode has no relationships
-            [],  # no chunks
-            [],  # no references
-            "naive",
-        )
-        empty_raw_data["message"] = "No relevant document chunks found."
-        return QueryResult(content=PROMPTS["fail_response"], raw_data=empty_raw_data)
+        # If only raw data is requested, return it directly
+        if return_raw_data:
+            empty_raw_data = convert_to_user_format(
+                [],  # naive mode has no entities
+                [],  # naive mode has no relationships
+                [],  # no chunks
+                [],  # no references
+                "naive",
+            )
+            empty_raw_data["message"] = "No relevant document chunks found."
+            return empty_raw_data
+        else:
+            return PROMPTS["fail_response"]
 
     # Calculate dynamic token limit for chunks
+    # Get token limits from query_param (with fallback to global_config)
     max_total_tokens = getattr(
         query_param,
         "max_total_tokens",
@@ -4042,7 +4401,7 @@ async def naive_query(
     )
 
     # Calculate system prompt template tokens (excluding content_data)
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -4054,23 +4413,26 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Create a preliminary system prompt with empty content_data to calculate overhead
-    pre_sys_prompt = sys_prompt_template.format(
+    # Create a sample system prompt with empty content_data to calculate overhead
+    sample_sys_prompt = sys_prompt_template.format(
+        content_data="",  # Empty for overhead calculation
         response_type=response_type,
         user_prompt=user_prompt,
-        content_data="",  # Empty for overhead calculation
     )
+    sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
+
+    # Total system prompt overhead = template + query tokens
+    query_tokens = len(tokenizer.encode(query))
+    sys_prompt_overhead = sys_prompt_template_tokens + query_tokens
+
+    buffer_tokens = 100  # Safety buffer
 
     # Calculate available tokens for chunks
-    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
-    query_tokens = len(tokenizer.encode(query))
-    buffer_tokens = 200  # reserved for reference list and safety buffer
-    available_chunk_tokens = max_total_tokens - (
-        sys_prompt_tokens + query_tokens + buffer_tokens
-    )
+    used_tokens = sys_prompt_overhead + buffer_tokens
+    available_chunk_tokens = max_total_tokens - used_tokens
 
     logger.debug(
-        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
     )
 
     # Process chunks using unified processing with dynamic token limit
@@ -4090,26 +4452,30 @@ async def naive_query(
 
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
-    # Build raw data structure for naive mode using processed chunks with reference IDs
-    raw_data = convert_to_user_format(
-        [],  # naive mode has no entities
-        [],  # naive mode has no relationships
-        processed_chunks_with_ref_ids,
-        reference_list,
-        "naive",
-    )
+    # If only raw data is requested, return it directly
+    if return_raw_data:
+        # Build raw data structure for naive mode using processed chunks with reference IDs
+        raw_data = convert_to_user_format(
+            [],  # naive mode has no entities
+            [],  # naive mode has no relationships
+            processed_chunks_with_ref_ids,
+            reference_list,
+            "naive",
+        )
 
-    # Add complete metadata for naive mode
-    if "metadata" not in raw_data:
-        raw_data["metadata"] = {}
-    raw_data["metadata"]["keywords"] = {
-        "high_level": [],  # naive mode has no keyword extraction
-        "low_level": [],  # naive mode has no keyword extraction
-    }
-    raw_data["metadata"]["processing_info"] = {
-        "total_chunks_found": len(chunks),
-        "final_chunks_count": len(processed_chunks_with_ref_ids),
-    }
+        # Add complete metadata for naive mode
+        if "metadata" not in raw_data:
+            raw_data["metadata"] = {}
+        raw_data["metadata"]["keywords"] = {
+            "high_level": [],  # naive mode has no keyword extraction
+            "low_level": [],  # naive mode has no keyword extraction
+        }
+        raw_data["metadata"]["processing_info"] = {
+            "total_chunks_found": len(chunks),
+            "final_chunks_count": len(processed_chunks_with_ref_ids),
+        }
+
+        return raw_data
 
     # Build text_units_context from processed chunks with reference IDs
     text_units_context = []
@@ -4124,106 +4490,90 @@ async def naive_query(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
-    reference_list_str = "\n".join(
+    reference_list_str = "\n\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list
         if ref["reference_id"]
     )
 
-    naive_context_template = PROMPTS["naive_query_context"]
-    context_content = naive_context_template.format(
-        text_chunks_str=text_units_str,
-        reference_list_str=reference_list_str,
-    )
-
     if query_param.only_need_context and not query_param.only_need_prompt:
-        return QueryResult(content=context_content, raw_data=raw_data)
+        return f"""
+---Document Chunks(DC)---
 
-    sys_prompt = sys_prompt_template.format(
-        response_type=query_param.response_type,
-        user_prompt=user_prompt,
-        content_data=context_content,
+```json
+{text_units_str}
+```
+
+-----Refrence Document List-----
+
+{reference_list_str}
+
+"""
+    user_query = (
+        "\n\n".join([query, query_param.user_prompt])
+        if query_param.user_prompt
+        else query
     )
 
-    user_query = query
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
+    sys_prompt = sys_prompt_temp.format(
+        content_data=text_units_str,
+        response_type=query_param.response_type,
+    )
 
     if query_param.only_need_prompt:
-        prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=raw_data)
+        return "\n\n".join([sys_prompt, "---User Query---", user_query])
 
-    # Handle cache
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
+    logger.debug(
+        f"[naive_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+
+    response = await use_model_func(
+        user_query,
+        system_prompt=sys_prompt,
+        history_messages=query_param.conversation_history,
+        enable_cot=True,
+        stream=query_param.stream,
     )
-    if cached_result is not None:
-        cached_response, _ = cached_result  # Extract content, ignore timestamp
-        logger.info(
-            " == LLM cache == Query cache hit, using cached response as query result"
-        )
-        response = cached_response
-    else:
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
+
+    if isinstance(response, str) and len(response) > len(sys_prompt):
+        response = (
+            response[len(sys_prompt) :]
+            .replace(sys_prompt, "")
+            .replace("user", "")
+            .replace("model", "")
+            .replace(query, "")
+            .replace("<system>", "")
+            .replace("</system>", "")
+            .strip()
         )
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
-            queryparam_dict = {
-                "mode": query_param.mode,
-                "response_type": query_param.response_type,
-                "top_k": query_param.top_k,
-                "chunk_top_k": query_param.chunk_top_k,
-                "max_entity_tokens": query_param.max_entity_tokens,
-                "max_relation_tokens": query_param.max_relation_tokens,
-                "max_total_tokens": query_param.max_total_tokens,
-                "user_prompt": query_param.user_prompt or "",
-                "enable_rerank": query_param.enable_rerank,
-            }
-            await save_to_cache(
-                hashing_kv,
-                CacheData(
-                    args_hash=args_hash,
-                    content=response,
-                    prompt=query,
-                    mode=query_param.mode,
-                    cache_type="query",
-                    queryparam=queryparam_dict,
-                ),
-            )
-
-    # Return unified result based on actual response type
-    if isinstance(response, str):
-        # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response[len(sys_prompt) :]
-                .replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
-
-        return QueryResult(content=response, raw_data=raw_data)
-    else:
-        # Streaming response (AsyncIterator)
-        return QueryResult(
-            response_iterator=response, raw_data=raw_data, is_streaming=True
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache with query parameters
+        queryparam_dict = {
+            "mode": query_param.mode,
+            "response_type": query_param.response_type,
+            "top_k": query_param.top_k,
+            "chunk_top_k": query_param.chunk_top_k,
+            "max_entity_tokens": query_param.max_entity_tokens,
+            "max_relation_tokens": query_param.max_relation_tokens,
+            "max_total_tokens": query_param.max_total_tokens,
+            "hl_keywords": query_param.hl_keywords or [],
+            "ll_keywords": query_param.ll_keywords or [],
+            "user_prompt": query_param.user_prompt or "",
+            "enable_rerank": query_param.enable_rerank,
+        }
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                mode=query_param.mode,
+                cache_type="query",
+                queryparam=queryparam_dict,
+            ),
         )
+
+    return response
