@@ -23,7 +23,7 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
-import { labelColorDarkTheme } from '@/lib/constants'
+import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -48,11 +48,11 @@ const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   labelRenderedSizeThreshold: 12,
   enableEdgeEvents: true,
   labelColor: {
-    color: isDarkTheme ? labelColorDarkTheme : '#000',
+    color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
     attribute: 'labelColor'
   },
   edgeLabelColor: {
-    color: isDarkTheme ? labelColorDarkTheme : '#000',
+    color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
     attribute: 'labelColor'
   },
   edgeLabelSize: 8,
@@ -108,8 +108,9 @@ const GraphEvents = () => {
 }
 
 const GraphViewer = () => {
-  const [sigmaSettings, setSigmaSettings] = useState<Partial<SigmaSettings>>({})
+  const [isThemeSwitching, setIsThemeSwitching] = useState(false)
   const sigmaRef = useRef<any>(null)
+  const prevTheme = useRef<string>('')
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
@@ -122,11 +123,29 @@ const GraphViewer = () => {
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
 
-  // Initialize sigma settings based on theme
-  useEffect(() => {
+  // Memoize sigma settings to prevent unnecessary re-creation
+  const memoizedSigmaSettings = useMemo(() => {
     const isDarkTheme = theme === 'dark'
-    const settings = createSigmaSettings(isDarkTheme)
-    setSigmaSettings(settings)
+    return createSigmaSettings(isDarkTheme)
+  }, [theme])
+
+  // Initialize sigma settings based on theme with theme switching protection
+  useEffect(() => {
+    // Detect theme change
+    const isThemeChange = prevTheme.current && prevTheme.current !== theme
+    if (isThemeChange) {
+      setIsThemeSwitching(true)
+      console.log('Theme switching detected:', prevTheme.current, '->', theme)
+
+      // Reset theme switching state after a short delay
+      const timer = setTimeout(() => {
+        setIsThemeSwitching(false)
+        console.log('Theme switching completed')
+      }, 150)
+
+      return () => clearTimeout(timer)
+    }
+    prevTheme.current = theme
     console.log('Initialized sigma settings for theme:', theme)
   }, [theme])
 
@@ -176,7 +195,7 @@ const GraphViewer = () => {
   return (
     <div className="relative h-full w-full overflow-hidden">
       <SigmaContainer
-        settings={sigmaSettings}
+        settings={memoizedSigmaSettings}
         className="!bg-background !size-full overflow-hidden"
         ref={sigmaRef}
       >
@@ -188,7 +207,7 @@ const GraphViewer = () => {
 
         <div className="absolute top-2 left-2 flex items-start gap-2">
           <GraphLabels />
-          {showNodeSearchBar && (
+          {showNodeSearchBar && !isThemeSwitching && (
             <GraphSearch
               value={searchInitSelectedNode}
               onFocus={onSearchFocus}
@@ -225,12 +244,12 @@ const GraphViewer = () => {
         <SettingsDisplay />
       </SigmaContainer>
 
-      {/* Loading overlay - shown when data is loading */}
-      {isFetching && (
+      {/* Loading overlay - shown when data is loading or theme is switching */}
+      {(isFetching || isThemeSwitching) && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
           <div className="text-center">
-            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-            <p>Loading Graph Data...</p>
+            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto"></div>
+            <p>{isThemeSwitching ? 'Switching Theme...' : 'Loading Graph Data...'}</p>
           </div>
         </div>
       )}

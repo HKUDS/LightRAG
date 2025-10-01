@@ -91,6 +91,8 @@ const pulseStyle = `
   z-index: 9999; /* Ensure tooltip appears above all other elements */
   max-width: 600px;
   white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.75rem; /* 12px */
@@ -111,6 +113,12 @@ const pulseStyle = `
 .dark .tooltip {
   background-color: rgba(255, 255, 255, 0.95);
   color: black;
+}
+
+.tooltip pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* Position tooltip helper class */
@@ -235,6 +243,26 @@ export default function DocumentManager() {
   // State for document selection
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
   const isSelectionMode = selectedDocIds.length > 0
+
+  // Add refs to track previous pipelineBusy state and current interval
+  const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Add retry mechanism state
+  const [retryState, setRetryState] = useState({
+    count: 0,
+    lastError: null as Error | null,
+    isBackingOff: false
+  });
+
+  // Add circuit breaker state
+  const [circuitBreakerState, setCircuitBreakerState] = useState({
+    isOpen: false,
+    failureCount: 0,
+    lastFailureTime: null as number | null,
+    nextRetryTime: null as number | null
+  });
+
 
   // Handle checkbox change for individual documents
   const handleDocumentSelect = useCallback((docId: string, checked: boolean) => {
@@ -519,6 +547,98 @@ export default function DocumentManager() {
     setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
   }, []);
 
+  // Utility function to create timeout wrapper for API calls
+  const withTimeout = useCallback((
+    promise: Promise<any>,
+    timeoutMs: number = 30000,
+    errorMsg: string = 'Request timeout'
+  ): Promise<any> => {
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
+    });
+    return Promise.race([promise, timeoutPromise]);
+  }, []);
+
+
+  // Enhanced error classification
+  const classifyError = useCallback((error: any) => {
+    if (error.name === 'AbortError') {
+      return { type: 'cancelled', shouldRetry: false, shouldShowToast: false };
+    }
+
+    if (error.message === 'Request timeout') {
+      return { type: 'timeout', shouldRetry: true, shouldShowToast: true };
+    }
+
+    if (error.message?.includes('Network Error') || error.code === 'NETWORK_ERROR') {
+      return { type: 'network', shouldRetry: true, shouldShowToast: true };
+    }
+
+    if (error.status >= 500) {
+      return { type: 'server', shouldRetry: true, shouldShowToast: true };
+    }
+
+    if (error.status >= 400 && error.status < 500) {
+      return { type: 'client', shouldRetry: false, shouldShowToast: true };
+    }
+
+    return { type: 'unknown', shouldRetry: true, shouldShowToast: true };
+  }, []);
+
+  // Circuit breaker utility functions
+  const isCircuitBreakerOpen = useCallback(() => {
+    if (!circuitBreakerState.isOpen) return false;
+
+    const now = Date.now();
+    if (circuitBreakerState.nextRetryTime && now >= circuitBreakerState.nextRetryTime) {
+      // Reset circuit breaker to half-open state
+      setCircuitBreakerState(prev => ({
+        ...prev,
+        isOpen: false,
+        failureCount: Math.max(0, prev.failureCount - 1)
+      }));
+      return false;
+    }
+
+    return true;
+  }, [circuitBreakerState]);
+
+  const recordFailure = useCallback((error: Error) => {
+    const now = Date.now();
+    setCircuitBreakerState(prev => {
+      const newFailureCount = prev.failureCount + 1;
+      const shouldOpen = newFailureCount >= 3; // Open after 3 failures
+
+      return {
+        isOpen: shouldOpen,
+        failureCount: newFailureCount,
+        lastFailureTime: now,
+        nextRetryTime: shouldOpen ? now + (Math.pow(2, newFailureCount) * 1000) : null
+      };
+    });
+
+    setRetryState(prev => ({
+      count: prev.count + 1,
+      lastError: error,
+      isBackingOff: true
+    }));
+  }, []);
+
+  const recordSuccess = useCallback(() => {
+    setCircuitBreakerState({
+      isOpen: false,
+      failureCount: 0,
+      lastFailureTime: null,
+      nextRetryTime: null
+    });
+
+    setRetryState({
+      count: 0,
+      lastError: null,
+      isBackingOff: false
+    });
+  }, []);
+
   // Intelligent refresh function: handles all boundary cases
   const handleIntelligentRefresh = useCallback(async (
     targetPage?: number, // Optional target page, defaults to current page
@@ -540,7 +660,12 @@ export default function DocumentManager() {
         sort_direction: sortDirection
       };
 
-      const response = await getDocumentsPaginated(request);
+      // Use timeout wrapper for the API call
+      const response = await withTimeout(
+        getDocumentsPaginated(request),
+        30000, // 30 second timeout
+        'Document fetch timeout'
+      );
 
       if (!isMountedRef.current) return;
 
@@ -556,7 +681,11 @@ export default function DocumentManager() {
             page: lastPage
           };
 
-          const lastPageResponse = await getDocumentsPaginated(lastPageRequest);
+          const lastPageResponse = await withTimeout(
+            getDocumentsPaginated(lastPageRequest),
+            30000,
+            'Document fetch timeout'
+          );
 
           if (!isMountedRef.current) return;
 
@@ -575,14 +704,22 @@ export default function DocumentManager() {
 
     } catch (err) {
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+        const errorClassification = classifyError(err);
+
+        if (errorClassification.shouldShowToast) {
+          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+        }
+
+        if (errorClassification.shouldRetry) {
+          recordFailure(err as Error);
+        }
       }
     } finally {
       if (isMountedRef.current) {
         setIsRefreshing(false);
       }
     }
-  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState]);
+  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState, withTimeout, classifyError, recordFailure]);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
@@ -602,10 +739,6 @@ export default function DocumentManager() {
     await fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
   }, [fetchPaginatedDocuments, pagination.page, pagination.page_size, statusFilter]);
 
-  // Add refs to track previous pipelineBusy state and current interval
-  const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
-  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   // Function to clear current polling interval
   const clearPollingInterval = useCallback(() => {
     if (pollingIntervalRef.current) {
@@ -620,18 +753,49 @@ export default function DocumentManager() {
 
     pollingIntervalRef.current = setInterval(async () => {
       try {
+        // Check circuit breaker before making request
+        if (isCircuitBreakerOpen()) {
+          return; // Skip this polling cycle
+        }
+
         // Only perform fetch if component is still mounted
         if (isMountedRef.current) {
-          await fetchDocuments()
+          await fetchDocuments();
+          recordSuccess(); // Record successful operation
         }
       } catch (err) {
-        // Only show error if component is still mounted
+        // Only handle error if component is still mounted
         if (isMountedRef.current) {
-          toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+          const errorClassification = classifyError(err);
+
+          // Always reset isRefreshing state on error
+          setIsRefreshing(false);
+
+          if (errorClassification.shouldShowToast) {
+            toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }));
+          }
+
+          if (errorClassification.shouldRetry) {
+            recordFailure(err as Error);
+
+            // Implement exponential backoff for retries
+            const backoffDelay = Math.min(Math.pow(2, retryState.count) * 1000, 30000); // Max 30s
+
+            if (retryState.count < 3) { // Max 3 retries
+              setTimeout(() => {
+                if (isMountedRef.current) {
+                  setRetryState(prev => ({ ...prev, isBackingOff: false }));
+                }
+              }, backoffDelay);
+            }
+          } else {
+            // For non-retryable errors, stop polling
+            clearPollingInterval();
+          }
         }
       }
     }, intervalMs);
-  }, [fetchDocuments, t, clearPollingInterval]);
+  }, [fetchDocuments, t, clearPollingInterval, isCircuitBreakerOpen, recordSuccess, recordFailure, classifyError, retryState.count]);
 
   const scanDocuments = useCallback(async () => {
     try {

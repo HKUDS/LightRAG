@@ -8,8 +8,6 @@ PROMPTS: dict[str, Any] = {}
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
-PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
-
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
 
@@ -77,7 +75,7 @@ Extract entities and relationships from the input text to be processed.
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Oputput Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -95,7 +93,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
 5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Oputput Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -215,40 +213,152 @@ PROMPTS["fail_response"] = (
 
 PROMPTS["rag_response"] = """---Role---
 
-You are a helpful assistant responding to user query about Knowledge Graph and Document Chunks provided in JSON format below.
-
+You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.
 
 ---Goal---
 
-Generate a concise response based on Knowledge Base and follow Response Rules, considering both current query and the conversation history if provided. Summarize all information in the provided Knowledge Base, and incorporating general knowledge relevant to the Knowledge Base. Do not include information not provided by Knowledge Base.
+Generate a comprehensive, well-structured answer to the user query.
+The answer must integrate relevant facts from the Knowledge Graph and Document Chunks found in the **Context**.
+Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
 
----Knowledge Graph and Document Chunks---
+---Instructions---
+
+**1. Step-by-Step Instruction:**
+  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
+  - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
+
+**2. Content & Grounding:**
+  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
+  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+
+**3. Formatting & Language:**
+  - The response MUST be in the same language as the user query.
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
+  - The response should be presented in {response_type}.
+
+**4. References Section Format:**
+  - The References section should be under heading: `### References`
+  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
+  - Do not generate footnotes section or any text after the references.
+
+**5. Reference Section Example:**
+```
+### References
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
+```
+
+**6. Additional Instructions**: {user_prompt}
+
+
+---Context---
 
 {context_data}
+"""
 
----Response Guidelines---
-1. **Content & Adherence:**
-  - Strictly adhere to the provided context from the Knowledge Base. Do not invent, assume, or include any information not present in the source data.
-  - If the answer cannot be found in the provided context, state that you do not have enough information to answer.
-  - Ensure the response maintains continuity with the conversation history.
+PROMPTS["naive_rag_response"] = """---Role---
 
-2. **Formatting & Language:**
-  - Format the response using markdown with appropriate section headings.
-  - The response language must in the same language as the user's question.
-  - Target format and length: {response_type}
+You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.
 
-3. **Citations / References:**
-  - At the end of the response, under a "References" section, each citation must clearly indicate its origin (KG or DC).
-  - The maximum number of citations is 5, including both KG and DC.
-  - Use the following formats for citations:
-    - For a Knowledge Graph Entity: `[KG] <entity_name>`
-    - For a Knowledge Graph Relationship: `[KG] <entity1_name> ~ <entity2_name>`
-    - For a Document Chunk: `[DC] <file_path_or_document_name>`
+---Goal---
 
----User Context---
-- Additional user prompt: {user_prompt}
+Generate a comprehensive, well-structured answer to the user query.
+The answer must integrate relevant facts from the Document Chunks found in the **Context**.
+Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
 
----Response---
+---Instructions---
+
+**1. Think Step-by-Step:**
+  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
+  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
+
+**2. Content & Grounding:**
+  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
+  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+
+**3. Formatting & Language:**
+  - The response MUST be in the same language as the user query.
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
+  - The response should be presented in {response_type}.
+
+**4. References Section Format:**
+  - The References section should be under heading: `### References`
+  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
+  - Do not generate footnotes section or any text after the references.
+
+**5. Reference Section Example:**
+```
+### References
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
+```
+
+**6. Additional Instructions**: {user_prompt}
+
+
+---Context---
+
+{content_data}
+"""
+
+PROMPTS["kg_query_context"] = """
+Knowledge Graph Data (Entity):
+
+```json
+{entities_str}
+```
+
+Knowledge Graph Data (Relationship):
+
+```json
+{relations_str}
+```
+
+Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+
+```json
+{text_chunks_str}
+```
+
+Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+
+```
+{reference_list_str}
+```
+
+"""
+
+PROMPTS["naive_query_context"] = """
+Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+
+```json
+{text_chunks_str}
+```
+
+Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+
+```
+{reference_list_str}
+```
+
 """
 
 PROMPTS["keywords_extraction"] = """---Role---
@@ -309,35 +419,3 @@ Output:
 
 """,
 ]
-
-PROMPTS["naive_rag_response"] = """---Role---
-
-You are a helpful assistant responding to user query about Document Chunks provided provided in JSON format below.
-
----Goal---
-
-Generate a concise response based on Document Chunks and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Document Chunks, and incorporating general knowledge relevant to the Document Chunks. Do not include information not provided by Document Chunks.
-
----Document Chunks(DC)---
-{content_data}
-
----RESPONSE GUIDELINES---
-**1. Content & Adherence:**
-- Strictly adhere to the provided context from the Knowledge Base. Do not invent, assume, or include any information not present in the source data.
-- If the answer cannot be found in the provided context, state that you do not have enough information to answer.
-- Ensure the response maintains continuity with the conversation history.
-
-**2. Formatting & Language:**
-- Format the response using markdown with appropriate section headings.
-- The response language must match the user's question language.
-- Target format and length: {response_type}
-
-**3. Citations / References:**
-- At the end of the response, under a "References" section, cite a maximum of 5 most relevant sources used.
-- Use the following formats for citations: `[DC] <file_path_or_document_name>`
-
----USER CONTEXT---
-- Additional user prompt: {user_prompt}
-
----Response---
-Output:"""

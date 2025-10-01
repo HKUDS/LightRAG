@@ -1052,6 +1052,52 @@ class RedisDocStatusStorage(DocStatusStorage):
 
         return counts
 
+    async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
+        """Get document by file path
+
+        Args:
+            file_path: The file path to search for
+
+        Returns:
+            Union[dict[str, Any], None]: Document data if found, None otherwise
+            Returns the same format as get_by_id method
+        """
+        async with self._get_redis_connection() as redis:
+            try:
+                # Use SCAN to iterate through all keys in the namespace
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(
+                        cursor, match=f"{self.final_namespace}:*", count=1000
+                    )
+                    if keys:
+                        # Get all values in batch
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.get(key)
+                        values = await pipe.execute()
+
+                        # Check each document for matching file_path
+                        for value in values:
+                            if value:
+                                try:
+                                    doc_data = json.loads(value)
+                                    if doc_data.get("file_path") == file_path:
+                                        return doc_data
+                                except json.JSONDecodeError as e:
+                                    logger.error(
+                                        f"[{self.workspace}] JSON decode error in get_doc_by_file_path: {e}"
+                                    )
+                                    continue
+
+                    if cursor == 0:
+                        break
+
+                return None
+            except Exception as e:
+                logger.error(f"[{self.workspace}] Error in get_doc_by_file_path: {e}")
+                return None
+
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
         async with get_storage_lock():

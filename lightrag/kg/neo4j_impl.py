@@ -70,6 +70,11 @@ class Neo4JStorage(BaseGraphStorage):
         """Return workspace label (guaranteed non-empty during initialization)"""
         return self.workspace
 
+    def _is_chinese_text(self, text: str) -> bool:
+        """Check if text contains Chinese characters."""
+        chinese_pattern = re.compile(r"[\u4e00-\u9fff]+")
+        return bool(chinese_pattern.search(text))
+
     async def initialize(self):
         async with get_data_init_lock():
             URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
@@ -201,43 +206,138 @@ class Neo4JStorage(BaseGraphStorage):
                                 raise e
 
                 if connected:
-                    # Create index for workspace nodes on entity_id if it doesn't exist
                     workspace_label = self._get_workspace_label()
+                    # Create B-Tree index for entity_id for faster lookups
                     try:
                         async with self._driver.session(database=database) as session:
-                            # Check if index exists first
-                            check_query = f"""
-                            CALL db.indexes() YIELD name, labelsOrTypes, properties
-                            WHERE labelsOrTypes = ['{workspace_label}'] AND properties = ['entity_id']
-                            RETURN count(*) > 0 AS exists
-                            """
-                            try:
-                                check_result = await session.run(check_query)
-                                record = await check_result.single()
-                                await check_result.consume()
-
-                                index_exists = record and record.get("exists", False)
-
-                                if not index_exists:
-                                    # Create index only if it doesn't exist
-                                    result = await session.run(
-                                        f"CREATE INDEX FOR (n:`{workspace_label}`) ON (n.entity_id)"
-                                    )
-                                    await result.consume()
-                                    logger.info(
-                                        f"[{self.workspace}] Created index for {workspace_label} nodes on entity_id in {database}"
-                                    )
-                            except Exception:
-                                # Fallback if db.indexes() is not supported in this Neo4j version
-                                result = await session.run(
-                                    f"CREATE INDEX IF NOT EXISTS FOR (n:`{workspace_label}`) ON (n.entity_id)"
-                                )
-                                await result.consume()
+                            await session.run(
+                                f"CREATE INDEX IF NOT EXISTS FOR (n:`{workspace_label}`) ON (n.entity_id)"
+                            )
+                            logger.info(
+                                f"[{self.workspace}] Ensured B-Tree index on entity_id for {workspace_label} in {database}"
+                            )
                     except Exception as e:
                         logger.warning(
-                            f"[{self.workspace}] Failed to create index: {str(e)}"
+                            f"[{self.workspace}] Failed to create B-Tree index: {str(e)}"
                         )
+
+                    # Create full-text index for entity_id for faster text searches
+                    await self._create_fulltext_index(
+                        self._driver, self._DATABASE, workspace_label
+                    )
                     break
+
+    async def _create_fulltext_index(
+        self, driver: AsyncDriver, database: str, workspace_label: str
+    ):
+        """Create a full-text index on the entity_id property with Chinese tokenizer support."""
+        index_name = "entity_id_fulltext_idx"
+        try:
+            async with driver.session(database=database) as session:
+                # Check if the full-text index exists and get its configuration
+                check_index_query = "SHOW FULLTEXT INDEXES"
+                result = await session.run(check_index_query)
+                indexes = await result.data()
+                await result.consume()
+
+                existing_index = None
+                for idx in indexes:
+                    if idx["name"] == index_name:
+                        existing_index = idx
+                        break
+
+                # Check if index exists and is online
+                if existing_index:
+                    index_state = existing_index.get("state", "UNKNOWN")
+                    logger.info(
+                        f"[{self.workspace}] Found existing index '{index_name}' with state: {index_state}"
+                    )
+
+                    if index_state == "ONLINE":
+                        logger.info(
+                            f"[{self.workspace}] Full-text index '{index_name}' already exists and is online. Skipping recreation."
+                        )
+                        return
+                    else:
+                        logger.warning(
+                            f"[{self.workspace}] Existing index '{index_name}' is not online (state: {index_state}). Will recreate."
+                        )
+                else:
+                    logger.info(
+                        f"[{self.workspace}] No existing index '{index_name}' found. Creating new index."
+                    )
+
+                # Create or recreate the index if needed
+                needs_recreation = (
+                    existing_index is not None
+                    and existing_index.get("state") != "ONLINE"
+                )
+                needs_creation = existing_index is None
+
+                if needs_recreation or needs_creation:
+                    # Drop existing index if it needs recreation
+                    if needs_recreation:
+                        try:
+                            drop_query = f"DROP INDEX {index_name}"
+                            result = await session.run(drop_query)
+                            await result.consume()
+                            logger.info(
+                                f"[{self.workspace}] Dropped existing index '{index_name}'"
+                            )
+                        except Exception as drop_error:
+                            logger.warning(
+                                f"[{self.workspace}] Failed to drop existing index: {str(drop_error)}"
+                            )
+
+                    # Create new index with CJK analyzer
+                    logger.info(
+                        f"[{self.workspace}] Creating full-text index '{index_name}' with Chinese tokenizer support."
+                    )
+
+                    try:
+                        create_index_query = f"""
+                        CREATE FULLTEXT INDEX {index_name}
+                        FOR (n:`{workspace_label}`) ON EACH [n.entity_id]
+                        OPTIONS {{
+                            indexConfig: {{
+                                `fulltext.analyzer`: 'cjk',
+                                `fulltext.eventually_consistent`: true
+                            }}
+                        }}
+                        """
+                        result = await session.run(create_index_query)
+                        await result.consume()
+                        logger.info(
+                            f"[{self.workspace}] Successfully created full-text index '{index_name}' with CJK analyzer."
+                        )
+                    except Exception as cjk_error:
+                        # Fallback to standard analyzer if CJK is not supported
+                        logger.warning(
+                            f"[{self.workspace}] CJK analyzer not supported: {str(cjk_error)}. "
+                            "Falling back to standard analyzer."
+                        )
+                        create_index_query = f"""
+                        CREATE FULLTEXT INDEX {index_name}
+                        FOR (n:`{workspace_label}`) ON EACH [n.entity_id]
+                        """
+                        result = await session.run(create_index_query)
+                        await result.consume()
+                        logger.info(
+                            f"[{self.workspace}] Successfully created full-text index '{index_name}' with standard analyzer."
+                        )
+
+        except Exception as e:
+            # Handle cases where the command might not be supported
+            if "Unknown command" in str(e) or "invalid syntax" in str(e).lower():
+                logger.warning(
+                    f"[{self.workspace}] Could not create or verify full-text index '{index_name}'. "
+                    "This might be because you are using a Neo4j version that does not support it. "
+                    "Search functionality will fall back to slower, non-indexed queries."
+                )
+            else:
+                logger.error(
+                    f"[{self.workspace}] Failed to create or verify full-text index '{index_name}': {str(e)}"
+                )
 
     async def finalize(self):
         """Close the Neo4j driver and release all resources"""
@@ -251,7 +351,7 @@ class Neo4JStorage(BaseGraphStorage):
         await self.finalize()
 
     async def index_done_callback(self) -> None:
-        # Noe4J handles persistence automatically
+        # Neo4J handles persistence automatically
         pass
 
     async def has_node(self, node_id: str) -> bool:
@@ -1522,6 +1622,180 @@ class Neo4JStorage(BaseGraphStorage):
                 edges.append(edge_properties)
             await result.consume()
             return edges
+
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            try:
+                query = f"""
+                MATCH (n:`{workspace_label}`)
+                WHERE n.entity_id IS NOT NULL
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n.entity_id AS label, count(r) AS degree
+                ORDER BY degree DESC, label ASC
+                LIMIT $limit
+                RETURN label
+                """
+                result = await session.run(query, limit=limit)
+                labels = []
+                async for record in result:
+                    labels.append(record["label"])
+                await result.consume()
+
+                logger.debug(
+                    f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
+                )
+                return labels
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error getting popular labels: {str(e)}"
+                )
+                await result.consume()
+                raise
+
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """
+        Search labels with fuzzy matching, using a full-text index for performance if available.
+        Enhanced with Chinese text support using CJK analyzer.
+        Falls back to a slower CONTAINS search if the index is not available or fails.
+        """
+        workspace_label = self._get_workspace_label()
+        query_strip = query.strip()
+        if not query_strip:
+            return []
+
+        query_lower = query_strip.lower()
+        is_chinese = self._is_chinese_text(query_strip)
+        index_name = "entity_id_fulltext_idx"
+
+        # Attempt to use the full-text index first
+        try:
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                if is_chinese:
+                    # For Chinese text, use different search strategies
+                    cypher_query = f"""
+                    CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
+                    WITH node, score
+                    WHERE node:`{workspace_label}`
+                    WITH node.entity_id AS label, score
+                    WITH label, score,
+                         CASE
+                             WHEN label = $query_strip THEN score + 1000
+                             WHEN label CONTAINS $query_strip THEN score + 500
+                             ELSE score
+                         END AS final_score
+                    RETURN label
+                    ORDER BY final_score DESC, label ASC
+                    LIMIT $limit
+                    """
+                    # For Chinese, don't add wildcard as it may not work properly with CJK analyzer
+                    search_query = query_strip
+                else:
+                    # For non-Chinese text, use the original logic with wildcard
+                    cypher_query = f"""
+                    CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
+                    WITH node, score
+                    WHERE node:`{workspace_label}`
+                    WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
+                    WITH label, label_lower, score,
+                         CASE
+                             WHEN label_lower = $query_lower THEN score + 1000
+                             WHEN label_lower STARTS WITH $query_lower THEN score + 500
+                             WHEN label_lower CONTAINS ' ' + $query_lower OR label_lower CONTAINS '_' + $query_lower THEN score + 50
+                             ELSE score
+                         END AS final_score
+                    RETURN label
+                    ORDER BY final_score DESC, label ASC
+                    LIMIT $limit
+                    """
+                    search_query = f"{query_strip}*"
+
+                result = await session.run(
+                    cypher_query,
+                    index_name=index_name,
+                    search_query=search_query,
+                    query_lower=query_lower,
+                    query_strip=query_strip,
+                    limit=limit,
+                )
+                labels = [record["label"] async for record in result]
+                await result.consume()
+
+                logger.debug(
+                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                )
+                return labels
+
+        except Exception as e:
+            # If the full-text search fails, fall back to CONTAINS search
+            logger.warning(
+                f"[{self.workspace}] Full-text search failed with error: {str(e)}. "
+                "Falling back to slower, non-indexed search."
+            )
+
+            # Enhanced fallback implementation
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
+                if is_chinese:
+                    # For Chinese text, use direct CONTAINS without case conversion
+                    cypher_query = f"""
+                    MATCH (n:`{workspace_label}`)
+                    WHERE n.entity_id IS NOT NULL
+                    WITH n.entity_id AS label
+                    WHERE label CONTAINS $query_strip
+                    WITH label,
+                         CASE
+                             WHEN label = $query_strip THEN 1000
+                             WHEN label STARTS WITH $query_strip THEN 500
+                             ELSE 100 - size(label)
+                         END AS score
+                    ORDER BY score DESC, label ASC
+                    LIMIT $limit
+                    RETURN label
+                    """
+                    result = await session.run(
+                        cypher_query, query_strip=query_strip, limit=limit
+                    )
+                else:
+                    # For non-Chinese text, use the original fallback logic
+                    cypher_query = f"""
+                    MATCH (n:`{workspace_label}`)
+                    WHERE n.entity_id IS NOT NULL
+                    WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                    WHERE label_lower CONTAINS $query_lower
+                    WITH label, label_lower,
+                         CASE
+                             WHEN label_lower = $query_lower THEN 1000
+                             WHEN label_lower STARTS WITH $query_lower THEN 500
+                             ELSE 100 - size(label)
+                         END AS score
+                    ORDER BY score DESC, label ASC
+                    LIMIT $limit
+                    RETURN label
+                    """
+                    result = await session.run(
+                        cypher_query, query_lower=query_lower, limit=limit
+                    )
+
+                labels = [record["label"] async for record in result]
+                await result.consume()
+                logger.debug(
+                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                )
+                return labels
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from current workspace storage and clean up resources

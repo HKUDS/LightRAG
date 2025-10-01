@@ -1,22 +1,32 @@
-import { ReactNode, useCallback, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
+import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
 import { Message } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
-import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
+import rehypeRaw from 'rehype-raw'
 import remarkMath from 'remark-math'
 import mermaid from 'mermaid'
+import { remarkFootnotes } from '@/utils/remarkFootnotes'
 
-import type { Element } from 'hast'
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
-import { LoaderIcon, CopyIcon, ChevronDownIcon } from 'lucide-react'
+import { LoaderIcon, ChevronDownIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+
+// KaTeX configuration options interface
+interface KaTeXOptions {
+  errorColor?: string;
+  throwOnError?: boolean;
+  displayMode?: boolean;
+  strict?: boolean;
+  trust?: boolean;
+  errorCallback?: (error: string, latex: string) => void;
+}
 
 export type MessageWithError = Message & {
   id: string // Unique identifier for stable React keys
@@ -27,13 +37,18 @@ export type MessageWithError = Message & {
    * Used to persist the rendering state across updates and prevent flickering.
    */
   mermaidRendered?: boolean
+  /**
+   * Indicates if the LaTeX formulas in this message are complete and ready for rendering.
+   * Used to prevent red error text during streaming of incomplete LaTeX formulas.
+   */
+  latexRendered?: boolean
 }
 
 // Restore original component definition and export
 export const ChatMessage = ({ message }: { message: MessageWithError }) => { // Remove isComplete prop
   const { t } = useTranslation()
   const { theme } = useTheme()
-  const [katexPlugin, setKatexPlugin] = useState<any>(null)
+  const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
   // Directly use props passed from the parent.
@@ -59,35 +74,56 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
-        const [{ default: rehypeKatex }] = await Promise.all([
-          import('rehype-katex'),
-          import('katex/dist/katex.min.css')
-        ])
-        setKatexPlugin(() => rehypeKatex)
+        const { default: rehypeKatex } = await import('rehype-katex');
+        setKatexPlugin(() => rehypeKatex);
       } catch (error) {
-        console.error('Failed to load KaTeX:', error)
+        console.error('Failed to load KaTeX plugin:', error);
+        // Set to null to ensure we don't try to use a failed plugin
+        setKatexPlugin(null);
       }
-    }
-    loadKaTeX()
-  }, [])
-  const handleCopyMarkdown = useCallback(async () => {
-    if (message.content) {
-      try {
-        await navigator.clipboard.writeText(message.content)
-      } catch (err) {
-        console.error(t('chat.copyError'), err)
-      }
-    }
-  }, [message, t]) // Added t to dependency array
+    };
+
+    loadKaTeX();
+  }, []);
 
   const mainMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (
-      <CodeHighlight
-        {...props}
-        renderAsDiagram={message.mermaidRendered ?? false}
-      />
-    ),
-    p: ({ children }: { children?: ReactNode }) => <p className="my-2">{children}</p>,
+    code: (props: any) => {
+      const { inline, className, children, ...restProps } = props;
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : undefined;
+
+      // Handle math blocks ($$...$$) - provide better container and styling
+      if (language === 'math' && !inline) {
+        return (
+          <div className="katex-display-wrapper my-4 overflow-x-auto">
+            <div className="text-current">{children}</div>
+          </div>
+        );
+      }
+
+      // Handle inline math ($...$) - ensure proper inline display
+      if (language === 'math' && inline) {
+        return (
+          <span className="katex-inline-wrapper">
+            <span className="text-current">{children}</span>
+          </span>
+        );
+      }
+
+      // Handle all other code (inline and block)
+      return (
+        <CodeHighlight
+          inline={inline}
+          className={className}
+          {...restProps}
+          renderAsDiagram={message.mermaidRendered ?? false}
+          messageRole={message.role}
+        >
+          {children}
+        </CodeHighlight>
+      );
+    },
+    p: ({ children }: { children?: ReactNode }) => <div className="my-2">{children}</div>,
     h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
     h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
     h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
@@ -95,11 +131,11 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
     li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
-  }), [message.mermaidRendered]);
+  }), [message.mermaidRendered, message.role]);
 
   const thinkingMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} />)
-  }), [message.mermaidRendered]);
+    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
+  }), [message.mermaidRendered, message.role]);
 
   return (
     <div
@@ -136,16 +172,30 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           </div>
           {/* Show thinking content when expanded and content exists, even during thinking process */}
           {isThinkingExpanded && finalThinkingContent && finalThinkingContent.trim() !== '' && (
-            <div className="mt-2 pl-4 border-l-2 border-primary/20 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2">
+            <div className="mt-2 pl-4 border-l-2 border-primary/20 dark:border-primary/40 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2 [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-6 [&_.footnotes]:pt-3 [&_.footnotes]:border-t [&_.footnotes]:border-border [&_.footnotes_ol]:text-xs [&_.footnotes_li]:my-0.5 [&_a[href^='#fn']]:text-primary [&_a[href^='#fn']]:no-underline [&_a[href^='#fn']]:hover:underline [&_a[href^='#fnref']]:text-primary [&_a[href^='#fnref']]:no-underline [&_a[href^='#fnref']]:hover:underline text-foreground">
               {isThinking && (
-                <div className="mb-2 text-xs text-gray-400 dark:text-gray-500 italic">
+                <div className="mb-2 text-xs text-gray-400 dark:text-gray-300 italic">
                   {t('retrievePanel.chatMessage.thinkingInProgress', 'Thinking in progress...')}
                 </div>
               )}
               <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
+                remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
                 rehypePlugins={[
-                  ...(katexPlugin ? [[katexPlugin, { errorColor: theme === 'dark' ? '#ef4444' : '#dc2626', throwOnError: false, displayMode: false }] as any] : []),
+                  rehypeRaw,
+                  ...((katexPlugin && (message.latexRendered ?? true)) ? [[katexPlugin, {
+                    errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                    throwOnError: false,
+                    displayMode: false,
+                    strict: false,
+                    trust: true,
+                    // Add silent error handling to avoid console noise
+                    errorCallback: (error: string, latex: string) => {
+                      // Only show detailed errors in development environment
+                      if (process.env.NODE_ENV === 'development') {
+                        console.warn('KaTeX rendering error in thinking content:', error, 'for LaTeX:', latex);
+                      }
+                    }
+                  }] as any] : []),
                   rehypeReact
                 ]}
                 skipHtml={false}
@@ -161,15 +211,31 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
       {finalDisplayContent && (
         <div className="relative">
           <ReactMarkdown
-            className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
-            remarkPlugins={[remarkGfm, remarkMath]}
+            className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
+              message.role === 'user' ? 'text-primary-foreground' : 'text-foreground'
+            } ${
+              message.role === 'user'
+                ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
+                : '[&_.footnotes]:border-border [&_a[href^="#fn"]]:text-primary [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
+            }`}
+            remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
             rehypePlugins={[
-              ...(katexPlugin ? [[
+              rehypeRaw,
+              ...((katexPlugin && (message.latexRendered ?? true)) ? [[
                 katexPlugin,
                 {
                   errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
                   throwOnError: false,
-                  displayMode: false
+                  displayMode: false,
+                  strict: false,
+                  trust: true,
+                  // Add silent error handling to avoid console noise
+                  errorCallback: (error: string, latex: string) => {
+                    // Only show detailed errors in development environment
+                    if (process.env.NODE_ENV === 'development') {
+                      console.warn('KaTeX rendering error in main content:', error, 'for LaTeX:', latex);
+                    }
+                  }
                 }
               ] as any] : []),
               rehypeReact
@@ -179,17 +245,6 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           >
             {finalDisplayContent}
           </ReactMarkdown>
-          {message.role === 'assistant' && finalDisplayContent && finalDisplayContent.length > 0 && (
-            <Button
-              onClick={handleCopyMarkdown}
-              className="absolute right-0 bottom-0 size-6 rounded-md opacity-20 transition-opacity hover:opacity-100"
-              tooltip={t('retrievePanel.chatMessage.copyTooltip')}
-              variant="default"
-              size="icon"
-            >
-              <CopyIcon className="size-4" /> {/* Explicit size */}
-            </Button>
-          )}
         </div>
       )}
       {(() => {
@@ -208,20 +263,10 @@ interface CodeHighlightProps {
   inline?: boolean
   className?: string
   children?: ReactNode
-  node?: Element // Keep node for inline check
   renderAsDiagram?: boolean // Flag to indicate if rendering as diagram should be attempted
+  messageRole?: 'user' | 'assistant' // Message role for context-aware styling
 }
 
-// Helper function remains the same
-const isInlineCode = (node?: Element): boolean => {
-  if (!node || !node.children) return false;
-  const textContent = node.children
-    .filter((child) => child.type === 'text')
-    .map((child) => (child as any).value)
-    .join('');
-  // Consider inline if it doesn't contain newline or is very short
-  return !textContent.includes('\n') || textContent.length < 40;
-};
 
 
 // Check if it is a large JSON
@@ -231,12 +276,11 @@ const isLargeJson = (language: string | undefined, content: string | undefined):
 };
 
 // Memoize the CodeHighlight component
-const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false, ...props }: CodeHighlightProps) => {
+const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = false, messageRole, ...props }: CodeHighlightProps) => {
   const { theme } = useTheme();
   const [hasRendered, setHasRendered] = useState(false); // State to track successful render
   const match = className?.match(/language-(\w+)/);
   const language = match ? match[1] : undefined;
-  const inline = isInlineCode(node); // Use the helper function
   const mermaidRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Use ReturnType for better typing
 
@@ -401,20 +445,45 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
   }
 
 
+  // ReactMarkdown determines inline vs block based on markdown syntax
+  // Inline code: `code` (no className with language)
+  // Block code: ```language (has className like "language-js")
+  // If there's no language className and no explicit inline prop, it's likely inline code
+  const isInline = inline ?? !className?.startsWith('language-');
+
+  // Generate dynamic inline code styles based on message role and theme
+  const getInlineCodeStyles = () => {
+    if (messageRole === 'user') {
+      // User messages have dark background (bg-primary), need light inline code
+      return theme === 'dark'
+        ? 'bg-primary-foreground/20 text-primary-foreground border border-primary-foreground/30'
+        : 'bg-primary-foreground/20 text-primary-foreground border border-primary-foreground/30';
+    } else {
+      // Assistant messages have light background (bg-muted), need contrasting inline code
+      return theme === 'dark'
+        ? 'bg-muted-foreground/20 text-muted-foreground border border-muted-foreground/30'
+        : 'bg-slate-200 text-slate-800 border border-slate-300';
+    }
+  };
+
   // Handle non-Mermaid code blocks
-  return !inline ? (
+  return !isInline ? (
     <SyntaxHighlighter
       style={theme === 'dark' ? oneDark : oneLight}
-      PreTag="div" // Use div for block code
+      PreTag="div"
       language={language}
       {...props}
     >
       {contentStr}
     </SyntaxHighlighter>
   ) : (
-    // Handle inline code
+    // Handle inline code with context-aware styling
     <code
-      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 font-mono text-sm')} // Add font-mono to ensure monospaced font is used
+      className={cn(
+        className,
+        'mx-1 rounded-sm px-1 py-0.5 font-mono text-sm',
+        getInlineCodeStyles()
+      )}
       {...props}
     >
       {children}

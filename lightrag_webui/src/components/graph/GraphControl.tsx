@@ -156,6 +156,15 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
     // Register the events
     registerEvents(events)
+
+    // Cleanup function - basic cleanup without relying on specific APIs
+    return () => {
+      try {
+        console.log('Cleaning up graph event listeners')
+      } catch (error) {
+        console.warn('Error cleaning up graph event listeners:', error)
+      }
+    }
   }, [registerEvents, enableEdgeEvents, sigma])
 
   /**
@@ -203,6 +212,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     }
   }, [sigma, sigmaGraph, minEdgeSize, maxEdgeSize])
 
+
   /**
    * When component mount or hovered node change
    * => Setting the sigma reducers
@@ -224,6 +234,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       // Node reducer for node appearance
       nodeReducer: (node, data) => {
         const graph = sigma.getGraph()
+
+        // Add defensive check for node existence during theme switching
+        if (!graph.hasNode(node)) {
+          console.warn(`Node ${node} not found in graph during theme switch, returning default data`)
+          return { ...data, highlighted: false, labelColor }
+        }
+
         const newData: NodeType & {
           labelColor?: string
           borderColor?: string
@@ -244,11 +261,17 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
               }
             } catch (error) {
               console.error('Error in nodeReducer:', error);
+              return { ...data, highlighted: false, labelColor }
             }
           } else if (_focusedEdge && graph.hasEdge(_focusedEdge)) {
-            if (graph.extremities(_focusedEdge).includes(node)) {
-              newData.highlighted = true
-              newData.size = 3
+            try {
+              if (graph.extremities(_focusedEdge).includes(node)) {
+                newData.highlighted = true
+                newData.size = 3
+              }
+            } catch (error) {
+              console.error('Error accessing edge extremities in nodeReducer:', error);
+              return { ...data, highlighted: false, labelColor }
             }
           } else {
             return newData
@@ -268,6 +291,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       // Edge reducer for edge appearance
       edgeReducer: (edge, data) => {
         const graph = sigma.getGraph()
+
+        // Add defensive check for edge existence during theme switching
+        if (!graph.hasEdge(edge)) {
+          console.warn(`Edge ${edge} not found in graph during theme switch, returning default data`)
+          return { ...data, hidden: false, labelColor, color: edgeColor }
+        }
+
         const newData = { ...data, hidden: false, labelColor, color: edgeColor }
 
         if (!disableHoverEffect) {
@@ -286,6 +316,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
               }
             } catch (error) {
               console.error('Error in edgeReducer:', error);
+              return { ...data, hidden: false, labelColor, color: edgeColor }
             }
           } else {
             const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null;

@@ -143,18 +143,6 @@ docker compose up
 
 > You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
-### Auto scan on startup
-
-When starting the LightRAG Server with the `--auto-scan-at-startup` parameter, the system will automatically:
-
-1. Scan for new files in the input directory
-2. Index new documents that aren't already in the database
-3. Make all content immediately available for RAG queries
-
-This offers an efficient method for deploying ad-hoc RAG processes.
-
-> The `--input-dir` parameter specifies the input directory to scan. You can trigger the input directory scan from the Web UI.
-
 ### Starting Multiple LightRAG Instances
 
 There are two ways to start multiple LightRAG instances. The first way is to configure a completely independent working environment for each instance. This requires creating a separate working directory for each instance and placing a dedicated `.env` configuration file in that directory. The server listening ports in the configuration files of different instances cannot be the same. Then, you can start the service by running `lightrag-server` in the working directory.
@@ -292,7 +280,17 @@ LIGHTRAG_API_KEY=your-secure-api-key-here
 WHITELIST_PATHS=/health,/api/*
 ```
 
-> Health check and Ollama emulation endpoints are excluded from API Key check by default.
+> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required.
+
+The API key is passed using the request header `X-API-Key`. Below is an example of accessing the LightRAG Server via API:
+
+```
+curl -X 'POST' \
+  'http://localhost:9621/documents/scan' \
+  -H 'accept: application/json' \
+  -H 'X-API-Key: your-secure-api-key-here-123' \
+  -d ''
+```
 
 * Account credentials (the Web UI requires login before access can be granted):
 
@@ -434,7 +432,6 @@ You cannot change storage implementation selection after adding documents to Lig
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
 | --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
 | --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
-| --auto-scan-at-startup| -             | Scan input directory for new files and start indexing                                                                           |
 
 ### Reranking Configuration
 

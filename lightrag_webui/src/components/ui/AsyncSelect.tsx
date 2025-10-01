@@ -43,10 +43,12 @@ export interface AsyncSelectProps<T> {
   value: string
   /** Callback when selection changes */
   onChange: (value: string) => void
-  /** Label for the select field */
-  label: string
+  /** Accessibility label for the select field */
+  ariaLabel?: string
   /** Placeholder text when no selection */
   placeholder?: string
+  /** Display text for search placeholder */
+  searchPlaceholder?: string
   /** Disable the entire select */
   disabled?: boolean
   /** Custom width for the popover *
@@ -63,6 +65,8 @@ export interface AsyncSelectProps<T> {
   triggerTooltip?: string
   /** Allow clearing the selection */
   clearable?: boolean
+  /** Debounce time in milliseconds */
+  debounceTime?: number
 }
 
 export function AsyncSelect<T>({
@@ -74,8 +78,9 @@ export function AsyncSelect<T>({
   getDisplayValue,
   notFound,
   loadingSkeleton,
-  label,
+  ariaLabel,
   placeholder = 'Select...',
+  searchPlaceholder,
   value,
   onChange,
   disabled = false,
@@ -84,7 +89,8 @@ export function AsyncSelect<T>({
   searchInputClassName,
   noResultsMessage,
   triggerTooltip,
-  clearable = true
+  clearable = true,
+  debounceTime = 150
 }: AsyncSelectProps<T>) {
   const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
@@ -94,7 +100,7 @@ export function AsyncSelect<T>({
   const [selectedValue, setSelectedValue] = useState(value)
   const [selectedOption, setSelectedOption] = useState<T | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
-  const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
+  const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : debounceTime)
   const [originalOptions, setOriginalOptions] = useState<T[]>([])
   const [initialValueDisplay, setInitialValueDisplay] = useState<React.ReactNode | null>(null)
 
@@ -130,8 +136,8 @@ export function AsyncSelect<T>({
       try {
         setLoading(true)
         setError(null)
-        // If we have a value, use it for the initial search
-        const data = await fetcher(value)
+        // Always use empty query for initial load to show search history
+        const data = await fetcher('')
         setOriginalOptions(data)
         setOptions(data)
       } catch (err) {
@@ -144,7 +150,7 @@ export function AsyncSelect<T>({
     if (!mounted) {
       initializeOptions()
     }
-  }, [mounted, fetcher, value])
+  }, [mounted, fetcher])
 
   useEffect(() => {
     const fetchOptions = async () => {
@@ -197,6 +203,7 @@ export function AsyncSelect<T>({
           variant="outline"
           role="combobox"
           aria-expanded={open}
+          aria-label={ariaLabel}
           className={cn(
             'justify-between',
             disabled && 'cursor-not-allowed opacity-50',
@@ -220,7 +227,7 @@ export function AsyncSelect<T>({
         <Command shouldFilter={false}>
           <div className="relative w-full border-b">
             <CommandInput
-              placeholder={`Search ${label.toLowerCase()}...`}
+              placeholder={searchPlaceholder || 'Search...'}
               value={searchTerm}
               onValueChange={(value) => {
                 setSearchTerm(value)
@@ -241,25 +248,22 @@ export function AsyncSelect<T>({
               options.length === 0 &&
               (notFound || (
                 <CommandEmpty>
-                  {noResultsMessage ?? `No ${label.toLowerCase()} found.`}
+                  {noResultsMessage || 'No results found.'}
                 </CommandEmpty>
               ))}
             <CommandGroup>
-              {options.map((option, index) => {
+              {options.map((option) => {
                 const optionValue = getOptionValue(option);
-                // Use index as a safe value that won't be trimmed by cmdk
-                const safeValue = `option-${index}-${optionValue.length}`;
+                // Fix cmdk filtering issue: use empty string when search is empty
+                // This ensures all items are shown when searchTerm is empty
+                const itemValue = searchTerm.trim() === '' ? '' : optionValue;
 
                 return (
                   <CommandItem
                     key={optionValue}
-                    value={safeValue}
-                    onSelect={(selectedSafeValue) => {
-                      // Extract the original value from the safe value
-                      const selectedIndex = parseInt(selectedSafeValue.split('-')[1]);
-                      const originalValue = getOptionValue(options[selectedIndex]);
-                      console.log(`CommandItem onSelect: safeValue='${selectedSafeValue}', originalValue='${originalValue}' (length: ${originalValue.length})`);
-                      handleSelect(originalValue);
+                    value={itemValue}
+                    onSelect={() => {
+                      handleSelect(optionValue);
                     }}
                     className="truncate"
                   >

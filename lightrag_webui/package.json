@@ -8,6 +8,9 @@
     "build": "bunx --bun vite build",
     "lint": "eslint .",
     "preview": "bunx --bun vite preview",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
     "dev-no-bun": "vite",
     "build-no-bun": "vite build --emptyOutDir",
     "preview-no-bun": "vite preview"
@@ -37,6 +40,7 @@
     "@react-sigma/minimap": "^5.0.2",
     "@sigma/edge-curve": "^3.1.0",
     "@sigma/node-border": "^3.0.0",
+    "@tanstack/react-table": "^8.21.3",
     "axios": "^1.7.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -63,6 +67,7 @@
     "react-select": "^5.10.2",
     "react-syntax-highlighter": "^15.6.1",
     "rehype-katex": "^7.0.1",
+    "rehype-raw": "^7.0.0",
     "rehype-react": "^8.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
@@ -72,6 +77,7 @@
     "tailwind-merge": "^3.0.2",
     "tailwind-scrollbar": "^4.0.1",
     "typography": "^0.16.24",
+    "unist-util-visit": "^5.0.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
