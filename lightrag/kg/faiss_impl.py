@@ -180,16 +180,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
         return [m["__id__"] for m in list_data]
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
-        embedding = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-        # embedding is shape (1, dim)
-        embedding = np.array(embedding, dtype=np.float32)
+        if query_embedding is not None:
+            embedding = np.array([query_embedding], dtype=np.float32)
+        else:
+            embedding = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            # embedding is shape (1, dim)
+            embedding = np.array(embedding, dtype=np.float32)
+
         faiss.normalize_L2(embedding)  # we do in-place normalization
 
         # Perform the similarity search

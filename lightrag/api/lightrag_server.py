@@ -2,8 +2,9 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status
-import asyncio
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 import os
 import logging
 import logging.config
@@ -11,6 +12,7 @@ import signal
 import sys
 import uvicorn
 import pipmaster as pm
+import inspect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -38,11 +40,12 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
-    run_scanning_process,
 )
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
@@ -51,7 +54,6 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_pipeline_status_lock,
     initialize_pipeline_status,
     cleanup_keyed_lock,
     finalize_share_data,
@@ -94,10 +96,62 @@ def setup_signal_handlers():
     signal.signal(signal.SIGTERM, signal_handler)  # kill command
 
 
+class LLMConfigCache:
+    """Smart LLM and Embedding configuration cache class"""
+
+    def __init__(self, args):
+        self.args = args
+
+        # Initialize configurations based on binding conditions
+        self.openai_llm_options = None
+        self.ollama_llm_options = None
+        self.ollama_embedding_options = None
+
+        # Only initialize and log OpenAI options when using OpenAI-related bindings
+        if args.llm_binding in ["openai", "azure_openai"]:
+            from lightrag.llm.binding_options import OpenAILLMOptions
+
+            self.openai_llm_options = OpenAILLMOptions.options_dict(args)
+            logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
+
+        # Only initialize and log Ollama LLM options when using Ollama LLM binding
+        if args.llm_binding == "ollama":
+            try:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                self.ollama_llm_options = OllamaLLMOptions.options_dict(args)
+                logger.info(f"Ollama LLM Options: {self.ollama_llm_options}")
+            except ImportError:
+                logger.warning(
+                    "OllamaLLMOptions not available, using default configuration"
+                )
+                self.ollama_llm_options = {}
+
+        # Only initialize and log Ollama Embedding options when using Ollama Embedding binding
+        if args.embedding_binding == "ollama":
+            try:
+                from lightrag.llm.binding_options import OllamaEmbeddingOptions
+
+                self.ollama_embedding_options = OllamaEmbeddingOptions.options_dict(
+                    args
+                )
+                logger.info(
+                    f"Ollama Embedding Options: {self.ollama_embedding_options}"
+                )
+            except ImportError:
+                logger.warning(
+                    "OllamaEmbeddingOptions not available, using default configuration"
+                )
+                self.ollama_embedding_options = {}
+
+
 def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
+
+    # Create configuration cache (this will output configuration logs)
+    config_cache = LLMConfigCache(args)
 
     # Verify that bindings are correctly setup
     if args.llm_binding not in [
@@ -157,24 +211,6 @@ def create_app(args):
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-
-            should_start_autoscan = False
-            async with get_pipeline_status_lock():
-                # Auto scan documents if enabled
-                if args.auto_scan_at_startup:
-                    if not pipeline_status.get("autoscanned", False):
-                        pipeline_status["autoscanned"] = True
-                        should_start_autoscan = True
-
-            # Only run auto scan when no other process started it first
-            if should_start_autoscan:
-                # Create background task
-                task = asyncio.create_task(run_scanning_process(rag, doc_manager))
-                app.state.background_tasks.add(task)
-                task.add_done_callback(app.state.background_tasks.discard)
-                logger.info(f"Process {os.getpid()} auto scan task started at startup.")
-
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
             yield
@@ -211,6 +247,35 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
+    # Add custom validation error handler for /query/data endpoint
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        # Check if this is a request to /query/data endpoint
+        if request.url.path.endswith("/query/data"):
+            # Extract error details
+            error_details = []
+            for error in exc.errors():
+                field_path = " -> ".join(str(loc) for loc in error["loc"])
+                error_details.append(f"{field_path}: {error['msg']}")
+
+            error_message = "; ".join(error_details)
+
+            # Return in the expected format for /query/data
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "failure",
+                    "message": f"Validation error: {error_message}",
+                    "data": {},
+                    "metadata": {},
+                },
+            )
+        else:
+            # For other endpoints, return the default FastAPI validation error
+            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
     def get_cors_origins():
         """Get allowed origins from global_args
         Returns a list of allowed origins, defaults to ["*"] if not set
@@ -234,84 +299,192 @@ def create_app(args):
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
-    if args.llm_binding == "lollms" or args.embedding_binding == "lollms":
-        from lightrag.llm.lollms import lollms_model_complete, lollms_embed
-    if args.llm_binding == "ollama" or args.embedding_binding == "ollama":
-        from lightrag.llm.ollama import ollama_model_complete, ollama_embed
-        from lightrag.llm.binding_options import OllamaLLMOptions
-    if args.llm_binding == "openai" or args.embedding_binding == "openai":
-        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-        from lightrag.llm.binding_options import OpenAILLMOptions
-    if args.llm_binding == "azure_openai" or args.embedding_binding == "azure_openai":
-        from lightrag.llm.azure_openai import (
-            azure_openai_complete_if_cache,
-            azure_openai_embed,
-        )
-    if args.llm_binding == "aws_bedrock" or args.embedding_binding == "aws_bedrock":
-        from lightrag.llm.bedrock import bedrock_complete_if_cache, bedrock_embed
-    if args.embedding_binding == "ollama":
-        from lightrag.llm.binding_options import OllamaEmbeddingOptions
-    if args.embedding_binding == "jina":
-        from lightrag.llm.jina import jina_embed
 
-    llm_timeout = get_env_value("LLM_TIMEOUT", args.timeout, int)
+    def create_optimized_openai_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized OpenAI LLM function with pre-processed configuration"""
 
-    async def openai_alike_model_complete(
-        prompt,
-        system_prompt=None,
-        history_messages=None,
-        keyword_extraction=False,
-        **kwargs,
-    ) -> str:
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
-        if keyword_extraction:
-            kwargs["response_format"] = GPTKeywordExtractionFormat
-        if history_messages is None:
-            history_messages = []
-
-        # Use OpenAI LLM options if available
-        openai_options = OpenAILLMOptions.options_dict(args)
-        kwargs["timeout"] = llm_timeout
-        kwargs.update(openai_options)
-
-        return await openai_complete_if_cache(
-            args.llm_model,
+        async def optimized_openai_alike_model_complete(
             prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            base_url=args.llm_binding_host,
-            api_key=args.llm_binding_api_key,
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
             **kwargs,
-        )
+        ) -> str:
+            from lightrag.llm.openai import openai_complete_if_cache
 
-    async def azure_openai_model_complete(
-        prompt,
-        system_prompt=None,
-        history_messages=None,
-        keyword_extraction=False,
-        **kwargs,
-    ) -> str:
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
-        if keyword_extraction:
-            kwargs["response_format"] = GPTKeywordExtractionFormat
-        if history_messages is None:
-            history_messages = []
+            keyword_extraction = kwargs.pop("keyword_extraction", None)
+            if keyword_extraction:
+                kwargs["response_format"] = GPTKeywordExtractionFormat
+            if history_messages is None:
+                history_messages = []
 
-        # Use OpenAI LLM options
-        openai_options = OpenAILLMOptions.options_dict(args)
-        kwargs["timeout"] = llm_timeout
-        kwargs.update(openai_options)
+            # Use pre-processed configuration to avoid repeated parsing
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_llm_options:
+                kwargs.update(config_cache.openai_llm_options)
 
-        return await azure_openai_complete_if_cache(
-            args.llm_model,
+            return await openai_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=args.llm_binding_api_key,
+                **kwargs,
+            )
+
+        return optimized_openai_alike_model_complete
+
+    def create_optimized_azure_openai_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized Azure OpenAI LLM function with pre-processed configuration"""
+
+        async def optimized_azure_openai_model_complete(
             prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            base_url=args.llm_binding_host,
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
             **kwargs,
-        )
+        ) -> str:
+            from lightrag.llm.azure_openai import azure_openai_complete_if_cache
+
+            keyword_extraction = kwargs.pop("keyword_extraction", None)
+            if keyword_extraction:
+                kwargs["response_format"] = GPTKeywordExtractionFormat
+            if history_messages is None:
+                history_messages = []
+
+            # Use pre-processed configuration to avoid repeated parsing
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_llm_options:
+                kwargs.update(config_cache.openai_llm_options)
+
+            return await azure_openai_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=os.getenv("AZURE_OPENAI_API_KEY", args.llm_binding_api_key),
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+                **kwargs,
+            )
+
+        return optimized_azure_openai_model_complete
+
+    def create_llm_model_func(binding: str):
+        """
+        Create LLM model function based on binding type.
+        Uses optimized functions for OpenAI bindings and lazy import for others.
+        """
+        try:
+            if binding == "lollms":
+                from lightrag.llm.lollms import lollms_model_complete
+
+                return lollms_model_complete
+            elif binding == "ollama":
+                from lightrag.llm.ollama import ollama_model_complete
+
+                return ollama_model_complete
+            elif binding == "aws_bedrock":
+                return bedrock_model_complete  # Already defined locally
+            elif binding == "azure_openai":
+                # Use optimized function with pre-processed configuration
+                return create_optimized_azure_openai_llm_func(
+                    config_cache, args, llm_timeout
+                )
+            else:  # openai and compatible
+                # Use optimized function with pre-processed configuration
+                return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
+        except ImportError as e:
+            raise Exception(f"Failed to import {binding} LLM binding: {e}")
+
+    def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
+        """
+        Create LLM model kwargs based on binding type.
+        Uses lazy import for binding-specific options.
+        """
+        if binding in ["lollms", "ollama"]:
+            try:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                return {
+                    "host": args.llm_binding_host,
+                    "timeout": llm_timeout,
+                    "options": OllamaLLMOptions.options_dict(args),
+                    "api_key": args.llm_binding_api_key,
+                }
+            except ImportError as e:
+                raise Exception(f"Failed to import {binding} options: {e}")
+        return {}
+
+    def create_optimized_embedding_function(
+        config_cache: LLMConfigCache, binding, model, host, api_key, dimensions, args
+    ):
+        """
+        Create optimized embedding function with pre-processed configuration for applicable bindings.
+        Uses lazy imports for all bindings and avoids repeated configuration parsing.
+        """
+
+        async def optimized_embedding_function(texts):
+            try:
+                if binding == "lollms":
+                    from lightrag.llm.lollms import lollms_embed
+
+                    return await lollms_embed(
+                        texts, embed_model=model, host=host, api_key=api_key
+                    )
+                elif binding == "ollama":
+                    from lightrag.llm.ollama import ollama_embed
+
+                    # Use pre-processed configuration if available, otherwise fallback to dynamic parsing
+                    if config_cache.ollama_embedding_options is not None:
+                        ollama_options = config_cache.ollama_embedding_options
+                    else:
+                        # Fallback for cases where config cache wasn't initialized properly
+                        from lightrag.llm.binding_options import OllamaEmbeddingOptions
+
+                        ollama_options = OllamaEmbeddingOptions.options_dict(args)
+
+                    return await ollama_embed(
+                        texts,
+                        embed_model=model,
+                        host=host,
+                        api_key=api_key,
+                        options=ollama_options,
+                    )
+                elif binding == "azure_openai":
+                    from lightrag.llm.azure_openai import azure_openai_embed
+
+                    return await azure_openai_embed(texts, model=model, api_key=api_key)
+                elif binding == "aws_bedrock":
+                    from lightrag.llm.bedrock import bedrock_embed
+
+                    return await bedrock_embed(texts, model=model)
+                elif binding == "jina":
+                    from lightrag.llm.jina import jina_embed
+
+                    return await jina_embed(
+                        texts, dimensions=dimensions, base_url=host, api_key=api_key
+                    )
+                else:  # openai and compatible
+                    from lightrag.llm.openai import openai_embed
+
+                    return await openai_embed(
+                        texts, model=model, base_url=host, api_key=api_key
+                    )
+            except ImportError as e:
+                raise Exception(f"Failed to import {binding} embedding: {e}")
+
+        return optimized_embedding_function
+
+    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
+    embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
 
     async def bedrock_model_complete(
         prompt,
@@ -320,6 +493,9 @@ def create_app(args):
         keyword_extraction=False,
         **kwargs,
     ) -> str:
+        # Lazy import
+        from lightrag.llm.bedrock import bedrock_complete_if_cache
+
         keyword_extraction = kwargs.pop("keyword_extraction", None)
         if keyword_extraction:
             kwargs["response_format"] = GPTKeywordExtractionFormat
@@ -337,86 +513,74 @@ def create_app(args):
             **kwargs,
         )
 
+    # Create embedding function with optimized configuration
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=lambda texts: (
-            lollms_embed(
-                texts,
-                embed_model=args.embedding_model,
-                host=args.embedding_binding_host,
-                api_key=args.embedding_binding_api_key,
-            )
-            if args.embedding_binding == "lollms"
-            else (
-                ollama_embed(
-                    texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                    api_key=args.embedding_binding_api_key,
-                    options=OllamaEmbeddingOptions.options_dict(args),
-                )
-                if args.embedding_binding == "ollama"
-                else (
-                    azure_openai_embed(
-                        texts,
-                        model=args.embedding_model,  # no host is used for openai,
-                        api_key=args.embedding_binding_api_key,
-                    )
-                    if args.embedding_binding == "azure_openai"
-                    else (
-                        bedrock_embed(
-                            texts,
-                            model=args.embedding_model,
-                        )
-                        if args.embedding_binding == "aws_bedrock"
-                        else (
-                            jina_embed(
-                                texts,
-                                dimensions=args.embedding_dim,
-                                base_url=args.embedding_binding_host,
-                                api_key=args.embedding_binding_api_key,
-                            )
-                            if args.embedding_binding == "jina"
-                            else openai_embed(
-                                texts,
-                                model=args.embedding_model,
-                                base_url=args.embedding_binding_host,
-                                api_key=args.embedding_binding_api_key,
-                            )
-                        )
-                    )
-                )
-            )
+        func=create_optimized_embedding_function(
+            config_cache=config_cache,
+            binding=args.embedding_binding,
+            model=args.embedding_model,
+            host=args.embedding_binding_host,
+            api_key=args.embedding_binding_api_key,
+            dimensions=args.embedding_dim,
+            args=args,  # Pass args object for fallback option generation
         ),
     )
 
-    # Configure rerank function if model and API are configured
+    # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
-    if args.rerank_binding_api_key and args.rerank_binding_host:
-        from lightrag.rerank import custom_rerank
+    if args.rerank_binding != "null":
+        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+
+        # Map rerank binding to corresponding function
+        rerank_functions = {
+            "cohere": cohere_rerank,
+            "jina": jina_rerank,
+            "aliyun": ali_rerank,
+        }
+
+        # Select the appropriate rerank function based on binding
+        selected_rerank_func = rerank_functions.get(args.rerank_binding)
+        if not selected_rerank_func:
+            logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
+            raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
+
+        # Get default values from selected_rerank_func if args values are None
+        if args.rerank_model is None or args.rerank_binding_host is None:
+            sig = inspect.signature(selected_rerank_func)
+
+            # Set default model if args.rerank_model is None
+            if args.rerank_model is None and "model" in sig.parameters:
+                default_model = sig.parameters["model"].default
+                if default_model != inspect.Parameter.empty:
+                    args.rerank_model = default_model
+
+            # Set default base_url if args.rerank_binding_host is None
+            if args.rerank_binding_host is None and "base_url" in sig.parameters:
+                default_base_url = sig.parameters["base_url"].default
+                if default_base_url != inspect.Parameter.empty:
+                    args.rerank_binding_host = default_base_url
 
         async def server_rerank_func(
-            query: str, documents: list, top_n: int = None, **kwargs
+            query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
             """Server rerank function with configuration from environment variables"""
-            return await custom_rerank(
+            return await selected_rerank_func(
                 query=query,
                 documents=documents,
+                top_n=top_n,
+                api_key=args.rerank_binding_api_key,
                 model=args.rerank_model,
                 base_url=args.rerank_binding_host,
-                api_key=args.rerank_binding_api_key,
-                top_n=top_n,
-                **kwargs,
+                extra_body=extra_body,
             )
 
         rerank_model_func = server_rerank_func
         logger.info(
-            f"Rerank model configured: {args.rerank_model} (can be enabled per query)"
+            f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
         )
     else:
-        logger.info(
-            "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
-        )
+        logger.info("Reranking is disabled")
 
     # Create ollama_server_infos from command line arguments
     from lightrag.api.config import OllamaServerInfos
@@ -425,38 +589,24 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai", "aws_bedrock"]:
+    # Initialize RAG with unified configuration
+    try:
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
-            llm_model_func=(
-                lollms_model_complete
-                if args.llm_binding == "lollms"
-                else (
-                    ollama_model_complete
-                    if args.llm_binding == "ollama"
-                    else bedrock_model_complete
-                    if args.llm_binding == "aws_bedrock"
-                    else openai_alike_model_complete
-                )
-            ),
+            llm_model_func=create_llm_model_func(args.llm_binding),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            summary_max_tokens=args.max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            summary_context_size=args.summary_context_size,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=(
-                {
-                    "host": args.llm_binding_host,
-                    "timeout": llm_timeout,
-                    "options": OllamaLLMOptions.options_dict(args),
-                    "api_key": args.llm_binding_api_key,
-                }
-                if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-                else {}
+            llm_model_kwargs=create_llm_model_kwargs(
+                args.llm_binding, args, llm_timeout
             ),
             embedding_func=embedding_func,
+            default_llm_timeout=llm_timeout,
+            default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
@@ -469,35 +619,15 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={"language": args.summary_language},
-            ollama_server_infos=ollama_server_infos,
-        )
-    else:  # azure_openai
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            workspace=args.workspace,
-            llm_model_func=azure_openai_model_complete,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            summary_max_tokens=args.max_tokens,
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
+            addon_params={
+                "language": args.summary_language,
+                "entity_types": args.entity_types,
             },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            rerank_model_func=rerank_model_func,
-            max_parallel_insert=args.max_parallel_insert,
-            max_graph_nodes=args.max_graph_nodes,
-            addon_params={"language": args.summary_language},
             ollama_server_infos=ollama_server_infos,
         )
+    except Exception as e:
+        logger.error(f"Failed to initialize LightRAG: {e}")
+        raise
 
     # Add routes
     app.include_router(
@@ -568,9 +698,7 @@ def create_app(args):
             }
         username = form_data.username
         if auth_handler.accounts.get(username) != form_data.password:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
-            )
+            raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login
         user_token = auth_handler.create_token(
@@ -613,7 +741,8 @@ def create_app(args):
                     "embedding_binding": args.embedding_binding,
                     "embedding_binding_host": args.embedding_binding_host,
                     "embedding_model": args.embedding_model,
-                    "max_tokens": args.max_tokens,
+                    "summary_max_tokens": args.summary_max_tokens,
+                    "summary_context_size": args.summary_context_size,
                     "kv_storage": args.kv_storage,
                     "doc_status_storage": args.doc_status_storage,
                     "graph_storage": args.graph_storage,
@@ -622,13 +751,12 @@ def create_app(args):
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
-                    # Rerank configuration (based on whether rerank model is configured)
+                    # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
-                    "rerank_model": args.rerank_model
-                    if rerank_model_func is not None
-                    else None,
+                    "rerank_binding": args.rerank_binding,
+                    "rerank_model": args.rerank_model if rerank_model_func else None,
                     "rerank_binding_host": args.rerank_binding_host
-                    if rerank_model_func is not None
+                    if rerank_model_func
                     else None,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,

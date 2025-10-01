@@ -6,6 +6,7 @@ export const webuiPrefix = '/webui/'
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
 export const labelColorDarkTheme = '#B2EBF2'
+export const labelColorLightTheme = '#000'
 export const LabelColorHighlightedDarkTheme = '#000'
 
 export const nodeColorDisabled = '#E2E2E2'
@@ -18,6 +19,17 @@ export const edgeColorHighlighted = '#B2EBF2'
 
 export const searchResultLimit = 50
 export const labelListLimit = 100
+
+// Search History Configuration
+export const searchHistoryMaxItems = 500
+export const searchHistoryVersion = '1.0'
+
+// API Request Limits
+export const popularLabelsDefaultLimit = 300
+export const searchLabelsDefaultLimit = 50
+
+// UI Display Limits
+export const dropdownDisplayLimit = 300
 
 export const minNodeSize = 4
 export const maxNodeSize = 20

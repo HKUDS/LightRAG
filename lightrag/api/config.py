@@ -30,11 +30,15 @@ from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_EMBEDDING_BATCH_NUM,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_RERANK_BINDING,
+    DEFAULT_ENTITY_TYPES,
 )
 
 # use the .env that is inside the current folder
@@ -76,9 +80,7 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: Parsed arguments
     """
 
-    parser = argparse.ArgumentParser(
-        description="LightRAG FastAPI Server with separate working and input directories"
-    )
+    parser = argparse.ArgumentParser(description="LightRAG API Server")
 
     # Server configuration
     parser.add_argument(
@@ -120,10 +122,26 @@ def parse_args() -> argparse.Namespace:
         help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
-        "--max-tokens",
+        "--summary-max-tokens",
         type=int,
         default=get_env_value("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
-        help=f"Maximum token size (default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+        help=f"Maximum token size for entity/relation summary(default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+    )
+    parser.add_argument(
+        "--summary-context-size",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_CONTEXT_SIZE})",
+    )
+    parser.add_argument(
+        "--summary-length-recommended",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration
@@ -188,13 +206,6 @@ def parse_args() -> argparse.Namespace:
         help="Default workspace for all storage",
     )
 
-    parser.add_argument(
-        "--auto-scan-at-startup",
-        action="store_true",
-        default=False,
-        help="Enable automatic scanning when the program starts",
-    )
-
     # Server workers configuration
     parser.add_argument(
         "--workers",
@@ -224,6 +235,13 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
         choices=["lollms", "ollama", "openai", "azure_openai", "aws_bedrock", "jina"],
         help="Embedding binding type (default: from env or ollama)",
+    )
+    parser.add_argument(
+        "--rerank-binding",
+        type=str,
+        default=get_env_value("RERANK_BINDING", DEFAULT_RERANK_BINDING),
+        choices=["null", "cohere", "jina", "aliyun"],
+        help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
     )
 
     # Conditionally add binding options defined in binding_options module
@@ -327,6 +345,7 @@ def parse_args() -> argparse.Namespace:
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
+    args.entity_types = get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
@@ -337,9 +356,10 @@ def parse_args() -> argparse.Namespace:
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
 
     # Rerank model configuration
-    args.rerank_model = get_env_value("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    args.rerank_model = get_env_value("RERANK_MODEL", None)
     args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
     args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
+    # Note: rerank_binding is already set by argparse, no need to override from env
 
     # Min rerank score configuration
     args.min_rerank_score = get_env_value(
@@ -390,7 +410,7 @@ def update_uvicorn_mode_config():
         global_args.workers = 1
         # Log warning directly here
         logging.warning(
-            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
+            f">> Forcing workers=1 in uvicorn mode(Ignoring workers={original_workers})"
         )
 
 

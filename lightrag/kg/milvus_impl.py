@@ -1047,14 +1047,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         return results
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
         # Ensure collection is loaded before querying
         self._ensure_collection_loaded()
 
-        embedding = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
+        # Use provided embedding or compute it
+        if query_embedding is not None:
+            embedding = [query_embedding]  # Milvus expects a list of embeddings
+        else:
+            embedding = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
 
         # Include all meta_fields (created_at is now always included)
         output_fields = list(self.meta_fields)

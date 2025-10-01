@@ -94,9 +94,14 @@ async def llama_index_complete_if_cache(
     prompt: str,
     system_prompt: Optional[str] = None,
     history_messages: List[dict] = [],
+    enable_cot: bool = False,
     chat_kwargs={},
 ) -> str:
     """Complete the prompt using LlamaIndex."""
+    if enable_cot:
+        logger.debug(
+            "enable_cot=True is not supported for LlamaIndex implementation and will be ignored."
+        )
     try:
         # Format messages for chat
         formatted_messages = []
@@ -138,6 +143,7 @@ async def llama_index_complete(
     prompt,
     system_prompt=None,
     history_messages=None,
+    enable_cot: bool = False,
     keyword_extraction=False,
     settings: LlamaIndexSettings = None,
     **kwargs,
@@ -162,6 +168,7 @@ async def llama_index_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
     return result

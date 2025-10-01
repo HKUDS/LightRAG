@@ -11,6 +11,10 @@ from typing import (
     TypedDict,
     TypeVar,
     Callable,
+    Optional,
+    Dict,
+    List,
+    AsyncIterator,
 )
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
@@ -22,7 +26,6 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_HISTORY_TURNS,
-    DEFAULT_ENABLE_RERANK,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_OLLAMA_MODEL_SIZE,
@@ -133,19 +136,15 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # TODO: Deprecated - history message have negtive effect on query performance
+    # History mesages is only send to LLM for context, not used for retrieval
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    # TODO: Deprecated - history message have negtive effect on query performance
+    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
-
-    # TODO: TODO: Deprecated - ID-based filtering only applies to chunks, not entities or relations, and implemented only in PostgreSQL storage
-    ids: list[str] | None = None
-    """List of doc ids to filter the results."""
 
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
@@ -155,14 +154,19 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    If proivded, this will be use instead of the default vaulue from prompt template.
+    Addition instructions for LLM. If provided, this will be inject into the prompt template.
+    It's purpose is the let user customize the way LLM generate the response.
     """
 
-    enable_rerank: bool = (
-        os.getenv("ENABLE_RERANK", str(DEFAULT_ENABLE_RERANK).lower()).lower() == "true"
-    )
+    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
+    """
+
+    include_references: bool = False
+    """If True, includes reference list in the response for supported endpoints.
+    This parameter controls whether the API response includes a references field
+    containing citation information for the retrieved content.
     """
 
 
@@ -219,9 +223,16 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """Query the vector storage and retrieve top_k results."""
+        """Query the vector storage and retrieve top_k results.
+
+        Args:
+            query: The query string to search for
+            top_k: Number of top results to return
+            query_embedding: Optional pre-computed embedding for the query.
+                           If provided, skips embedding computation for better performance.
+        """
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -629,6 +640,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges: List of edges to be deleted, each edge is a (source, target) tuple
         """
 
+    # TODO: deprecated
     @abstractmethod
     async def get_all_labels(self) -> list[str]:
         """Get all labels in the graph.
@@ -669,6 +681,29 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             A list of all edges, where each edge is a dictionary of its properties
+        """
+
+    @abstractmethod
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+
+    @abstractmethod
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """Search labels with fuzzy matching
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching labels sorted by relevance
         """
 
 
@@ -759,6 +794,18 @@ class DocStatusStorage(BaseKVStorage, ABC):
             Dictionary mapping status names to counts
         """
 
+    @abstractmethod
+    async def get_doc_by_file_path(self, file_path: str) -> dict[str, Any] | None:
+        """Get document by file path
+
+        Args:
+            file_path: The file path to search for
+
+        Returns:
+            dict[str, Any] | None: Document data if found, None otherwise
+            Returns the same format as get_by_ids method
+        """
+
 
 class StoragesStatus(str, Enum):
     """Storages status"""
@@ -778,3 +825,68 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+
+
+# Unified Query Result Data Structures for Reference List Support
+
+
+@dataclass
+class QueryResult:
+    """
+    Unified query result data structure for all query modes.
+
+    Attributes:
+        content: Text content for non-streaming responses
+        response_iterator: Streaming response iterator for streaming responses
+        raw_data: Complete structured data including references and metadata
+        is_streaming: Whether this is a streaming result
+    """
+
+    content: Optional[str] = None
+    response_iterator: Optional[AsyncIterator[str]] = None
+    raw_data: Optional[Dict[str, Any]] = None
+    is_streaming: bool = False
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """
+        Convenient property to extract reference list from raw_data.
+
+        Returns:
+            List[Dict[str, str]]: Reference list in format:
+            [{"reference_id": "1", "file_path": "/path/to/file.pdf"}, ...]
+        """
+        if self.raw_data:
+            return self.raw_data.get("data", {}).get("references", [])
+        return []
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """
+        Convenient property to extract metadata from raw_data.
+
+        Returns:
+            Dict[str, Any]: Query metadata including query_mode, keywords, etc.
+        """
+        if self.raw_data:
+            return self.raw_data.get("metadata", {})
+        return {}
+
+
+@dataclass
+class QueryContextResult:
+    """
+    Unified query context result data structure.
+
+    Attributes:
+        context: LLM context string
+        raw_data: Complete structured data including reference_list
+    """
+
+    context: str
+    raw_data: Dict[str, Any]
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """Convenient property to extract reference list from raw_data."""
+        return self.raw_data.get("data", {}).get("references", [])

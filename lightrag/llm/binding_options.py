@@ -154,6 +154,28 @@ class BindingOptions:
                     default=env_value,
                     help=arg_item["help"],
                 )
+            # Handle boolean types specially to avoid argparse bool() constructor issues
+            elif arg_item["type"] is bool:
+
+                def bool_parser(value):
+                    """Custom boolean parser that handles string representations correctly"""
+                    if isinstance(value, bool):
+                        return value
+                    if isinstance(value, str):
+                        return value.lower() in ("true", "1", "yes", "t", "on")
+                    return bool(value)
+
+                # Get environment variable with proper type conversion
+                env_value = get_env_value(
+                    f"{arg_item['env_name']}", argparse.SUPPRESS, bool
+                )
+
+                group.add_argument(
+                    f"--{arg_item['argname']}",
+                    type=bool_parser,
+                    default=env_value,
+                    help=arg_item["help"],
+                )
             else:
                 group.add_argument(
                     f"--{arg_item['argname']}",

@@ -187,7 +187,21 @@
       "unknown": "未知",
       "object": "物品",
       "group": "群组",
-      "technology": "技术"
+      "technology": "技术",
+      "product": "产品",
+      "document": "文档",
+      "content": "内容",
+      "data": "数据",
+      "artifact": "人工制品",
+      "concept": "概念",
+      "naturalobject": "自然物品",
+      "method": "方法",
+      "creature": "生物神怪",
+      "plant": "植物",
+      "disease": "疾病",
+      "drug": "药物",
+      "food": "食物",
+      "other": "其他"
     },
     "sideBar": {
       "settings": {
@@ -318,23 +332,34 @@
       }
     },
     "search": {
-      "placeholder": "搜索节点...",
+      "placeholder": "页面内搜索节点...",
       "message": "还有 {count} 个"
     },
     "graphLabels": {
-      "selectTooltip": "选择查询标签",
-      "noLabels": "未找到标签",
-      "label": "标签",
-      "placeholder": "搜索标签...",
+      "selectTooltip": "获取节点(标签)子图",
+      "noLabels": "未找到匹配的节点",
+      "label": "搜索节点名称",
+      "placeholder": "搜索节点名称...",
       "andOthers": "还有 {count} 个",
-      "refreshTooltip": "重载图形数据(添加文件后需重载)"
+      "refreshGlobalTooltip": "刷新全图数据和重置搜索历史",
+      "refreshCurrentLabelTooltip": "刷新当前页面图数据",
+      "refreshingTooltip": "正在刷新数据..."
     },
     "emptyGraph": "无数据(请重载图形数据)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "复制到剪贴板",
-      "copyError": "复制文本到剪贴板失败"
+      "copyError": "复制文本到剪贴板失败",
+      "copyEmpty": "没有内容可复制",
+      "copySuccess": "内容已复制到剪贴板",
+      "copySuccessLegacy": "内容已复制（传统方法）",
+      "copySuccessManual": "内容已复制（手动方法）",
+      "copyFailed": "复制内容失败",
+      "copyManualInstruction": "请手动选择并复制文本",
+      "thinking": "正在思考...",
+      "thinkingTime": "思考用时 {{time}} 秒",
+      "thinkingInProgress": "思考进行中..."
     },
     "retrieval": {
       "startPrompt": "输入查询开始检索",
@@ -349,7 +374,7 @@
       "parametersTitle": "参数",
       "parametersDescription": "配置查询参数",
       "queryMode": "查询模式",
-      "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索\n• Bypass：直接传递查询到LLM，不进行检索",
+      "queryModeTooltip": "选择检索策略：\n• Naive：传统文本块向量检索\n• Local：侧重实体检索\n• Global：侧重关系检索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳过检索,把历史会话与当前问题送LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
@@ -386,7 +411,7 @@
       "onlyNeedPromptTooltip": "如果为True，仅返回生成的提示而不产生响应",
       "streamResponse": "流式响应",
       "streamResponseTooltip": "如果为True，启用实时流式输出响应",
-      "userPrompt": "用户提示词",
+      "userPrompt": "附加输出提示词",
       "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。",
       "userPromptPlaceholder": "输入自定义提示词（可选）",
       "enableRerank": "启用重排",

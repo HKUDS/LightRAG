@@ -3,6 +3,7 @@ name: Upload LightRAG-hku Package
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,10 +14,26 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for tags
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          echo "Found tag: $TAG"
+          echo "Extracted version: $TAG"
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Update version in __init__.py
+        run: |
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_version.outputs.version }}\"/" lightrag/__init__.py
+          echo "Updated __init__.py with version ${{ steps.get_version.outputs.version }}"
+          cat lightrag/__init__.py | grep __version__
 
       - name: Build release distributions
         run: |

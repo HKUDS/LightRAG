@@ -1,7 +1,6 @@
 import { FC, useCallback, useEffect } from 'react'
 import {
   EdgeById,
-  NodeById,
   GraphSearchInputProps,
   GraphSearchContextProviderProps
 } from '@react-sigma/graph-search'
@@ -23,10 +22,31 @@ export interface OptionItem {
 
 const NodeOption = ({ id }: { id: string }) => {
   const graph = useGraphStore.use.sigmaGraph()
+
+  // Early return if no graph or node doesn't exist
   if (!graph?.hasNode(id)) {
     return null
   }
-  return <NodeById id={id} />
+
+  // Safely get node attributes with fallbacks
+  const label = graph.getNodeAttribute(id, 'label') || id
+  const color = graph.getNodeAttribute(id, 'color') || '#666'
+  const size = graph.getNodeAttribute(id, 'size') || 4
+
+  // Custom node display component that doesn't rely on @react-sigma/graph-search
+  return (
+    <div className="flex items-center gap-2 p-2 text-sm">
+      <div
+        className="rounded-full flex-shrink-0"
+        style={{
+          width: Math.max(8, Math.min(size * 2, 16)),
+          height: Math.max(8, Math.min(size * 2, 16)),
+          backgroundColor: color
+        }}
+      />
+      <span className="truncate">{label}</span>
+    </div>
+  )
 }
 
 function OptionComponent(item: OptionItem) {
@@ -83,12 +103,17 @@ export const GraphSearchInput = ({
       }
     })
 
-    // Add nodes to search engine
-    const documents = graph.nodes().map((id: string) => ({
-      id: id,
-      label: graph.getNodeAttribute(id, 'label')
-    }))
-    newSearchEngine.addAll(documents)
+    // Add nodes to search engine with safety checks
+    const documents = graph.nodes()
+      .filter(id => graph.hasNode(id)) // Ensure node exists before accessing attributes
+      .map((id: string) => ({
+        id: id,
+        label: graph.getNodeAttribute(id, 'label')
+      }))
+
+    if (documents.length > 0) {
+      newSearchEngine.addAll(documents)
+    }
 
     // Update search engine in store
     useGraphStore.getState().setSearchEngine(newSearchEngine)
@@ -136,13 +161,16 @@ export const GraphSearchInput = ({
         // Get already matched IDs to avoid duplicates
         const matchedIds = new Set(result.map(item => item.id))
 
-        // Perform middle-content matching on all nodes
+        // Perform middle-content matching on all nodes with safety checks
         const middleMatchResults = graph.nodes()
           .filter(id => {
             // Skip already matched nodes
             if (matchedIds.has(id)) return false
 
-            // Get node label
+            // Ensure node exists before accessing attributes
+            if (!graph.hasNode(id)) return false
+
+            // Get node label safely
             const label = graph.getNodeAttribute(id, 'label')
             // Match if label contains query string but doesn't start with it
             return label &&
@@ -176,7 +204,7 @@ export const GraphSearchInput = ({
 
   return (
     <AsyncSearch
-      className="bg-background/60 w-24 rounded-xl border-1 opacity-60 backdrop-blur-lg transition-all hover:w-fit hover:opacity-100"
+      className="bg-background/60 w-24 rounded-xl border-1 opacity-60 backdrop-blur-lg transition-all hover:w-fit hover:opacity-100 w-full"
       fetcher={loadOptions}
       renderOption={OptionComponent}
       getOptionValue={(item) => item.id}
@@ -187,8 +215,9 @@ export const GraphSearchInput = ({
       onFocus={(id) => {
         if (id !== messageId && onFocus) onFocus(id ? { id, type: 'nodes' } : null)
       }}
-      label={'item'}
+      ariaLabel={t('graphPanel.search.placeholder')}
       placeholder={t('graphPanel.search.placeholder')}
+      noResultsMessage={t('graphPanel.search.placeholder')}
     />
   )
 }

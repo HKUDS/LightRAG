@@ -187,7 +187,21 @@
       "unknown": "Unknown",
       "object": "Object",
       "group": "Group",
-      "technology": "Technology"
+      "technology": "Technology",
+      "product": "Product",
+      "document": "Document",
+      "content": "Content",
+      "data": "Data",
+      "artifact": "Artifact",
+      "concept": "Concept",
+      "naturalobject": "Natural Object",
+      "method": "Method",
+      "creature": "Creature",
+      "plant": "Plant",
+      "disease": "Disease",
+      "drug": "Drug",
+      "food": "Food",
+      "other": "Other"
     },
     "sideBar": {
       "settings": {
@@ -318,23 +332,34 @@
       }
     },
     "search": {
-      "placeholder": "Search nodes...",
+      "placeholder": "Search nodes in page...",
       "message": "And {count} others"
     },
     "graphLabels": {
-      "selectTooltip": "Select query label",
-      "noLabels": "No labels found",
-      "label": "Label",
-      "placeholder": "Search labels...",
+      "selectTooltip": "Get subgraph of a node (label)",
+      "noLabels": "No matching nodes found",
+      "label": "Search node name",
+      "placeholder": "Search node name...",
       "andOthers": "And {count} others",
-      "refreshTooltip": "Reload data(After file added)"
+      "refreshGlobalTooltip": "Refresh global graph data and reset search history",
+      "refreshCurrentLabelTooltip": "Refresh current page graph data",
+      "refreshingTooltip": "Refreshing data..."
     },
     "emptyGraph": "Empty(Try Reload Again)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "Copy to clipboard",
-      "copyError": "Failed to copy text to clipboard"
+      "copyError": "Failed to copy text to clipboard",
+      "copyEmpty": "No content to copy",
+      "copySuccess": "Content copied to clipboard",
+      "copySuccessLegacy": "Content copied (legacy method)",
+      "copySuccessManual": "Content copied (manual method)",
+      "copyFailed": "Failed to copy content",
+      "copyManualInstruction": "Please select and copy the text manually",
+      "thinking": "Thinking...",
+      "thinkingTime": "Thinking time {{time}}s",
+      "thinkingInProgress": "Thinking in progress..."
     },
     "retrieval": {
       "startPrompt": "Start a retrieval by typing your query below",
@@ -349,7 +374,7 @@
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
-      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval\n• Bypass: Passes query directly to LLM without retrieval",
+      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
@@ -386,7 +411,7 @@
       "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
-      "userPrompt": "User Prompt",
+      "userPrompt": "Additional Output Prompt",
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
       "enableRerank": "Enable Rerank",

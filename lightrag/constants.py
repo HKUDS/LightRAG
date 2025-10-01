@@ -11,10 +11,31 @@ DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
-DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for summaries
-DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
+DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
-DEFAULT_SUMMARY_MAX_TOKENS = 10000  # Default maximum token size
+
+# Number of description fragments to trigger LLM summary
+DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
+# Max description token size to trigger LLM summary
+DEFAULT_SUMMARY_MAX_TOKENS = 1200
+# Recommended LLM summary output length in tokens
+DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
+# Maximum token size sent to LLM for summary
+DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
+# Default entities to extract if ENTITY_TYPES is not specified in .env
+DEFAULT_ENTITY_TYPES = [
+    "Person",
+    "Creature",
+    "Organization",
+    "Location",
+    "Event",
+    "Concept",
+    "Method",
+    "Content",
+    "Data",
+    "Artifact",
+    "NaturalObject",
+]
 
 # Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
@@ -28,12 +49,13 @@ DEFAULT_MAX_TOTAL_TOKENS = 30000
 DEFAULT_COSINE_THRESHOLD = 0.2
 DEFAULT_RELATED_CHUNK_NUMBER = 5
 DEFAULT_KG_CHUNK_PICK_METHOD = "VECTOR"
-# Deprated: history message have negtive effect on query performance
+
+# TODO: Deprated. All conversation_history messages is send to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults
-DEFAULT_ENABLE_RERANK = True
 DEFAULT_MIN_RERANK_SCORE = 0.0
+DEFAULT_RERANK_BINDING = "null"
 
 # File path configuration for vector and graph database(Should not be changed, used in Milvus Schema)
 DEFAULT_MAX_FILE_PATH_LENGTH = 32768
@@ -49,8 +71,12 @@ DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
-# gunicorn worker timeout(as default LLM request timeout if LLM_TIMEOUT is not set)
-DEFAULT_TIMEOUT = 150
+# Gunicorn worker timeout
+DEFAULT_TIMEOUT = 300
+
+# Default llm and embedding timeout
+DEFAULT_LLM_TIMEOUT = 180
+DEFAULT_EMBEDDING_TIMEOUT = 30
 
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB

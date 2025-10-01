@@ -34,9 +34,15 @@ from lightrag.constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.utils import get_env_value
 
@@ -53,7 +59,7 @@ from lightrag.kg.shared_storage import (
     get_data_init_lock,
 )
 
-from .base import (
+from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
@@ -65,9 +71,10 @@ from .base import (
     StoragesStatus,
     DeletionResult,
     OllamaServerInfos,
+    QueryResult,
 )
-from .namespace import NameSpace
-from .operate import (
+from lightrag.namespace import NameSpace
+from lightrag.operate import (
     chunking_by_token_size,
     extract_entities,
     merge_nodes_and_edges,
@@ -75,8 +82,8 @@ from .operate import (
     naive_query,
     _rebuild_knowledge_from_chunks,
 )
-from .constants import GRAPH_FIELD_SEP
-from .utils import (
+from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
     EmbeddingFunc,
@@ -88,9 +95,10 @@ from .utils import (
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
+    convert_to_user_format,
     logger,
 )
-from .types import KnowledgeGraph
+from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
@@ -273,6 +281,10 @@ class LightRAG:
     - use_llm_check: If True, validates cached embeddings using an LLM.
     """
 
+    default_embedding_timeout: int = field(
+        default=int(os.getenv("EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT))
+    )
+
     # LLM Configuration
     # ---
 
@@ -285,7 +297,19 @@ class LightRAG:
     summary_max_tokens: int = field(
         default=int(os.getenv("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
     )
+    """Maximum tokens allowed for entity/relation description."""
+
+    summary_context_size: int = field(
+        default=int(os.getenv("SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE))
+    )
     """Maximum number of tokens allowed per LLM response."""
+
+    summary_length_recommended: int = field(
+        default=int(
+            os.getenv("SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED)
+        )
+    )
+    """Recommended length of LLM summary output."""
 
     llm_model_max_async: int = field(
         default=int(os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC))
@@ -294,6 +318,10 @@ class LightRAG:
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
+
+    default_llm_timeout: int = field(
+        default=int(os.getenv("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT))
+    )
 
     # Rerank Configuration
     # ---
@@ -333,7 +361,10 @@ class LightRAG:
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
-            "language": get_env_value("SUMMARY_LANGUAGE", "English", str)
+            "language": get_env_value(
+                "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
+            ),
+            "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
         }
     )
 
@@ -416,6 +447,20 @@ class LightRAG:
         if self.ollama_server_infos is None:
             self.ollama_server_infos = OllamaServerInfos()
 
+        # Validate config
+        if self.force_llm_summary_on_merge < 3:
+            logger.warning(
+                f"force_llm_summary_on_merge should be at least 3, got {self.force_llm_summary_on_merge}"
+            )
+        if self.summary_context_size > self.max_total_tokens:
+            logger.warning(
+                f"summary_context_size({self.summary_context_size}) should no greater than max_total_tokens({self.max_total_tokens})"
+            )
+        if self.summary_length_recommended > self.summary_max_tokens:
+            logger.warning(
+                f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
+            )
+
         # Fix global_config now
         global_config = asdict(self)
 
@@ -424,7 +469,9 @@ class LightRAG:
 
         # Init Embedding
         self.embedding_func = priority_limit_async_func_call(
-            self.embedding_func_max_async
+            self.embedding_func_max_async,
+            llm_timeout=self.default_embedding_timeout,
+            queue_name="Embedding func",
         )(self.embedding_func)
 
         # Initialize all storages
@@ -517,21 +564,18 @@ class LightRAG:
         # Directly use llm_response_cache, don't create a new object
         hashing_kv = self.llm_response_cache
 
-        self.llm_model_func = priority_limit_async_func_call(self.llm_model_max_async)(
+        # Get timeout from LLM model kwargs for dynamic timeout calculation
+        self.llm_model_func = priority_limit_async_func_call(
+            self.llm_model_max_async,
+            llm_timeout=self.default_llm_timeout,
+            queue_name="LLM func",
+        )(
             partial(
                 self.llm_model_func,  # type: ignore
                 hashing_kv=hashing_kv,
                 **self.llm_model_kwargs,
             )
         )
-
-        # Init Rerank
-        if self.rerank_model_func:
-            logger.info("Rerank model initialized for improved retrieval quality")
-        else:
-            logger.warning(
-                "Rerank is enabled but no rerank_model_func provided. Reranking will be skipped."
-            )
 
         self._storages_status = StoragesStatus.CREATED
 
@@ -951,7 +995,7 @@ class LightRAG:
 
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_entity_relation_graph(inserting_chunks),
+                self._process_extract_entities(inserting_chunks),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
@@ -1462,6 +1506,15 @@ class LightRAG:
                                 pipeline_status["latest_message"] = log_message
                                 pipeline_status["history_messages"].append(log_message)
 
+                                # Prevent memory growth: keep only latest 5000 messages when exceeding 10000
+                                if len(pipeline_status["history_messages"]) > 10000:
+                                    logger.info(
+                                        f"Trimming pipeline history from {len(pipeline_status['history_messages'])} to 5000 messages"
+                                    )
+                                    pipeline_status["history_messages"] = (
+                                        pipeline_status["history_messages"][-5000:]
+                                    )
+
                             # Get document content from full_docs
                             content_data = await self.full_docs.get_by_id(doc_id)
                             if not content_data:
@@ -1540,7 +1593,7 @@ class LightRAG:
 
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(
+                                self._process_extract_entities(
                                     chunks, pipeline_status, pipeline_status_lock
                                 )
                             )
@@ -1750,7 +1803,7 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(
+    async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
         try:
@@ -2009,59 +2062,403 @@ class LightRAG:
         system_prompt: str | None = None,
     ) -> str | AsyncIterator[str]:
         """
-        Perform a async query.
+        Perform a async query (backward compatibility wrapper).
+
+        This function is now a wrapper around aquery_llm that maintains backward compatibility
+        by returning only the LLM response content in the original format.
 
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
                 If param.model_func is provided, it will be used instead of the global model.
-            prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
-            str: The result of the query execution.
+            str | AsyncIterator[str]: The LLM response content.
+                - Non-streaming: Returns str
+                - Streaming: Returns AsyncIterator[str]
         """
-        # If a custom model is provided in param, temporarily update global config
+        # Call the new aquery_llm function to get complete results
+        result = await self.aquery_llm(query, param, system_prompt)
+
+        # Extract and return only the LLM response for backward compatibility
+        llm_response = result.get("llm_response", {})
+
+        if llm_response.get("is_streaming"):
+            return llm_response.get("response_iterator")
+        else:
+            return llm_response.get("content", "")
+
+    def query_data(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Synchronous data retrieval API: returns structured retrieval results without LLM generation.
+
+        This function is the synchronous version of aquery_data, providing the same functionality
+        for users who prefer synchronous interfaces.
+
+        Args:
+            query: Query text for retrieval.
+            param: Query parameters controlling retrieval behavior (same as aquery).
+
+        Returns:
+            dict[str, Any]: Same structured data result as aquery_data.
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aquery_data(query, param))
+
+    async def aquery_data(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Asynchronous data retrieval API: returns structured retrieval results without LLM generation.
+
+        This function reuses the same logic as aquery but stops before LLM generation,
+        returning the final processed entities, relationships, and chunks data that would be sent to LLM.
+
+        Args:
+            query: Query text for retrieval.
+            param: Query parameters controlling retrieval behavior (same as aquery).
+
+        Returns:
+            dict[str, Any]: Structured data result in the following format:
+
+            **Success Response:**
+            ```python
+            {
+                "status": "success",
+                "message": "Query executed successfully",
+                "data": {
+                    "entities": [
+                        {
+                            "entity_name": str,      # Entity identifier
+                            "entity_type": str,      # Entity category/type
+                            "description": str,      # Entity description
+                            "source_id": str,        # Source chunk references
+                            "file_path": str,        # Origin file path
+                            "created_at": str,       # Creation timestamp
+                            "reference_id": str      # Reference identifier for citations
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "src_id": str,           # Source entity name
+                            "tgt_id": str,           # Target entity name
+                            "description": str,      # Relationship description
+                            "keywords": str,         # Relationship keywords
+                            "weight": float,         # Relationship strength
+                            "source_id": str,        # Source chunk references
+                            "file_path": str,        # Origin file path
+                            "created_at": str,       # Creation timestamp
+                            "reference_id": str      # Reference identifier for citations
+                        }
+                    ],
+                    "chunks": [
+                        {
+                            "content": str,          # Document chunk content
+                            "file_path": str,        # Origin file path
+                            "chunk_id": str,         # Unique chunk identifier
+                            "reference_id": str      # Reference identifier for citations
+                        }
+                    ],
+                    "references": [
+                        {
+                            "reference_id": str,     # Reference identifier
+                            "file_path": str         # Corresponding file path
+                        }
+                    ]
+                },
+                "metadata": {
+                    "query_mode": str,           # Query mode used ("local", "global", "hybrid", "mix", "naive", "bypass")
+                    "keywords": {
+                        "high_level": List[str], # High-level keywords extracted
+                        "low_level": List[str]   # Low-level keywords extracted
+                    },
+                    "processing_info": {
+                        "total_entities_found": int,        # Total entities before truncation
+                        "total_relations_found": int,       # Total relations before truncation
+                        "entities_after_truncation": int,   # Entities after token truncation
+                        "relations_after_truncation": int,  # Relations after token truncation
+                        "merged_chunks_count": int,          # Chunks before final processing
+                        "final_chunks_count": int            # Final chunks in result
+                    }
+                }
+            }
+            ```
+
+            **Query Mode Differences:**
+            - **local**: Focuses on entities and their related chunks based on low-level keywords
+            - **global**: Focuses on relationships and their connected entities based on high-level keywords
+            - **hybrid**: Combines local and global results using round-robin merging
+            - **mix**: Includes knowledge graph data plus vector-retrieved document chunks
+            - **naive**: Only vector-retrieved chunks, entities and relationships arrays are empty
+            - **bypass**: All data arrays are empty, used for direct LLM queries
+
+            ** processing_info is optional and may not be present in all responses, especially when query result is empty**
+
+            **Failure Response:**
+            ```python
+            {
+                "status": "failure",
+                "message": str,  # Error description
+                "data": {}       # Empty data object
+            }
+            ```
+
+            **Common Failure Cases:**
+            - Empty query string
+            - Both high-level and low-level keywords are empty
+            - Query returns empty dataset
+            - Missing tokenizer or system configuration errors
+
+        Note:
+            The function adapts to the new data format from convert_to_user_format where
+            actual data is nested under the 'data' field, with 'status' and 'message'
+            fields at the top level.
+        """
         global_config = asdict(self)
 
-        if param.mode in ["local", "global", "hybrid", "mix"]:
-            response = await kg_query(
+        # Create a copy of param to avoid modifying the original
+        data_param = QueryParam(
+            mode=param.mode,
+            only_need_context=True,  # Skip LLM generation, only get context and data
+            only_need_prompt=False,
+            response_type=param.response_type,
+            stream=False,  # Data retrieval doesn't need streaming
+            top_k=param.top_k,
+            chunk_top_k=param.chunk_top_k,
+            max_entity_tokens=param.max_entity_tokens,
+            max_relation_tokens=param.max_relation_tokens,
+            max_total_tokens=param.max_total_tokens,
+            hl_keywords=param.hl_keywords,
+            ll_keywords=param.ll_keywords,
+            conversation_history=param.conversation_history,
+            history_turns=param.history_turns,
+            model_func=param.model_func,
+            user_prompt=param.user_prompt,
+            enable_rerank=param.enable_rerank,
+        )
+
+        query_result = None
+
+        if data_param.mode in ["local", "global", "hybrid", "mix"]:
+            logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
+            query_result = await kg_query(
                 query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
                 self.text_chunks,
-                param,
+                data_param,  # Use data_param with only_need_context=True
                 global_config,
                 hashing_kv=self.llm_response_cache,
-                system_prompt=system_prompt,
+                system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
             )
-        elif param.mode == "naive":
-            response = await naive_query(
+        elif data_param.mode == "naive":
+            logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
+            query_result = await naive_query(
                 query.strip(),
                 self.chunks_vdb,
-                param,
+                data_param,  # Use data_param with only_need_context=True
                 global_config,
                 hashing_kv=self.llm_response_cache,
-                system_prompt=system_prompt,
+                system_prompt=None,
             )
-        elif param.mode == "bypass":
-            # Bypass mode: directly use LLM without knowledge retrieval
-            use_llm_func = param.model_func or global_config["llm_model_func"]
-            # Apply higher priority (8) to entity/relation summary tasks
-            use_llm_func = partial(use_llm_func, _priority=8)
+        elif data_param.mode == "bypass":
+            logger.debug("[aquery_data] Using bypass mode")
+            # bypass mode returns empty data using convert_to_user_format
+            empty_raw_data = convert_to_user_format(
+                [],  # no entities
+                [],  # no relationships
+                [],  # no chunks
+                [],  # no references
+                "bypass",
+            )
+            query_result = QueryResult(content="", raw_data=empty_raw_data)
+        else:
+            raise ValueError(f"Unknown mode {data_param.mode}")
 
-            param.stream = True if param.stream is None else param.stream
-            response = await use_llm_func(
-                query.strip(),
-                system_prompt=system_prompt,
-                history_messages=param.conversation_history,
-                stream=param.stream,
+        # Extract raw_data from QueryResult
+        final_data = query_result.raw_data if query_result else {}
+
+        # Log final result counts - adapt to new data format from convert_to_user_format
+        if final_data and "data" in final_data:
+            data_section = final_data["data"]
+            entities_count = len(data_section.get("entities", []))
+            relationships_count = len(data_section.get("relationships", []))
+            chunks_count = len(data_section.get("chunks", []))
+            logger.debug(
+                f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
             )
         else:
-            raise ValueError(f"Unknown mode {param.mode}")
+            logger.warning("[aquery_data] No data section found in query result")
+
         await self._query_done()
-        return response
+        return final_data
+
+    async def aquery_llm(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+        system_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Asynchronous complete query API: returns structured retrieval results with LLM generation.
+
+        This function performs a single query operation and returns both structured data and LLM response,
+        based on the original aquery logic to avoid duplicate calls.
+
+        Args:
+            query: Query text for retrieval and LLM generation.
+            param: Query parameters controlling retrieval and LLM behavior.
+            system_prompt: Optional custom system prompt for LLM generation.
+
+        Returns:
+            dict[str, Any]: Complete response with structured data and LLM response.
+        """
+        logger.debug(f"[aquery_llm] Query param: {param}")
+
+        global_config = asdict(self)
+
+        try:
+            query_result = None
+
+            if param.mode in ["local", "global", "hybrid", "mix"]:
+                query_result = await kg_query(
+                    query.strip(),
+                    self.chunk_entity_relation_graph,
+                    self.entities_vdb,
+                    self.relationships_vdb,
+                    self.text_chunks,
+                    param,
+                    global_config,
+                    hashing_kv=self.llm_response_cache,
+                    system_prompt=system_prompt,
+                    chunks_vdb=self.chunks_vdb,
+                )
+            elif param.mode == "naive":
+                query_result = await naive_query(
+                    query.strip(),
+                    self.chunks_vdb,
+                    param,
+                    global_config,
+                    hashing_kv=self.llm_response_cache,
+                    system_prompt=system_prompt,
+                )
+            elif param.mode == "bypass":
+                # Bypass mode: directly use LLM without knowledge retrieval
+                use_llm_func = param.model_func or global_config["llm_model_func"]
+                # Apply higher priority (8) to entity/relation summary tasks
+                use_llm_func = partial(use_llm_func, _priority=8)
+
+                param.stream = True if param.stream is None else param.stream
+                response = await use_llm_func(
+                    query.strip(),
+                    system_prompt=system_prompt,
+                    history_messages=param.conversation_history,
+                    enable_cot=True,
+                    stream=param.stream,
+                )
+                if type(response) is str:
+                    return {
+                        "status": "success",
+                        "message": "Bypass mode LLM non streaming response",
+                        "data": {},
+                        "metadata": {},
+                        "llm_response": {
+                            "content": response,
+                            "response_iterator": None,
+                            "is_streaming": False,
+                        },
+                    }
+                else:
+                    return {
+                        "status": "success",
+                        "message": "Bypass mode LLM streaming response",
+                        "data": {},
+                        "metadata": {},
+                        "llm_response": {
+                            "content": None,
+                            "response_iterator": response,
+                            "is_streaming": True,
+                        },
+                    }
+            else:
+                raise ValueError(f"Unknown mode {param.mode}")
+
+            await self._query_done()
+
+            # Check if query_result is None
+            if query_result is None:
+                return {
+                    "status": "failure",
+                    "message": "Query returned no results",
+                    "data": {},
+                    "metadata": {},
+                    "llm_response": {
+                        "content": None,
+                        "response_iterator": None,
+                        "is_streaming": False,
+                    },
+                }
+
+            # Extract structured data from query result
+            raw_data = query_result.raw_data if query_result else {}
+            raw_data["llm_response"] = {
+                "content": query_result.content
+                if not query_result.is_streaming
+                else None,
+                "response_iterator": query_result.response_iterator
+                if query_result.is_streaming
+                else None,
+                "is_streaming": query_result.is_streaming,
+            }
+
+            return raw_data
+
+        except Exception as e:
+            logger.error(f"Query failed: {e}")
+            # Return error response
+            return {
+                "status": "failure",
+                "message": f"Query failed: {str(e)}",
+                "data": {},
+                "metadata": {},
+                "llm_response": {
+                    "content": None,
+                    "response_iterator": None,
+                    "is_streaming": False,
+                },
+            }
+
+    def query_llm(
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+        system_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Synchronous complete query API: returns structured retrieval results with LLM generation.
+
+        This function is the synchronous version of aquery_llm, providing the same functionality
+        for users who prefer synchronous interfaces.
+
+        Args:
+            query: Query text for retrieval and LLM generation.
+            param: Query parameters controlling retrieval and LLM behavior.
+            system_prompt: Optional custom system prompt for LLM generation.
+
+        Returns:
+            dict[str, Any]: Same complete response format as aquery_llm.
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aquery_llm(query, param, system_prompt))
 
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
@@ -2280,117 +2677,111 @@ class LightRAG:
             relationships_to_delete = set()
             relationships_to_rebuild = {}  # (src, tgt) -> remaining_chunk_ids
 
-            # Use graph database lock to ensure atomic merges and updates
+            try:
+                # Get affected entities and relations from full_entities and full_relations storage
+                doc_entities_data = await self.full_entities.get_by_id(doc_id)
+                doc_relations_data = await self.full_relations.get_by_id(doc_id)
+
+                affected_nodes = []
+                affected_edges = []
+
+                # Get entity data from graph storage using entity names from full_entities
+                if doc_entities_data and "entity_names" in doc_entities_data:
+                    entity_names = doc_entities_data["entity_names"]
+                    # get_nodes_batch returns dict[str, dict], need to convert to list[dict]
+                    nodes_dict = await self.chunk_entity_relation_graph.get_nodes_batch(
+                        entity_names
+                    )
+                    for entity_name in entity_names:
+                        node_data = nodes_dict.get(entity_name)
+                        if node_data:
+                            # Ensure compatibility with existing logic that expects "id" field
+                            if "id" not in node_data:
+                                node_data["id"] = entity_name
+                            affected_nodes.append(node_data)
+
+                # Get relation data from graph storage using relation pairs from full_relations
+                if doc_relations_data and "relation_pairs" in doc_relations_data:
+                    relation_pairs = doc_relations_data["relation_pairs"]
+                    edge_pairs_dicts = [
+                        {"src": pair[0], "tgt": pair[1]} for pair in relation_pairs
+                    ]
+                    # get_edges_batch returns dict[tuple[str, str], dict], need to convert to list[dict]
+                    edges_dict = await self.chunk_entity_relation_graph.get_edges_batch(
+                        edge_pairs_dicts
+                    )
+
+                    for pair in relation_pairs:
+                        src, tgt = pair[0], pair[1]
+                        edge_key = (src, tgt)
+                        edge_data = edges_dict.get(edge_key)
+                        if edge_data:
+                            # Ensure compatibility with existing logic that expects "source" and "target" fields
+                            if "source" not in edge_data:
+                                edge_data["source"] = src
+                            if "target" not in edge_data:
+                                edge_data["target"] = tgt
+                            affected_edges.append(edge_data)
+
+            except Exception as e:
+                logger.error(f"Failed to analyze affected graph elements: {e}")
+                raise Exception(f"Failed to analyze graph dependencies: {e}") from e
+
+            try:
+                # Process entities
+                for node_data in affected_nodes:
+                    node_label = node_data.get("entity_id")
+                    if node_label and "source_id" in node_data:
+                        sources = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
+                        remaining_sources = sources - chunk_ids
+
+                        if not remaining_sources:
+                            entities_to_delete.add(node_label)
+                        elif remaining_sources != sources:
+                            entities_to_rebuild[node_label] = remaining_sources
+
+                async with pipeline_status_lock:
+                    log_message = f"Found {len(entities_to_rebuild)} affected entities"
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+
+                # Process relationships
+                for edge_data in affected_edges:
+                    src = edge_data.get("source")
+                    tgt = edge_data.get("target")
+
+                    if src and tgt and "source_id" in edge_data:
+                        edge_tuple = tuple(sorted((src, tgt)))
+                        if (
+                            edge_tuple in relationships_to_delete
+                            or edge_tuple in relationships_to_rebuild
+                        ):
+                            continue
+
+                        sources = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
+                        remaining_sources = sources - chunk_ids
+
+                        if not remaining_sources:
+                            relationships_to_delete.add(edge_tuple)
+                        elif remaining_sources != sources:
+                            relationships_to_rebuild[edge_tuple] = remaining_sources
+
+                async with pipeline_status_lock:
+                    log_message = (
+                        f"Found {len(relationships_to_rebuild)} affected relations"
+                    )
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+
+            except Exception as e:
+                logger.error(f"Failed to process graph analysis results: {e}")
+                raise Exception(f"Failed to process graph dependencies: {e}") from e
+
+            # Use graph database lock to prevent dirty read
             graph_db_lock = get_graph_db_lock(enable_logging=False)
             async with graph_db_lock:
-                try:
-                    # Get affected entities and relations from full_entities and full_relations storage
-                    doc_entities_data = await self.full_entities.get_by_id(doc_id)
-                    doc_relations_data = await self.full_relations.get_by_id(doc_id)
-
-                    affected_nodes = []
-                    affected_edges = []
-
-                    # Get entity data from graph storage using entity names from full_entities
-                    if doc_entities_data and "entity_names" in doc_entities_data:
-                        entity_names = doc_entities_data["entity_names"]
-                        # get_nodes_batch returns dict[str, dict], need to convert to list[dict]
-                        nodes_dict = (
-                            await self.chunk_entity_relation_graph.get_nodes_batch(
-                                entity_names
-                            )
-                        )
-                        for entity_name in entity_names:
-                            node_data = nodes_dict.get(entity_name)
-                            if node_data:
-                                # Ensure compatibility with existing logic that expects "id" field
-                                if "id" not in node_data:
-                                    node_data["id"] = entity_name
-                                affected_nodes.append(node_data)
-
-                    # Get relation data from graph storage using relation pairs from full_relations
-                    if doc_relations_data and "relation_pairs" in doc_relations_data:
-                        relation_pairs = doc_relations_data["relation_pairs"]
-                        edge_pairs_dicts = [
-                            {"src": pair[0], "tgt": pair[1]} for pair in relation_pairs
-                        ]
-                        # get_edges_batch returns dict[tuple[str, str], dict], need to convert to list[dict]
-                        edges_dict = (
-                            await self.chunk_entity_relation_graph.get_edges_batch(
-                                edge_pairs_dicts
-                            )
-                        )
-
-                        for pair in relation_pairs:
-                            src, tgt = pair[0], pair[1]
-                            edge_key = (src, tgt)
-                            edge_data = edges_dict.get(edge_key)
-                            if edge_data:
-                                # Ensure compatibility with existing logic that expects "source" and "target" fields
-                                if "source" not in edge_data:
-                                    edge_data["source"] = src
-                                if "target" not in edge_data:
-                                    edge_data["target"] = tgt
-                                affected_edges.append(edge_data)
-
-                except Exception as e:
-                    logger.error(f"Failed to analyze affected graph elements: {e}")
-                    raise Exception(f"Failed to analyze graph dependencies: {e}") from e
-
-                try:
-                    # Process entities
-                    for node_data in affected_nodes:
-                        node_label = node_data.get("entity_id")
-                        if node_label and "source_id" in node_data:
-                            sources = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
-                            remaining_sources = sources - chunk_ids
-
-                            if not remaining_sources:
-                                entities_to_delete.add(node_label)
-                            elif remaining_sources != sources:
-                                entities_to_rebuild[node_label] = remaining_sources
-
-                    async with pipeline_status_lock:
-                        log_message = (
-                            f"Found {len(entities_to_rebuild)} affected entities"
-                        )
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-
-                    # Process relationships
-                    for edge_data in affected_edges:
-                        src = edge_data.get("source")
-                        tgt = edge_data.get("target")
-
-                        if src and tgt and "source_id" in edge_data:
-                            edge_tuple = tuple(sorted((src, tgt)))
-                            if (
-                                edge_tuple in relationships_to_delete
-                                or edge_tuple in relationships_to_rebuild
-                            ):
-                                continue
-
-                            sources = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
-                            remaining_sources = sources - chunk_ids
-
-                            if not remaining_sources:
-                                relationships_to_delete.add(edge_tuple)
-                            elif remaining_sources != sources:
-                                relationships_to_rebuild[edge_tuple] = remaining_sources
-
-                    async with pipeline_status_lock:
-                        log_message = (
-                            f"Found {len(relationships_to_rebuild)} affected relations"
-                        )
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-
-                except Exception as e:
-                    logger.error(f"Failed to process graph analysis results: {e}")
-                    raise Exception(f"Failed to process graph dependencies: {e}") from e
-
                 # 5. Delete chunks from storage
                 if chunk_ids:
                     try:
@@ -2461,27 +2852,28 @@ class LightRAG:
                         logger.error(f"Failed to delete relationships: {e}")
                         raise Exception(f"Failed to delete relationships: {e}") from e
 
-                # 8. Rebuild entities and relationships from remaining chunks
-                if entities_to_rebuild or relationships_to_rebuild:
-                    try:
-                        await _rebuild_knowledge_from_chunks(
-                            entities_to_rebuild=entities_to_rebuild,
-                            relationships_to_rebuild=relationships_to_rebuild,
-                            knowledge_graph_inst=self.chunk_entity_relation_graph,
-                            entities_vdb=self.entities_vdb,
-                            relationships_vdb=self.relationships_vdb,
-                            text_chunks_storage=self.text_chunks,
-                            llm_response_cache=self.llm_response_cache,
-                            global_config=asdict(self),
-                            pipeline_status=pipeline_status,
-                            pipeline_status_lock=pipeline_status_lock,
-                        )
+                # Persist changes to graph database before releasing graph database lock
+                await self._insert_done()
 
-                    except Exception as e:
-                        logger.error(f"Failed to rebuild knowledge from chunks: {e}")
-                        raise Exception(
-                            f"Failed to rebuild knowledge graph: {e}"
-                        ) from e
+            # 8. Rebuild entities and relationships from remaining chunks
+            if entities_to_rebuild or relationships_to_rebuild:
+                try:
+                    await _rebuild_knowledge_from_chunks(
+                        entities_to_rebuild=entities_to_rebuild,
+                        relationships_to_rebuild=relationships_to_rebuild,
+                        knowledge_graph_inst=self.chunk_entity_relation_graph,
+                        entities_vdb=self.entities_vdb,
+                        relationships_vdb=self.relationships_vdb,
+                        text_chunks_storage=self.text_chunks,
+                        llm_response_cache=self.llm_response_cache,
+                        global_config=asdict(self),
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to rebuild knowledge from chunks: {e}")
+                    raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
 
             # 9. Delete from full_entities and full_relations storage
             try:
@@ -2557,7 +2949,7 @@ class LightRAG:
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
-        from .utils_graph import adelete_by_entity
+        from lightrag.utils_graph import adelete_by_entity
 
         return await adelete_by_entity(
             self.chunk_entity_relation_graph,
@@ -2590,7 +2982,7 @@ class LightRAG:
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
-        from .utils_graph import adelete_by_relation
+        from lightrag.utils_graph import adelete_by_relation
 
         return await adelete_by_relation(
             self.chunk_entity_relation_graph,
@@ -2641,7 +3033,7 @@ class LightRAG:
         self, entity_name: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of an entity"""
-        from .utils_graph import get_entity_info
+        from lightrag.utils_graph import get_entity_info
 
         return await get_entity_info(
             self.chunk_entity_relation_graph,
@@ -2654,7 +3046,7 @@ class LightRAG:
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of a relationship"""
-        from .utils_graph import get_relation_info
+        from lightrag.utils_graph import get_relation_info
 
         return await get_relation_info(
             self.chunk_entity_relation_graph,
@@ -2679,7 +3071,7 @@ class LightRAG:
         Returns:
             Dictionary containing updated entity information
         """
-        from .utils_graph import aedit_entity
+        from lightrag.utils_graph import aedit_entity
 
         return await aedit_entity(
             self.chunk_entity_relation_graph,
@@ -2713,7 +3105,7 @@ class LightRAG:
         Returns:
             Dictionary containing updated relation information
         """
-        from .utils_graph import aedit_relation
+        from lightrag.utils_graph import aedit_relation
 
         return await aedit_relation(
             self.chunk_entity_relation_graph,
@@ -2746,7 +3138,7 @@ class LightRAG:
         Returns:
             Dictionary containing created entity information
         """
-        from .utils_graph import acreate_entity
+        from lightrag.utils_graph import acreate_entity
 
         return await acreate_entity(
             self.chunk_entity_relation_graph,
@@ -2777,7 +3169,7 @@ class LightRAG:
         Returns:
             Dictionary containing created relation information
         """
-        from .utils_graph import acreate_relation
+        from lightrag.utils_graph import acreate_relation
 
         return await acreate_relation(
             self.chunk_entity_relation_graph,
@@ -2823,7 +3215,7 @@ class LightRAG:
         Returns:
             Dictionary containing the merged entity information
         """
-        from .utils_graph import amerge_entities
+        from lightrag.utils_graph import amerge_entities
 
         return await amerge_entities(
             self.chunk_entity_relation_graph,
@@ -2867,7 +3259,7 @@ class LightRAG:
                 - table: Print formatted tables to console
             include_vector_data: Whether to include data from the vector database.
         """
-        from .utils import aexport_data as utils_aexport_data
+        from lightrag.utils import aexport_data as utils_aexport_data
 
         await utils_aexport_data(
             self.chunk_entity_relation_graph,

@@ -187,7 +187,21 @@
       "unknown": "未知",
       "object": "物品",
       "group": "群組",
-      "technology": "技術"
+      "technology": "技術",
+      "product": "產品",
+      "document": "文檔",
+      "content": "內容",
+      "data": "資料",
+      "artifact": "人工製品",
+      "concept": "概念",
+      "naturalobject": "自然物品",
+      "method": "方法",
+      "creature": "生物神怪",
+      "plant": "植物",
+      "disease": "疾病",
+      "drug": "藥物",
+      "food": "食物",
+      "other": "其他"
     },
     "sideBar": {
       "settings": {
@@ -318,23 +332,34 @@
       }
     },
     "search": {
-      "placeholder": "搜尋節點...",
+      "placeholder": "頁面內搜尋節點...",
       "message": "還有 {count} 個"
     },
     "graphLabels": {
-      "selectTooltip": "選擇查詢標籤",
-      "noLabels": "未找到標籤",
-      "label": "標籤",
-      "placeholder": "搜尋標籤...",
+      "selectTooltip": "獲取節點(標籤)子圖",
+      "noLabels": "未找到匹配的節點",
+      "label": "搜尋節點名稱",
+      "placeholder": "搜尋節點名稱...",
       "andOthers": "還有 {count} 個",
-      "refreshTooltip": "重載圖形數據(新增檔案後需重載)"
+      "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
+      "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
+      "refreshingTooltip": "正在重新整理資料..."
     },
     "emptyGraph": "無數據(請重載圖形數據)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "複製到剪貼簿",
-      "copyError": "複製文字到剪貼簿失敗"
+      "copyError": "複製文字到剪貼簿失敗",
+      "copyEmpty": "沒有內容可複製",
+      "copySuccess": "內容已複製到剪貼簿",
+      "copySuccessLegacy": "內容已複製（傳統方法）",
+      "copySuccessManual": "內容已複製（手動方法）",
+      "copyFailed": "複製內容失敗",
+      "copyManualInstruction": "請手動選取並複製文字",
+      "thinking": "正在思考...",
+      "thinkingTime": "思考用時 {{time}} 秒",
+      "thinkingInProgress": "思考進行中..."
     },
     "retrieval": {
       "startPrompt": "輸入查詢開始檢索",
@@ -349,7 +374,7 @@
       "parametersTitle": "參數",
       "parametersDescription": "設定查詢參數",
       "queryMode": "查詢模式",
-      "queryModeTooltip": "選擇檢索策略：\n• Naive：基礎搜尋，無進階技術\n• Local：上下文相關資訊檢索\n• Global：利用全域知識庫\n• Hybrid：結合本地和全域檢索\n• Mix：整合知識圖譜和向量檢索\n• Bypass：直接傳遞查詢到LLM，不進行檢索",
+      "queryModeTooltip": "選擇檢索策略：\n• Naive：傳統文字塊向量檢索\n• Local：側重實體檢索\n• Global：側重關係檢索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳過檢索，把歷史會話與當前問題送LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
@@ -380,7 +405,7 @@
       "onlyNeedPromptTooltip": "如果為True，僅回傳產生的提示而不產生回應",
       "streamResponse": "串流回應",
       "streamResponseTooltip": "如果為True，啟用即時串流輸出回應",
-      "userPrompt": "用戶提示詞",
+      "userPrompt": "附加輸出提示詞",
       "userPromptTooltip": "向LLM提供額外的響應要求（與查詢內容無關，僅用於處理輸出）。",
       "userPromptPlaceholder": "輸入自定義提示詞（可選）",
       "enableRerank": "啟用重排",

@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl } from '@/lib/constants'
+import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { navigationService } from '@/services/navigation'
@@ -35,7 +35,6 @@ export type LightragStatus = {
     embedding_binding: string
     embedding_binding_host: string
     embedding_model: string
-    max_tokens: number
     kv_storage: string
     doc_status_storage: string
     graph_storage: string
@@ -43,6 +42,7 @@ export type LightragStatus = {
     workspace?: string
     max_graph_nodes?: string
     enable_rerank?: boolean
+    rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
     summary_language: string
@@ -99,6 +99,9 @@ export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypas
 export type Message = {
   role: 'user' | 'assistant' | 'system'
   content: string
+  thinkingContent?: string
+  displayContent?: string
+  thinkingTime?: number | null
 }
 
 export type QueryRequest = {
@@ -313,6 +316,16 @@ export const queryGraphs = async (
 
 export const getGraphLabels = async (): Promise<string[]> => {
   const response = await axiosInstance.get('/graph/label/list')
+  return response.data
+}
+
+export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit): Promise<string[]> => {
+  const response = await axiosInstance.get(`/graph/label/popular?limit=${limit}`)
+  return response.data
+}
+
+export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
+  const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
   return response.data
 }
 
