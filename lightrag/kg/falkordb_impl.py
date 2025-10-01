@@ -983,3 +983,87 @@ class FalkorDBStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"Error dropping FalkorDB workspace '{workspace_label}': {e}")
             return {"status": "error", "message": str(e)}
+
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+        workspace_label = self._get_workspace_label()
+        try:
+            query = f"""
+            MATCH (n:`{workspace_label}`)
+            WHERE n.entity_id IS NOT NULL
+            OPTIONAL MATCH (n)-[r]-()
+            WITH n.entity_id AS label, count(r) AS degree
+            ORDER BY degree DESC, label ASC
+            LIMIT {limit}
+            RETURN label
+            """
+            result = await self._run_query(query)
+            labels = []
+
+            if result.result_set:
+                for record in result.result_set:
+                    labels.append(record[0])
+
+            logger.debug(
+                f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
+            )
+            return labels
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
+            return []
+
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """Search labels with fuzzy matching
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching labels sorted by relevance
+        """
+        workspace_label = self._get_workspace_label()
+        query_lower = query.lower().strip()
+
+        if not query_lower:
+            return []
+
+        try:
+            # FalkorDB search using CONTAINS with relevance scoring
+            cypher_query = f"""
+            MATCH (n:`{workspace_label}`)
+            WHERE n.entity_id IS NOT NULL
+            WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+            WHERE label_lower CONTAINS $query_lower
+            WITH label, label_lower,
+                 CASE
+                     WHEN label_lower = $query_lower THEN 1000
+                     WHEN label_lower STARTS WITH $query_lower THEN 500
+                     ELSE 100 - size(label)
+                 END AS score
+            ORDER BY score DESC, label ASC
+            LIMIT {limit}
+            RETURN label
+            """
+
+            result = await self._run_query(cypher_query, {"query_lower": query_lower})
+            labels = []
+
+            if result.result_set:
+                for record in result.result_set:
+                    labels.append(record[0])
+
+            logger.debug(
+                f"[{self.workspace}] Search query '{query}' returned {len(labels)} results (limit: {limit})"
+            )
+            return labels
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error searching labels: {str(e)}")
+            return []
