@@ -246,7 +246,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any text after the references.
+  - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
 **5. Reference Section Example:**
 ```
@@ -300,7 +300,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any text after the references.
+  - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
 **5. Reference Section Example:**
 ```
