@@ -237,7 +237,7 @@ Consider the conversation history if provided to maintain conversational flow an
 
 **3. Formatting & Language:**
   - The response MUST be in the same language as the user query.
-  - Use Markdown for clear formatting (e.g., headings, bold, lists).
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
 **4. References Section Format:**
@@ -251,9 +251,10 @@ Consider the conversation history if provided to maintain conversational flow an
 **5. Reference Section Example:**
 ```
 ### References
-* [1] Document Title One
-* [2] Document Title Two
-* [3] Document Title Three
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
 ```
 
 **6. Additional Instructions**: {user_prompt}
@@ -290,7 +291,7 @@ Consider the conversation history if provided to maintain conversational flow an
 
 **3. Formatting & Language:**
   - The response MUST be in the same language as the user query.
-  - Use Markdown for clear formatting (e.g., headings, bold, lists).
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
 **4. References Section Format:**
@@ -304,9 +305,10 @@ Consider the conversation history if provided to maintain conversational flow an
 **5. Reference Section Example:**
 ```
 ### References
-* [1] Document Title One
-* [2] Document Title Two
-* [3] Document Title Three
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
 ```
 
 **6. Additional Instructions**: {user_prompt}
