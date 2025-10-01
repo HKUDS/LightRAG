@@ -1,12 +1,88 @@
-# Dependency Migration Guide: Python to TypeScript/Node.js
+# Dependency Migration Guide: Python to TypeScript/Bun
 
 ## Table of Contents
-1. [Core Dependencies Mapping](#core-dependencies-mapping)
-2. [Storage Driver Dependencies](#storage-driver-dependencies)
-3. [LLM and Embedding Dependencies](#llm-and-embedding-dependencies)
-4. [API and Web Framework Dependencies](#api-and-web-framework-dependencies)
-5. [Utility and Helper Dependencies](#utility-and-helper-dependencies)
-6. [Migration Complexity Assessment](#migration-complexity-assessment)
+1. [Runtime and Build Tools](#runtime-and-build-tools)
+2. [Core Dependencies Mapping](#core-dependencies-mapping)
+3. [Storage Driver Dependencies](#storage-driver-dependencies)
+4. [LLM and Embedding Dependencies](#llm-and-embedding-dependencies)
+5. [API and Web Framework Dependencies](#api-and-web-framework-dependencies)
+6. [Utility and Helper Dependencies](#utility-and-helper-dependencies)
+7. [Migration Complexity Assessment](#migration-complexity-assessment)
+
+## Runtime and Build Tools
+
+### Bun vs Node.js Comparison
+
+| Aspect | Python | Node.js | Bun | Recommendation |
+|--------|--------|---------|-----|----------------|
+| **Runtime** | CPython | V8 Engine | JavaScriptCore | **Bun** (3x faster I/O) |
+| **Package Manager** | pip/poetry | npm/pnpm/yarn | Built-in | **Bun** (20-100x faster install) |
+| **TypeScript** | N/A (needs transpiler) | Needs ts-node/tsx | Built-in native | **Bun** (no config needed) |
+| **Bundler** | N/A | webpack/esbuild/vite | Built-in | **Bun** (3-5x faster) |
+| **Test Runner** | pytest/unittest | jest/vitest | Built-in | **Bun** (faster, simpler) |
+| **Watch Mode** | N/A | nodemon/tsx | Built-in | **Bun** (integrated) |
+| **HTTP Performance** | ~10k req/s | ~15k req/s | ~50k req/s | **Bun** (3-4x faster) |
+| **Startup Time** | Fast | ~50-100ms | ~5-10ms | **Bun** (10x faster cold start) |
+| **Memory Usage** | Medium | High | Lower | **Bun** (30% less memory) |
+| **Ecosystem** | Mature | Very Mature | Growing (90%+ compatible) | **Bun** for new projects |
+
+### Bun-Specific Features
+
+**Built-in APIs:**
+```typescript
+// Bun's native file I/O (faster than Node.js fs)
+const file = Bun.file("./data.json");
+const text = await file.text();
+const json = await file.json();
+
+// Bun's native HTTP server
+Bun.serve({
+  port: 3000,
+  fetch(req) {
+    return new Response("Hello World");
+  },
+});
+
+// Bun's native crypto (faster than Node.js crypto)
+const hash = Bun.hash("md5", "content");
+const password = await Bun.password.hash("secret");
+
+// Bun's native SQLite support
+import { Database } from "bun:sqlite";
+const db = new Database("mydb.sqlite");
+
+// Bun's native environment variables
+const apiKey = Bun.env.OPENAI_API_KEY;
+```
+
+**Installation Command:**
+```bash
+# Install Bun
+curl -fsSL https://bun.sh/install | bash
+
+# Initialize project
+bun init
+
+# Install dependencies (20-100x faster than npm)
+bun install
+
+# Run TypeScript directly (no compilation needed)
+bun run index.ts
+
+# Run with watch mode
+bun --watch run index.ts
+
+# Build for production
+bun build --compile --minify src/index.ts --outfile lightrag
+
+# Test
+bun test
+```
+
+### Migration Complexity: Low to Medium
+- **Node.js → Bun**: Very Low (95%+ compatible, drop-in replacement for most packages)
+- **Python → Bun**: Low-Medium (similar to Node.js migration, but with better performance)
+- **Key Benefit**: Bun eliminates need for separate build tools, test runners, and transpilers
 
 ## Core Dependencies Mapping
 
@@ -110,36 +186,293 @@ try {
 
 ## Storage Driver Dependencies
 
-### PostgreSQL
+### PostgreSQL with Drizzle ORM (Recommended)
 
 | Python Package | npm Package | Version | Notes |
 |----------------|-------------|---------|-------|
-| `asyncpg` | `pg` | ^8.11.0 | Most popular, excellent TypeScript support |
-| | `drizzle-orm` | ^0.29.0 | Optional: Type-safe query builder |
-| | `@neondatabase/serverless` | ^0.9.0 | For serverless environments |
+| `asyncpg` | `drizzle-orm` | ^0.33.0 | Type-safe ORM, recommended for TypeScript |
+| | `postgres` | ^3.4.0 | Fast PostgreSQL client for Drizzle (works with Bun) |
+| | `pg` | ^8.11.0 | Traditional client (Node.js) |
+| | `drizzle-kit` | ^0.24.0 | Migration tool |
+| | `pgvector` | ^0.2.0 | Vector extension support |
 
 **Migration complexity**: Low  
-**Recommendation**: Use `pg` with connection pooling. Consider `drizzle-orm` for type-safe queries.
+**Recommendation**: Use Drizzle ORM for type-safe queries, automatic migrations, and excellent TypeScript support.
+
+#### Why Drizzle ORM?
+- ✅ **Type-safe** queries with full inference
+- ✅ **SQL-like** syntax (familiar to SQL developers)
+- ✅ **Zero runtime overhead** (direct SQL generation)
+- ✅ **Auto-generated** migrations from schema changes
+- ✅ **Bun and Node.js** compatible
+- ✅ **Lightweight** (40KB gzipped vs Prisma's 5MB)
+
+#### Schema Definition with Drizzle
 
 ```typescript
-// PostgreSQL connection with pg
-import { Pool } from 'pg';
+// schema.ts - Define your database schema
+import { pgTable, text, varchar, timestamp, integer, vector, jsonb, pgEnum, serial, boolean } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
 
-const pool = new Pool({
-  host: process.env.PG_HOST,
-  port: parseInt(process.env.PG_PORT || '5432'),
-  database: process.env.PG_DATABASE,
-  user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD,
-  max: 20,  // Connection pool size
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+// Enums
+export const docStatusEnum = pgEnum('doc_status', ['pending', 'processing', 'completed', 'failed']);
+export const queryModeEnum = pgEnum('query_mode', ['local', 'global', 'hybrid', 'mix', 'naive', 'bypass']);
+
+// Text chunks table (KV storage)
+export const textChunks = pgTable('text_chunks', {
+  id: varchar('id', { length: 255 }).primaryKey(),
+  content: text('content').notNull(),
+  tokens: integer('tokens').notNull(),
+  fullDocId: varchar('full_doc_id', { length: 255 }).notNull(),
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-// With Drizzle ORM for type safety
-import { drizzle } from 'drizzle-orm/node-postgres';
-const db = drizzle(pool);
+// Document status table
+export const documents = pgTable('documents', {
+  id: varchar('id', { length: 255 }).primaryKey(),
+  filename: text('filename'),
+  status: docStatusEnum('status').default('pending').notNull(),
+  chunkCount: integer('chunk_count').default(0),
+  entityCount: integer('entity_count').default(0),
+  relationCount: integer('relation_count').default(0),
+  processedAt: timestamp('processed_at'),
+  errorMessage: text('error_message'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Entities table (graph nodes)
+export const entities = pgTable('entities', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 500 }).notNull().unique(),
+  type: varchar('type', { length: 100 }),
+  description: text('description'),
+  sourceIds: jsonb('source_ids').$type<string[]>(),
+  embedding: vector('embedding', { dimensions: 1536 }), // For pgvector
+  degree: integer('degree').default(0),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Relationships table (graph edges)
+export const relationships = pgTable('relationships', {
+  id: serial('id').primaryKey(),
+  sourceEntity: varchar('source_entity', { length: 500 }).notNull(),
+  targetEntity: varchar('target_entity', { length: 500 }).notNull(),
+  relationshipType: varchar('relationship_type', { length: 200 }),
+  description: text('description'),
+  weight: integer('weight').default(1),
+  sourceIds: jsonb('source_ids').$type<string[]>(),
+  embedding: vector('embedding', { dimensions: 1536 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Define relations
+export const entityRelations = relations(entities, ({ many }) => ({
+  outgoingRelations: many(relationships, { relationName: 'source' }),
+  incomingRelations: many(relationships, { relationName: 'target' }),
+}));
+
+export const relationshipRelations = relations(relationships, ({ one }) => ({
+  source: one(entities, {
+    fields: [relationships.sourceEntity],
+    references: [entities.name],
+    relationName: 'source',
+  }),
+  target: one(entities, {
+    fields: [relationships.targetEntity],
+    references: [entities.name],
+    relationName: 'target',
+  }),
+}));
 ```
+
+#### Database Connection with Drizzle
+
+```typescript
+// db.ts - Setup database connection
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as schema from './schema';
+
+// For Bun or Node.js
+const connectionString = process.env.DATABASE_URL!;
+
+// Create connection pool
+const client = postgres(connectionString, {
+  max: 20, // Connection pool size
+  idle_timeout: 30,
+  connect_timeout: 10,
+});
+
+// Create Drizzle instance
+export const db = drizzle(client, { schema });
+
+// For migrations
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
+
+export async function runMigrations() {
+  await migrate(db, { migrationsFolder: './drizzle' });
+  console.log('Migrations completed');
+}
+```
+
+#### Type-Safe Queries with Drizzle
+
+```typescript
+import { db } from './db';
+import { textChunks, entities, relationships, documents } from './schema';
+import { eq, and, or, sql, desc, asc } from 'drizzle-orm';
+
+// Insert text chunk
+await db.insert(textChunks).values({
+  id: chunkId,
+  content: chunkContent,
+  tokens: tokenCount,
+  fullDocId: docId,
+  metadata: { page: 1, section: 'intro' },
+});
+
+// Query text chunks
+const chunks = await db
+  .select()
+  .from(textChunks)
+  .where(eq(textChunks.fullDocId, docId))
+  .orderBy(desc(textChunks.createdAt));
+
+// Insert entity with type inference
+await db.insert(entities).values({
+  name: 'John Doe',
+  type: 'Person',
+  description: 'CEO of Company X',
+  sourceIds: ['doc1', 'doc2'],
+});
+
+// Complex join query - get entity with relationships
+const entityWithRelations = await db.query.entities.findFirst({
+  where: eq(entities.name, 'John Doe'),
+  with: {
+    outgoingRelations: {
+      with: {
+        target: true,
+      },
+    },
+  },
+});
+
+// Vector similarity search with pgvector
+const similarEntities = await db
+  .select()
+  .from(entities)
+  .orderBy(sql`${entities.embedding} <-> ${queryVector}`)
+  .limit(10);
+
+// Transaction example
+await db.transaction(async (tx) => {
+  // Insert entity
+  const [entity] = await tx.insert(entities).values({
+    name: 'Jane Smith',
+    type: 'Person',
+  }).returning();
+  
+  // Insert relationship
+  await tx.insert(relationships).values({
+    sourceEntity: 'John Doe',
+    targetEntity: entity.name,
+    relationshipType: 'KNOWS',
+  });
+});
+
+// Batch insert for performance
+await db.insert(textChunks).values([
+  { id: '1', content: 'chunk1', tokens: 100, fullDocId: 'doc1' },
+  { id: '2', content: 'chunk2', tokens: 150, fullDocId: 'doc1' },
+  { id: '3', content: 'chunk3', tokens: 120, fullDocId: 'doc1' },
+]);
+
+// Update document status
+await db
+  .update(documents)
+  .set({ 
+    status: 'completed',
+    processedAt: new Date(),
+    chunkCount: 10,
+  })
+  .where(eq(documents.id, docId));
+
+// Delete old data
+await db
+  .delete(textChunks)
+  .where(
+    and(
+      eq(textChunks.fullDocId, docId),
+      sql`${textChunks.createdAt} < NOW() - INTERVAL '30 days'`
+    )
+  );
+```
+
+#### Drizzle Kit - Migrations
+
+```typescript
+// drizzle.config.ts
+import type { Config } from 'drizzle-kit';
+
+export default {
+  schema: './src/schema.ts',
+  out: './drizzle',
+  driver: 'pg',
+  dbCredentials: {
+    connectionString: process.env.DATABASE_URL!,
+  },
+} satisfies Config;
+```
+
+**Migration Commands:**
+```bash
+# Generate migration from schema changes
+bun drizzle-kit generate:pg
+
+# Apply migrations
+bun drizzle-kit push:pg
+
+# View current migrations
+bun drizzle-kit up:pg
+
+# Drop all tables (be careful!)
+bun drizzle-kit drop
+```
+
+#### Alternative: Plain SQL with postgres.js (for complex queries)
+
+```typescript
+import postgres from 'postgres';
+
+const sql = postgres(connectionString);
+
+// Complex graph traversal query
+const result = await sql`
+  WITH RECURSIVE entity_network AS (
+    SELECT id, name, type, 1 as depth
+    FROM entities
+    WHERE name = ${startEntity}
+    
+    UNION ALL
+    
+    SELECT e.id, e.name, e.type, en.depth + 1
+    FROM entities e
+    JOIN relationships r ON r.target_entity = e.name
+    JOIN entity_network en ON r.source_entity = en.name
+    WHERE en.depth < ${maxDepth}
+  )
+  SELECT DISTINCT * FROM entity_network;
+`;
+```
+
+**Performance Benefits:**
+- Drizzle generates optimal SQL (no ORM overhead)
+- Connection pooling built-in
+- Prepared statements for security
+- Type-safe at compile time, fast at runtime
 
 ### PostgreSQL pgvector Extension
 
@@ -593,7 +926,109 @@ const tokenCount = enc.encode('Hello, world!').length;
 
 ## API and Web Framework Dependencies
 
-### FastAPI → Node.js Framework
+### FastAPI → Hono (Recommended) or Fastify
+
+#### Option 1: Hono (Recommended for Bun)
+
+| Python Package | npm Package | Version | Notes |
+|----------------|-------------|---------|-------|
+| `fastapi` | `hono` | ^4.0.0 | Ultrafast, runtime-agnostic, TypeScript-first |
+| | `@hono/zod-openapi` | ^0.9.0 | OpenAPI with Zod validation |
+| | `zod` | ^3.22.0 | Type-safe validation |
+
+**Migration complexity**: Low  
+**Recommendation**: Use Hono for best performance (3-4x faster than Express, works on Bun/Node/Deno/Cloudflare Workers).
+
+**Hono Example:**
+```typescript
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { jwt } from 'hono/jwt';
+import { logger } from 'hono/logger';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
+import { createRoute, OpenAPIHono } from '@hono/zod-openapi';
+
+// Type-safe OpenAPI routes
+const app = new OpenAPIHono();
+
+// Middleware
+app.use('*', logger());
+app.use('*', cors());
+app.use('/api/*', jwt({ secret: process.env.JWT_SECRET! }));
+
+// Query schema
+const QuerySchema = z.object({
+  query: z.string().min(1).openapi({
+    example: 'What is LightRAG?',
+  }),
+  mode: z.enum(['local', 'global', 'hybrid', 'mix', 'naive', 'bypass']).default('mix'),
+  top_k: z.number().positive().default(40),
+  stream: z.boolean().default(false),
+});
+
+// Type-safe route with OpenAPI
+const queryRoute = createRoute({
+  method: 'post',
+  path: '/api/query',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: QuerySchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Query response',
+      content: {
+        'application/json': {
+          schema: z.object({
+            response: z.string(),
+            sources: z.array(z.string()),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(queryRoute, async (c) => {
+  const { query, mode, top_k, stream } = c.req.valid('json');
+  
+  // Process query
+  const response = await processQuery(query, mode, top_k, stream);
+  
+  return c.json(response);
+});
+
+// OpenAPI documentation
+app.doc('/openapi.json', {
+  openapi: '3.0.0',
+  info: {
+    title: 'LightRAG API',
+    version: '1.0.0',
+  },
+});
+
+// Swagger UI (optional, can use external tool)
+app.get('/docs', (c) => {
+  return c.html(swaggerUIHtml('/openapi.json'));
+});
+
+// Start server (Bun)
+export default app;
+
+// Or use Bun.serve
+Bun.serve({
+  port: 9621,
+  fetch: app.fetch,
+});
+```
+
+#### Option 2: Fastify (Alternative for Node.js)
 
 | Python Package | npm Package | Version | Notes |
 |----------------|-------------|---------|-------|
@@ -603,11 +1038,10 @@ const tokenCount = enc.encode('Hello, world!').length;
 | | `@fastify/cors` | ^8.5.0 | CORS support |
 | | `@fastify/jwt` | ^7.2.0 | JWT authentication |
 
-**Alternative**: Express.js (^4.18.0) - More familiar but slower
-
 **Migration complexity**: Low  
-**Recommendation**: Use Fastify for similar performance to FastAPI.
+**Use Case**: When you need Node.js-specific features or existing Fastify ecosystem.
 
+**Fastify Example:**
 ```typescript
 import Fastify from 'fastify';
 import fastifySwagger from '@fastify/swagger';
@@ -649,6 +1083,12 @@ app.post('/query', {
 
 await app.listen({ port: 9621, host: '0.0.0.0' });
 ```
+
+**Performance Comparison (req/s):**
+- FastAPI (Python): ~10,000
+- Express.js: ~15,000
+- Fastify: ~30,000
+- **Hono on Bun: ~50,000** ⚡
 
 ### Pydantic → TypeScript Validation
 

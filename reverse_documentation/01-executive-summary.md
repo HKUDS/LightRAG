@@ -187,22 +187,25 @@ LLM and embedding providers are abstracted behind function interfaces, supportin
 ## Recommended TypeScript Technology Stack
 
 ### Runtime and Core
-- **Runtime**: Node.js 20 LTS (for latest async features and stability)
+- **Runtime**: Bun 1.1+ (ultra-fast JavaScript runtime with native TypeScript support, 3x faster than Node.js)
 - **Language**: TypeScript 5.3+ (for latest type system features)
-- **Build Tool**: esbuild or swc (for fast builds)
-- **Package Manager**: pnpm (for efficient dependency management)
+- **Build Tool**: Bun's built-in bundler (no additional build tools needed)
+- **Package Manager**: Bun's built-in package manager (faster than pnpm/npm)
+- **Alternative Runtime**: Node.js 20 LTS (for environments where Bun is not available)
 
 ### Web Framework
-- **API Framework**: Fastify or Express with TypeScript
-- **Validation**: Zod or class-validator
-- **OpenAPI**: @fastify/swagger or tsoa
+- **API Framework**: Hono (ultrafast web framework, 3-4x faster than Express, works on any runtime)
+- **Validation**: Zod (type-safe validation, perfect with TypeScript)
+- **OpenAPI**: @hono/zod-openapi (Hono middleware for OpenAPI generation)
+- **Alternative**: Fastify (if Node.js-specific features are needed)
 
-### Storage Drivers
-- **PostgreSQL**: pg with @types/pg, or Drizzle ORM for type-safe queries
+### Database and ORM
+- **ORM**: Drizzle ORM (type-safe, lightweight, SQL-like query builder)
+- **PostgreSQL**: postgres.js or pg (connection driver for Drizzle)
 - **MongoDB**: mongodb driver with TypeScript support
 - **Neo4j**: neo4j-driver with TypeScript bindings
 - **Redis**: ioredis (best TypeScript support)
-- **Vector**: @pinecone-database/pinecone, qdrant-client, or pg with pgvector
+- **Vector**: @pinecone-database/pinecone, @qdrant/js-client-rest, or Drizzle with pgvector extension
 
 ### LLM and Embeddings
 - **OpenAI**: openai (official SDK)
@@ -213,37 +216,65 @@ LLM and embedding providers are abstracted behind function interfaces, supportin
 
 ### Utilities
 - **Async Control**: p-limit, p-queue, bottleneck
-- **Logging**: pino or winston
-- **Configuration**: dotenv, convict
-- **Testing**: vitest (fast, TypeScript-native)
-- **Hashing**: crypto (built-in), or js-md5
-- **JSON Repair**: json-repair-ts
+- **Logging**: pino (fast, structured logging, Bun-compatible)
+- **Configuration**: Bun's built-in environment handling or dotenv
+- **Testing**: Bun's built-in test runner (faster than vitest) or vitest
+- **Hashing**: Bun's built-in crypto (native performance)
+- **JSON Repair**: json-repair
+
+### Why Bun + Drizzle + Hono?
+
+**Bun Benefits:**
+- 🚀 **3x faster** runtime than Node.js for I/O operations
+- 📦 **Built-in** TypeScript, JSX, bundler, and test runner
+- ⚡ **Fast startup** time (important for serverless/edge deployment)
+- 🔋 **Lower memory** usage
+- 🛠️ **Node.js compatible** - can run most Node.js packages
+- 💰 **Reduced infrastructure** costs due to better performance
+
+**Drizzle ORM Benefits:**
+- 🎯 **Type-safe** queries with full TypeScript inference
+- 🪶 **Lightweight** - only 40KB gzipped
+- 📝 **SQL-like** syntax - easy to learn and debug
+- 🔄 **Auto-generated** migrations
+- ⚡ **Fast** - no overhead, direct SQL generation
+- 🔌 **Multi-database** support (PostgreSQL, MySQL, SQLite)
+- 🧩 **Composable** queries for complex graph operations
+
+**Hono Benefits:**
+- ⚡ **Fastest** web framework for JavaScript (faster than Express, Fastify, Koa)
+- 🎯 **TypeScript-first** design
+- 🌐 **Runtime agnostic** - works on Bun, Node.js, Deno, Cloudflare Workers
+- 🪶 **Ultra-light** - only 14KB
+- 🔧 **Middleware ecosystem** for authentication, CORS, validation
+- 📊 **Built-in** Zod integration for type-safe APIs
+- 🚀 **Perfect** for edge deployment and serverless functions
 
 ## Migration Approach Recommendation
 
 ### Phase 1: Core Abstractions (Weeks 1-2)
-Establish foundational abstractions: storage interfaces, base classes, type definitions, and configuration management. This creates the contract layer that all other components will depend on. Implement basic in-memory storage to enable early testing.
+Establish foundational abstractions: storage interfaces, base classes, type definitions, and configuration management. Set up Bun project with TypeScript and Drizzle ORM. Create schema definitions and migrations for PostgreSQL. This creates the contract layer that all other components will depend on. Implement basic in-memory storage to enable early testing.
 
-### Phase 2: Storage Layer (Weeks 3-5)
-Implement storage adapters for primary backends (PostgreSQL, NetworkX-equivalent using graphology, NanoVectorDB-equivalent). Focus on KV and Vector storage first, then Graph storage, finally Doc Status storage. Each storage type should pass identical test suites regardless of backend.
+### Phase 2: Storage Layer with Drizzle (Weeks 3-5)
+Implement storage adapters using Drizzle ORM for PostgreSQL (primary), graphology for graph storage, and in-memory vector storage. Define Drizzle schemas for KV storage, document status, and relational data. Implement vector storage using Drizzle with pgvector extension. Create connection pooling and transaction management. Each storage type should pass identical test suites regardless of backend.
 
 ### Phase 3: LLM Integration (Weeks 4-6, parallel)
-Build LLM and embedding provider adapters, starting with OpenAI as reference implementation. Implement retry logic, rate limiting, and error handling. Create abstract interfaces that other providers can implement. Add streaming support for responses.
+Build LLM and embedding provider adapters, starting with OpenAI as reference implementation. Implement retry logic using p-retry, rate limiting with p-limit, and error handling with custom error classes. Create abstract interfaces that other providers (Anthropic, Ollama, Bedrock) can implement. Add streaming support for responses using async iterators. Leverage Bun's fast HTTP client for API calls.
 
 ### Phase 4: Core Engine (Weeks 6-8)
-Implement the LightRAG core engine: chunking, entity extraction, graph merging, and indexing pipeline. This requires integrating storage, LLM, and utility layers. Focus on making the pipeline idempotent and resumable with comprehensive state tracking.
+Implement the LightRAG core engine: chunking, entity extraction, graph merging, and indexing pipeline. This requires integrating storage, LLM, and utility layers. Focus on making the pipeline idempotent and resumable with comprehensive state tracking using Drizzle transactions. Leverage Bun's performance for concurrent operations.
 
 ### Phase 5: Query Pipeline (Weeks 8-10)
-Build the query engine with all six retrieval modes. Implement keyword extraction, graph retrieval, vector retrieval, context building with token budgets, and response generation. Add support for conversation history and streaming responses.
+Build the query engine with all six retrieval modes (local, global, hybrid, mix, naive, bypass). Implement keyword extraction, graph retrieval with Drizzle joins, vector retrieval with pgvector, context building with token budgets, and response generation. Add support for conversation history and streaming responses. Optimize queries for performance.
 
-### Phase 6: API Layer (Weeks 10-11)
-Develop RESTful API with Fastify or Express, implementing all endpoints from the Python version. Add authentication, authorization, request validation, and OpenAPI documentation. Ensure API compatibility with existing WebUI.
+### Phase 6: API Layer with Hono (Weeks 10-11)
+Develop RESTful API with Hono framework, implementing all endpoints from the Python version. Add JWT authentication middleware, Zod validation schemas, CORS middleware, and OpenAPI documentation using @hono/zod-openapi. Ensure API compatibility with existing WebUI. Leverage Hono's performance for high-throughput scenarios. Add rate limiting and request logging.
 
 ### Phase 7: Testing and Optimization (Weeks 11-13)
-Comprehensive testing including unit tests, integration tests, and end-to-end tests. Performance testing and optimization, particularly for concurrent operations. Load testing for production readiness. Documentation updates.
+Comprehensive testing using Bun's built-in test runner or Vitest. Unit tests for all core functions, integration tests for storage and LLM layers, and end-to-end tests for API endpoints. Performance testing and optimization, particularly for concurrent operations. Load testing for production readiness with tools like autocannon or k6. Documentation updates.
 
 ### Phase 8: Production Hardening (Weeks 13-14)
-Add monitoring, logging, error tracking, health checks, and deployment configurations. Implement graceful shutdown, connection pooling, and resource cleanup. Create Docker images and Kubernetes configurations.
+Add monitoring with pino logging, error tracking with custom error handlers, health checks for all dependencies, and deployment configurations. Implement graceful shutdown, Drizzle connection pooling, and resource cleanup. Create Docker images optimized for Bun runtime. Add Kubernetes configurations for horizontal scaling. Set up CI/CD pipelines with GitHub Actions.
 
 ## Success Metrics
 

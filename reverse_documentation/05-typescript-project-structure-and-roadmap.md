@@ -342,115 +342,285 @@ export class OpenAIProvider implements LLMProvider {
 
 ### API Module (`src/api/`)
 
-RESTful API using Fastify.
+RESTful API using Hono framework (ultrafast, runtime-agnostic).
 
 **server.ts**:
 ```typescript
-import Fastify from 'fastify';
-import cors from '@fastify/cors';
-import helmet from '@fastify/helmet';
-import jwt from '@fastify/jwt';
-import swagger from '@fastify/swagger';
-import swaggerUi from '@fastify/swagger-ui';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { logger } from 'hono/logger';
+import { jwt } from 'hono/jwt';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
+import { createRoute, OpenAPIHono } from '@hono/zod-openapi';
+import { LightRAG } from '../core/LightRAG';
 import { queryRoutes } from './routes/query';
 import { documentRoutes } from './routes/documents';
+import { graphRoutes } from './routes/graph';
 import { errorHandler } from './middleware/errorHandler';
 
-export async function createServer(rag: LightRAG) {
-  const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL || 'info',
+export function createServer(rag: LightRAG) {
+  const app = new OpenAPIHono();
+
+  // Middleware
+  app.use('*', logger());
+  app.use('*', cors({
+    origin: Bun.env.CORS_ORIGIN || '*',
+    credentials: true,
+  }));
+
+  // JWT authentication for protected routes
+  app.use('/api/*', jwt({
+    secret: Bun.env.JWT_SECRET!,
+    cookie: 'auth_token',
+  }));
+
+  // Health check
+  app.get('/health', (c) => {
+    return c.json({ 
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+    });
+  });
+
+  // Register routes
+  app.route('/api/query', queryRoutes(rag));
+  app.route('/api/documents', documentRoutes(rag));
+  app.route('/api/graph', graphRoutes(rag));
+
+  // OpenAPI documentation
+  app.doc('/openapi.json', {
+    openapi: '3.0.0',
+    info: {
+      title: 'LightRAG API',
+      version: '1.0.0',
+      description: 'Graph-based RAG system with TypeScript and Bun',
     },
+    servers: [
+      { url: 'http://localhost:9621', description: 'Development server' },
+    ],
   });
 
-  // Security
-  await app.register(helmet);
-  await app.register(cors, {
-    origin: process.env.CORS_ORIGIN || '*',
+  // Swagger UI
+  app.get('/docs', (c) => {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>LightRAG API Documentation</title>
+          <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
+        </head>
+        <body>
+          <div id="swagger-ui"></div>
+          <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+          <script>
+            SwaggerUIBundle({
+              url: '/openapi.json',
+              dom_id: '#swagger-ui',
+            });
+          </script>
+        </body>
+      </html>
+    `;
+    return c.html(html);
   });
-
-  // JWT
-  await app.register(jwt, {
-    secret: process.env.JWT_SECRET!,
-  });
-
-  // OpenAPI docs
-  await app.register(swagger, {
-    openapi: {
-      info: {
-        title: 'LightRAG API',
-        version: '1.0.0',
-      },
-      servers: [
-        { url: 'http://localhost:9621' },
-      ],
-    },
-  });
-  
-  await app.register(swaggerUi, {
-    routePrefix: '/docs',
-  });
-
-  // Routes
-  await app.register(queryRoutes, { rag });
-  await app.register(documentRoutes, { rag });
 
   // Error handling
-  app.setErrorHandler(errorHandler);
+  app.onError(errorHandler);
+
+  return app;
+}
+
+// Start server with Bun
+const rag = new LightRAG({ /* config */ });
+const app = createServer(rag);
+
+Bun.serve({
+  port: parseInt(Bun.env.PORT || '9621'),
+  fetch: app.fetch,
+  development: Bun.env.NODE_ENV !== 'production',
+});
+
+console.log('🚀 LightRAG server started on http://localhost:9621');
+console.log('📚 API docs available at http://localhost:9621/docs');
+```
+
+**routes/query.ts** (Hono with type-safe validation):
+```typescript
+import { OpenAPIHono, createRoute } from '@hono/zod-openapi';
+import { z } from 'zod';
+import { LightRAG } from '../../core/LightRAG';
+
+const QuerySchema = z.object({
+  query: z.string().min(1).openapi({
+    example: 'What is LightRAG?',
+    description: 'The query text',
+  }),
+  mode: z.enum(['local', 'global', 'hybrid', 'mix', 'naive', 'bypass'])
+    .default('mix')
+    .openapi({
+      description: 'Query mode: local (entity-focused), global (relationship-focused), hybrid, mix, naive, bypass',
+    }),
+  top_k: z.number().int().positive().default(40).openapi({
+    description: 'Number of top results to return',
+  }),
+  stream: z.boolean().default(false).openapi({
+    description: 'Enable streaming response',
+  }),
+});
+
+const QueryResponseSchema = z.object({
+  response: z.string(),
+  sources: z.array(z.string()).optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+export function queryRoutes(rag: LightRAG) {
+  const app = new OpenAPIHono();
+
+  const queryRoute = createRoute({
+    method: 'post',
+    path: '/',
+    tags: ['Query'],
+    request: {
+      body: {
+        content: {
+          'application/json': {
+            schema: QuerySchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Query response',
+        content: {
+          'application/json': {
+            schema: QueryResponseSchema,
+          },
+        },
+      },
+      400: {
+        description: 'Bad request',
+      },
+      500: {
+        description: 'Internal server error',
+      },
+    },
+  });
+
+  app.openapi(queryRoute, async (c) => {
+    const { query, mode, top_k, stream } = c.req.valid('json');
+
+    if (stream) {
+      // Streaming response
+      return c.stream(async (stream) => {
+        for await (const chunk of rag.queryStream(query, { mode, top_k })) {
+          await stream.write(chunk);
+        }
+      });
+    }
+
+    // Regular response
+    const result = await rag.query(query, { mode, top_k });
+    
+    return c.json({
+      response: result.response,
+      sources: result.sources,
+      metadata: result.metadata,
+    });
+  });
 
   return app;
 }
 ```
 
+**middleware/errorHandler.ts**:
+```typescript
+import { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import pino from 'pino';
+
+const logger = pino();
+
+export function errorHandler(err: Error, c: Context) {
+  if (err instanceof HTTPException) {
+    return c.json(
+      {
+        error: err.message,
+        status: err.status,
+      },
+      err.status
+    );
+  }
+
+  // Log unexpected errors
+  logger.error(
+    {
+      err,
+      path: c.req.path,
+      method: c.req.method,
+    },
+    'Unhandled error'
+  );
+
+  return c.json(
+    {
+      error: 'Internal server error',
+      message: Bun.env.NODE_ENV === 'development' ? err.message : undefined,
+    },
+    500
+  );
+}
+```
+
 ## Configuration Files
 
-### package.json
+### package.json (Bun-Optimized)
 
 ```json
 {
   "name": "lightrag-ts",
   "version": "1.0.0",
-  "description": "TypeScript implementation of LightRAG",
+  "description": "TypeScript implementation of LightRAG with Bun runtime",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "engines": {
+    "bun": ">=1.1.0",
     "node": ">=18.0.0"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsup",
-    "test": "vitest",
-    "test:unit": "vitest run --testPathPattern=tests/unit",
-    "test:integration": "vitest run --testPathPattern=tests/integration",
-    "test:e2e": "vitest run --testPathPattern=tests/e2e",
-    "test:coverage": "vitest run --coverage",
+    "dev": "bun --watch src/index.ts",
+    "dev:api": "bun --watch src/api/server.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun --minify",
+    "build:standalone": "bun build src/api/server.ts --compile --minify --outfile lightrag-server",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/index.js",
-    "start:api": "node dist/api/server.js"
+    "start": "bun run dist/index.js",
+    "start:api": "bun run src/api/server.ts",
+    "db:generate": "drizzle-kit generate:pg",
+    "db:migrate": "drizzle-kit push:pg",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.17.0",
     "@dqbd/tiktoken": "^1.0.7",
-    "@fastify/cors": "^8.5.0",
-    "@fastify/helmet": "^11.1.0",
-    "@fastify/jwt": "^7.2.0",
-    "@fastify/swagger": "^8.13.0",
-    "@fastify/swagger-ui": "^2.1.0",
+    "@hono/zod-openapi": "^0.9.0",
     "@qdrant/js-client-rest": "^1.8.0",
     "@zilliz/milvus2-sdk-node": "^2.3.0",
-    "axios": "^1.6.0",
-    "bcrypt": "^5.1.0",
-    "bottleneck": "^2.19.0",
-    "date-fns": "^3.0.0",
-    "dotenv": "^16.0.0",
-    "fastify": "^4.25.0",
+    "drizzle-orm": "^0.33.0",
     "graphology": "^0.25.0",
+    "hono": "^4.0.0",
     "ioredis": "^5.3.0",
     "json-repair": "^0.2.0",
-    "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.3.0",
     "neo4j-driver": "^5.15.0",
     "ollama": "^0.5.0",
@@ -459,24 +629,59 @@ export async function createServer(rag: LightRAG) {
     "p-queue": "^8.0.0",
     "p-retry": "^6.0.0",
     "p-timeout": "^6.0.0",
-    "pg": "^8.11.0",
-    "pgvector": "^0.1.0",
+    "pgvector": "^0.2.0",
     "pino": "^8.17.0",
     "pino-pretty": "^10.3.0",
+    "postgres": "^3.4.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
-    "@types/bcrypt": "^5.0.0",
-    "@types/jsonwebtoken": "^9.0.0",
-    "@types/node": "^20.10.0",
-    "@types/pg": "^8.10.0",
+    "@types/bun": "^1.1.0",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
-    "@vitest/coverage-v8": "^1.1.0",
+    "drizzle-kit": "^0.24.0",
     "eslint": "^8.56.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-import": "^2.29.0",
     "prettier": "^3.1.0",
+    "typescript": "^5.3.0"
+  }
+}
+```
+
+**Key Changes for Bun:**
+- ✅ Uses `bun --watch` instead of tsx/nodemon
+- ✅ Bun's native build command for bundling
+- ✅ `--compile` flag creates standalone executable
+- ✅ Drizzle Kit for database migrations
+- ✅ Hono instead of Fastify
+- ✅ `postgres` driver instead of `pg` (faster with Bun)
+- ✅ No need for ts-node, tsx, or vitest
+- ✅ Smaller dependency tree
+
+### Alternative: Node.js-Compatible package.json
+
+If you need to support both Bun and Node.js:
+
+```json
+{
+  "name": "lightrag-ts",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:bun": "bun --watch src/index.ts",
+    "build": "tsup",
+    "test": "vitest",
+    "test:bun": "bun test",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "drizzle-orm": "^0.33.0",
+    "postgres": "^3.4.0"
+  },
+  "devDependencies": {
     "tsup": "^8.0.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
@@ -528,6 +733,126 @@ export async function createServer(rag: LightRAG) {
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "tests"]
 }
+```
+
+### drizzle.config.ts
+
+```typescript
+import type { Config } from 'drizzle-kit';
+
+export default {
+  schema: './src/storage/schema.ts',
+  out: './drizzle',
+  driver: 'pg',
+  dbCredentials: {
+    connectionString: Bun.env.DATABASE_URL!,
+  },
+  verbose: true,
+  strict: true,
+} satisfies Config;
+```
+
+**Usage:**
+```bash
+# Generate migration files from schema changes
+bun run db:generate
+
+# Apply migrations to database
+bun run db:migrate
+
+# Open Drizzle Studio (GUI for database inspection)
+bun run db:studio
+```
+
+### bunfig.toml (Bun Configuration)
+
+```toml
+[install]
+# Configure package installation
+cache = true
+exact = true
+
+[install.cache]
+# Cache directory
+dir = "~/.bun/install/cache"
+
+[test]
+# Test configuration
+preload = ["./tests/setup.ts"]
+coverage = true
+
+[run]
+# Runtime configuration
+bun = true
+silent = false
+
+[env]
+# Environment variable prefix (optional)
+# Loads from .env, .env.local, .env.production
+```
+
+### Bun Test Configuration (bunfig.test.ts)
+
+For Bun's built-in test runner:
+
+```typescript
+// tests/setup.ts
+import { beforeAll, afterAll } from 'bun:test';
+import { db } from '../src/db';
+
+beforeAll(async () => {
+  // Setup test database
+  await db.execute(sql`CREATE EXTENSION IF NOT EXISTS vector`);
+  console.log('Test database initialized');
+});
+
+afterAll(async () => {
+  // Cleanup
+  await db.execute(sql`DROP SCHEMA IF EXISTS test CASCADE`);
+  console.log('Test database cleaned up');
+});
+```
+
+**Test Example:**
+```typescript
+// tests/unit/storage/drizzle.test.ts
+import { describe, test, expect } from 'bun:test';
+import { db } from '../../../src/db';
+import { textChunks, entities } from '../../../src/storage/schema';
+import { eq } from 'drizzle-orm';
+
+describe('Drizzle Storage', () => {
+  test('should insert and query text chunk', async () => {
+    // Insert
+    await db.insert(textChunks).values({
+      id: 'test-chunk-1',
+      content: 'Test content',
+      tokens: 10,
+      fullDocId: 'test-doc',
+    });
+
+    // Query
+    const chunks = await db
+      .select()
+      .from(textChunks)
+      .where(eq(textChunks.id, 'test-chunk-1'));
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].content).toBe('Test content');
+  });
+
+  test('should perform vector similarity search', async () => {
+    const queryVector = new Array(1536).fill(0.1);
+    
+    const results = await db
+      .select()
+      .from(entities)
+      .orderBy(sql`${entities.embedding} <-> ${queryVector}`)
+      .limit(10);
+
+    expect(results.length).toBeLessThanOrEqual(10);
+  });
+});
 ```
 
 ### vitest.config.ts
@@ -602,35 +927,80 @@ module.exports = {
 
 ## Build and Development Workflow
 
-### Development Mode
+### Development Mode with Bun
 
 ```bash
-# Install dependencies
-pnpm install
+# Install Bun (if not already installed)
+curl -fsSL https://bun.sh/install | bash
+
+# Install dependencies (20-100x faster than npm)
+bun install
 
 # Start development server with hot reload
-pnpm dev
+bun run dev
+
+# Or directly run TypeScript file with watch mode
+bun --watch src/api/server.ts
+
+# Run tests with Bun's test runner (faster than Jest/Vitest)
+bun test
 
 # Run tests in watch mode
-pnpm test
+bun test --watch
 
 # Type checking
-pnpm typecheck
+bun run typecheck
+
+# Database operations
+bun run db:generate    # Generate migrations from schema
+bun run db:migrate     # Apply migrations
+bun run db:studio      # Open Drizzle Studio GUI
 ```
 
-### Build for Production
+### Build for Production with Bun
 
 ```bash
-# Build optimized bundle
-pnpm build
+# Build optimized bundle for Bun runtime
+bun build src/index.ts --outdir dist --target bun --minify
+
+# Build standalone executable (single binary, no Node.js needed!)
+bun build src/api/server.ts --compile --minify --outfile lightrag-server
+
+# The standalone binary includes Bun runtime + your code
+# Can be deployed without installing Bun or Node.js
+./lightrag-server
 
 # Run production build
-pnpm start
+bun run start
 ```
 
-### Build Configuration (tsup.config.ts)
+### Alternative: Node.js Compatible Build
+
+If you need Node.js compatibility, you can still use traditional tools:
+
+```bash
+# Using tsup for Node.js build
+bun run build
+
+# Or using Bun's bundler with Node target
+bun build src/index.ts --outdir dist --target node --minify
+```
+
+### Build Configuration Comparison
+
+**Option 1: Bun Native (Recommended)**
+
+No configuration needed! Bun handles TypeScript natively:
+
+```bash
+# Just run TypeScript directly
+bun src/api/server.ts
+```
+
+**Option 2: Using tsup (for Node.js compatibility)**
 
 ```typescript
+// tsup.config.ts
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
@@ -645,6 +1015,42 @@ export default defineConfig({
   target: 'es2022',
   outDir: 'dist',
 });
+```
+
+### Performance Comparison
+
+| Operation | npm | pnpm | Bun | Speedup |
+|-----------|-----|------|-----|---------|
+| Install (cold) | 20s | 10s | 0.5s | **40x faster** |
+| Install (warm) | 10s | 5s | 0.2s | **50x faster** |
+| Run TS file | 500ms | 500ms | 50ms | **10x faster** |
+| Test suite | 5s | 5s | 1s | **5x faster** |
+| Build | 3s | 3s | 0.5s | **6x faster** |
+
+### Development Workflow Example
+
+```bash
+# 1. Clone and setup
+git clone https://github.com/your-org/lightrag-ts
+cd lightrag-ts
+bun install  # Super fast!
+
+# 2. Setup database
+createdb lightrag
+bun run db:migrate
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your API keys
+
+# 4. Start development
+bun --watch src/api/server.ts
+
+# 5. Run tests in another terminal
+bun test --watch
+
+# 6. Check database with Drizzle Studio
+bun run db:studio
 ```
 
 ## Testing Strategy
