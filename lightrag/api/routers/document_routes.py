@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, field_validator
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id
-from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.utils_api import get_combined_auth_dependency, get_rag
 from ..config import global_args
 
 import asyncio
@@ -1607,26 +1607,6 @@ async def background_delete_documents(
             except Exception as e:
                 logger.error(f"Error processing pending documents after deletion: {e}")
 
-async def get_rag_and_doc_manager(
-    request: Request,
-    x_workspace: Optional[str] = Header(default=None, alias="X-Workspace"),
-    q_workspace: Optional[str] = Query(default=None, alias="workspace"),
-) -> Tuple[LightRAG, DocumentManager]:
-    """
-        Resolve (rag, doc_manager) per request using the InstanceManager stored in app.state.
-        - user_id is derived from the bearer token via auth_handler.
-        - workspace priority: X-Workspace header > ?workspace= query > global_args.workspace > "".
-    """
-    # Add logic to fetch workspace and user_id for creation / fetching of valid rag instance
-    auth_header = request.headers.get("authorization")
-
-    user_id = "test_user"
-
-    workspace = x_workspace or q_workspace or "default"
-
-    manager = request.app.state.instance_manager
-    rag, doc_manager = await manager.get_instance(user_id, workspace)
-    return rag, doc_manager
 
 def create_document_routes(
     api_key: Optional[str] = None
@@ -1639,7 +1619,7 @@ def create_document_routes(
     )
     async def scan_for_new_documents(
         background_tasks: BackgroundTasks,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager),
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag),
     ):
         """
         Trigger the scanning process for new documents.
@@ -1671,7 +1651,7 @@ def create_document_routes(
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager),
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag),
     ):
         """
         Upload a file to the input directory and index it.
@@ -1737,7 +1717,7 @@ def create_document_routes(
     async def insert_text(
         request: InsertTextRequest,
         background_tasks: BackgroundTasks,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager),
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag),
     ):
         """
         Insert text into the RAG system.
@@ -1787,7 +1767,7 @@ def create_document_routes(
     async def insert_texts(
         request: InsertTextsRequest,
         background_tasks: BackgroundTasks,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager),
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag),
     ):
         """
         Insert multiple texts into the RAG system.
@@ -1837,7 +1817,7 @@ def create_document_routes(
     async def insert_links(
         request: InsertLinksRequest,
         background_tasks: BackgroundTasks,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager),
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag),
     ):
         try:
             rag, doc_manager = pair
@@ -1878,7 +1858,7 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents(pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)):
+    async def clear_documents(pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)):
         """
         Clear all documents from the RAG system.
 
@@ -2071,7 +2051,7 @@ def create_document_routes(
         response_model=PipelineStatusResponse,
     )
     async def get_pipeline_status(
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ) -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
@@ -2143,7 +2123,7 @@ def create_document_routes(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )
     async def documents(
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ) -> DocsStatusesResponse:
         """
         Get the status of all documents in the system.
@@ -2218,7 +2198,7 @@ def create_document_routes(
     async def delete_document(
         delete_request: DeleteDocRequest,
         background_tasks: BackgroundTasks,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ) -> DeleteDocByIdResponse:
         """
         Delete documents and all their associated data by their IDs using background processing.
@@ -2298,7 +2278,7 @@ def create_document_routes(
     )
     async def clear_cache(
         request: ClearCacheRequest,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
         ):
         """
         Clear all cache data from the LLM response cache storage.
@@ -2337,7 +2317,7 @@ def create_document_routes(
     )
     async def delete_entity(
         request: DeleteEntityRequest,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ):
         """
         Delete an entity and all its relationships from the knowledge graph.
@@ -2377,7 +2357,7 @@ def create_document_routes(
     )
     async def delete_relation(
         request: DeleteRelationRequest,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ):
         """
         Delete a relationship between two entities from the knowledge graph.
@@ -2420,7 +2400,7 @@ def create_document_routes(
     )
     async def get_track_status(
         track_id: str,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
         ) -> TrackStatusResponse:
         """
         Get the processing status of documents by tracking ID.
@@ -2499,7 +2479,7 @@ def create_document_routes(
     )
     async def get_documents_paginated(
         request: DocumentsRequest,
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ) -> PaginatedDocsResponse:
         """
         Get documents with pagination support.
@@ -2588,7 +2568,7 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def get_document_status_counts(
-        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag_and_doc_manager)
+        pair: Tuple[LightRAG, DocumentManager] = Depends(get_rag)
     ) -> StatusCountsResponse:
         """
         Get counts of documents by status.

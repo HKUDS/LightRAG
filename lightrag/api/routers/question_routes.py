@@ -10,7 +10,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Question as QuestionModel
+from ..models import Question as QuestionModel, QuestionOptionVariant as VariantModel
 from ..utils_api import get_combined_auth_dependency
 from ascii_colors import trace_exception
 
@@ -45,6 +45,17 @@ def create_questions(
 
 # ---------------------- Schemas ----------------------
 
+class QuestionVariantOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    question_id: str
+    difficulty_level: Optional[str] = None
+    options: List[str] = []
+    correct_answers: List[int] = []
+    rationale: str
+    created_at: datetime
+    updated_at: datetime
+
 class QuestionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -62,6 +73,7 @@ class QuestionOut(BaseModel):
     isArchived: bool = False
     created_at: datetime
     updated_at: datetime
+    variants: List[QuestionVariantOut] = []
 
 class CreateQuestionItem(BaseModel):
     user_id: str
@@ -130,11 +142,10 @@ class BulkPatchIn(BaseModel):
     ids: List[str]
     patch: PatchQuestionIn
 
-
 # ---------------------- Router ----------------------
 
 def create_question_routes(api_key: Optional[str] = None) -> APIRouter:
-    router = APIRouter(prefix="/v1/questions", tags=["questions"])
+    router = APIRouter(prefix="/questions", tags=["questions"])
     auth = get_combined_auth_dependency(api_key)
 
     # --- POST /v1/questions (single or bulk create)
@@ -208,12 +219,34 @@ def create_question_routes(api_key: Optional[str] = None) -> APIRouter:
             offset = (page - 1) * pageSize
             stmt = stmt.offset(offset).limit(pageSize)
 
-            rows = list(db.execute(stmt).scalars())
+            # Base questions
+            questions = list(db.execute(stmt).scalars())
+
+            # Fetch variants in one shot
+            id_list = [q.id for q in questions]
+            variants_by_qid: dict[str, list[VariantModel]] = {}
+            if id_list:
+                v_stmt = select(VariantModel).where(VariantModel.question_id.in_(id_list))
+                variant_rows = list(db.execute(v_stmt).scalars())
+                for v in variant_rows:
+                    variants_by_qid.setdefault(v.question_id, []).append(v)
+            
+            # Build payloads with variants
+            out_items: List[QuestionOut] = []
+            for qobj in questions:
+                variants = [
+                    QuestionVariantOut.model_validate(v)
+                    for v in variants_by_qid.get(qobj.id, [])
+                ]
+                item = QuestionOut.model_validate(qobj)
+                item.variants = variants
+                out_items.append(item)
+
             return ListOut(
                 total=total,
                 page=page,
                 pageSize=pageSize,
-                questions=[QuestionOut.model_validate(r) for r in rows],
+                questions=out_items,
             )
         except Exception as e:
             trace_exception(e)
@@ -226,7 +259,15 @@ def create_question_routes(api_key: Optional[str] = None) -> APIRouter:
             obj = db.get(QuestionModel, id)
             if not obj:
                 raise HTTPException(status_code=404, detail="Question not found.")
-            return ItemOut(question=QuestionOut.model_validate(obj))
+
+            # Fetch all variants for this question
+            v_stmt = select(VariantModel).where(VariantModel.question_id == id)
+            variant_rows = list(db.execute(v_stmt).scalars())
+            variants = [QuestionVariantOut.model_validate(v) for v in variant_rows]
+
+            out = QuestionOut.model_validate(obj)
+            out.variants = variants
+            return ItemOut(question=out)
         except HTTPException:
             raise
         except Exception as e:

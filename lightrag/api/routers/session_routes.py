@@ -1,10 +1,3 @@
-# session_routes.py
-"""
-Chat Session routes for the LightRAG API.
-Converted from the Node/Express session routes and aligned with workspace_routes.py style.
-Service helpers (title + memory summarization) are embedded directly in this file.
-"""
-
 from __future__ import annotations
 
 import os
@@ -13,7 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy import select, update, delete
 from sqlalchemy.exc import IntegrityError
@@ -39,7 +32,7 @@ from ..prompts import (
     SESSION_TOPIC_GENERATION_PROMPT
 )
 
-# LLM instances (use your env vars)
+# ---------- LLM + token counting ----------
 summarizer_llm = ChatOpenAI(
     temperature=0.0,
     model=os.getenv("OPENAI_TOPIC_SUMMARY_MODEL"),
@@ -49,11 +42,10 @@ summarizer_llm = ChatOpenAI(
 
 tiktoken_model = tiktoken.get_encoding("cl100k_base")
 
-
 def count_tokens(text: str) -> int:
     return len(tiktoken_model.encode(text))
 
-
+# ---------- Memory helpers ----------
 def load_memory(serialized: Optional[Union[str, List[dict[str, Any]]]]) -> ConversationBufferMemory:
     mem = ConversationBufferMemory(return_messages=True)
     if not serialized:
@@ -71,9 +63,8 @@ def load_memory(serialized: Optional[Union[str, List[dict[str, Any]]]]) -> Conve
         logging.warning(f"Failed to load memory: {e}")
     return mem
 
-
 def stringify_memory(memory: ConversationBufferMemory) -> str:
-    """Plain-text transcript: Human: ..., AI: ..., System: ..."""
+    # Plain-text transcript: Human: ..., AI: ..., System: ...
     lines: List[str] = []
     for m in memory.chat_memory.messages:
         if m.type == "human":
@@ -84,16 +75,14 @@ def stringify_memory(memory: ConversationBufferMemory) -> str:
             lines.append(f"System: {m.content}")
     return "\n".join(lines)
 
-
 def dump_memory(memory: ConversationBufferMemory) -> List[dict]:
-    # return a Python list (SQLAlchemy JSON will store as array)
+    # Return a Python list; SQLAlchemy JSON column can store directly
     return [m.dict() for m in memory.chat_memory.messages]
-
 
 async def summarize_memory_controller_new(
     memory: ConversationBufferMemory, max_tokens: int = 2000
 ) -> bool:
-    """Token-budget summarizer: compress older messages into a single SystemMessage."""
+    """Token-budget summarizer: compress older messages into one SystemMessage."""
     human_ai = [m for m in memory.chat_memory.messages if m.type in ("human", "ai")]
     system_msgs = [m for m in memory.chat_memory.messages if m.type == "system"]
 
@@ -101,7 +90,7 @@ async def summarize_memory_controller_new(
     if total <= max_tokens:
         return False
 
-    # Keep ~last 500 tokens of conversation intact
+    # Keep ~last 500 tokens intact
     latest_msgs: List[Any] = []
     cur = 0
     for m in reversed(human_ai):
@@ -112,7 +101,6 @@ async def summarize_memory_controller_new(
         cur += t
 
     to_summarize = human_ai[: -len(latest_msgs)] if latest_msgs else human_ai
-
     prior_summary = "\n".join(m.content for m in system_msgs)
     message_block = "\n".join(f"{m.type.title()}: {m.content}" for m in to_summarize)
 
@@ -126,7 +114,6 @@ async def summarize_memory_controller_new(
     memory.chat_memory.messages = [updated_summary] + latest_msgs
     return True
 
-
 async def generate_title_controller(session_id: str, db: Session) -> str:
     """Generate a concise session title from its conversation memory."""
     session = db.get(ChatSession, session_id)
@@ -135,30 +122,29 @@ async def generate_title_controller(session_id: str, db: Session) -> str:
 
     memory = load_memory(session.memory_state)
     chat_history = stringify_memory(memory)
-
     prompt = SESSION_TOPIC_GENERATION_PROMPT.format(chats=chat_history)
     resp = await summarizer_llm.ainvoke(prompt)
     return resp.content
 
-
+# ---------- Router ----------
 router = APIRouter(
-    prefix="/session",
-    tags=["session"]
+    prefix="/sessions",
+    tags=["sessions"],
 )
 
-
+# ---------- Schemas ----------
 class SessionCreateRequest(BaseModel):
     user_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
+    topic: Optional[str] = Field(default="Untitled", description="Optional initial topic/title.")
 
+class SessionPatchRequest(BaseModel):
+    # Partial field updates
+    topic: Optional[str] = Field(default=None, description="New topic/title for the session.")
 
-class SessionUpdateRequest(BaseModel):
-    topic: Optional[str] = Field(default=None, description="New topic for the session.")
-
-
-class SessionIdBody(BaseModel):
-    session_id: str = Field(min_length=1)
-
+    # Server-computed actions (flags)
+    generate_title: Optional[bool] = Field(default=False, description="If true, generate & set a concise title (stored in `topic`).")
+    refresh_memory: Optional[bool] = Field(default=False, description="If true, summarize long history and persist.")
 
 class SessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -182,56 +168,39 @@ class SessionOut(BaseModel):
                 return parsed if isinstance(parsed, list) else []
             except Exception:
                 return []
-        # if DB row is a dict (older shape), wrap in a list
         if isinstance(v, dict):
             return [v]
         return v
-
 
 class ApiSuccess(BaseModel):
     success: bool = True
     message: Optional[str] = None
 
-
 class SessionCreateResponse(ApiSuccess):
     session_id: str
-
 
 class SessionSingleResponse(BaseModel):
     success: bool = True
     session: SessionOut
 
-
 class SessionListResponse(BaseModel):
     success: bool = True
     sessions: List[SessionOut]
 
-
-class TopicResponse(BaseModel):
-    success: bool = True
-    topic: str
-    session_id: str
-
-
-class SummaryResponse(BaseModel):
-    success: bool = True
-    message: str
-    updated: bool
-    session_id: str
-
+# ---------- Routes ----------
 
 def create_session_routes(api_key: Optional[str] = None) -> APIRouter:
     combined_auth = get_combined_auth_dependency(api_key)
 
-    # POST "/"
+    # POST /sessions
     @router.post(
-        "/",
+        "",
         response_model=SessionCreateResponse,
         dependencies=[Depends(combined_auth)],
         summary="Create a new chat session",
     )
     async def create_new(payload: SessionCreateRequest, db: Session = Depends(get_db)):
-        # Validate refs (like Node did implicitly)
+        # Validate refs
         if db.get(User, payload.user_id) is None:
             raise HTTPException(status_code=400, detail="Invalid user_id: user not found.")
         if db.get(Project, payload.project_id) is None:
@@ -240,7 +209,7 @@ def create_session_routes(api_key: Optional[str] = None) -> APIRouter:
         sid = str(uuid4())
         session = ChatSession(
             id=sid,
-            topic="Untitled",
+            topic=payload.topic or "Untitled",
             user_id=payload.user_id,
             project_id=payload.project_id,
         )
@@ -254,44 +223,42 @@ def create_session_routes(api_key: Optional[str] = None) -> APIRouter:
 
         return SessionCreateResponse(
             success=True,
-            message="New Chat Session is created successfully.",
+            message="New chat session created.",
             session_id=sid,
         )
 
-    # GET "/"
+    # GET /sessions  (filters + paging + sort)
     @router.get(
-        "/",
+        "",
         response_model=SessionListResponse,
         dependencies=[Depends(combined_auth)],
-        summary="Get all sessions (descending by created_at)",
+        summary="List sessions (filter by user/project; sort; paging)",
     )
-    async def get_all_sessions(db: Session = Depends(get_db)):
-        stmt = select(ChatSession).order_by(ChatSession.created_at.desc())
-        rows = db.execute(stmt).scalars().all()
-        return SessionListResponse(success=True, sessions=[SessionOut.model_validate(r) for r in rows])
-
-    # GET "/user/{user_id}/workspace/{project_id}"
-    @router.get(
-        "/user/{user_id}/workspace/{project_id}",
-        response_model=SessionListResponse,
-        dependencies=[Depends(combined_auth)],
-        summary="Get sessions by user and workspace (limit 30)",
-    )
-    async def get_sessions_by_project_id(
-        user_id: str = Path(...),
-        project_id: str = Path(...),
+    async def list_sessions(
+        user_id: Optional[str] = Query(None, description="Filter by user_id"),
+        project_id: Optional[str] = Query(None, description="Filter by project_id"),
+        limit: int = Query(30, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        sort: str = Query("-created_at", description="Sort by 'created_at' or '-created_at' (default)."),
         db: Session = Depends(get_db),
     ):
-        stmt = (
-            select(ChatSession)
-            .where(ChatSession.user_id == user_id, ChatSession.project_id == project_id)
-            .order_by(ChatSession.created_at.desc())
-            .limit(30)
-        )
+        # Validate sort
+        sort_col = ChatSession.created_at
+        if sort not in ("created_at", "-created_at"):
+            raise HTTPException(status_code=400, detail="Unsupported sort. Use 'created_at' or '-created_at'.")
+        order_by = sort_col.asc() if sort == "created_at" else sort_col.desc()
+
+        stmt = select(ChatSession)
+        if user_id:
+            stmt = stmt.where(ChatSession.user_id == user_id)
+        if project_id:
+            stmt = stmt.where(ChatSession.project_id == project_id)
+
+        stmt = stmt.order_by(order_by).offset(offset).limit(limit)
         rows = db.execute(stmt).scalars().all()
         return SessionListResponse(success=True, sessions=[SessionOut.model_validate(r) for r in rows])
 
-    # GET "/{id}"
+    # GET /sessions/{id}
     @router.get(
         "/{id}",
         response_model=SessionSingleResponse,
@@ -304,36 +271,51 @@ def create_session_routes(api_key: Optional[str] = None) -> APIRouter:
             raise HTTPException(status_code=404, detail="Session not found.")
         return SessionSingleResponse(success=True, session=SessionOut.model_validate(row))
 
-    # PUT "/{id}"
-    @router.put(
+    # PATCH /sessions/{id}
+    @router.patch(
         "/{id}",
-        response_model=ApiSuccess,
+        response_model=SessionSingleResponse,
         dependencies=[Depends(combined_auth)],
-        summary="Update a session (topic only)",
+        summary="Partially update a session (topic or flags: generate_title, refresh_memory)",
     )
-    async def update_session(
+    async def patch_session(
         id: str = Path(...),
-        payload: SessionUpdateRequest = Body(...),
+        payload: SessionPatchRequest = Body(...),
         db: Session = Depends(get_db),
     ):
-        if payload.topic is None:
-            raise HTTPException(status_code=400, detail="Provide `topic` to update.")
+        sess = db.get(ChatSession, id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
 
-        stmt = update(ChatSession).where(ChatSession.id == id).values(topic=payload.topic)
         try:
-            res = db.execute(stmt)
+            # 1) Field update: topic
+            if payload.topic is not None:
+                sess.topic = payload.topic
+
+            # 2) Action: generate title (stored in `topic`)
+            if payload.generate_title:
+                generated = (await generate_title_controller(id, db)).strip()
+                if not generated:
+                    raise RuntimeError("Empty title produced by generator.")
+                sess.topic = generated  # using `topic` as the canonical title field
+
+            # 3) Action: refresh/summarize memory
+            if payload.refresh_memory:
+                memory = load_memory(sess.memory_state)
+                updated = await summarize_memory_controller_new(memory, max_tokens=2000)
+                # Persist regardless (safe overwrite)
+                sess.memory_state = dump_memory(memory)
+
             db.commit()
-            if res.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Session not found.")
-        except HTTPException:
-            raise
+            db.refresh(sess)
+            return SessionSingleResponse(success=True, session=SessionOut.model_validate(sess))
+
         except Exception as e:
             db.rollback()
             trace_exception(e)
-            raise HTTPException(status_code=500, detail="Failed to update session.")
-        return ApiSuccess(message="Session updated successfully.")
+            raise HTTPException(status_code=500, detail=f"Failed to update session. {e}")
 
-    # DELETE "/{id}"
+    # DELETE /sessions/{id}
     @router.delete(
         "/{id}",
         response_model=ApiSuccess,
@@ -358,58 +340,5 @@ def create_session_routes(api_key: Optional[str] = None) -> APIRouter:
             trace_exception(e)
             raise HTTPException(status_code=500, detail="Failed to delete session.")
         return ApiSuccess(message="Session deleted successfully.")
-
-    # POST "/title"
-    @router.post(
-        "/title",
-        response_model=TopicResponse,
-        dependencies=[Depends(combined_auth)],
-        summary="Generate a concise session title and persist it",
-    )
-    async def generate_session_topic(payload: SessionIdBody, db: Session = Depends(get_db)):
-        # Validate
-        sess = db.get(ChatSession, payload.session_id)
-        if sess is None:
-            raise HTTPException(status_code=404, detail="Session not found.")
-
-        try:
-            topic = (await generate_title_controller(payload.session_id, db)).strip()
-            if not topic:
-                raise RuntimeError("Empty title produced by title generator.")
-            stmt = update(ChatSession).where(ChatSession.id == payload.session_id).values(topic=topic)
-            res = db.execute(stmt)
-            db.commit()
-            if res.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Session not found during update.")
-            return TopicResponse(success=True, topic=topic, session_id=payload.session_id)
-        except Exception as e:
-            db.rollback()
-            trace_exception(e)
-            raise HTTPException(status_code=500, detail=f"Failed to generate topic. {e}")
-
-    # POST "/summarize"
-    @router.post(
-        "/summarize",
-        response_model=SummaryResponse,
-        dependencies=[Depends(combined_auth)],
-        summary="Summarize/refresh session memory (compress long histories)",
-    )
-    async def summarize_memory(payload: SessionIdBody, db: Session = Depends(get_db)):
-        sess = db.get(ChatSession, payload.session_id)
-        if sess is None:
-            raise HTTPException(status_code=404, detail="Session not found.")
-
-        try:
-            memory = load_memory(sess.memory_state)
-            updated = await summarize_memory_controller_new(memory, max_tokens=2000)
-            # Persist regardless (safe to rewrite same state)
-            sess.memory_state = dump_memory(memory)
-            db.commit()
-            message = "Memory summarized." if updated else "No summarization needed."
-            return SummaryResponse(success=True, message=message, updated=updated, session_id=payload.session_id)
-        except Exception as e:
-            db.rollback()
-            trace_exception(e)
-            raise HTTPException(status_code=500, detail=f"Failed to summarize memory. {e}")
 
     return router

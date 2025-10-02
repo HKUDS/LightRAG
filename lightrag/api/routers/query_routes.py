@@ -16,7 +16,7 @@ from fastapi import (
     Query
 )
 from lightrag.base import QueryParam
-from ..utils_api import get_combined_auth_dependency
+from ..utils_api import get_combined_auth_dependency, get_rag
 from pydantic import BaseModel, Field, field_validator
 
 from ascii_colors import trace_exception
@@ -141,27 +141,6 @@ class QueryResponse(BaseModel):
         description="The generated response",
     )
 
-async def get_rag(
-    request: Request,
-    x_workspace: Optional[str] = Header(default=None, alias="X-Workspace"),
-    q_workspace: Optional[str] = Query(default=None, alias="workspace"),
-) -> LightRAG:
-    """
-        Resolve (rag, doc_manager) per request using the InstanceManager stored in app.state.
-        - user_id is derived from the bearer token via auth_handler.
-        - workspace priority: X-Workspace header > ?workspace= query > global_args.workspace > "".
-    """
-    # Add logic to fetch workspace and user_id for creation / fetching of valid rag instance
-    auth_header = request.headers.get("authorization")
-
-    user_id = "test_user"
-
-    workspace = x_workspace or q_workspace or "default"
-
-    manager = request.app.state.instance_manager
-    rag, _ = await manager.get_instance(user_id, workspace)
-    return rag
-
 def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -170,7 +149,7 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
     )
     async def query_text(
         request: QueryRequest,
-        rag: LightRAG = Depends(get_rag)
+        pair: LightRAG = Depends(get_rag)
     ):
         """
         Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
@@ -187,6 +166,8 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                        with status code 500 and detail containing the exception message.
         """
         try:
+            rag, doc_manager = pair
+
             param = request.to_query_params(False)
             response = await rag.aquery(request.query, param=param)
 
@@ -206,7 +187,7 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
     @router.post("/query/stream", dependencies=[Depends(combined_auth)])
     async def query_text_stream(
         request: QueryRequest,
-        rag: LightRAG = Depends(get_rag)
+        pair: LightRAG = Depends(get_rag)
     ):
         """
         This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
@@ -219,6 +200,7 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
             StreamingResponse: A streaming response containing the RAG query results.
         """
         try:
+            rag, doc_manager = pair
             param = request.to_query_params(True)
             response = await rag.aquery(request.query, param=param)
 

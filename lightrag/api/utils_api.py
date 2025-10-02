@@ -7,17 +7,38 @@ import argparse
 from typing import Optional, List, Tuple
 import sys
 from ascii_colors import ASCIIColors
+from lightrag import LightRAG
 from lightrag.api import __api_version__ as api_version
 from lightrag import __version__ as core_version
 from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
-from fastapi import HTTPException, Security, Request, status
+from fastapi import HTTPException, Security, Request, status, Query, Header
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
 from .config import ollama_server_infos, global_args, get_env_value
 
+async def get_rag(
+    request: Request,
+    x_workspace: Optional[str] = Header(default=None, alias="X-Workspace"),
+    q_workspace: Optional[str] = Query(default=None, alias="workspace"),
+) -> LightRAG:
+    """
+        Resolve (rag, doc_manager) per request using the InstanceManager stored in app.state.
+        - user_id is derived from the bearer token via auth_handler.
+        - workspace priority: X-Workspace header > ?workspace= query > global_args.workspace > "".
+    """
+    # Add logic to fetch workspace and user_id for creation / fetching of valid rag instance
+    auth_header = request.headers.get("authorization")
+
+    user_id = "101"
+
+    workspace = x_workspace or q_workspace or "default"
+
+    manager = request.app.state.instance_manager
+    rag, doc_manager = await manager.get_instance(user_id, workspace)
+    return rag, doc_manager
 
 def check_env_file():
     """

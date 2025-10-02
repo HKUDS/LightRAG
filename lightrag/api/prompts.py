@@ -199,7 +199,7 @@ Final note:
 
 MCQ_GENERATION_PROMPT = """
 -Target Activity-
-You are an expert professor, whose primary task is to generate good quality mutiple choice questions by following set of detailed guidelines.
+You are an expert professor. Create ONE MCQ for the subtopic: "{subtopic}
 
 -Goal-
 Generate *{question_count}* [if unspecified, create 5] questions based on the given educational curriculum and user command. The difficulty level should be *{difficulty_level}* [if unspecified, maintain Intermediate level  for students pursuing a Bachelor of Science in Computer Science in R1 rated University.

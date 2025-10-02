@@ -15,7 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
-    PrimaryKeyConstraint,
+    Column,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -254,3 +254,23 @@ class Question(Base):
     session: Mapped["ChatSession"] = relationship()
     project: Mapped[Optional["Project"]] = relationship(back_populates="questions")
 
+class QuestionOptionVariant(Base):
+    __tablename__ = "question_option_variants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    question_id = Column(
+        String,
+        ForeignKey("questions.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    difficulty_level: Mapped[Optional[str]] = mapped_column(String(100))
+    options: Mapped[dict] = mapped_column(JSON, nullable=False)
+    correct_answers: Mapped[dict] = mapped_column(JSON, nullable=False)
+    rationale = Column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), server_onupdate=func.now(), nullable=False
+    )

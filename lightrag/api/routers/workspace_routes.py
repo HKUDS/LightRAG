@@ -1,14 +1,21 @@
 """
-Workspace (Project) routes for the LightRAG API.
+Workspaces routes (CRUD-first) for the LightRAG API.
 Treats "workspace" and "project" as the same entity.
+Old routes mapped to:
+- POST   /workspaces                         (was POST /workspace/create)
+- POST   /workspaces/{id}/initializations    (was POST /workspace/init/{id})
+- GET    /workspaces?user_id=…&limit=…&sort= (was GET  /workspace/user/{user_id})
+- GET    /workspaces/{id}                    (was GET  /workspace/{id})
+- PATCH  /workspaces/{id}                    (was PUT  /workspace/{id} and PUT /workspace/{id}/instructions)
+- DELETE /workspaces/{id}                    (was DELETE /workspace/{id})
 """
 
 import os
 import json
 import logging
 from typing import Any, Dict, List, Optional
-
 from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Path, Body
 from fastapi import Header, Query as Q
 from sqlalchemy import select, update, delete
@@ -27,11 +34,7 @@ try:
 except ImportError:
     httpx = None
 
-router = APIRouter(
-    prefix="/workspace",
-    tags=["workspace"]
-)
-
+# -------- Schemas --------
 
 class WorkspaceCreateRequest(BaseModel):
     name: str = Field(min_length=1, description="Workspace (project) name.")
@@ -39,50 +42,47 @@ class WorkspaceCreateRequest(BaseModel):
     instructions: Optional[str] = Field(
         default=None, description="Optional instructions string."
     )
+    initialize: bool = Field(
+        default=False,
+        description="If true, initialize LightRAG after create."
+    )
 
-
-class WorkspaceUpdateRequest(BaseModel):
+class WorkspacePatchRequest(BaseModel):
     name: Optional[str] = Field(default=None, description="New name.")
     user_id: Optional[str] = Field(default=None, description="New owner user id.")
     instructions: Optional[str] = Field(default=None, description="New instructions.")
-
-
-class InstructionsUpdateRequest(BaseModel):
-    instructions: str = Field(min_length=1, description="Instructions content.")
-
+    # Optional side-effect flag (zero-extra-route variant, if you want it):
+    reinitialize: Optional[bool] = Field(
+        default=None,
+        description="If true, (re)initialize LightRAG after updating."
+    )
 
 class WorkspaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: str
     name: Optional[str]
     user_id: str
     instructions: Optional[str] = None
     created_at: Any
 
-
 class ApiSuccess(BaseModel):
     success: bool = True
     message: Optional[str] = None
-
-
-class HealthResponse(BaseModel):
-    success: bool
-    status: Optional[int] = None
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    details: Optional[Any] = None
-
 
 class WorkspaceSingleResponse(BaseModel):
     success: bool = True
     project: WorkspaceOut
 
-
 class WorkspaceListResponse(BaseModel):
     success: bool = True
     projects: List[WorkspaceOut]
 
+class InitRunOut(BaseModel):
+    run_id: str
+    workspace_id: str
+    status: str = Field(description='queued|running|ready|failed')
+
+# -------------------- Shared helpers --------------------
 
 async def _ensure_rag_initialized(request: Request, user_id: str, workspace_id: str) -> None:
     """
@@ -92,33 +92,32 @@ async def _ensure_rag_initialized(request: Request, user_id: str, workspace_id: 
     try:
         manager = request.app.state.instance_manager
     except Exception as e:
-        # If instance manager is not available, this is a soft failure.
         logging.warning(f"Instance manager not available: {e}")
         return
 
     try:
-        # get_instance should create if missing and return (rag, doc_manager)
         await manager.get_instance(user_id, workspace_id)
     except Exception as e:
-        # Propagate to caller (Node code returned 500 in this case)
         raise RuntimeError(f"Failed to initialize LightRAG instance: {e}") from e
-    
+
+
+# -------------------- Router factory --------------------
 
 def create_workspace_routes(api_key: Optional[str] = None) -> APIRouter:
-    """
-    Factory to build workspace/project routes with shared auth dependency.
-    """
     combined_auth = get_combined_auth_dependency(api_key)
 
+    router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+
+    # -------- Routes --------
 
     @router.post(
-        "/create",
+        "",
         response_model=WorkspaceSingleResponse,
         status_code=201,
         dependencies=[Depends(combined_auth)],
-        summary="Create a new workspace (project) and initialize LightRAG",
+        summary="Create a new workspace. Optionally initialize LightRAG."
     )
-    async def create_new(
+    async def create_workspace(
         request: Request,
         payload: WorkspaceCreateRequest,
         db: Session = Depends(get_db),
@@ -145,80 +144,61 @@ def create_workspace_routes(api_key: Optional[str] = None) -> APIRouter:
             trace_exception(e)
             raise HTTPException(status_code=500, detail="Failed to create project.")
 
-        # Initialize LightRAG instance for this project (workspace)
-        try:
-            await _ensure_rag_initialized(request, user_id=payload.user_id, workspace_id=project_id)
-        except Exception as e:
-            # Match Node behavior: created but failed to start lightrag -> 500
-            trace_exception(e)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Project created, but failed to initialize LightRAG. {e}",
-            )
+        # Optional initialize
+        if payload.initialize:
+            try:
+                await _ensure_rag_initialized(request, user_id=payload.user_id, workspace_id=project_id)
+            except Exception as e:
+                trace_exception(e)
+                # Match previous behavior: created but init failed -> 500
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Project created, but failed to initialize LightRAG. {e}",
+                )
 
-        return WorkspaceSingleResponse(
-            success=True,
-            project=WorkspaceOut.model_validate(project),
-        )
-
-
-    @router.post(
-        "/init/{id}",
-        response_model=ApiSuccess,
-        dependencies=[Depends(combined_auth)],
-        summary="Initialize (or re-initialize) LightRAG for the workspace",
-    )
-    async def init_rag(
-        request: Request,
-        id: str = Path(..., description="Workspace/Project ID"),
-        db: Session = Depends(get_db),
-    ):
-        # Verify project exists
-        project = db.get(Project, id)
-        if project is None:
-            raise HTTPException(status_code=404, detail="Project not found.")
-
-        try:
-            await _ensure_rag_initialized(request, user_id=project.user_id, workspace_id=id)
-        except Exception as e:
-            trace_exception(e)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to initialize LightRAG for workspace {id}. {e}",
-            )
-
-        return ApiSuccess(message=f"LightRAG initialized for workspace {id}.")
-
+        return WorkspaceSingleResponse(success=True, project=WorkspaceOut.model_validate(project))
 
     @router.get(
-        "/user/{user_id}",
+        "",
         response_model=WorkspaceListResponse,
         dependencies=[Depends(combined_auth)],
-        summary="List workspaces for a user",
+        summary="List workspaces (filter by user_id, pagination, sorting)."
     )
-    async def get_by_user(
-        user_id: str = Path(..., description="Owner user id"),
+    async def list_workspaces(
+        user_id: Optional[str] = Q(default=None, description="Filter by owner user id"),
+        limit: int = Q(default=30, ge=1, le=100, description="Max rows to return"),
+        sort: str = Q(default="-created_at", description="Field to sort by, e.g., -created_at or created_at"),
         db: Session = Depends(get_db),
     ):
-        stmt = (
-            select(Project)
-            .where(Project.user_id == user_id)
-            .order_by(Project.created_at.desc())
-        )
+        # Base query
+        stmt = select(Project)
+        if user_id:
+            stmt = stmt.where(Project.user_id == user_id)
+
+        # Sorting
+        sort_field = sort.lstrip("-")
+        desc = sort.startswith("-")
+        sort_col = getattr(Project, sort_field, None)
+        if sort_col is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported sort field: {sort_field}")
+        stmt = stmt.order_by(sort_col.desc() if desc else sort_col.asc())
+
+        # Limit (simple page)
+        stmt = stmt.limit(limit)
+
         projects = db.execute(stmt).scalars().all()
         return WorkspaceListResponse(
             success=True,
             projects=[WorkspaceOut.model_validate(p) for p in projects],
         )
 
-
     @router.get(
         "/{id}",
         response_model=WorkspaceSingleResponse,
         dependencies=[Depends(combined_auth)],
-        summary="Fetch a workspace by id",
+        summary="Fetch a workspace by id"
     )
-    async def get_by_id(
+    async def get_workspace(
         id: str = Path(..., description="Workspace/Project ID"),
         db: Session = Depends(get_db),
     ):
@@ -227,33 +207,35 @@ def create_workspace_routes(api_key: Optional[str] = None) -> APIRouter:
             raise HTTPException(status_code=404, detail="Project not found.")
         return WorkspaceSingleResponse(success=True, project=WorkspaceOut.model_validate(project))
 
-
-    @router.put(
+    @router.patch(
         "/{id}",
-        response_model=ApiSuccess,
+        response_model=WorkspaceSingleResponse,
         dependencies=[Depends(combined_auth)],
-        summary="Update a workspace",
+        summary="Patch a workspace (name, user_id, instructions). Optionally reinitialize."
     )
-    async def update_by_id(
+    async def patch_workspace(
+        request: Request,
         id: str = Path(..., description="Workspace/Project ID"),
-        payload: WorkspaceUpdateRequest = Body(...),
+        payload: WorkspacePatchRequest = Body(...),
         db: Session = Depends(get_db),
     ):
-        # Nothing to update?
+        # No-op?
         if (
             payload.name is None
             and payload.user_id is None
             and payload.instructions is None
+            and not payload.reinitialize
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update. Provide at least `name`, `user_id`, or `instructions`.",
+                detail="Nothing to update. Provide at least one of: name, user_id, instructions, or reinitialize=true.",
             )
 
-        # If user_id provided, validate exists
+        # Validate user if changing
         if payload.user_id is not None and db.get(User, payload.user_id) is None:
             raise HTTPException(status_code=400, detail="Invalid user_id: user not found.")
 
+        # Build values
         values: Dict[str, Any] = {}
         if payload.name is not None:
             values["name"] = payload.name
@@ -262,37 +244,53 @@ def create_workspace_routes(api_key: Optional[str] = None) -> APIRouter:
         if payload.instructions is not None:
             values["instructions"] = payload.instructions
 
-        stmt = (
-            update(Project)
-            .where(Project.id == id)
-            .values(**values)
-        )
-        try:
-            res = db.execute(stmt)
-            db.commit()
-            if res.rowcount == 0:
+        # Update row
+        if values:
+            stmt = update(Project).where(Project.id == id).values(**values)
+            try:
+                res = db.execute(stmt)
+                db.commit()
+                if res.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="Project not found.")
+            except IntegrityError as e:
+                db.rollback()
+                trace_exception(e)
+                raise HTTPException(status_code=400, detail="Integrity error while updating project.")
+            except HTTPException:
+                raise
+            except Exception as e:
+                db.rollback()
+                trace_exception(e)
+                raise HTTPException(status_code=500, detail="Failed to update project.")
+
+        # Optionally (re)initialize after update
+        if payload.reinitialize:
+            # Need current project to know user_id (after possible change)
+            project = db.get(Project, id)
+            if project is None:
                 raise HTTPException(status_code=404, detail="Project not found.")
-        except IntegrityError as e:
-            db.rollback()
-            trace_exception(e)
-            raise HTTPException(status_code=400, detail="Integrity error while updating project.")
-        except HTTPException:
-            raise
-        except Exception as e:
-            db.rollback()
-            trace_exception(e)
-            raise HTTPException(status_code=500, detail="Failed to update project.")
+            try:
+                await _ensure_rag_initialized(request, user_id=project.user_id, workspace_id=id)
+            except Exception as e:
+                trace_exception(e)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to (re)initialize LightRAG for workspace {id}. {e}",
+                )
 
-        return ApiSuccess(message="Project updated successfully.")
-
+        # Return fresh row
+        project = db.get(Project, id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        return WorkspaceSingleResponse(success=True, project=WorkspaceOut.model_validate(project))
 
     @router.delete(
         "/{id}",
         response_model=ApiSuccess,
         dependencies=[Depends(combined_auth)],
-        summary="Delete a workspace",
+        summary="Delete a workspace"
     )
-    async def delete_by_id(
+    async def delete_workspace(
         id: str = Path(..., description="Workspace/Project ID"),
         db: Session = Depends(get_db),
     ):
@@ -319,35 +317,38 @@ def create_workspace_routes(api_key: Optional[str] = None) -> APIRouter:
 
         return ApiSuccess(message="Project deleted successfully.")
 
-
-    @router.put(
-        "/{id}/instructions",
-        response_model=ApiSuccess,
+    @router.post(
+        "/{id}/initializations",
+        response_model=InitRunOut,
+        status_code=202,
         dependencies=[Depends(combined_auth)],
-        summary="Save/update instructions for a workspace",
+        summary="(Re)Initialize LightRAG for the workspace (explicit subresource)"
     )
-    async def save_instructions(
+    async def start_initialization(
+        request: Request,
         id: str = Path(..., description="Workspace/Project ID"),
-        payload: InstructionsUpdateRequest = Body(...),
         db: Session = Depends(get_db),
     ):
-        stmt = (
-            update(Project)
-            .where(Project.id == id)
-            .values(instructions=payload.instructions)
-        )
-        try:
-            res = db.execute(stmt)
-            db.commit()
-            if res.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Project not found.")
-        except HTTPException:
-            raise
-        except Exception as e:
-            db.rollback()
-            trace_exception(e)
-            raise HTTPException(status_code=500, detail="Failed to save instructions.")
+        # Verify project exists
+        project = db.get(Project, id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
 
-        return ApiSuccess(message="Instructions saved successfully.")
+        try:
+            await _ensure_rag_initialized(request, user_id=project.user_id, workspace_id=id)
+        except Exception as e:
+            trace_exception(e)
+            # Expose a failed run status while keeping a consistent shape
+            return InitRunOut(
+                run_id=f"init_{uuid4().hex[:8]}",
+                workspace_id=id,
+                status="failed",
+            )
+
+        return InitRunOut(
+            run_id=f"init_{uuid4().hex[:8]}",
+            workspace_id=id,
+            status="ready",  # manager.get_instance completed without raising
+        )
 
     return router
