@@ -43,12 +43,12 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
-  
+
   // Track system theme changes when theme is set to 'system'
-  const [systemThemeIsDark, setSystemThemeIsDark] = useState(() => 
+  const [systemThemeIsDark, setSystemThemeIsDark] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches
   )
-  
+
   useEffect(() => {
     if (theme === 'system') {
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -219,7 +219,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
    */
   useEffect(() => {
     // Check if dark mode is actually applied (handles both 'dark' theme and 'system' theme when OS is dark)
-    const isDarkTheme = theme === 'dark' || 
+    const isDarkTheme = theme === 'dark' ||
       (theme === 'system' && window.document.documentElement.classList.contains('dark'))
     const labelColor = isDarkTheme ? Constants.labelColorDarkTheme : undefined
     const edgeColor = isDarkTheme ? Constants.edgeColorDarkTheme : undefined

@@ -56,7 +56,7 @@ const useRandomGraph = () => {
         image: faker.image.urlLoremFlickr()
       })
     })
-    
+
     // Add edge attributes
     graph.edges().forEach((edge: string) => {
       graph.mergeEdgeAttributes(edge, {
@@ -65,7 +65,7 @@ const useRandomGraph = () => {
         color: randomColor()
       })
     })
-    
+
     return graph as Graph<NodeType, EdgeType>
   }, [faker])
 
