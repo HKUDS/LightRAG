@@ -1,5 +1,5 @@
 # Python-related files
-__pycache__/
+__pycache__
 *.py[cod]
 *.egg-info/
 .eggs/
@@ -66,9 +66,10 @@ lightrag-dev/
 gui/
 
 # unit-test files
-test_*
+# test_*
 
 # Cline files
 memory-bank
 memory-bank/
 .clinerules
+throwaway
