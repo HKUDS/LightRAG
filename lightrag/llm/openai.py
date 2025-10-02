@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 
 import pipmaster as pm
+
 # install specific modules
 if not pm.is_installed("openai"):
     pm.install("openai")
