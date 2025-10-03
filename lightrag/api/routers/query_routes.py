@@ -78,6 +78,11 @@ class QueryRequest(BaseModel):
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
+    ids: list[str] | None = Field(
+        default=None, description="List of ids to filter the results."
+    )
+
+
     user_prompt: Optional[str] = Field(
         default=None,
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
@@ -97,7 +102,7 @@ class QueryRequest(BaseModel):
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
-
+    
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:

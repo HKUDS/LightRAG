@@ -2262,14 +2262,16 @@ class LightRAG:
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
-            query_result = await naive_query(
+            raw_data = await naive_query(
                 query.strip(),
                 self.chunks_vdb,
                 data_param,  # Use data_param with only_need_context=True
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
+                return_raw_data=True,
             )
+            query_result = QueryResult(content="", raw_data=raw_data)
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
             # bypass mode returns empty data using convert_to_user_format
