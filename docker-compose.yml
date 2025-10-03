@@ -1,7 +1,7 @@
 services:
   lightrag:
     container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
+    # image: ghcr.io/hkuds/lightrag:latest  # Commented out to use local code
     build:
       context: .
       dockerfile: Dockerfile
@@ -22,3 +22,10 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      poc_network:
+  
+networks:
+  poc_network:
+    external: true
+    
