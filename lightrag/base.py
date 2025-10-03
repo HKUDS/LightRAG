@@ -11,6 +11,10 @@ from typing import (
     TypedDict,
     TypeVar,
     Callable,
+    Optional,
+    Dict,
+    List,
+    AsyncIterator,
 )
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
@@ -132,13 +136,13 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # TODO: Deprecated - history message have negtive effect on query performance
+    # History mesages is only send to LLM for context, not used for retrieval
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    # TODO: Deprecated - history message have negtive effect on query performance
+    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
@@ -150,7 +154,8 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    If proivded, this will be use instead of the default vaulue from prompt template.
+    Addition instructions for LLM. If provided, this will be inject into the prompt template.
+    It's purpose is the let user customize the way LLM generate the response.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
@@ -161,6 +166,12 @@ class QueryParam:
     ids: list[str] | None = None
     """List of document IDs to filter the query results. If provided, only chunks, entities, 
     and relationships associated with these document IDs will be considered in the search results."""
+
+    include_references: bool = False
+    """If True, includes reference list in the response for supported endpoints.
+    This parameter controls whether the API response includes a references field
+    containing citation information for the retrieved content.
+    """
 
 
 @dataclass
@@ -818,3 +829,68 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+
+
+# Unified Query Result Data Structures for Reference List Support
+
+
+@dataclass
+class QueryResult:
+    """
+    Unified query result data structure for all query modes.
+
+    Attributes:
+        content: Text content for non-streaming responses
+        response_iterator: Streaming response iterator for streaming responses
+        raw_data: Complete structured data including references and metadata
+        is_streaming: Whether this is a streaming result
+    """
+
+    content: Optional[str] = None
+    response_iterator: Optional[AsyncIterator[str]] = None
+    raw_data: Optional[Dict[str, Any]] = None
+    is_streaming: bool = False
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """
+        Convenient property to extract reference list from raw_data.
+
+        Returns:
+            List[Dict[str, str]]: Reference list in format:
+            [{"reference_id": "1", "file_path": "/path/to/file.pdf"}, ...]
+        """
+        if self.raw_data:
+            return self.raw_data.get("data", {}).get("references", [])
+        return []
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """
+        Convenient property to extract metadata from raw_data.
+
+        Returns:
+            Dict[str, Any]: Query metadata including query_mode, keywords, etc.
+        """
+        if self.raw_data:
+            return self.raw_data.get("metadata", {})
+        return {}
+
+
+@dataclass
+class QueryContextResult:
+    """
+    Unified query context result data structure.
+
+    Attributes:
+        context: LLM context string
+        raw_data: Complete structured data including reference_list
+    """
+
+    context: str
+    raw_data: Dict[str, Any]
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """Convenient property to extract reference list from raw_data."""
+        return self.raw_data.get("data", {}).get("references", [])
