@@ -134,6 +134,33 @@ class ScanResponse(BaseModel):
         }
 
 
+class ReprocessResponse(BaseModel):
+    """Response model for reprocessing failed documents operation
+
+    Attributes:
+        status: Status of the reprocessing operation
+        message: Message describing the operation result
+        track_id: Tracking ID for monitoring reprocessing progress
+    """
+
+    status: Literal["reprocessing_started"] = Field(
+        description="Status of the reprocessing operation"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+    track_id: str = Field(
+        description="Tracking ID for monitoring reprocessing progress"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "reprocessing_started",
+                "message": "Reprocessing of failed documents has been initiated in background",
+                "track_id": "retry_20250729_170612_def456",
+            }
+        }
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
@@ -2654,6 +2681,54 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/reprocess_failed",
+        response_model=ReprocessResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+        """
+        Reprocess failed and pending documents.
+
+        This endpoint triggers the document processing pipeline which automatically
+        picks up and reprocesses documents in the following statuses:
+        - FAILED: Documents that failed during previous processing attempts
+        - PENDING: Documents waiting to be processed
+        - PROCESSING: Documents with abnormally terminated processing (e.g., server crashes)
+
+        This is useful for recovering from server crashes, network errors, LLM service
+        outages, or other temporary failures that caused document processing to fail.
+
+        The processing happens in the background and can be monitored using the
+        returned track_id or by checking the pipeline status.
+
+        Returns:
+            ReprocessResponse: Response with status, message, and track_id
+
+        Raises:
+            HTTPException: If an error occurs while initiating reprocessing (500).
+        """
+        try:
+            # Generate track_id with "retry" prefix for retry operation
+            track_id = generate_track_id("retry")
+
+            # Start the reprocessing in the background
+            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+            logger.info(
+                f"Reprocessing of failed documents initiated with track_id: {track_id}"
+            )
+
+            return ReprocessResponse(
+                status="reprocessing_started",
+                message="Reprocessing of failed documents has been initiated in background",
+                track_id=track_id,
+            )
+
+        except Exception as e:
+            logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
