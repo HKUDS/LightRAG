@@ -26,31 +26,31 @@ validate_success_response() {
     local response="$1"
     local test_name="$2"
     local expected_mode="$3"
-    
+
     echo -e "${BLUE}Validating $test_name response format...${NC}"
-    
+
     # Check if valid JSON
     if ! echo "$response" | jq . >/dev/null 2>&1; then
         echo -e "${RED}❌ Response is not valid JSON format${NC}"
         return 1
     fi
-    
+
     # Validate required fields
     local status=$(echo "$response" | jq -r '.status // "missing"')
     local message=$(echo "$response" | jq -r '.message // "missing"')
     local data_exists=$(echo "$response" | jq 'has("data")')
     local metadata_exists=$(echo "$response" | jq 'has("metadata")')
-    
+
     echo "  Status: $status"
     echo "  Message: $message"
-    
+
     # Validate data structure
     if [[ "$data_exists" == "true" ]]; then
         local entities_count=$(echo "$response" | jq '.data.entities | length // 0')
         local relationships_count=$(echo "$response" | jq '.data.relationships | length // 0')
         local chunks_count=$(echo "$response" | jq '.data.chunks | length // 0')
         local references_count=$(echo "$response" | jq '.data.references | length // 0')
-        
+
         echo "  Data.entities: $entities_count"
         echo "  Data.relationships: $relationships_count"
         echo "  Data.chunks: $chunks_count"
@@ -59,17 +59,17 @@ validate_success_response() {
         echo -e "${RED}  ❌ Missing 'data' field${NC}"
         return 1
     fi
-    
+
     # Validate metadata
     if [[ "$metadata_exists" == "true" ]]; then
         local query_mode=$(echo "$response" | jq -r '.metadata.query_mode // "missing"')
         local keywords_exists=$(echo "$response" | jq 'has("metadata") and (.metadata | has("keywords"))')
         local processing_info_exists=$(echo "$response" | jq 'has("metadata") and (.metadata | has("processing_info"))')
-        
+
         echo "  Metadata.query_mode: $query_mode"
         echo "  Metadata.keywords: $keywords_exists"
         echo "  Metadata.processing_info: $processing_info_exists"
-        
+
         # Validate if query mode matches
         if [[ "$expected_mode" != "" && "$query_mode" != "$expected_mode" ]]; then
             echo -e "${YELLOW}  ⚠️  Query mode mismatch: expected '$expected_mode', actual '$query_mode'${NC}"
@@ -78,7 +78,7 @@ validate_success_response() {
         echo -e "${RED}  ❌ Missing 'metadata' field${NC}"
         return 1
     fi
-    
+
     # Validate status
     if [[ "$status" == "success" ]]; then
         echo -e "${GREEN}  ✅ Response format validation passed${NC}"
@@ -93,38 +93,38 @@ validate_success_response() {
 validate_error_response() {
     local response="$1"
     local test_name="$2"
-    
+
     echo -e "${BLUE}Validating $test_name response format...${NC}"
-    
+
     # Check if valid JSON
     if ! echo "$response" | jq . >/dev/null 2>&1; then
         echo -e "${RED}❌ Response is not valid JSON format${NC}"
         return 1
     fi
-    
+
     # Validate required fields
     local status=$(echo "$response" | jq -r '.status // "missing"')
     local message=$(echo "$response" | jq -r '.message // "missing"')
     local data_exists=$(echo "$response" | jq 'has("data")')
     local metadata_exists=$(echo "$response" | jq 'has("metadata")')
-    
+
     echo "  Status: $status"
     echo "  Message: $message"
-    
+
     # Validate basic structure exists
     if [[ "$data_exists" != "true" ]]; then
         echo -e "${RED}  ❌ Missing 'data' field${NC}"
         return 1
     fi
-    
+
     if [[ "$metadata_exists" != "true" ]]; then
         echo -e "${RED}  ❌ Missing 'metadata' field${NC}"
         return 1
     fi
-    
+
     echo "  Data: {}"
     echo "  Metadata: {}"
-    
+
     # Validate status should be failure
     if [[ "$status" == "failure" ]]; then
         echo -e "${GREEN}  ✅ Error response format validation passed${NC}"
@@ -141,28 +141,28 @@ run_success_test() {
     local query_data="$2"
     local expected_mode="$3"
     local print_json="${4:-false}"  # Optional parameter: whether to print JSON response (default: false)
-    
+
     echo ""
     echo "=================================="
     echo -e "${BLUE}$test_name${NC}"
     echo "=================================="
-    
+
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    
+
     # Send request
     echo "Sending request..."
     local response=$(curl -s -X POST "${BASE_URL}/query/data" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: your-secure-api-key-here-123" \
       -d "$query_data")
-    
+
     # Check if curl succeeded
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}❌ Request failed - cannot connect to server${NC}"
         FAILED_TESTS=$((FAILED_TESTS + 1))
         return 1
     fi
-    
+
     # Print JSON response if requested
     if [[ "$print_json" == "true" ]]; then
         echo ""
@@ -170,7 +170,7 @@ run_success_test() {
         echo "$response" | jq '.' 2>/dev/null || echo "$response"
         echo ""
     fi
-    
+
     # Validate response
     if validate_success_response "$response" "$test_name" "$expected_mode"; then
         PASSED_TESTS=$((PASSED_TESTS + 1))
@@ -187,28 +187,28 @@ run_success_test() {
 run_error_test() {
     local test_name="$1"
     local query_data="$2"
-    
+
     echo ""
     echo "=================================="
     echo -e "${BLUE}$test_name${NC}"
     echo "=================================="
-    
+
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    
+
     # Send request
     echo "Sending request..."
     local response=$(curl -s -X POST "${BASE_URL}/query/data" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: your-secure-api-key-here-123" \
       -d "$query_data")
-    
+
     # Check if curl succeeded
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}❌ Request failed - cannot connect to server${NC}"
         FAILED_TESTS=$((FAILED_TESTS + 1))
         return 1
     fi
-    
+
     # Validate response
     if validate_error_response "$response" "$test_name"; then
         PASSED_TESTS=$((PASSED_TESTS + 1))
