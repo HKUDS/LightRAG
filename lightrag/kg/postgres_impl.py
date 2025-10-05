@@ -161,6 +161,7 @@ class PostgreSQLDB:
                 "port": self.port,
                 "min_size": 1,
                 "max_size": self.max,
+                "statement_cache_size": 0,
             }
 
             # Add SSL configuration if provided
