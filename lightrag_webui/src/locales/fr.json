@@ -115,6 +115,8 @@
       "title": "Gestion des documents",
       "scanButton": "Scanner",
       "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "retryFailedButton": "Réessayer",
+      "retryFailedTooltip": "Réessayer le traitement de tous les documents échoués",
       "refreshTooltip": "Réinitialiser la liste des documents",
       "pipelineStatusButton": "État du Pipeline",
       "pipelineStatusTooltip": "Voir l'état du pipeline",

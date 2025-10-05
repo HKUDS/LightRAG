@@ -115,6 +115,8 @@
       "title": "文件管理",
       "scanButton": "掃描",
       "scanTooltip": "掃描輸入目錄中的文件",
+      "retryFailedButton": "重試",
+      "retryFailedTooltip": "重新處理所有失敗的文件",
       "refreshTooltip": "重設文件清單",
       "pipelineStatusButton": "pipeline 狀態",
       "pipelineStatusTooltip": "查看pipeline 狀態",
