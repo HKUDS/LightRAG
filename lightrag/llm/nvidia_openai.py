@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 if sys.version_info < (3, 9):
     pass
@@ -12,25 +12,23 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 if not pm.is_installed("openai"):
     pm.install("openai")
 
+import numpy as np
 from openai import (
-    AsyncOpenAI,
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
 )
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
 )
-
-
-import numpy as np
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=2048)

@@ -5,14 +5,14 @@ This module provides container implementations for various Large Language Model
 bindings and integrations.
 """
 
-from argparse import ArgumentParser, Namespace
 import argparse
 import json
+from argparse import ArgumentParser, Namespace
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, List
 
-from lightrag.utils import get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
+from lightrag.utils import get_env_value
 
 
 # =============================================================================
@@ -516,6 +516,7 @@ class OpenAILLMOptions(BindingOptions):
 
 if __name__ == "__main__":
     import sys
+
     import dotenv
     # from io import StringIO
 

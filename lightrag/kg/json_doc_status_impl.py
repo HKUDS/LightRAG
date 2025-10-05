@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from typing import Any, Union, final
 
 from lightrag.base import (
@@ -7,20 +7,21 @@ from lightrag.base import (
     DocStatus,
     DocStatusStorage,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from lightrag.utils import (
+    get_pinyin_sort_key,
     load_json,
     logger,
     write_json,
-    get_pinyin_sort_key,
 )
-from lightrag.exceptions import StorageNotInitializedError
+
 from .shared_storage import (
+    clear_all_update_flags,
+    get_data_init_lock,
     get_namespace_data,
     get_storage_lock,
-    get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
-    clear_all_update_flags,
     try_initialize_namespace,
 )
 

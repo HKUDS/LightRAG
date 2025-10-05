@@ -1,12 +1,12 @@
+import asyncio
+import logging
+import multiprocessing as mp
 import os
 import sys
-import asyncio
-import multiprocessing as mp
-from multiprocessing.synchronize import Lock as ProcessLock
-from multiprocessing import Manager
 import time
-import logging
-from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
+from multiprocessing import Manager
+from multiprocessing.synchronize import Lock as ProcessLock
+from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 
 from lightrag.exceptions import PipelineNotInitializedError
 

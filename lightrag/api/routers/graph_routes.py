@@ -2,12 +2,14 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from lightrag.utils import logger
+
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])

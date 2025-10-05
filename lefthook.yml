@@ -1,0 +1,8 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: lint-fix
+      run: uvx ruff check --select I --fix
+
+    - name: format
+      run: uvx ruff format

@@ -10,23 +10,22 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 if not pm.is_installed("lmdeploy"):
     pm.install("lmdeploy")
 
+import base64
+import struct
+
+import aiohttp
+import numpy as np
 from openai import (
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    RateLimitError,
 )
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
-
-
-import numpy as np
-import aiohttp
-import base64
-import struct
 
 
 @retry(

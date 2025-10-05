@@ -1,18 +1,18 @@
-import os
 import asyncio
+import os
+
 import nest_asyncio
+import numpy as np
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import (
-    openai_complete_if_cache,
-    nvidia_openai_embed,
-)
-from lightrag.utils import EmbeddingFunc
-import numpy as np
 from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.llm import (
+    nvidia_openai_embed,
+    openai_complete_if_cache,
+)
 
 # for custom llm_model_func
-from lightrag.utils import locate_json_string_body_from_string
+from lightrag.utils import EmbeddingFunc, locate_json_string_body_from_string
 
 nest_asyncio.apply()
 

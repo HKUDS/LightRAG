@@ -1,7 +1,7 @@
-import os
-import json
-import glob
 import argparse
+import glob
+import json
+import os
 
 
 def extract_unique_contexts(input_directory, output_directory):

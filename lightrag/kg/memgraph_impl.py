@@ -1,26 +1,26 @@
-import os
 import asyncio
+import configparser
+import os
 import random
 from dataclasses import dataclass
 from typing import final
-import configparser
 
-from ..utils import logger
+import pipmaster as pm
+
 from ..base import BaseGraphStorage
-from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
-import pipmaster as pm
+from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from ..utils import logger
 
 if not pm.is_installed("neo4j"):
     pm.install("neo4j")
+from dotenv import load_dotenv
 from neo4j import (
     AsyncGraphDatabase,
     AsyncManagedTransaction,
 )
-from neo4j.exceptions import TransientError, ResultFailedError
-
-from dotenv import load_dotenv
+from neo4j.exceptions import ResultFailedError, TransientError
 
 # use the .env that is inside the current folder
 load_dotenv(dotenv_path=".env", override=False)

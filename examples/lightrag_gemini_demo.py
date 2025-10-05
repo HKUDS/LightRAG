@@ -1,17 +1,18 @@
 # pip install -q -U google-genai to use gemini as a client
 
+import asyncio
 import os
+
+import nest_asyncio
 import numpy as np
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
-from lightrag.utils import EmbeddingFunc
-from lightrag import LightRAG, QueryParam
 from sentence_transformers import SentenceTransformer
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
-import asyncio
-import nest_asyncio
+from lightrag import LightRAG, QueryParam
+from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import EmbeddingFunc
 
 # Apply nest_asyncio to solve event loop issues
 nest_asyncio.apply()

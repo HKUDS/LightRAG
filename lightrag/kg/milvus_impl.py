@@ -1,19 +1,28 @@
 import asyncio
 import os
-from typing import Any, final
 from dataclasses import dataclass
+from typing import Any, final
+
 import numpy as np
-from lightrag.utils import logger, compute_mdhash_id
+import pipmaster as pm
+
+from lightrag.utils import compute_mdhash_id, logger
+
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
 from ..kg.shared_storage import get_data_init_lock, get_storage_lock
-import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
     pm.install("pymilvus==2.5.2")
 
 import configparser
-from pymilvus import MilvusClient, DataType, CollectionSchema, FieldSchema  # type: ignore
+
+from pymilvus import (  # type: ignore
+    CollectionSchema,
+    DataType,
+    FieldSchema,
+    MilvusClient,
+)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")

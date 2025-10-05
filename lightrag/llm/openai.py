@@ -1,40 +1,40 @@
-from ..utils import verbose_debug, VERBOSE_DEBUG
-import os
 import logging
-
+import os
 from collections.abc import AsyncIterator
 
 import pipmaster as pm
+
+from ..utils import VERBOSE_DEBUG, verbose_debug
 
 # install specific modules
 if not pm.is_installed("openai"):
     pm.install("openai")
 
-from openai import (
-    AsyncOpenAI,
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    safe_unicode_decode,
-    logger,
-)
-from lightrag.types import GPTKeywordExtractionFormat
-from lightrag.api import __api_version__
-
-import numpy as np
 import base64
 from typing import Any, Union
 
+import numpy as np
 from dotenv import load_dotenv
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
+)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from lightrag.api import __api_version__
+from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.utils import (
+    logger,
+    safe_unicode_decode,
+    wrap_embedding_func_with_attrs,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance

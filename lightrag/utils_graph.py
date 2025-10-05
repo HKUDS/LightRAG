@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import time
 import asyncio
+import time
 from typing import Any, cast
 
-from .base import DeletionResult
-from .kg.shared_storage import get_graph_db_lock
+from .base import DeletionResult, StorageNameSpace
 from .constants import GRAPH_FIELD_SEP
+from .kg.shared_storage import get_graph_db_lock
 from .utils import compute_mdhash_id, logger
-from .base import StorageNameSpace
 
 
 async def adelete_by_entity(

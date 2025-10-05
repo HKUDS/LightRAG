@@ -4,18 +4,19 @@ Start LightRAG server with Gunicorn
 """
 
 import os
-import sys
 import signal
-import pipmaster as pm
-from lightrag.api.utils_api import display_splash_screen, check_env_file
-from lightrag.api.config import global_args
-from lightrag.utils import get_env_value
-from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
+import sys
 
+import pipmaster as pm
+
+from lightrag.api.config import global_args
+from lightrag.api.utils_api import check_env_file, display_splash_screen
 from lightrag.constants import (
-    DEFAULT_WOKERS,
     DEFAULT_TIMEOUT,
+    DEFAULT_WOKERS,
 )
+from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+from lightrag.utils import get_env_value
 
 
 def check_and_install_dependencies():

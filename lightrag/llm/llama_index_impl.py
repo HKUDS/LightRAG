@@ -1,33 +1,36 @@
+from typing import List, Optional
+
 import pipmaster as pm
 from llama_index.core.llms import (
     ChatMessage,
-    MessageRole,
     ChatResponse,
+    MessageRole,
 )
-from typing import List, Optional
+
 from lightrag.utils import logger
 
 # Install required dependencies
 if not pm.is_installed("llama-index"):
     pm.install("llama-index")
 
+import numpy as np
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.settings import Settings as LlamaIndexSettings
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+)
+
+from lightrag.exceptions import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
 )
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
 )
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
-import numpy as np
 
 
 def configure_llama_index(settings: LlamaIndexSettings = None, **kwargs):

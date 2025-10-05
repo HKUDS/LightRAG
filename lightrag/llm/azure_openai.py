@@ -1,33 +1,32 @@
-from collections.abc import Iterable
 import os
+from collections.abc import Iterable
+
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("openai"):
     pm.install("openai")
 
+import numpy as np
 from openai import (
-    AsyncAzureOpenAI,
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    AsyncAzureOpenAI,
+    RateLimitError,
 )
 from openai.types.chat import ChatCompletionMessageParam
-
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    safe_unicode_decode,
     logger,
+    safe_unicode_decode,
+    wrap_embedding_func_with_attrs,
 )
-
-import numpy as np
 
 
 @retry(

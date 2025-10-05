@@ -1,14 +1,16 @@
+import asyncio
 import os
+
+import nest_asyncio
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
+
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.llama_index_impl import (
     llama_index_complete_if_cache,
     llama_index_embed,
 )
 from lightrag.utils import EmbeddingFunc
-from llama_index.llms.openai import OpenAI
-from llama_index.embeddings.openai import OpenAIEmbedding
-import asyncio
-import nest_asyncio
 
 nest_asyncio.apply()
 

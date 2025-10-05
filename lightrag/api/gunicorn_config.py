@@ -1,14 +1,14 @@
 # gunicorn_config.py
-import os
 import logging
-from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.utils import setup_logger, get_env_value
+import os
+
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
+    DEFAULT_LOG_MAX_BYTES,
 )
-
+from lightrag.kg.shared_storage import finalize_share_data
+from lightrag.utils import get_env_value, setup_logger
 
 # Get log directory path from environment variable
 log_dir = os.getenv("LOG_DIR", os.getcwd())

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import traceback
 import asyncio
 import configparser
 import os
 import time
+import traceback
 import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -13,93 +13,91 @@ from typing import (
     Any,
     AsyncIterator,
     Callable,
+    Dict,
     Iterator,
-    cast,
-    final,
+    List,
     Literal,
     Optional,
-    List,
-    Dict,
-)
-from lightrag.constants import (
-    DEFAULT_MAX_GLEANING,
-    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
-    DEFAULT_TOP_K,
-    DEFAULT_CHUNK_TOP_K,
-    DEFAULT_MAX_ENTITY_TOKENS,
-    DEFAULT_MAX_RELATION_TOKENS,
-    DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_COSINE_THRESHOLD,
-    DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_MIN_RERANK_SCORE,
-    DEFAULT_SUMMARY_MAX_TOKENS,
-    DEFAULT_SUMMARY_CONTEXT_SIZE,
-    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
-    DEFAULT_MAX_ASYNC,
-    DEFAULT_MAX_PARALLEL_INSERT,
-    DEFAULT_MAX_GRAPH_NODES,
-    DEFAULT_ENTITY_TYPES,
-    DEFAULT_SUMMARY_LANGUAGE,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
-)
-from lightrag.utils import get_env_value
-
-from lightrag.kg import (
-    STORAGES,
-    verify_storage_implementation,
+    cast,
+    final,
 )
 
-
-from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_pipeline_status_lock,
-    get_graph_db_lock,
-    get_data_init_lock,
-)
+from dotenv import load_dotenv
 
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DeletionResult,
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
+    OllamaServerInfos,
     QueryParam,
+    QueryResult,
     StorageNameSpace,
     StoragesStatus,
-    DeletionResult,
-    OllamaServerInfos,
-    QueryResult,
+)
+from lightrag.constants import (
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_GLEANING,
+    DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_TOP_K,
+    GRAPH_FIELD_SEP,
+)
+from lightrag.kg import (
+    STORAGES,
+    verify_storage_implementation,
+)
+from lightrag.kg.shared_storage import (
+    get_data_init_lock,
+    get_graph_db_lock,
+    get_namespace_data,
+    get_pipeline_status_lock,
 )
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
+    _rebuild_knowledge_from_chunks,
     chunking_by_token_size,
     extract_entities,
-    merge_nodes_and_edges,
     kg_query,
+    merge_nodes_and_edges,
     naive_query,
-    _rebuild_knowledge_from_chunks,
-)
-from lightrag.constants import GRAPH_FIELD_SEP
-from lightrag.utils import (
-    Tokenizer,
-    TiktokenTokenizer,
-    EmbeddingFunc,
-    always_get_an_event_loop,
-    compute_mdhash_id,
-    lazy_external_import,
-    priority_limit_async_func_call,
-    get_content_summary,
-    sanitize_text_for_encoding,
-    check_storage_env_vars,
-    generate_track_id,
-    convert_to_user_format,
-    logger,
 )
 from lightrag.types import KnowledgeGraph
-from dotenv import load_dotenv
+from lightrag.utils import (
+    EmbeddingFunc,
+    TiktokenTokenizer,
+    Tokenizer,
+    always_get_an_event_loop,
+    check_storage_env_vars,
+    compute_mdhash_id,
+    convert_to_user_format,
+    generate_track_id,
+    get_content_summary,
+    get_env_value,
+    lazy_external_import,
+    logger,
+    priority_limit_async_func_call,
+    sanitize_text_for_encoding,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance

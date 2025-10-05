@@ -3,14 +3,14 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from lightrag.utils import logger, get_pinyin_sort_key
-import aiofiles
 import shutil
 import traceback
-import pipmaster as pm
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from typing import Any, Dict, List, Literal, Optional
+
+import aiofiles
+import pipmaster as pm
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -22,9 +22,10 @@ from fastapi import (
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
-from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.utils import generate_track_id
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
+from lightrag.utils import generate_track_id, get_pinyin_sort_key, logger
+
 from ..config import global_args
 
 
@@ -836,8 +837,8 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     Returns:
         str: Unique filename (may have numeric suffix added)
     """
-    from pathlib import Path
     import time
+    from pathlib import Path
 
     original_path = Path(original_name)
     base_name = original_path.stem
@@ -1032,7 +1033,9 @@ async def pipeline_enqueue_file(
                         if global_args.document_loading_engine == "DOCLING":
                             if not pm.is_installed("docling"):  # type: ignore
                                 pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
+                            from docling.document_converter import (
+                                DocumentConverter,  # type: ignore
+                            )
 
                             converter = DocumentConverter()
                             result = converter.convert(file_path)
@@ -1040,8 +1043,9 @@ async def pipeline_enqueue_file(
                         else:
                             if not pm.is_installed("pypdf2"):  # type: ignore
                                 pm.install("pypdf2")
-                            from PyPDF2 import PdfReader  # type: ignore
                             from io import BytesIO
+
+                            from PyPDF2 import PdfReader  # type: ignore
 
                             pdf_file = BytesIO(file)
                             reader = PdfReader(pdf_file)
@@ -1069,7 +1073,9 @@ async def pipeline_enqueue_file(
                         if global_args.document_loading_engine == "DOCLING":
                             if not pm.is_installed("docling"):  # type: ignore
                                 pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
+                            from docling.document_converter import (
+                                DocumentConverter,  # type: ignore
+                            )
 
                             converter = DocumentConverter()
                             result = converter.convert(file_path)
@@ -1080,8 +1086,9 @@ async def pipeline_enqueue_file(
                                     pm.install("python-docx")
                                 except Exception:
                                     pm.install("docx")
-                            from docx import Document  # type: ignore
                             from io import BytesIO
+
+                            from docx import Document  # type: ignore
 
                             docx_file = BytesIO(file)
                             doc = Document(docx_file)
@@ -1110,7 +1117,9 @@ async def pipeline_enqueue_file(
                         if global_args.document_loading_engine == "DOCLING":
                             if not pm.is_installed("docling"):  # type: ignore
                                 pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
+                            from docling.document_converter import (
+                                DocumentConverter,  # type: ignore
+                            )
 
                             converter = DocumentConverter()
                             result = converter.convert(file_path)
@@ -1118,8 +1127,9 @@ async def pipeline_enqueue_file(
                         else:
                             if not pm.is_installed("python-pptx"):  # type: ignore
                                 pm.install("pptx")
-                            from pptx import Presentation  # type: ignore
                             from io import BytesIO
+
+                            from pptx import Presentation  # type: ignore
 
                             pptx_file = BytesIO(file)
                             prs = Presentation(pptx_file)
@@ -1149,7 +1159,9 @@ async def pipeline_enqueue_file(
                         if global_args.document_loading_engine == "DOCLING":
                             if not pm.is_installed("docling"):  # type: ignore
                                 pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
+                            from docling.document_converter import (
+                                DocumentConverter,  # type: ignore
+                            )
 
                             converter = DocumentConverter()
                             result = converter.convert(file_path)
@@ -1157,8 +1169,9 @@ async def pipeline_enqueue_file(
                         else:
                             if not pm.is_installed("openpyxl"):  # type: ignore
                                 pm.install("openpyxl")
-                            from openpyxl import load_workbook  # type: ignore
                             from io import BytesIO
+
+                            from openpyxl import load_workbook  # type: ignore
 
                             xlsx_file = BytesIO(file)
                             wb = load_workbook(xlsx_file)
@@ -2138,8 +2151,8 @@ def create_document_routes(
         """
         try:
             from lightrag.kg.shared_storage import (
-                get_namespace_data,
                 get_all_update_flags_status,
+                get_namespace_data,
             )
 
             pipeline_status = await get_namespace_data("pipeline_status")

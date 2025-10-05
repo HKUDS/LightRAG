@@ -126,8 +126,8 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
 
 async def demo():
     """Demonstrate the diagnostic tool with a test instance."""
-    from lightrag.llm.openai import openai_embed, gpt_4o_mini_complete
     from lightrag.kg.shared_storage import initialize_pipeline_status
+    from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 
     print("=" * 50)
     print("LightRAG Initialization Diagnostic Tool")

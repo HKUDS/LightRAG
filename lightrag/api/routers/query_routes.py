@@ -6,12 +6,12 @@ import json
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
+from ascii_colors import trace_exception
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
-from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
-from ascii_colors import trace_exception
+from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import QueryParam
 
 router = APIRouter(tags=["query"])
 

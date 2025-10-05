@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
 from typing import Any, Optional
+
+from pydantic import BaseModel
 
 
 class GPTKeywordExtractionFormat(BaseModel):

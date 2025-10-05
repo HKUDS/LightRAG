@@ -2,18 +2,19 @@ import os
 from dataclasses import dataclass
 from typing import final
 
-from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from lightrag.utils import logger
+import networkx as nx
+from dotenv import load_dotenv
+
 from lightrag.base import BaseGraphStorage
 from lightrag.constants import GRAPH_FIELD_SEP
-import networkx as nx
+from lightrag.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from lightrag.utils import logger
+
 from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
 )
-
-from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance

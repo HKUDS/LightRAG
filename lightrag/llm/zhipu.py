@@ -1,6 +1,7 @@
-import sys
-import re
 import json
+import re
+import sys
+
 from ..utils import verbose_debug
 
 if sys.version_info < (3, 9):
@@ -13,27 +14,26 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 if not pm.is_installed("zhipuai"):
     pm.install("zhipuai")
 
+from typing import Dict, List, Optional, Union
+
+import numpy as np
 from openai import (
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    RateLimitError,
 )
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-)
-
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    logger,
 )
 
 from lightrag.types import GPTKeywordExtractionFormat
-
-import numpy as np
-from typing import Union, List, Optional, Dict
+from lightrag.utils import (
+    logger,
+    wrap_embedding_func_with_attrs,
+)
 
 
 @retry(

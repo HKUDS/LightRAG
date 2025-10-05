@@ -6,23 +6,23 @@ import pipmaster as pm
 if not pm.is_installed("ollama"):
     pm.install("ollama")
 
-import ollama
-
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
-from lightrag.api import __api_version__
+from typing import Union
 
 import numpy as np
-from typing import Union
+import ollama
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from lightrag.api import __api_version__
+from lightrag.exceptions import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+)
 from lightrag.utils import logger
 
 

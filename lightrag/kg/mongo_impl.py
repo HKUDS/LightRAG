@@ -1,12 +1,13 @@
+import asyncio
+import configparser
 import os
 import re
 import time
 from dataclasses import dataclass, field
-import numpy as np
-import configparser
-import asyncio
-
 from typing import Any, Union, final
+
+import numpy as np
+import pipmaster as pm
 
 from ..base import (
     BaseGraphStorage,
@@ -16,22 +17,22 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id
-from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
-from ..kg.shared_storage import get_data_init_lock, get_storage_lock, get_graph_db_lock
-
-import pipmaster as pm
+from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock, get_storage_lock
+from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from ..utils import compute_mdhash_id, logger
 
 if not pm.is_installed("pymongo"):
     pm.install("pymongo")
 
-from pymongo import AsyncMongoClient  # type: ignore
-from pymongo import UpdateOne  # type: ignore
-from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
+from pymongo import (
+    AsyncMongoClient,  # type: ignore
+    UpdateOne,  # type: ignore
+)
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
-from pymongo.operations import SearchIndexModel  # type: ignore
+from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.errors import PyMongoError  # type: ignore
+from pymongo.operations import SearchIndexModel  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")

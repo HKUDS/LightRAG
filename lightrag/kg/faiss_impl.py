@@ -1,22 +1,22 @@
+import asyncio
+import json
 import os
 import time
-import asyncio
-from typing import Any, final
-import json
-import numpy as np
 from dataclasses import dataclass
+from typing import Any, final
 
-from lightrag.utils import logger, compute_mdhash_id
+# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
+import faiss  # type: ignore
+import numpy as np
+
 from lightrag.base import BaseVectorStorage
+from lightrag.utils import compute_mdhash_id, logger
 
 from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
 )
-
-# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
-import faiss  # type: ignore
 
 
 @final

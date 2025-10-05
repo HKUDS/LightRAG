@@ -5,19 +5,20 @@ from typing import Any, final
 from lightrag.base import (
     BaseKVStorage,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from lightrag.utils import (
     load_json,
     logger,
     write_json,
 )
-from lightrag.exceptions import StorageNotInitializedError
+
 from .shared_storage import (
+    clear_all_update_flags,
+    get_data_init_lock,
     get_namespace_data,
     get_storage_lock,
-    get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
-    clear_all_update_flags,
     try_initialize_namespace,
 )
 

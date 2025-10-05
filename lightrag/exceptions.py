@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import httpx
 from typing import Literal
+
+import httpx
 
 
 class APIStatusError(Exception):

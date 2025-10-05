@@ -2,11 +2,12 @@ import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any, final
+
 import numpy as np
+import pipmaster as pm
 
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
-import pipmaster as pm
 
 if not pm.is_installed("chromadb"):
     pm.install("chromadb")

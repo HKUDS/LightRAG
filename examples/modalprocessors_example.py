@@ -4,17 +4,19 @@ Example of directly using modal processors
 This example demonstrates how to use LightRAG's modal processors directly without going through MinerU.
 """
 
-import asyncio
 import argparse
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.kg.shared_storage import initialize_pipeline_status
-from lightrag import LightRAG
-from lightrag.utils import EmbeddingFunc
+import asyncio
+
 from raganything.modalprocessors import (
+    EquationModalProcessor,
     ImageModalProcessor,
     TableModalProcessor,
-    EquationModalProcessor,
 )
+
+from lightrag import LightRAG
+from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.utils import EmbeddingFunc
 
 WORKING_DIR = "./rag_storage"
 

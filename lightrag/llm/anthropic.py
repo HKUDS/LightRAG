@@ -1,10 +1,12 @@
-from ..utils import verbose_debug, VERBOSE_DEBUG
-import sys
-import os
 import logging
+import os
+import sys
+from typing import Any, AsyncIterator, Union
+
 import numpy as np
-from typing import Any, Union, AsyncIterator
 import pipmaster as pm  # Pipmaster for dynamic library install
+
+from ..utils import VERBOSE_DEBUG, verbose_debug
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
@@ -19,24 +21,24 @@ if not pm.is_installed("anthropic"):
 if not pm.is_installed("voyageai"):
     pm.install("voyageai")
 import voyageai
-
 from anthropic import (
-    AsyncAnthropic,
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    AsyncAnthropic,
+    RateLimitError,
 )
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
-from lightrag.utils import (
-    safe_unicode_decode,
-    logger,
-)
+
 from lightrag.api import __api_version__
+from lightrag.utils import (
+    logger,
+    safe_unicode_decode,
+)
 
 
 # Custom exception for retry mechanism

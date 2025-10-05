@@ -1,5 +1,6 @@
-import re
 import json
+import re
+
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import always_get_an_event_loop
 

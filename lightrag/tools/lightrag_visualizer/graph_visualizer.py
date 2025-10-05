@@ -1,6 +1,7 @@
-from typing import Optional, Tuple, Dict, List
-import numpy as np
+from typing import Dict, List, Optional, Tuple
+
 import networkx as nx
+import numpy as np
 import pipmaster as pm
 
 # Added automatic libraries install using pipmaster
@@ -13,15 +14,16 @@ if not pm.is_installed("pyglm"):
 if not pm.is_installed("python-louvain"):
     pm.install("python-louvain")
 
-import moderngl
-from imgui_bundle import imgui, immapp, hello_imgui
-import community
-import glm
-import tkinter as tk
-from tkinter import filedialog
-import traceback
 import colorsys
 import os
+import tkinter as tk
+import traceback
+from tkinter import filedialog
+
+import community
+import glm
+import moderngl
+from imgui_bundle import hello_imgui, imgui, immapp
 
 CUSTOM_FONT = "font.ttf"
 

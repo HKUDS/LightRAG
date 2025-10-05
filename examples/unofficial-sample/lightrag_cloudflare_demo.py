@@ -1,15 +1,16 @@
 import asyncio
-import os
 import inspect
 import logging
 import logging.config
-from lightrag import LightRAG, QueryParam
-from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
-from lightrag.kg.shared_storage import initialize_pipeline_status
+import os
 
-import requests
 import numpy as np
+import requests
 from dotenv import load_dotenv
+
+from lightrag import LightRAG, QueryParam
+from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 
 """This code is a modified version of lightrag_openai_demo.py"""
 

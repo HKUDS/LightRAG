@@ -24,15 +24,15 @@ Note: Rerank is controlled per query via the 'enable_rerank' parameter (default:
 
 import asyncio
 import os
+from functools import partial
+
 import numpy as np
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc, setup_logger
 from lightrag.kg.shared_storage import initialize_pipeline_status
-
-from functools import partial
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.rerank import cohere_rerank
+from lightrag.utils import EmbeddingFunc, setup_logger
 
 # Set up your working directory
 WORKING_DIR = "./test_rerank"
