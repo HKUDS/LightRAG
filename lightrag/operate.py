@@ -3228,7 +3228,7 @@ async def _build_llm_context(
                 chunk_tracking_log.append("?0/0")
 
         if chunk_tracking_log:
-            logger.info(f"chunks S+F/O: {' '.join(chunk_tracking_log)}")
+            logger.info(f"Final chunks S+F/O: {' '.join(chunk_tracking_log)}")
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
