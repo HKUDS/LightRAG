@@ -114,7 +114,9 @@
     "documentManager": {
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
+      "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
+      "retryFailedButton": "إعادة المحاولة",
+      "retryFailedTooltip": "إعادة معالجة جميع المستندات الفاشلة",
       "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "حالة خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
