@@ -114,7 +114,7 @@
     "documentManager": {
       "title": "Gestion des documents",
       "scanButton": "Scanner",
-      "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "scanTooltip": "Scanner et traiter les documents dans le dossier d'entrée, et retraiter également tous les documents échoués",
       "retryFailedButton": "Réessayer",
       "retryFailedTooltip": "Réessayer le traitement de tous les documents échoués",
       "refreshTooltip": "Réinitialiser la liste des documents",
