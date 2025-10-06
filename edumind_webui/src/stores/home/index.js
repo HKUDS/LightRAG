@@ -116,20 +116,6 @@ const toolCatalogue = [
     icon: 'mdi-clipboard-text-outline',
     quickAction: 'Create Assignment',
   },
-  {
-    id: 'quiz-builder',
-    name: 'Quiz Composer',
-    description: 'Assemble thematic quiz prompts for rapid knowledge checks.',
-    icon: 'mdi-layers-triple-outline',
-    quickAction: 'Build Quiz Prompt',
-  },
-  {
-    id: 'flashcard-creator',
-    name: 'Flashcard Studio',
-    description: 'Spin up concise prompts ideal for spaced repetition.',
-    icon: 'mdi-card-text-outline',
-    quickAction: 'Craft Flashcard',
-  },
 ]
 
 const createOutputId = () => `output-${Math.random().toString(36).slice(2, 10)}`
