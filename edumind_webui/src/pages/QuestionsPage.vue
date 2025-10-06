@@ -69,6 +69,58 @@
               />
 
               <v-select
+                v-model="filterWorkspace"
+                :items="workspaceOptions"
+                item-title="title"
+                item-value="value"
+                label="Workspace"
+                variant="solo"
+                density="comfortable"
+                hide-details
+                class="mb-4"
+                :menu-props="{ maxHeight: 240 }"
+              />
+
+              <v-select
+                v-model="filterSession"
+                :items="sessionOptions"
+                item-title="title"
+                item-value="value"
+                label="Canvas"
+                variant="solo"
+                density="comfortable"
+                hide-details
+                class="mb-4"
+                :menu-props="{ maxHeight: 240 }"
+                :loading="sessionsLoading"
+                :disabled="filterWorkspace === 'all'"
+              />
+
+              <v-select
+                v-model="filterApproved"
+                :items="approvalOptions"
+                item-title="title"
+                item-value="value"
+                label="Approval status"
+                variant="solo"
+                density="comfortable"
+                hide-details
+                class="mb-4"
+              />
+
+              <v-select
+                v-model="filterArchived"
+                :items="archivedOptions"
+                item-title="title"
+                item-value="value"
+                label="Archived"
+                variant="solo"
+                density="comfortable"
+                hide-details
+                class="mb-4"
+              />
+
+              <v-select
                 v-model="filterTag"
                 :items="tagOptions"
                 item-title="title"
@@ -151,11 +203,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import MCQCard from '@/components/MCQCard.vue';
 import AssignmentCard from '@/components/AssignmentCard.vue';
-import { useQuestionsStore } from '@/stores';
+import { useQuestionsStore, useDashboardStore, useWorkspaceContextStore } from '@/stores';
 
 interface DatabaseQuestion {
   id: string;
@@ -167,20 +219,61 @@ interface DatabaseQuestion {
   ai_rational: string;
   source: string;
   tag: string;
+  tags?: string[];
   created_at: string;
+  updated_at?: string;
+  project_id?: string;
+  session_id?: string;
+  isApproved?: boolean;
+  isArchived?: boolean;
 }
 
 const questionsStore = useQuestionsStore();
-const {
-  loading,
-  searchQuery,
-  filterType,
-  filterDifficulty,
-  filterTag,
-  uniqueTags,
-  filteredQuestions,
-  resultsSummary,
-} = storeToRefs(questionsStore);
+const dashboardStore = useDashboardStore();
+const workspaceContextStore = useWorkspaceContextStore();
+
+const { loading, uniqueTags, filteredQuestions, resultsSummary, sessionsLoading } = storeToRefs(questionsStore);
+const { workspaces } = storeToRefs(dashboardStore);
+
+const searchQuery = computed({
+  get: () => questionsStore.filters.searchQuery,
+  set: (value: string) => questionsStore.setSearchQuery(value),
+});
+
+const filterType = computed({
+  get: () => questionsStore.filters.type,
+  set: (value: string) => questionsStore.setFilterType(value),
+});
+
+const filterDifficulty = computed({
+  get: () => questionsStore.filters.difficulty,
+  set: (value: string) => questionsStore.setFilterDifficulty(value),
+});
+
+const filterTag = computed({
+  get: () => questionsStore.filters.tag,
+  set: (value: string) => questionsStore.setFilterTag(value),
+});
+
+const filterWorkspace = computed({
+  get: () => questionsStore.filters.workspaceId,
+  set: (value: string) => questionsStore.setFilterWorkspace(value),
+});
+
+const filterSession = computed({
+  get: () => questionsStore.filters.sessionId,
+  set: (value: string) => questionsStore.setFilterSession(value),
+});
+
+const filterApproved = computed({
+  get: () => questionsStore.filters.approved,
+  set: (value: string) => questionsStore.setFilterApproved(value),
+});
+
+const filterArchived = computed({
+  get: () => questionsStore.filters.archived,
+  set: (value: string) => questionsStore.setFilterArchived(value),
+});
 
 const typeOptions = [
   { title: 'All types', value: 'all' },
@@ -199,6 +292,34 @@ const tagOptions = computed(() => [
   { title: 'All tags', value: 'all' },
   ...uniqueTags.value.map((tag) => ({ title: tag, value: tag })),
 ]);
+
+const workspaceOptions = computed(() => {
+  const items = Array.isArray(workspaces.value) ? workspaces.value : [];
+  return [
+    { title: 'All workspaces', value: 'all' },
+    ...items.map((workspace) => ({ title: workspace.name, value: workspace.id })),
+  ];
+});
+
+const sessionOptions = computed(() => {
+  const options = questionsStore.sessionsForWorkspace(filterWorkspace.value);
+  return [
+    { title: 'All canvases', value: 'all' },
+    ...options.map((session) => ({ title: session.name, value: session.id })),
+  ];
+});
+
+const approvalOptions = [
+  { title: 'All statuses', value: 'all' },
+  { title: 'Approved', value: 'true' },
+  { title: 'Not approved', value: 'false' },
+];
+
+const archivedOptions = [
+  { title: 'Only active', value: 'false' },
+  { title: 'All', value: 'all' },
+  { title: 'Only archived', value: 'true' },
+];
 
 const resetFilters = () => {
   questionsStore.resetFilters();
@@ -224,8 +345,51 @@ const convertToAssignment = (question: DatabaseQuestion) => ({
   tag: question.tag,
 });
 
-onMounted(() => {
-  questionsStore.hydrateWithSampleData();
+let fetchTimeout: ReturnType<typeof setTimeout> | null = null;
+const scheduleFetch = (delay = 300) => {
+  if (fetchTimeout) {
+    clearTimeout(fetchTimeout);
+  }
+  fetchTimeout = setTimeout(() => {
+    questionsStore.fetchQuestions();
+  }, delay);
+};
+
+onUnmounted(() => {
+  if (fetchTimeout) {
+    clearTimeout(fetchTimeout);
+    fetchTimeout = null;
+  }
+});
+
+watch(searchQuery, () => {
+  scheduleFetch(400);
+});
+
+watch([filterType, filterDifficulty, filterTag, filterApproved, filterArchived, filterSession], () => {
+  scheduleFetch();
+});
+
+watch(
+  filterWorkspace,
+  async (value) => {
+    await questionsStore.fetchSessionsForWorkspace(value);
+    scheduleFetch();
+  },
+  { immediate: true }
+);
+
+onMounted(async () => {
+  if (typeof dashboardStore.initialise === 'function') {
+    await dashboardStore.initialise();
+  }
+
+  if (workspaceContextStore.workspaceId) {
+    questionsStore.setFilterWorkspace(workspaceContextStore.workspaceId);
+    await questionsStore.fetchSessionsForWorkspace(workspaceContextStore.workspaceId);
+  }
+
+  await questionsStore.fetchQuestions();
 });
 </script>
 
@@ -261,29 +425,44 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   padding: 32px 40px;
-  overflow: hidden;
+  overflow: hidden; /* keep internal scrolling */
 }
 
 .questions-page__grid {
   flex: 1;
-  min-height: 0;
-  gap: 24px;
+  min-height: 0;            /* allow children to size/scroll */
+  /* REMOVE gap to avoid forcing wrap */
+  /* gap: 24px; */
 }
 
+/* Create the gutter without using row gap */
 .questions-page__filters,
 .questions-page__results {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 0;
 }
 
+@media (min-width: 960px) {
+  .questions-page__grid {
+    flex-wrap: nowrap;      /* keep both columns side by side on md+ */
+  }
+  .questions-page__filters { padding-right: 12px; }
+  .questions-page__results { padding-left: 12px; }
+}
+
+/* Cards */
 .filters-card,
 .results-card {
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.06);
-  height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.questions-page__results .results-card {
+  flex: 1 1 auto;   /* fills the right column */
+  min-height: 0;    /* allow body to get height */
 }
 
 .results-card__header {
@@ -299,20 +478,27 @@ onMounted(() => {
 }
 
 .results-card__body {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   padding: 24px;
-  overflow: hidden;
+  overflow: hidden;  /* contain inner scroll */
+  min-height: 0;     /* critical */
 }
 
 .results-card__list {
-  flex: 1;
+  flex: 1 1 auto;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 24px;
   padding-right: 8px;
+  min-height: 0;
+}
+
+.results-card__list > * {
+  flex: 0 0 auto;
+  align-self: stretch;
 }
 
 .state {
@@ -327,19 +513,20 @@ onMounted(() => {
   gap: 16px;
 }
 
-.state--loading {
-  border-style: solid;
-}
+.state--loading { border-style: solid; }
 
 @media (max-width: 960px) {
-  .questions-page__content {
-    padding: 24px 16px;
-  }
-
+  .questions-page__content { padding: 24px 16px; }
   .questions-page__bar {
     flex-direction: column;
     align-items: flex-start;
     gap: 16px;
   }
+  /* On small screens allow wrap + no side paddings */
+  .questions-page__filters,
+  .questions-page__results {
+    padding: 0;
+  }
 }
 </style>
+
