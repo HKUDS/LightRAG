@@ -22,6 +22,7 @@ from .config import ollama_server_infos, global_args, get_env_value
 async def get_rag(
     request: Request,
     x_workspace: Optional[str] = Header(default=None, alias="X-Workspace"),
+    x_user_id: Optional[str] = Header(default=None, alias="X-User-ID"),
     q_workspace: Optional[str] = Query(default=None, alias="workspace"),
 ) -> LightRAG:
     """
@@ -29,11 +30,7 @@ async def get_rag(
         - user_id is derived from the bearer token via auth_handler.
         - workspace priority: X-Workspace header > ?workspace= query > global_args.workspace > "".
     """
-    # Add logic to fetch workspace and user_id for creation / fetching of valid rag instance
-    auth_header = request.headers.get("authorization")
-
-    user_id = "101"
-
+    user_id = x_user_id
     workspace = x_workspace or q_workspace or "default"
 
     manager = request.app.state.instance_manager
