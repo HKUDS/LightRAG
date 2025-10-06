@@ -57,7 +57,7 @@ export const useQuestionsStore = defineStore('questions', {
     questions: [],
     totalQuestions: 0,
     page: 1,
-    pageSize: 50,
+    pageSize: 20,
     loading: false,
     error: null,
     filters: defaultFilters(),
@@ -110,10 +110,21 @@ export const useQuestionsStore = defineStore('questions', {
         )
       })
     },
+    pageCount(state) {
+      if (!state.totalQuestions) {
+        return 1
+      }
+      return Math.max(1, Math.ceil(state.totalQuestions / state.pageSize))
+    },
     resultsSummary() {
       const count = this.filteredQuestions.length
       if (count === 0) {
         return 'No questions match the current filters.'
+      }
+      const start = (this.page - 1) * this.pageSize + 1
+      const end = start + count - 1
+      if (this.totalQuestions) {
+        return `Showing ${start}-${end} of ${this.totalQuestions} questions (filtered view).`
       }
       if (count === 1) {
         return '1 question matches the current filters.'
@@ -127,39 +138,69 @@ export const useQuestionsStore = defineStore('questions', {
   actions: {
     resetFilters() {
       this.filters = defaultFilters()
+      this.page = 1
     },
     setSearchQuery(value) {
       this.filters.searchQuery = value
+      this.page = 1
     },
     setFilterType(value) {
       this.filters.type = value
+      this.page = 1
     },
     setFilterDifficulty(value) {
       this.filters.difficulty = value
+      this.page = 1
     },
     setFilterTag(value) {
       this.filters.tag = value
+      this.page = 1
     },
     setFilterWorkspace(value) {
       this.filters.workspaceId = value || 'all'
       if (value === 'all') {
         this.filters.sessionId = 'all'
       }
+      this.page = 1
     },
     setFilterSession(value) {
       this.filters.sessionId = value || 'all'
+      this.page = 1
     },
     setFilterApproved(value) {
       this.filters.approved = value || 'all'
+      this.page = 1
     },
     setFilterArchived(value) {
       this.filters.archived = value || 'all'
+      this.page = 1
     },
     normaliseQuestions(data) {
       const list = Array.isArray(data) ? data : []
       return list
         .map((question) => normaliseQuestion(question))
         .filter((entry) => entry !== null)
+    },
+    setPage(value) {
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed)) {
+        return
+      }
+      const page = Math.max(1, Math.floor(parsed))
+      if (page !== this.page) {
+        this.page = page
+      }
+    },
+    setPageSize(value) {
+      const parsed = Number(value)
+      const allowed = [20, 40, 60, 80, 100]
+      if (!allowed.includes(parsed)) {
+        return
+      }
+      if (parsed !== this.pageSize) {
+        this.pageSize = parsed
+        this.page = 1
+      }
     },
     async fetchQuestions() {
       const {
@@ -193,9 +234,14 @@ export const useQuestionsStore = defineStore('questions', {
 
         const questions = this.normaliseQuestions(response?.questions)
         this.questions = questions
-        this.totalQuestions = response?.total ?? questions.length
-        this.page = response?.page ?? 1
-        this.pageSize = response?.pageSize ?? this.pageSize
+        const total = Number(response?.total) || questions.length
+        this.totalQuestions = total
+        if (response?.page) {
+          this.page = response.page
+        }
+        if (response?.pageSize) {
+          this.pageSize = response.pageSize
+        }
       } catch (error) {
         console.error('Failed to load questions', error)
         this.error = error

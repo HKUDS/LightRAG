@@ -7,7 +7,7 @@
             <p class="text-overline text-uppercase text-medium-emphasis mb-1">Your Spaces</p>
             <h1 class="text-h5 font-weight-semibold mb-0">Workspace Dashboard</h1>
           </div>
-          <div class="dashboard-page__actions">
+          <!-- <div class="dashboard-page__actions">
             <v-btn
               color="primary"
               variant="flat"
@@ -16,7 +16,7 @@
             >
               Go to Canvas Studio
             </v-btn>
-          </div>
+          </div> -->
         </div>
       </v-container>
     </v-app-bar>

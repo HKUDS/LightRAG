@@ -156,9 +156,6 @@
                     {{ resultsSummary }}
                   </v-card-subtitle>
                 </div>
-                <v-chip color="primary" variant="flat" class="results-card__chip" label>
-                  {{ filteredQuestions.length }} total
-                </v-chip>
               </div>
             </v-card-item>
 
@@ -195,6 +192,32 @@
                 </template>
               </div>
             </v-card-text>
+
+            <v-divider v-if="totalQuestions > 0" />
+
+            <v-card-actions v-if="totalQuestions > 0" class="results-card__footer">
+              <div class="results-card__footer-controls">
+                <v-select
+                  v-model="pageSize"
+                  :items="pageSizeOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Items per page"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                  class="results-card__page-size"
+                />
+              </div>
+              <v-pagination
+                v-model="currentPage"
+                :length="pageCount"
+                :disabled="pageCount <= 1"
+                color="primary"
+                variant="tonal"
+                density="comfortable"
+              />
+            </v-card-actions>
           </v-card>
         </v-col>
       </v-row>
@@ -234,6 +257,7 @@ const workspaceContextStore = useWorkspaceContextStore();
 
 const { loading, uniqueTags, filteredQuestions, resultsSummary, sessionsLoading } = storeToRefs(questionsStore);
 const { workspaces } = storeToRefs(dashboardStore);
+const totalQuestions = computed(() => questionsStore.totalQuestions);
 
 const searchQuery = computed({
   get: () => questionsStore.filters.searchQuery,
@@ -274,6 +298,18 @@ const filterArchived = computed({
   get: () => questionsStore.filters.archived,
   set: (value: string) => questionsStore.setFilterArchived(value),
 });
+
+const currentPage = computed({
+  get: () => questionsStore.page,
+  set: (value: number) => questionsStore.setPage(value),
+});
+
+const pageSize = computed({
+  get: () => questionsStore.pageSize,
+  set: (value: number) => questionsStore.setPageSize(value),
+});
+
+const pageCount = computed(() => questionsStore.pageCount);
 
 const typeOptions = [
   { title: 'All types', value: 'all' },
@@ -321,8 +357,17 @@ const archivedOptions = [
   { title: 'Only archived', value: 'true' },
 ];
 
+const pageSizeOptions = [
+  { title: '20 per page', value: 20 },
+  { title: '40 per page', value: 40 },
+  { title: '60 per page', value: 60 },
+  { title: '80 per page', value: 80 },
+  { title: '100 per page', value: 100 },
+];
+
 const resetFilters = () => {
   questionsStore.resetFilters();
+  scheduleFetch();
 };
 
 const convertToMCQ = (question: DatabaseQuestion) => ({
@@ -378,6 +423,14 @@ watch(
   },
   { immediate: true }
 );
+
+watch(currentPage, () => {
+  scheduleFetch(0);
+});
+
+watch(pageSize, () => {
+  scheduleFetch(0);
+});
 
 onMounted(async () => {
   if (typeof dashboardStore.initialise === 'function') {
@@ -501,6 +554,26 @@ onMounted(async () => {
   align-self: stretch;
 }
 
+.results-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px 24px;
+}
+
+.results-card__footer-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.results-card__page-size {
+  min-width: 184px;
+}
+
 .state {
   display: flex;
   flex-direction: column;
@@ -529,4 +602,3 @@ onMounted(async () => {
   }
 }
 </style>
-
