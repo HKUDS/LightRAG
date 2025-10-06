@@ -1,7 +1,7 @@
 const DEFAULT_TIMEOUT = 30000
 
-const resolveBaseUrl = () => {
-  const envUrl = import.meta?.env?.VITE_EDUMIND_API_BASE_URL
+export const resolveBaseUrl = () => {
+  const envUrl = import.meta?.env?.VITE_EDUMIND_API_BASE_URL || "http://localhost:9621"
   if (envUrl) {
     return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl
   }
@@ -65,6 +65,8 @@ export const apiRequest = async (path, options = {}) => {
     timeout = DEFAULT_TIMEOUT,
     signal,
   } = options
+
+  console.log('API Request:', { baseUrl, method, path, query, headers, body })
 
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)

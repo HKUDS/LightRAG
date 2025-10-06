@@ -38,19 +38,68 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, watch, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import ToolsPanel from '@/components/ToolsPanel.vue'
 import CanvasPanel from '@/components/CanvasPanel.vue'
-import { useAppStore, useHomeStore } from '@/stores'
+import {
+  useAppStore,
+  useHomeStore,
+  useDashboardStore,
+  useWorkspaceContextStore,
+} from '@/stores'
 
 const appStore = useAppStore()
 const homeStore = useHomeStore()
+const dashboardStore = useDashboardStore()
+const workspaceContextStore = useWorkspaceContextStore()
+const route = useRoute()
 
 const { appName, tagline, organization, organizationInitials } = storeToRefs(appStore)
+const { workspaces } = storeToRefs(dashboardStore)
+
+const routeWorkspaceId = computed(() => {
+  const value = route.query.workspaceId
+  if (Array.isArray(value)) {
+    return value[0]
+  }
+  return value || ''
+})
+
+const setWorkspaceContext = () => {
+  let targetId = routeWorkspaceId.value
+  let targetName = ''
+
+  if (!targetId && workspaces.value.length > 0) {
+    targetId = workspaces.value[0].id
+    targetName = workspaces.value[0].name
+  }
+
+  if (targetId) {
+    const matched = workspaces.value.find((workspace) => workspace.id === targetId)
+    if (matched) {
+      targetName = matched.name
+    }
+  }
+
+  if (!targetId) {
+    targetId = 'default-workspace'
+  }
+
+  workspaceContextStore.setWorkspace({ id: targetId, name: targetName })
+}
 
 onMounted(() => {
   homeStore.initialise()
+  if (typeof dashboardStore.initialise === 'function') {
+    dashboardStore.initialise()
+  }
+  setWorkspaceContext()
+})
+
+watch([routeWorkspaceId, workspaces], () => {
+  setWorkspaceContext()
 })
 </script>
 

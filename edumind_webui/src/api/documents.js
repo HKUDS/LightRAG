@@ -167,7 +167,7 @@ export const getPaginatedDocuments = ({ payload, query, headers } = {}) => {
 
 export const getDocumentStatusCounts = ({ query, headers } = {}) =>
   apiRequest(`${basePath}/status_counts`, {
-    method: 'GET',
+    method: 'POST',
     query: normaliseQuery(query),
     headers,
   })
