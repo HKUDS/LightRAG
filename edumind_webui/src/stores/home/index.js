@@ -108,6 +108,7 @@ const toolCatalogue = [
     description: 'Generate alternate distractors for an existing MCQ question.',
     icon: 'mdi-arrange-bring-forward',
     quickAction: 'Generate Distractors',
+    is_new: true,
   },
   {
     id: 'assignment-generator',
@@ -115,6 +116,7 @@ const toolCatalogue = [
     description: 'Draft open-ended tasks that encourage critical thinking and synthesis.',
     icon: 'mdi-clipboard-text-outline',
     quickAction: 'Create Assignment',
+    is_new: true,
   },
 ]
 
@@ -262,7 +264,7 @@ const mapQuestionRecordToOutput = (question) => {
 export const useHomeStore = defineStore('home', {
   state: () => ({
     tools: toolCatalogue,
-    expandedToolIds: toolCatalogue.slice(0, 1).map((tool) => tool.id),
+    expandedToolIds: toolCatalogue.slice(0, 0).map((tool) => tool.id),
     tabs: [],
     activeTabId: '',
     tabCounter: 0,

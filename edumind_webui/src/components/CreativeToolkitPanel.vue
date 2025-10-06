@@ -10,6 +10,23 @@
                   <v-icon :icon="tool.icon" size="22" color="white" />
                 </v-avatar>
                 <div>
+                  <header
+                    v-if="tool.is_new"
+                    class="distractor-form__header">
+                    <div class="distractor-form__header-copy">
+                      <div class="distractor-form__eyebrow-line">
+                        <v-chip
+                          label
+                          size="x-small"
+                          color="orange"
+                          variant="flat"
+                          class="distractor-form__badge"
+                        >
+                          New
+                        </v-chip>
+                      </div>
+                    </div>
+                  </header>
                   <p class="text-subtitle-1 font-weight-semibold mb-1">{{ tool.name }}</p>
                   <p class="text-body-2 text-medium-emphasis mb-0">{{ tool.description }}</p>
                 </div>
@@ -51,6 +68,7 @@ interface ToolConfig {
   description: string
   icon: string
   quickAction: string
+  is_new?: boolean
 }
 
 const homeStore = useHomeStore()

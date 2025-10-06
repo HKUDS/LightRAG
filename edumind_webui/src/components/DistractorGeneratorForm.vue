@@ -215,6 +215,13 @@ const toggleSelection = () => {
   gap: 4px;
 }
 
+.distractor-form__eyebrow-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .distractor-form__eyebrow {
   margin: 0;
   font-size: 0.75rem;
@@ -222,6 +229,13 @@ const toggleSelection = () => {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(15, 23, 42, 0.6);
+}
+
+.distractor-form__badge {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.96);
 }
 
 .distractor-form__title {
