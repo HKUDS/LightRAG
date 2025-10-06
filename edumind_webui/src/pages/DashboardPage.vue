@@ -65,7 +65,29 @@
                   <v-icon size="20" color="white">mdi-folder-outline</v-icon>
                 </v-avatar>
                 <div class="dashboard-page__card-meta">
-                  <h3 class="text-subtitle-1 font-weight-semibold mb-1">{{ workspace.name }}</h3>
+                  <div class="dashboard-page__card-meta-top">
+                    <h3 class="text-subtitle-1 font-weight-semibold mb-1">{{ workspace.name }}</h3>
+                    <v-menu location="bottom end">
+                      <template #activator="{ props: menuProps }">
+                        <v-btn
+                          icon
+                          variant="text"
+                          color="primary"
+                          v-bind="menuProps"
+                        >
+                          <v-icon>mdi-dots-vertical</v-icon>
+                        </v-btn>
+                      </template>
+                      <v-list density="comfortable">
+                        <v-list-item @click="openEditWorkspace(workspace)">
+                          <v-list-item-title>Edit workspace</v-list-item-title>
+                        </v-list-item>
+                        <v-list-item @click="openDeleteWorkspace(workspace)">
+                          <v-list-item-title>Delete workspace</v-list-item-title>
+                        </v-list-item>
+                      </v-list>
+                    </v-menu>
+                  </div>
                   <p class="text-caption text-medium-emphasis mb-0">
                     Created {{ formatDate(workspace.createdAt) }}
                   </p>
@@ -99,16 +121,16 @@
       </div>
     </v-container>
 
-    <v-dialog v-model="createDialogOpen" max-width="480">
+    <v-dialog v-model="workspaceDialogOpen" max-width="480">
       <v-card>
-        <v-card-title class="text-h6 font-weight-semibold">Create Workspace</v-card-title>
+        <v-card-title class="text-h6 font-weight-semibold">{{ dialogTitle }}</v-card-title>
         <v-card-text class="pt-4">
           <v-text-field
             v-model="newWorkspaceName"
             label="Workspace name"
             variant="outlined"
             density="comfortable"
-            :disabled="creatingWorkspace"
+            :disabled="savingWorkspace"
             required
           />
           <v-textarea
@@ -118,34 +140,73 @@
             density="comfortable"
             auto-grow
             rows="3"
-            :disabled="creatingWorkspace"
+            :disabled="savingWorkspace"
           />
           <v-alert
-            v-if="createError"
+            v-if="dialogError"
             type="error"
             variant="tonal"
             density="comfortable"
             class="mt-3"
           >
-            {{ createError }}
+            {{ dialogError }}
           </v-alert>
         </v-card-text>
         <v-card-actions class="justify-end">
           <v-btn
             variant="text"
             color="primary"
-            @click="closeCreateWorkspace"
-            :disabled="creatingWorkspace"
+            @click="closeWorkspaceDialog"
+            :disabled="savingWorkspace"
           >
             Cancel
           </v-btn>
           <v-btn
             color="primary"
             variant="flat"
-            :loading="creatingWorkspace"
-            @click="handleCreateWorkspace"
+            :loading="savingWorkspace"
+            @click="handleSaveWorkspace"
           >
-            Create
+            {{ isEditMode ? 'Save Changes' : 'Create' }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog v-model="deleteDialogOpen" max-width="420">
+      <v-card>
+        <v-card-title class="text-h6 font-weight-semibold">Delete Workspace</v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-0">
+            Are you sure you want to delete
+            <strong>{{ deleteTarget?.name || 'this workspace' }}</strong>? This action cannot be undone.
+          </p>
+          <v-alert
+            v-if="dialogError"
+            type="error"
+            variant="tonal"
+            density="comfortable"
+            class="mt-3"
+          >
+            {{ dialogError }}
+          </v-alert>
+        </v-card-text>
+        <v-card-actions class="justify-end">
+          <v-btn
+            variant="text"
+            color="primary"
+            @click="closeDeleteDialog"
+            :disabled="deletingWorkspace"
+          >
+            Cancel
+          </v-btn>
+          <v-btn
+            color="error"
+            variant="flat"
+            :loading="deletingWorkspace"
+            @click="handleDeleteWorkspace"
+          >
+            Delete
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -154,7 +215,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores'
@@ -163,11 +224,20 @@ const dashboardStore = useDashboardStore()
 const router = useRouter()
 const { workspaces, loading, error, hasWorkspaces } = storeToRefs(dashboardStore)
 
-const createDialogOpen = ref(false)
-const creatingWorkspace = ref(false)
+const workspaceDialogOpen = ref(false)
+const dialogMode = ref<'create' | 'edit'>('create')
+const targetWorkspaceId = ref('')
+const savingWorkspace = ref(false)
 const newWorkspaceName = ref('')
 const newWorkspaceInstructions = ref('')
-const createError = ref('')
+const dialogError = ref('')
+
+const deleteDialogOpen = ref(false)
+const deletingWorkspace = ref(false)
+const deleteTarget = ref<{ id: string; name: string } | null>(null)
+
+const isEditMode = computed(() => dialogMode.value === 'edit')
+const dialogTitle = computed(() => (isEditMode.value ? 'Edit Workspace' : 'Create Workspace'))
 
 const refresh = () => {
   dashboardStore.initialise({ force: true })
@@ -184,52 +254,104 @@ const formatDate = (value?: string) => {
   })
 }
 
-const openCreateWorkspace = () => {
+const resetWorkspaceForm = () => {
   newWorkspaceName.value = ''
   newWorkspaceInstructions.value = ''
-  createError.value = ''
-  createDialogOpen.value = true
+  dialogError.value = ''
+  targetWorkspaceId.value = ''
+  dialogMode.value = 'create'
 }
 
-const closeCreateWorkspace = () => {
-  createDialogOpen.value = false
+const openCreateWorkspace = () => {
+  resetWorkspaceForm()
+  dialogMode.value = 'create'
+  workspaceDialogOpen.value = true
 }
 
-const handleCreateWorkspace = async () => {
+const openEditWorkspace = (workspace: { id: string; name: string; instructions: string }) => {
+  resetWorkspaceForm()
+  dialogMode.value = 'edit'
+  targetWorkspaceId.value = workspace.id
+  newWorkspaceName.value = workspace.name
+  newWorkspaceInstructions.value = workspace.instructions === 'No instructions provided.' ? '' : workspace.instructions
+  workspaceDialogOpen.value = true
+}
+
+const closeWorkspaceDialog = () => {
+  workspaceDialogOpen.value = false
+  resetWorkspaceForm()
+}
+
+const handleSaveWorkspace = async () => {
   if (!newWorkspaceName.value.trim()) {
-    createError.value = 'Workspace name is required.'
+    dialogError.value = 'Workspace name is required.'
     return
   }
 
-  creatingWorkspace.value = true
-  createError.value = ''
+  savingWorkspace.value = true
+  dialogError.value = ''
 
   try {
-    const workspace = await dashboardStore.createWorkspace({
-      name: newWorkspaceName.value,
-      instructions: newWorkspaceInstructions.value,
-    })
+    let workspace
+    if (isEditMode.value) {
+      workspace = await dashboardStore.updateWorkspace({
+        id: targetWorkspaceId.value,
+        name: newWorkspaceName.value,
+        instructions: newWorkspaceInstructions.value,
+      })
+    } else {
+      workspace = await dashboardStore.createWorkspace({
+        name: newWorkspaceName.value,
+        instructions: newWorkspaceInstructions.value,
+      })
+    }
 
-    closeCreateWorkspace()
+    closeWorkspaceDialog()
 
     if (workspace?.id) {
       router.push({ name: 'Studio', query: { workspaceId: workspace.id } })
-    } else {
-      await dashboardStore.initialise({ force: true })
     }
   } catch (error) {
-    createError.value = error?.message || 'Failed to create workspace.'
+    dialogError.value = error?.message || `Failed to ${isEditMode.value ? 'update' : 'create'} workspace.`
   } finally {
-    creatingWorkspace.value = false
+    savingWorkspace.value = false
+  }
+}
+
+const openDeleteWorkspace = (workspace: { id: string; name: string }) => {
+  deleteTarget.value = { id: workspace.id, name: workspace.name }
+  deleteDialogOpen.value = true
+  dialogError.value = ''
+}
+
+const closeDeleteDialog = () => {
+  deleteDialogOpen.value = false
+  deleteTarget.value = null
+  dialogError.value = ''
+}
+
+const handleDeleteWorkspace = async () => {
+  if (!deleteTarget.value?.id) {
+    return
+  }
+
+  deletingWorkspace.value = true
+  dialogError.value = ''
+
+  try {
+    await dashboardStore.deleteWorkspace({ id: deleteTarget.value.id })
+    closeDeleteDialog()
+  } catch (error) {
+    dialogError.value = error?.message || 'Failed to delete workspace.'
+  } finally {
+    deletingWorkspace.value = false
   }
 }
 
 onMounted(() => {
   dashboardStore.initialise()
 })
-onMounted(() => {
-  dashboardStore.initialise()
-})
+
 </script>
 
 <style scoped>
@@ -295,13 +417,22 @@ onMounted(() => {
 
 .dashboard-page__card-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 16px;
 }
 
 .dashboard-page__card-meta {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.dashboard-page__card-meta-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 @media (max-width: 960px) {

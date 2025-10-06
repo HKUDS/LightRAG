@@ -93,5 +93,47 @@ export const useDashboardStore = defineStore('dashboard', {
         throw error
       }
     },
+    async updateWorkspace({ id, name, instructions } = {}) {
+      const trimmedId = typeof id === 'string' ? id.trim() : ''
+      if (!trimmedId) {
+        throw new Error('Workspace id is required.')
+      }
+
+      const payload = {}
+      if (typeof name === 'string' && name.trim()) {
+        payload.name = name.trim()
+      }
+      if (instructions !== undefined) {
+        payload.instructions = instructions?.trim() || ''
+      }
+
+      if (Object.keys(payload).length === 0) {
+        throw new Error('No updates provided.')
+      }
+
+      try {
+        await workspacesApi.updateWorkspace({ id: trimmedId, payload })
+        await this.initialise({ force: true })
+
+        return this.workspaces.find((workspace) => workspace.id === trimmedId) || null
+      } catch (error) {
+        console.error('Failed to update workspace', error)
+        throw error
+      }
+    },
+    async deleteWorkspace({ id } = {}) {
+      const trimmedId = typeof id === 'string' ? id.trim() : ''
+      if (!trimmedId) {
+        throw new Error('Workspace id is required.')
+      }
+
+      try {
+        await workspacesApi.deleteWorkspace({ id: trimmedId })
+        await this.initialise({ force: true })
+      } catch (error) {
+        console.error('Failed to delete workspace', error)
+        throw error
+      }
+    },
   },
 })
