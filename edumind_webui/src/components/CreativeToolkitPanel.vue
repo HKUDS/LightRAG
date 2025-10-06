@@ -1,17 +1,5 @@
 <template>
   <v-card class="tools-panel" elevation="2">
-    <v-card-item class="pb-0">
-      <div class="tools-panel__header">
-        <v-icon size="20" color="rgba(17, 24, 39, 1)">mdi-cog-outline</v-icon>
-        <div>
-          <v-card-title class="text-h6 font-weight-semibold">Creative Toolkit</v-card-title>
-          <v-card-subtitle class="text-body-2 text-medium-emphasis">
-            Launch generators to populate your canvas.
-          </v-card-subtitle>
-        </div>
-      </div>
-    </v-card-item>
-
     <v-card-text class="pt-4">
       <v-expansion-panels v-model="panelModel" multiple elevation="0" class="tool-expansion">
         <v-expansion-panel v-for="tool in tools" :key="tool.id" :value="tool.id">

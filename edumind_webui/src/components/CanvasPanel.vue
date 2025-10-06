@@ -2,14 +2,6 @@
   <v-card class="canvas-panel" elevation="2">
     <v-card-item class="pb-0">
       <div class="canvas-panel__header">
-        <div>
-          <v-card-title class="text-h5 font-weight-semibold mb-1">
-            {{ activeTab?.name ?? 'Canvas' }}
-          </v-card-title>
-          <v-card-subtitle class="text-body-2 text-medium-emphasis">
-            Organise, compare, and refine the content generated across your canvases.
-          </v-card-subtitle>
-        </div>
         <div class="canvas-panel__actions">
           <v-btn
             variant="outlined"
