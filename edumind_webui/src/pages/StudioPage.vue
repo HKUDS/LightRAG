@@ -10,8 +10,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { onMounted, onUnmounted, onActivated, onDeactivated, watch, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import ToolsPanel from '@/components/ToolsPanel.vue'
 import CanvasPanel from '@/components/CanvasPanel.vue'
@@ -29,6 +29,7 @@ const dashboardStore = useDashboardStore()
 const workspaceContextStore = useWorkspaceContextStore()
 const headerStore = useHeaderStore()
 const route = useRoute()
+const router = useRouter()
 
 const { appName, tagline } = storeToRefs(appStore)
 const { workspaces } = storeToRefs(dashboardStore)
@@ -36,10 +37,7 @@ const { workspaceId } = storeToRefs(workspaceContextStore)
 
 const routeWorkspaceId = computed(() => {
   const value = route.query.workspaceId
-  if (Array.isArray(value)) {
-    return value[0]
-  }
-  return value || ''
+  return Array.isArray(value) ? value[0] : (value || '')
 })
 
 const setWorkspaceContext = () => {
@@ -52,18 +50,31 @@ const setWorkspaceContext = () => {
   }
 
   if (targetId) {
-    const matched = workspaces.value.find((workspace) => workspace.id === targetId)
-    if (matched) {
-      targetName = matched.name
-    }
+    const matched = workspaces.value.find((w) => w.id === targetId)
+    if (matched) targetName = matched.name
   }
 
   if (!targetId) {
     workspaceContextStore.resetWorkspace()
     return
   }
-
   workspaceContextStore.setWorkspace({ id: targetId, name: targetName })
+}
+
+const applyHeader = () => {
+  headerStore.setHeader({
+    title: appName.value,
+    description: tagline.value,
+    actions: [
+      {
+        id: 'studio-go-questions',
+        label: 'Go to Questions Library',
+        icon: 'mdi-file-document-multiple-outline',
+        variant: 'text',
+        to: { name: 'Questions' },
+      },
+    ],
+  })
 }
 
 onMounted(() => {
@@ -72,6 +83,21 @@ onMounted(() => {
     dashboardStore.initialise()
   }
   setWorkspaceContext()
+  applyHeader()
+})
+
+onActivated(() => {
+  // Re-apply header and ensure workspace context is up to date when navigating back
+  setWorkspaceContext()
+  applyHeader()
+})
+
+onDeactivated(() => {
+  headerStore.resetHeader()
+})
+
+onUnmounted(() => {
+  headerStore.resetHeader()
 })
 
 watch([routeWorkspaceId, workspaces], () => {
@@ -86,29 +112,8 @@ watch(
   { immediate: true }
 )
 
-watch(
-  [appName, tagline],
-  () => {
-    headerStore.setHeader({
-      title: appName.value,
-      description: tagline.value,
-      actions: [
-        {
-          id: 'studio-go-questions',
-          label: 'Go to Questions Library',
-          icon: 'mdi-file-document-multiple-outline',
-          variant: 'text',
-          to: { name: 'Questions' },
-        },
-      ],
-    })
-  },
-  { immediate: true }
-)
-
-onUnmounted(() => {
-  headerStore.resetHeader()
-})
+// Keep header reactive to name/tagline changes too
+watch([appName, tagline], () => applyHeader())
 </script>
 
 <style scoped>

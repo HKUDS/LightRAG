@@ -187,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore, useHeaderStore } from '@/stores'
@@ -321,48 +321,61 @@ const handleDeleteWorkspace = async () => {
   }
 }
 
+const applyHeader = () => {
+  headerStore.setHeader({
+    title: 'Workspace Dashboard',
+    description: 'Curate your knowledge spaces and continue building content.',
+    actions: [
+      {
+        id: 'create-workspace',
+        label: 'Create Workspace',
+        icon: 'mdi-plus-circle-outline',
+        variant: 'flat',
+        onClick: openCreateWorkspace,
+        disabled: loading.value || savingWorkspace.value,
+      },
+      {
+        id: 'refresh-workspaces',
+        label: 'Refresh',
+        icon: 'mdi-refresh',
+        variant: 'text',
+        onClick: refresh,
+        loading: loading.value,
+      },
+      {
+        id: 'go-questions',
+        label: 'Go to Questions Library',
+        icon: 'mdi-file-document-multiple-outline',
+        variant: 'text',
+        to: { name: 'Questions' },
+      },
+    ],
+  })
+}
+
 onMounted(() => {
   dashboardStore.initialise()
+  // Make sure header is applied on first mount
+  applyHeader()
 })
 
-watch(
-  [loading, savingWorkspace, deletingWorkspace],
-  () => {
-    headerStore.setHeader({
-      title: 'Workspace Dashboard',
-      description: 'Curate your knowledge spaces and continue building content.',
-      actions: [
-        {
-          id: 'create-workspace',
-          label: 'Create Workspace',
-          icon: 'mdi-plus-circle-outline',
-          variant: 'flat',
-          onClick: openCreateWorkspace,
-          disabled: loading.value || savingWorkspace.value,
-        },
-        {
-          id: 'refresh-workspaces',
-          label: 'Refresh',
-          icon: 'mdi-refresh',
-          variant: 'text',
-          onClick: refresh,
-          loading: loading.value,
-        },
-        {
-          id: 'go-questions',
-          label: 'Go to Questions Library',
-          icon: 'mdi-file-document-multiple-outline',
-          variant: 'text',
-          to: { name: 'Questions' },
-        },
-      ],
-    })
-  },
-  { immediate: true }
-)
+// If this view is cached via <keep-alive>, ensure header reapplies when we return
+onActivated(() => {
+  applyHeader()
+})
+
+// Clean up header when leaving this view
+onDeactivated(() => {
+  headerStore.resetHeader()
+})
 
 onUnmounted(() => {
   headerStore.resetHeader()
+})
+
+// Keep header reactive to state changes, but don't rely on it for initial/return cases
+watch([loading, savingWorkspace, deletingWorkspace], () => {
+  applyHeader()
 })
 
 </script>
