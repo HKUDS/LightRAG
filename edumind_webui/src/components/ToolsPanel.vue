@@ -2,15 +2,12 @@
   <v-card class="tool-shell" elevation="2">
     <v-tabs v-model="activeTab" class="tool-shell__tabs" color="primary" grow>
       <v-tab value="files" class="tool-shell__tab">
-        <v-icon size="18">mdi-file-document-outline</v-icon>
         <span>Files</span>
       </v-tab>
       <v-tab value="search" class="tool-shell__tab">
-        <v-icon size="18">mdi-chat-processing-outline</v-icon>
         <span>Search with AI</span>
       </v-tab>
       <v-tab value="creative" class="tool-shell__tab">
-        <v-icon size="18">mdi-lightbulb-on-outline</v-icon>
         <span>Creative Toolkit</span>
       </v-tab>
     </v-tabs>
@@ -94,7 +91,6 @@
               <p class="text-body-2 text-medium-emphasis mt-2 mb-0">{{ chatError.message || 'Something went wrong' }}</p>
             </div>
             <div v-else-if="!hasMessages" class="chat-pane__state">
-              <v-icon size="28" color="primary">mdi-forum-outline</v-icon>
               <p class="text-body-2 text-medium-emphasis mt-2 mb-0">Start a conversation to see AI responses.</p>
             </div>
             <template v-else>
@@ -104,7 +100,7 @@
                 class="chat-bubble"
                 :class="chatBubbleClass(message.role)"
               >
-                <p class="text-body-2 mb-0">{{ message.content }}</p>
+                <div class="chat-bubble__content" v-html="renderMarkdown(message.content)"></div>
               </div>
             </template>
           </div>
@@ -236,6 +232,97 @@ const uploadFilesModel = computed({
 })
 
 const chatBubbleClass = (role: string) => (role === 'user' ? 'chat-bubble--user' : 'chat-bubble--assistant')
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
+const inlineFormat = (line: string) => {
+  let formatted = escapeHtml(line)
+  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  formatted = formatted.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>')
+  return formatted
+}
+
+const renderMarkdown = (content: string) => {
+  if (!content) {
+    return ''
+  }
+
+  const lines = content.split('\n')
+  const html: string[] = []
+  let listItems: string[] = []
+  let inCodeBlock = false
+  let codeBuffer: string[] = []
+
+  const flushList = () => {
+    if (!listItems.length) return
+    const items = listItems.map((item) => `<li>${inlineFormat(item)}</li>`).join('')
+    html.push(`<ul>${items}</ul>`)
+    listItems = []
+  }
+
+  const flushCode = () => {
+    if (!codeBuffer.length) return
+    html.push(`<pre><code>${escapeHtml(codeBuffer.join('\n'))}</code></pre>`)
+    codeBuffer = []
+  }
+
+  lines.forEach((line) => {
+    const trimmed = line.trim()
+
+    if (trimmed.startsWith('```')) {
+      if (inCodeBlock) {
+        flushCode()
+        inCodeBlock = false
+      } else {
+        flushList()
+        inCodeBlock = true
+      }
+      return
+    }
+
+    if (inCodeBlock) {
+      codeBuffer.push(line)
+      return
+    }
+
+    const listMatch = line.match(/^\s*[-*]\s+(.*)$/)
+    if (listMatch) {
+      listItems.push(listMatch[1])
+      return
+    }
+
+    flushList()
+
+    const headingMatch = line.match(/^(#{1,3})\s+(.*)$/)
+    if (headingMatch) {
+      const level = Math.min(headingMatch[1].length + 2, 6)
+      html.push(`<h${level}>${inlineFormat(headingMatch[2])}</h${level}>`)
+      return
+    }
+
+    if (!trimmed) {
+      html.push('')
+      return
+    }
+
+    html.push(`<p>${inlineFormat(line)}</p>`)
+  })
+
+  if (inCodeBlock) {
+    flushCode()
+  } else {
+    flushList()
+  }
+
+  return html.filter(Boolean).join('')
+}
 
 const formatDate = (value?: string) => {
   if (!value) {
@@ -370,7 +457,6 @@ watch(
 }
 
 .tool-shell__pane {
-  flex: 1;
   display: flex;
   flex-direction: column;
   padding: 20px;
@@ -432,7 +518,9 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-right: 4px;
+  padding: 16px 4px 16px 0;
+  margin-bottom: 12px;
+  scrollbar-width: thin;
 }
 
 .chat-pane__state {
@@ -462,10 +550,35 @@ watch(
   border-color: rgba(22, 101, 52, 0.16);
 }
 
+.chat-bubble__content :deep(p) {
+  margin: 0 0 8px 0;
+}
+
+.chat-bubble__content :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.chat-bubble__content :deep(code) {
+  background-color: rgba(22, 101, 52, 0.08);
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.chat-bubble__content :deep(pre) {
+  background-color: rgba(15, 23, 42, 0.92);
+  color: #fefefe;
+  padding: 12px;
+  border-radius: 12px;
+  overflow-x: auto;
+  margin: 0 0 8px 0;
+}
+
 .chat-pane__composer {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  padding-top: 12px;
 }
 
 .chat-pane__composer-actions {

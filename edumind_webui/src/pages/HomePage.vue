@@ -148,7 +148,7 @@ watch([routeWorkspaceId, workspaces], () => {
 .home-page__workspace {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 3fr) minmax(0, 7fr);
   gap: 24px;
   min-height: 0;
 }
@@ -165,7 +165,7 @@ watch([routeWorkspaceId, workspaces], () => {
 
 @media (max-width: 1280px) {
   .home-page__workspace {
-    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+    grid-template-columns: minmax(240px, 35%) minmax(0, 1fr);
   }
 }
 
