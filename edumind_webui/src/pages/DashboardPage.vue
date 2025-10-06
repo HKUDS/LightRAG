@@ -94,7 +94,7 @@
                 </div>
               </div>
             </v-card-item>
-            <v-card-text>
+            <v-card-text class="dashboard-page__card-text">
               <p class="text-body-2 text-medium-emphasis mb-0">
                 {{ workspace.instructions }}
               </p>
@@ -401,10 +401,12 @@ onMounted(() => {
 
 .dashboard-page__grid {
   margin: 0;
+  gap: 16px;
 }
 
 .dashboard-page__grid-item {
   display: flex;
+  min-width: 0;
 }
 
 .dashboard-page__card {
@@ -413,6 +415,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   width: 100%;
+  height: 260px;
 }
 
 .dashboard-page__card-header {
@@ -433,6 +436,21 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.dashboard-page__card-text {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-page__card-text p {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 960px) {
