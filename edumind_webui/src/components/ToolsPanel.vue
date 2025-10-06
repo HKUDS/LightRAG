@@ -189,12 +189,14 @@ import {
   useDocumentsStore,
   useChatStore,
   useWorkspaceContextStore,
+  useUserStore,
 } from '@/stores'
 
 const toolkitStore = useWorkspaceToolkitStore()
 const documentsStore = useDocumentsStore()
 const chatStore = useChatStore()
 const workspaceContext = useWorkspaceContextStore()
+const userStore = useUserStore()
 
 const { activeTab } = storeToRefs(toolkitStore)
 const {
@@ -389,7 +391,18 @@ watch(
   (workspaceId, previous) => {
     if (workspaceId && workspaceId !== previous) {
       documentsStore.fetchDocuments()
-      chatStore.clearConversation()
+    } else if (workspaceId && !previous) {
+      documentsStore.fetchDocuments()
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => userStore.userId,
+  (userId, previous) => {
+    if (userId && userId !== previous) {
+      chatStore.hydrateHistoryForCurrentUser()
     }
   },
   { immediate: true }
@@ -403,7 +416,8 @@ watch(
     if (container) {
       container.scrollTop = container.scrollHeight
     }
-  }
+  },
+  { immediate: true }
 )
 </script>
 
