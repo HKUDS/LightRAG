@@ -14,9 +14,9 @@
             variant="flat"
             class="px-6"
             prepend-icon="mdi-arrow-left"
-            :to="{ name: 'Home' }"
+            :to="{ name: 'Dashboard' }"
           >
-            Back to Canvas
+            Back to Dashboard
           </v-btn>
         </div>
       </v-container>

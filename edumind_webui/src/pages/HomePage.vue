@@ -29,33 +29,29 @@
     </v-app-bar>
 
     <v-container fluid class="home-page__content">
-      <v-row class="home-page__grid" align="stretch" justify="stretch">
-        <v-col cols="12" md="4" lg="3" class="home-page__tools">
-          <ToolsPanel class="w-100" />
-        </v-col>
-        <v-col cols="12" md="8" lg="9" class="home-page__canvas">
-          <CanvasPanel class="w-100" />
-        </v-col>
-      </v-row>
+      <div class="home-page__workspace">
+        <ToolsPanel class="home-page__workspace-panel" />
+        <CanvasPanel class="home-page__workspace-canvas" />
+      </div>
     </v-container>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue';
-import { storeToRefs } from 'pinia';
-import ToolsPanel from '@/components/ToolsPanel.vue';
-import CanvasPanel from '@/components/CanvasPanel.vue';
-import { useAppStore, useHomeStore } from '@/stores';
+import { onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
+import ToolsPanel from '@/components/ToolsPanel.vue'
+import CanvasPanel from '@/components/CanvasPanel.vue'
+import { useAppStore, useHomeStore } from '@/stores'
 
-const appStore = useAppStore();
-const homeStore = useHomeStore();
+const appStore = useAppStore()
+const homeStore = useHomeStore()
 
-const { appName, tagline, organization, organizationInitials } = storeToRefs(appStore);
+const { appName, tagline, organization, organizationInitials } = storeToRefs(appStore)
 
 onMounted(() => {
-  homeStore.initialise();
-});
+  homeStore.initialise()
+})
 </script>
 
 <style scoped>
@@ -100,21 +96,28 @@ onMounted(() => {
   overflow: hidden;
 }
 
-.home-page__grid {
+.home-page__workspace {
   flex: 1;
-  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: 24px;
+  min-height: 0;
 }
 
-.home-page__tools,
-.home-page__canvas {
-  display: flex;
-  flex-direction: column;
+.home-page__workspace-panel,
+.home-page__workspace-canvas {
   height: 100%;
+  min-height: 0;
 }
 
 .home-page__brand-initials {
   color: #ffffff;
+}
+
+@media (max-width: 1280px) {
+  .home-page__workspace {
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 960px) {
@@ -134,6 +137,10 @@ onMounted(() => {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+
+  .home-page__workspace {
+    grid-template-columns: 1fr;
   }
 }
 </style>
