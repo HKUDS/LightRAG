@@ -164,7 +164,7 @@
               <div v-else class="results-card__list">
                 <template v-for="question in filteredQuestions" :key="question.id">
                   <MCQCard
-                    v-if="question.type === 'mcq'"
+                    v-if="question.type === 'mcq' || question.type === 'multiple_response'"
                     :mcq="convertToMCQ(question)"
                     :show-actions="false"
                   />
@@ -219,7 +219,7 @@ import { useQuestionsStore, useDashboardStore, useWorkspaceContextStore } from '
 
 interface DatabaseQuestion {
   id: string;
-  type: 'mcq' | 'assignment';
+  type: 'mcq' | 'multiple_response' | 'assignment';
   question: string;
   options: string[] | null;
   correct_options: number[] | null;
@@ -299,8 +299,8 @@ const pageCount = computed(() => questionsStore.pageCount);
 
 const typeOptions = [
   { title: 'All types', value: 'all' },
-  { title: 'MCQ', value: 'mcq' },
-  { title: 'Assignment', value: 'assignment' },
+  { title: 'Multiple Choice (single answer)', value: 'mcq' },
+  { title: 'Multiple Response', value: 'multiple_response' },
 ];
 
 const difficultyOptions = [
