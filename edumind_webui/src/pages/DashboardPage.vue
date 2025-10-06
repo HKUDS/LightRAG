@@ -8,34 +8,6 @@
             Review the workspaces generated for user 101 and continue your creation flow.
           </p>
         </div>
-        <div class="dashboard-page__intro-actions">
-          <v-btn
-            variant="outlined"
-            color="primary"
-            prepend-icon="mdi-plus-circle-outline"
-            :disabled="loading"
-            @click="openCreateWorkspace"
-          >
-            Create Workspace
-          </v-btn>
-          <v-btn
-            variant="text"
-            color="primary"
-            prepend-icon="mdi-refresh"
-            :loading="loading"
-            @click="refresh"
-          >
-            Refresh
-          </v-btn>
-          <v-btn
-            variant="text"
-            color="primary"
-            prepend-icon="mdi-file-document-multiple-outline"
-            :to="{ name: 'Questions' }"
-          >
-            Go to Questions Library
-          </v-btn>
-        </div>
       </div>
 
       <div v-if="loading" class="dashboard-page__state">
@@ -215,13 +187,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { useDashboardStore } from '@/stores'
+import { useDashboardStore, useHeaderStore } from '@/stores'
 
 const dashboardStore = useDashboardStore()
 const router = useRouter()
+const headerStore = useHeaderStore()
 const { workspaces, loading, error, hasWorkspaces } = storeToRefs(dashboardStore)
 
 const workspaceDialogOpen = ref(false)
@@ -352,6 +325,46 @@ onMounted(() => {
   dashboardStore.initialise()
 })
 
+watch(
+  [loading, savingWorkspace, deletingWorkspace],
+  () => {
+    headerStore.setHeader({
+      title: 'Workspace Dashboard',
+      description: 'Curate your knowledge spaces and continue building content.',
+      actions: [
+        {
+          id: 'create-workspace',
+          label: 'Create Workspace',
+          icon: 'mdi-plus-circle-outline',
+          variant: 'flat',
+          onClick: openCreateWorkspace,
+          disabled: loading.value || savingWorkspace.value,
+        },
+        {
+          id: 'refresh-workspaces',
+          label: 'Refresh',
+          icon: 'mdi-refresh',
+          variant: 'text',
+          onClick: refresh,
+          loading: loading.value,
+        },
+        {
+          id: 'go-questions',
+          label: 'Go to Questions Library',
+          icon: 'mdi-file-document-multiple-outline',
+          variant: 'text',
+          to: { name: 'Questions' },
+        },
+      ],
+    })
+  },
+  { immediate: true }
+)
+
+onUnmounted(() => {
+  headerStore.resetHeader()
+})
+
 </script>
 
 <style scoped>
@@ -378,14 +391,6 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-}
-
-.dashboard-page__intro-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .dashboard-page__state {
@@ -456,12 +461,6 @@ onMounted(() => {
 @media (max-width: 960px) {
   .dashboard-page__content {
     padding: 24px 16px;
-  }
-
-  .dashboard-page__bar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
   }
 }
 </style>

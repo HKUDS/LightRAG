@@ -1,13 +1,5 @@
 <template>
   <div class="studio-page">
-    <AppPageHeader
-      :title="appName"
-      :description="tagline"
-      action-label="Go to Questions Library"
-      action-icon="mdi-file-document-multiple-outline"
-      :action-to="{ name: 'Questions' }"
-    />
-
     <v-container fluid class="studio-page__content">
       <div class="studio-page__workspace">
         <ToolsPanel class="studio-page__workspace-panel" />
@@ -18,23 +10,24 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, watch, computed } from 'vue'
+import { onMounted, onUnmounted, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import ToolsPanel from '@/components/ToolsPanel.vue'
 import CanvasPanel from '@/components/CanvasPanel.vue'
-import AppPageHeader from '@/components/AppPageHeader.vue'
 import {
   useAppStore,
   useHomeStore,
   useDashboardStore,
   useWorkspaceContextStore,
+  useHeaderStore,
 } from '@/stores'
 
 const appStore = useAppStore()
 const homeStore = useHomeStore()
 const dashboardStore = useDashboardStore()
 const workspaceContextStore = useWorkspaceContextStore()
+const headerStore = useHeaderStore()
 const route = useRoute()
 
 const { appName, tagline } = storeToRefs(appStore)
@@ -92,6 +85,30 @@ watch(
   },
   { immediate: true }
 )
+
+watch(
+  [appName, tagline],
+  () => {
+    headerStore.setHeader({
+      title: appName.value,
+      description: tagline.value,
+      actions: [
+        {
+          id: 'studio-go-questions',
+          label: 'Go to Questions Library',
+          icon: 'mdi-file-document-multiple-outline',
+          variant: 'text',
+          to: { name: 'Questions' },
+        },
+      ],
+    })
+  },
+  { immediate: true }
+)
+
+onUnmounted(() => {
+  headerStore.resetHeader()
+})
 </script>
 
 <style scoped>

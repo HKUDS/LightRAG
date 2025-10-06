@@ -1,11 +1,5 @@
 <template>
   <div class="questions-page">
-    <AppPageHeader
-      title="Question Library"
-      :description="headerDescription"
-      show-back
-    />
-
     <v-container fluid class="questions-page__content">
       <v-row class="questions-page__grid" align="stretch" justify="stretch">
         <v-col cols="12" md="4" lg="3" class="questions-page__filters">
@@ -214,8 +208,7 @@ import { computed, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import MCQCard from '@/components/MCQCard.vue';
 import AssignmentCard from '@/components/AssignmentCard.vue';
-import AppPageHeader from '@/components/AppPageHeader.vue';
-import { useQuestionsStore, useDashboardStore, useWorkspaceContextStore } from '@/stores';
+import { useQuestionsStore, useDashboardStore, useWorkspaceContextStore, useHeaderStore } from '@/stores';
 
 interface DatabaseQuestion {
   id: string;
@@ -243,7 +236,7 @@ const workspaceContextStore = useWorkspaceContextStore();
 const { loading, uniqueTags, filteredQuestions, resultsSummary, sessionsLoading } = storeToRefs(questionsStore);
 const { workspaces } = storeToRefs(dashboardStore);
 const totalQuestions = computed(() => questionsStore.totalQuestions);
-const headerDescription = 'Browse and refine every prompt your team has generated.';
+const headerStore = useHeaderStore();
 
 const searchQuery = computed({
   get: () => questionsStore.filters.searchQuery,
@@ -429,6 +422,19 @@ onMounted(async () => {
   }
 
   await questionsStore.fetchQuestions();
+  headerStore.setHeader({
+    title: 'Question Library',
+    description: 'Browse and refine every prompt your team has generated.',
+    showBack: true,
+  });
+});
+
+onUnmounted(() => {
+  if (fetchTimeout) {
+    clearTimeout(fetchTimeout);
+    fetchTimeout = null;
+  }
+  headerStore.resetHeader();
 });
 </script>
 
@@ -439,24 +445,6 @@ onMounted(async () => {
   height: 100vh;
   background-color: #ffffff;
   overflow: hidden;
-}
-
-.questions-page__app-bar {
-  border-bottom: 1px solid rgba(22, 101, 52, 0.12);
-}
-
-.questions-page__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  padding-inline: 16px;
-}
-
-.questions-page__bar-left {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .questions-page__content {
@@ -576,11 +564,6 @@ onMounted(async () => {
 
 @media (max-width: 960px) {
   .questions-page__content { padding: 24px 16px; }
-  .questions-page__bar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
-  }
   /* On small screens allow wrap + no side paddings */
   .questions-page__filters,
   .questions-page__results {

@@ -11,10 +11,9 @@
             <h1 class="text-h5 font-weight-semibold mb-0">{{ title }}</h1>
           </div>
         </div>
-        <div class="app-page-header__actions" v-if="showActions">
+        <div class="app-page-header__actions" v-if="hasVisibleActions">
           <p v-if="description" class="text-body-2 text-medium-emphasis mb-0">{{ description }}</p>
           <div class="app-page-header__action-buttons">
-            <slot name="actions" />
             <v-btn
               v-if="showBack"
               variant="text"
@@ -25,15 +24,18 @@
               Go Back
             </v-btn>
             <v-btn
-              v-if="actionLabel"
-              color="primary"
-              variant="flat"
+              v-for="action in actions"
+              :key="action.id"
+              :variant="action.variant || 'flat'"
+              :color="action.color || 'primary'"
               class="px-6"
-              :prepend-icon="actionIcon"
-              v-bind="actionAttrs"
-              @click="handleAction"
+              :prepend-icon="action.icon"
+              :to="action.to"
+              :disabled="action.disabled"
+              :loading="action.loading"
+              @click="handleActionClick(action)"
             >
-              {{ actionLabel }}
+              {{ action.label }}
             </v-btn>
           </div>
         </div>
@@ -43,61 +45,56 @@
 </template>
 
 <script setup lang="ts">
-import { computed, useSlots } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed } from 'vue';
+import { useRouter, type RouteLocationRaw } from 'vue-router';
 import { useAppStore } from '@/stores';
 
-interface RouteLike {
-  name?: string;
-  path?: string;
-  params?: Record<string, unknown>;
-  query?: Record<string, unknown>;
+interface HeaderAction {
+  id: string;
+  label: string;
+  icon?: string;
+  variant?: 'flat' | 'text' | 'outlined';
+  color?: string;
+  to?: RouteLocationRaw;
+  disabled?: boolean;
+  loading?: boolean;
+  onClick?: () => void | Promise<void>;
 }
 
 const props = withDefaults(
   defineProps<{
-    title: string;
+    title?: string;
     description?: string;
-    actionLabel?: string;
-    actionIcon?: string;
-    actionTo?: string | RouteLike;
     showBack?: boolean;
+    actions?: HeaderAction[];
   }>(),
   {
+    title: '',
     description: '',
-    actionLabel: '',
-    actionIcon: 'mdi-arrow-right',
-    actionTo: undefined,
     showBack: false,
+    actions: () => [],
   }
 );
-
-const emit = defineEmits<{
-  action: [];
-}>();
 
 const router = useRouter();
 const appStore = useAppStore();
-const slots = useSlots();
 
 const organization = computed(() => appStore.organization);
 const organizationInitials = computed(() => appStore.organizationInitials);
+const actions = computed(() => props.actions ?? []);
 
-const hasActionLink = computed(() => props.actionTo !== undefined && props.actionTo !== null);
-const actionAttrs = computed(() => (hasActionLink.value ? { to: props.actionTo } : {}));
-const hasSlotActions = computed(() => Boolean(slots.actions));
-const showActions = computed(
-  () => Boolean(props.description) || props.showBack || Boolean(props.actionLabel) || hasSlotActions.value
+const hasVisibleActions = computed(
+  () => Boolean(props.description) || props.showBack || actions.value.length > 0
 );
-
-const handleAction = () => {
-  if (!hasActionLink.value) {
-    emit('action');
-  }
-};
 
 const handleBack = () => {
   router.back();
+};
+
+const handleActionClick = (action: HeaderAction) => {
+  if (typeof action.onClick === 'function') {
+    action.onClick();
+  }
 };
 </script>
 
