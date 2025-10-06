@@ -1,0 +1,35 @@
+{
+  "name": "edumind_webui",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@fontsource/roboto": "5.2.7",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.21",
+    "vue-router": "^4.5.1",
+    "vuetify": "^3.10.1"
+  },
+  "devDependencies": {
+    "@mdi/font": "^7.4.47",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "eslint-config-prettier": "^10.1.8",
+    "material-design-icons-iconfont": "^6.7.0",
+    "prettier": "^3.6.2",
+    "sass-embedded": "^1.92.1",
+    "unplugin-fonts": "^1.4.0",
+    "unplugin-vue-components": "^29.0.0",
+    "vite": "^7.1.5",
+    "vite-plugin-vuetify": "^2.1.2"
+  },
+  "lint-staged": {
+    "*.{js,ts,vue,css,scss,md,json}": "prettier --write"
+  }
+}
