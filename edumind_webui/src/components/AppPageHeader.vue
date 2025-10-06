@@ -11,9 +11,10 @@
             <h1 class="text-h5 font-weight-semibold mb-0">{{ title }}</h1>
           </div>
         </div>
-        <div class="app-page-header__actions" v-if="hasActions">
+        <div class="app-page-header__actions" v-if="showActions">
           <p v-if="description" class="text-body-2 text-medium-emphasis mb-0">{{ description }}</p>
           <div class="app-page-header__action-buttons">
+            <slot name="actions" />
             <v-btn
               v-if="showBack"
               variant="text"
@@ -42,7 +43,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, useSlots } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAppStore } from '@/stores';
 
@@ -77,14 +78,16 @@ const emit = defineEmits<{
 
 const router = useRouter();
 const appStore = useAppStore();
+const slots = useSlots();
 
 const organization = computed(() => appStore.organization);
 const organizationInitials = computed(() => appStore.organizationInitials);
 
 const hasActionLink = computed(() => props.actionTo !== undefined && props.actionTo !== null);
 const actionAttrs = computed(() => (hasActionLink.value ? { to: props.actionTo } : {}));
-const hasActions = computed(
-  () => Boolean(props.description) || props.showBack || Boolean(props.actionLabel)
+const hasSlotActions = computed(() => Boolean(slots.actions));
+const showActions = computed(
+  () => Boolean(props.description) || props.showBack || Boolean(props.actionLabel) || hasSlotActions.value
 );
 
 const handleAction = () => {

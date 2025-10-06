@@ -53,5 +53,45 @@ export const useDashboardStore = defineStore('dashboard', {
         this.loading = false
       }
     },
+    async createWorkspace({ name, instructions } = {}) {
+      const trimmedName = typeof name === 'string' ? name.trim() : ''
+      if (!trimmedName) {
+        throw new Error('Workspace name is required.')
+      }
+
+      const payload = {
+        name: trimmedName,
+        user_id: useUserStore().userId,
+      }
+      if (instructions && instructions.trim()) {
+        payload.instructions = instructions.trim()
+      }
+
+      try {
+        const response = await workspacesApi.createWorkspace({ payload })
+        const createdProject = response?.project || response?.workspace || response
+        const createdId = createdProject?.id
+
+        await this.initialise({ force: true })
+
+        if (createdId) {
+          const fresh = this.workspaces.find((workspace) => workspace.id === createdId)
+          if (fresh) {
+            return fresh
+          }
+          return {
+            id: createdId,
+            name: createdProject?.name || trimmedName,
+            createdAt: createdProject?.created_at || new Date().toISOString(),
+            instructions: createdProject?.instructions || payload.instructions || 'No instructions provided.',
+          }
+        }
+
+        return null
+      } catch (error) {
+        console.error('Failed to create workspace', error)
+        throw error
+      }
+    },
   },
 })

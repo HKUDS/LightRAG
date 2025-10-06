@@ -1,13 +1,5 @@
 <template>
   <div class="dashboard-page">
-    <AppPageHeader
-      title="Workspace Dashboard"
-      description="Curate your knowledge spaces and continue building content."
-      action-label="Go to Questions Library"
-      action-icon="mdi-file-document-multiple-outline"
-      :action-to="{ name: 'Questions' }"
-    />
-
     <v-container fluid class="dashboard-page__content">
       <div class="dashboard-page__intro">
         <div>
@@ -16,15 +8,34 @@
             Review the workspaces generated for user 101 and continue your creation flow.
           </p>
         </div>
-        <v-btn
-          variant="outlined"
-          color="primary"
-          prepend-icon="mdi-refresh"
-          :loading="loading"
-          @click="refresh"
-        >
-          Refresh
-        </v-btn>
+        <div class="dashboard-page__intro-actions">
+          <v-btn
+            variant="outlined"
+            color="primary"
+            prepend-icon="mdi-plus-circle-outline"
+            :disabled="loading"
+            @click="openCreateWorkspace"
+          >
+            Create Workspace
+          </v-btn>
+          <v-btn
+            variant="text"
+            color="primary"
+            prepend-icon="mdi-refresh"
+            :loading="loading"
+            @click="refresh"
+          >
+            Refresh
+          </v-btn>
+          <v-btn
+            variant="text"
+            color="primary"
+            prepend-icon="mdi-file-document-multiple-outline"
+            :to="{ name: 'Questions' }"
+          >
+            Go to Questions Library
+          </v-btn>
+        </div>
       </div>
 
       <div v-if="loading" class="dashboard-page__state">
@@ -87,17 +98,76 @@
         </p>
       </div>
     </v-container>
+
+    <v-dialog v-model="createDialogOpen" max-width="480">
+      <v-card>
+        <v-card-title class="text-h6 font-weight-semibold">Create Workspace</v-card-title>
+        <v-card-text class="pt-4">
+          <v-text-field
+            v-model="newWorkspaceName"
+            label="Workspace name"
+            variant="outlined"
+            density="comfortable"
+            :disabled="creatingWorkspace"
+            required
+          />
+          <v-textarea
+            v-model="newWorkspaceInstructions"
+            label="Instructions (optional)"
+            variant="outlined"
+            density="comfortable"
+            auto-grow
+            rows="3"
+            :disabled="creatingWorkspace"
+          />
+          <v-alert
+            v-if="createError"
+            type="error"
+            variant="tonal"
+            density="comfortable"
+            class="mt-3"
+          >
+            {{ createError }}
+          </v-alert>
+        </v-card-text>
+        <v-card-actions class="justify-end">
+          <v-btn
+            variant="text"
+            color="primary"
+            @click="closeCreateWorkspace"
+            :disabled="creatingWorkspace"
+          >
+            Cancel
+          </v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :loading="creatingWorkspace"
+            @click="handleCreateWorkspace"
+          >
+            Create
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import AppPageHeader from '@/components/AppPageHeader.vue'
 import { useDashboardStore } from '@/stores'
 
 const dashboardStore = useDashboardStore()
+const router = useRouter()
 const { workspaces, loading, error, hasWorkspaces } = storeToRefs(dashboardStore)
+
+const createDialogOpen = ref(false)
+const creatingWorkspace = ref(false)
+const newWorkspaceName = ref('')
+const newWorkspaceInstructions = ref('')
+const createError = ref('')
 
 const refresh = () => {
   dashboardStore.initialise({ force: true })
@@ -114,6 +184,49 @@ const formatDate = (value?: string) => {
   })
 }
 
+const openCreateWorkspace = () => {
+  newWorkspaceName.value = ''
+  newWorkspaceInstructions.value = ''
+  createError.value = ''
+  createDialogOpen.value = true
+}
+
+const closeCreateWorkspace = () => {
+  createDialogOpen.value = false
+}
+
+const handleCreateWorkspace = async () => {
+  if (!newWorkspaceName.value.trim()) {
+    createError.value = 'Workspace name is required.'
+    return
+  }
+
+  creatingWorkspace.value = true
+  createError.value = ''
+
+  try {
+    const workspace = await dashboardStore.createWorkspace({
+      name: newWorkspaceName.value,
+      instructions: newWorkspaceInstructions.value,
+    })
+
+    closeCreateWorkspace()
+
+    if (workspace?.id) {
+      router.push({ name: 'Studio', query: { workspaceId: workspace.id } })
+    } else {
+      await dashboardStore.initialise({ force: true })
+    }
+  } catch (error) {
+    createError.value = error?.message || 'Failed to create workspace.'
+  } finally {
+    creatingWorkspace.value = false
+  }
+}
+
+onMounted(() => {
+  dashboardStore.initialise()
+})
 onMounted(() => {
   dashboardStore.initialise()
 })
@@ -143,6 +256,14 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.dashboard-page__intro-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .dashboard-page__state {
