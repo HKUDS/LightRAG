@@ -6,6 +6,8 @@ import { useHomeStore } from '../home'
 
 const initialState = () => ({
   questionId: '',
+  selectedQuestionText: '',
+  selectionActive: false,
   instructions: '',
   loading: false,
   error: null,
@@ -16,10 +18,37 @@ export const useDistractorGeneratorStore = defineStore('distractorGenerator', {
   state: initialState,
   actions: {
     setQuestionId(value) {
-      this.questionId = value
+      const nextValue = typeof value === 'string' ? value : ''
+      const previousValue = this.questionId
+      this.questionId = nextValue
+      if (nextValue !== previousValue) {
+        this.selectedQuestionText = ''
+      }
     },
     setInstructions(value) {
       this.instructions = value
+    },
+    beginSelection() {
+      this.selectionActive = true
+      this.error = null
+    },
+    completeSelection({ id, text }) {
+      if (!id) {
+        return
+      }
+
+      this.questionId = id
+      this.selectedQuestionText = text || ''
+      this.selectionActive = false
+      this.error = null
+    },
+    cancelSelection() {
+      this.selectionActive = false
+    },
+    clearSelection() {
+      this.questionId = ''
+      this.selectedQuestionText = ''
+      this.selectionActive = false
     },
     reset() {
       Object.assign(this, initialState())
@@ -38,6 +67,7 @@ export const useDistractorGeneratorStore = defineStore('distractorGenerator', {
       this.loading = true
       this.error = null
       this.lastMessage = ''
+      this.selectionActive = false
 
       try {
         const response = await aiApi.generateQuestionVariants({

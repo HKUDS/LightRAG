@@ -1,5 +1,14 @@
 <template>
-  <v-card class="question-card" variant="outlined">
+  <v-card
+    class="question-card"
+    :class="{
+      'question-card--selectable': selectable,
+      'question-card--selected': selected,
+      'question-card--selection-active': selectable && !selected,
+    }"
+    variant="outlined"
+    @click="handleSelect"
+  >
     <v-card-item>
       <div class="d-flex align-center justify-space-between flex-wrap gap-3">
         <div class="d-flex align-center gap-2">
@@ -15,7 +24,7 @@
             size="small"
             color="primary"
             prepend-icon="mdi-arrange-bring-forward"
-            @click="toggleVariants"
+            @click.stop="toggleVariants"
           >
             {{ showVariants ? 'Hide' : 'Show' }} Variants ({{ variants.length }})
           </v-btn>
@@ -25,7 +34,7 @@
             size="small"
             color="primary"
             prepend-icon="mdi-delete-outline"
-            @click="deleteItem"
+            @click.stop="deleteItem"
           >
             Remove
           </v-btn>
@@ -143,14 +152,19 @@ const props = withDefaults(
   defineProps<{
     mcq: MCQContent;
     showActions?: boolean;
+    selectable?: boolean;
+    selected?: boolean;
   }>(),
   {
     showActions: true,
+    selectable: false,
+    selected: false,
   }
 );
 
 const emit = defineEmits<{
   delete: [id: string];
+  select: [payload: { id: string; question: string }];
 }>();
 
 const showVariants = ref(false);
@@ -183,6 +197,13 @@ const deleteItem = () => {
 const toggleVariants = () => {
   showVariants.value = !showVariants.value;
 };
+
+const handleSelect = () => {
+  if (!props.selectable) {
+    return;
+  }
+  emit('select', { id: props.mcq.id, question: props.mcq.question });
+};
 </script>
 
 <style scoped>
@@ -190,6 +211,22 @@ const toggleVariants = () => {
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow: 0 24px 40px -24px rgba(15, 23, 42, 0.24);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.question-card--selectable {
+  cursor: pointer;
+}
+
+.question-card--selection-active:hover {
+  border-color: rgba(22, 101, 52, 0.4);
+  box-shadow: 0 0 0 2px rgba(22, 101, 52, 0.18);
+  transform: translateY(-1px);
+}
+
+.question-card--selected {
+  border-color: rgba(22, 101, 52, 0.5);
+  box-shadow: 0 0 0 2px rgba(22, 101, 52, 0.24);
 }
 
 .options {

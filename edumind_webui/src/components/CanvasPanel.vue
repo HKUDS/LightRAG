@@ -73,7 +73,10 @@
                   v-if="output.type === 'mcq' || output.type === 'multiple_response'"
                   :mcq="output"
                   :show-actions="true"
+                  :selectable="distractorSelectionActive"
+                  :selected="selectedDistractorQuestionId === output.id"
                   @delete="handleDeleteOutput"
+                  @select="handleSelectForDistractor"
                 />
                 <AssignmentCard
                   v-else
@@ -95,10 +98,13 @@ import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import MCQCard from '@/components/MCQCard.vue';
 import AssignmentCard from '@/components/AssignmentCard.vue';
-import { useHomeStore } from '@/stores';
+import { useHomeStore, useDistractorGeneratorStore } from '@/stores';
 
 const homeStore = useHomeStore();
+const distractorStore = useDistractorGeneratorStore();
+
 const { tabs, activeTabId, activeTab, hasActiveOutputs, canAddTab, creatingCanvas } = storeToRefs(homeStore);
+const { selectionActive: distractorSelectionActive, questionId: selectedDistractorQuestionId } = storeToRefs(distractorStore);
 
 const tabModel = computed<string>({
   get: () => activeTabId.value,
@@ -157,6 +163,13 @@ const handleDeleteOutput = async (outputId: string) => {
   } catch (error) {
     console.error('Failed to delete output', error);
   }
+};
+
+const handleSelectForDistractor = (payload: { id: string; question: string }) => {
+  if (!distractorSelectionActive.value) {
+    return;
+  }
+  distractorStore.completeSelection({ id: payload.id, text: payload.question });
 };
 </script>
 
