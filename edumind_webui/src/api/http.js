@@ -1,4 +1,4 @@
-const DEFAULT_TIMEOUT = 30000
+const DEFAULT_TIMEOUT = 100000
 
 export const resolveBaseUrl = () => {
   const envUrl = import.meta?.env?.VITE_EDUMIND_API_BASE_URL || "http://localhost:9621"

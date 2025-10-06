@@ -38,8 +38,6 @@ export const useDashboardStore = defineStore('dashboard', {
           },
         })
 
-        console.info('Fetched workspaces:', response)
-
         const workspaces = response?.projects || response?.workspaces || []
         this.workspaces = workspaces.map((workspace) => ({
           id: workspace.id,

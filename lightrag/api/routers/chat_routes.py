@@ -562,9 +562,8 @@ def create_chat_routes(api_key: Optional[str] = None) -> APIRouter:
         pair: LightRAG = Depends(get_rag),
         db: Session = Depends(get_db),
     ):
-        # Validate references
-        if not db.get(ChatSession, payload.session_id):
-            raise HTTPException(status_code=400, detail="Invalid session_id")
+        # if not db.get(ChatSession, payload.session_id):
+        #     raise HTTPException(status_code=400, detail="Invalid session_id")
         if not db.get(Project, payload.project_id):
             raise HTTPException(status_code=400, detail="Invalid project_id")
         if not db.get(User, payload.user_id):

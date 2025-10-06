@@ -96,7 +96,7 @@ export const useMcqGeneratorStore = defineStore('mcqGenerator', {
       const homeStore = useHomeStore()
 
       const payload = {
-        session_id: this.sessionId || `session-${workspaceStore.workspaceId}`,
+        session_id: `default`,
         project_id: this.projectId || workspaceStore.workspaceId,
         user_id: this.userId || userStore.userId,
         topics: this.topics,
