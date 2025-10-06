@@ -470,6 +470,7 @@ watch(
   flex-direction: column;
   padding: 20px;
   min-height: 0;
+  height: 100%;
   flex: 1;
 }
 
@@ -478,6 +479,7 @@ watch(
   flex-direction: column;
   gap: 20px;
   height: 100%;
+  min-height: 0;
 }
 
 .files-pane__actions {
@@ -503,6 +505,7 @@ watch(
   overflow-y: auto;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 20px;
+  min-height: 0;
 }
 
 .files-pane__list-item + .files-pane__list-item {

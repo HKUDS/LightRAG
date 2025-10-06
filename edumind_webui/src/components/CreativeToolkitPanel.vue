@@ -1,6 +1,6 @@
 <template>
-  <v-card class="tools-panel" elevation="2">
-    <v-card-text class="pt-4">
+  <v-card class="tools-panel d-flex flex-column h-100" elevation="2">
+    <v-card-text class="pt-4 tools-panel__scroll flex-grow-1">
       <v-expansion-panels v-model="panelModel" multiple elevation="0" class="tool-expansion">
         <v-expansion-panel v-for="tool in tools" :key="tool.id" :value="tool.id">
           <v-expansion-panel-title expand-icon="mdi-chevron-down">
@@ -79,6 +79,12 @@ const handleExecute = (toolId: ToolConfig['id']) => {
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(10px);
+}
+
+.tools-panel__scroll {
+  overflow-y: auto;
+  min-height: 0;
+  padding-top: 16px;
 }
 
 .tools-panel__header {
