@@ -76,6 +76,8 @@ class PostgreSQLDB:
 
         # Server settings
         self.server_settings = config.get("server_settings")
+
+        # Statement LRU cache size
         self.statement_cache_size = int(config.get("statement_cache_size"))
 
         if self.user is None or self.password is None or self.database is None:
