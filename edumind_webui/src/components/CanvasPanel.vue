@@ -151,8 +151,12 @@ const handleDiscardOutputs = () => {
   }
 };
 
-const handleDeleteOutput = (outputId: string) => {
-  homeStore.deleteOutputById(outputId);
+const handleDeleteOutput = async (outputId: string) => {
+  try {
+    await homeStore.deleteOutputById(outputId);
+  } catch (error) {
+    console.error('Failed to delete output', error);
+  }
 };
 </script>
 

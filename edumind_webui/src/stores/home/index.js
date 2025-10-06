@@ -235,6 +235,7 @@ const mapQuestionRecordToOutput = (question) => {
     tag: tagList.length ? tagList.join(', ') : 'AI Generated',
     variants: Array.isArray(question.variants) ? question.variants : [],
     meta: question,
+    questionId: question.id,
   }
 }
 
@@ -596,12 +597,34 @@ export const useHomeStore = defineStore('home', {
       }
       this.activeTab.outputs = []
     },
-    deleteOutputById(outputId) {
+    async deleteOutputById(outputId) {
       const tab = this.activeTab
       if (!tab) {
         return
       }
+
+      const target = tab.outputs.find((output) => output.id === outputId)
+      if (!target) {
+        return
+      }
+
+      const questionId = target.questionId || target.meta?.id
+
       tab.outputs = tab.outputs.filter((output) => output.id !== outputId)
+
+      if (!questionId) {
+        return
+      }
+
+      const workspaceStore = useWorkspaceContextStore()
+      const projectId = workspaceStore.workspaceId || this.currentProjectId
+
+      try {
+        await questionsApi.deleteQuestion({ id: questionId, headers: buildProjectHeaders(projectId) })
+      } catch (error) {
+        console.error('Failed to delete question', error)
+        this.error = error
+      }
     },
     resetWorkspace() {
       this.setCanvasCollection([])
