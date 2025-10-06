@@ -227,6 +227,13 @@ interface DatabaseQuestion {
   session_id?: string;
   isApproved?: boolean;
   isArchived?: boolean;
+  variants?: Array<{
+    id?: string;
+    difficulty_level?: string;
+    options: string[];
+    correct_answers: number[];
+    rationale?: string;
+  }>;
 }
 
 const questionsStore = useQuestionsStore();
@@ -358,6 +365,7 @@ const convertToMCQ = (question: DatabaseQuestion) => ({
   aiRational: question.ai_rational,
   source: question.source,
   tag: question.tag,
+  variants: question.variants || [],
 });
 
 const convertToAssignment = (question: DatabaseQuestion) => ({

@@ -18,6 +18,7 @@
           </v-expansion-panel-title>
           <v-expansion-panel-text>
             <MCQGeneratorForm v-if="tool.id === 'mcq-generator'" />
+            <DistractorGeneratorForm v-else-if="tool.id === 'distractor-generator'" />
             <div v-else class="tools-panel__cta">
               <v-btn
                 color="primary"
@@ -42,6 +43,7 @@ import { computed, type Ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useHomeStore } from '@/stores'
 import MCQGeneratorForm from './MCQGeneratorForm.vue'
+import DistractorGeneratorForm from './DistractorGeneratorForm.vue'
 
 interface ToolConfig {
   id: string

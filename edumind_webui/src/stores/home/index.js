@@ -103,6 +103,13 @@ const toolCatalogue = [
     quickAction: 'Generate MCQ',
   },
   {
+    id: 'distractor-generator',
+    name: 'Distractor Generator',
+    description: 'Generate alternate distractors for an existing MCQ question.',
+    icon: 'mdi-arrange-bring-forward',
+    quickAction: 'Generate Distractors',
+  },
+  {
     id: 'assignment-generator',
     name: 'Assignment Builder',
     description: 'Draft open-ended tasks that encourage critical thinking and synthesis.',
@@ -212,6 +219,33 @@ const normaliseCorrectAnswers = (value, optionCount) => {
     }
   })
   return Array.from(unique)
+}
+
+const normaliseVariants = (variants) => {
+  if (!Array.isArray(variants)) {
+    return []
+  }
+
+  return variants
+    .map((variant) => {
+      if (!variant) {
+        return null
+      }
+      const options = Array.isArray(variant.options)
+        ? variant.options.map((option) => String(option))
+        : []
+      const correctAnswersRaw = variant.correct_answers || variant.correctIndexes || variant.correct_indexes
+      const correctAnswers = normaliseCorrectAnswers(correctAnswersRaw, options.length)
+
+      return {
+        id: variant.id || null,
+        difficulty_level: variant.difficulty_level || variant.difficultyLevel || null,
+        options,
+        correct_answers: correctAnswers,
+        rationale: variant.rationale || variant.ai_rational || '',
+      }
+    })
+    .filter((variant) => variant !== null)
 }
 
 const mapQuestionRecordToOutput = (question) => {
@@ -409,6 +443,39 @@ export const useHomeStore = defineStore('home', {
         this.updateCanvasOutputStatus(targetId, { loading: false, loaded: false, error })
         throw error
       }
+    },
+    applyVariantsToQuestion(questionId, variants) {
+      if (!questionId) {
+        return false
+      }
+
+      const normalised = normaliseVariants(variants)
+      let updated = false
+
+      this.tabs = this.tabs.map((tab) => {
+        const outputs = tab.outputs.map((output) => {
+          if (!output) {
+            return output
+          }
+
+          const matches = output.id === questionId || output.questionId === questionId
+          if (matches) {
+            updated = true
+            return {
+              ...output,
+              variants: normalised,
+              meta: {
+                ...(output.meta || {}),
+                variants: normalised,
+              },
+            }
+          }
+          return output
+        })
+        return { ...tab, outputs }
+      })
+
+      return updated
     },
     async loadProjectCanvases({ projectId, force = false } = {}) {
       if (this.loading) {
