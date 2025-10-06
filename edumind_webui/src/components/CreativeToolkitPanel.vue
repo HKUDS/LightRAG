@@ -17,7 +17,8 @@
             </div>
           </v-expansion-panel-title>
           <v-expansion-panel-text>
-            <div class="tools-panel__cta">
+            <MCQGeneratorForm v-if="tool.id === 'mcq-generator'" />
+            <div v-else class="tools-panel__cta">
               <v-btn
                 color="primary"
                 variant="flat"
@@ -40,6 +41,7 @@
 import { computed, type Ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useHomeStore } from '@/stores'
+import MCQGeneratorForm from './MCQGeneratorForm.vue'
 
 interface ToolConfig {
   id: string
@@ -64,6 +66,9 @@ const panelModel = computed<string[]>({
 })
 
 const handleExecute = (toolId: ToolConfig['id']) => {
+  if (toolId === 'mcq-generator') {
+    return
+  }
   homeStore.executeTool(toolId)
 }
 </script>

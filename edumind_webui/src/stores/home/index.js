@@ -253,6 +253,19 @@ export const useHomeStore = defineStore('home', {
       this.activeTabId = this.tabs[0].id
       this.tabCounter = 1
     },
+    appendOutputs(outputs) {
+      if (!Array.isArray(outputs) || outputs.length === 0) {
+        return
+      }
+
+      if (!this.activeTab) {
+        this.resetWorkspace()
+      }
+
+      if (this.activeTab) {
+        this.activeTab.outputs = [...this.activeTab.outputs, ...outputs]
+      }
+    },
     executeTool(toolId) {
       if (!this.activeTab) {
         this.resetWorkspace()
