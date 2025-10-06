@@ -3,6 +3,23 @@ replicaCount: 1
 image:
   repository: ghcr.io/hkuds/lightrag
   tag: latest
+  # Optionally specify imagePullSecrets if your image is in a private registry
+  # example:
+  # imagePullSecrets:
+  #   - name: my-registry-secret
+  imagePullSecrets: []
+
+# Specify a deployment strategy
+# example:
+# updateStrategy:
+#   type: RollingUpdate
+#   rollingUpdate:
+#     maxUnavailable: 25%
+#     maxSurge: 25%
+# Default for now should be Recreate as any RollingUpdate will cause issues with
+# multiple instances trying to access the same persistent storage if not using RWX volumes.
+updateStrategy:
+  type: Recreate
 
 service:
   type: ClusterIP
@@ -23,6 +40,13 @@ persistence:
   inputs:
     size: 5Gi
 
+# Allow specifying additional environment variables from ConfigMaps or Secrets created outside of this chart
+envFrom:
+  configmaps: []
+    # - name: my-shiny-configmap-1
+  secrets: []
+    # - name: my-shiny-secret-1
+
 env:
   HOST: 0.0.0.0
   PORT: 9621
@@ -38,8 +62,8 @@ env:
   EMBEDDING_BINDING_API_KEY:
   LIGHTRAG_KV_STORAGE: PGKVStorage
   LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
-#  LIGHTRAG_KV_STORAGE: RedisKVStorage
-#  LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
+  #  LIGHTRAG_KV_STORAGE: RedisKVStorage
+  #  LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
   LIGHTRAG_GRAPH_STORAGE: Neo4JStorage
   LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
   # Replace with your POSTGRES credentials
