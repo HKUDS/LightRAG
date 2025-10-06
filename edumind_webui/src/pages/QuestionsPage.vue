@@ -10,121 +10,124 @@
                 Narrow down the library by attributes.
               </v-card-subtitle>
             </v-card-item>
-            <v-card-text class="pt-0">
-              <v-text-field
-                v-model="searchQuery"
-                label="Search questions"
-                variant="solo"
-                color="primary"
-                prepend-inner-icon="mdi-magnify"
-                hide-details
-                density="comfortable"
-                class="mb-6"
-              />
+          <v-card-text class="pt-0 filters-card__body">
+            <v-text-field
+              v-model="searchQuery"
+              label="Search questions"
+              variant="solo"
+              color="primary"
+              prepend-inner-icon="mdi-magnify"
+              hide-details
+              density="comfortable"
+              class="filters-card__full mb-4"
+            />
 
-              <v-select
-                v-model="filterType"
-                :items="typeOptions"
-                item-title="title"
-                item-value="value"
-                label="Question type"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-              />
+            <v-row class="filters-card__grid" dense>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterType"
+                  :items="typeOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Question type"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterDifficulty"
+                  :items="difficultyOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Difficulty"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterWorkspace"
+                  :items="workspaceOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Workspace"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                  :menu-props="{ maxHeight: 240 }"
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterSession"
+                  :items="sessionOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Canvas"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                  :menu-props="{ maxHeight: 240 }"
+                  :loading="sessionsLoading"
+                  :disabled="filterWorkspace === 'all'"
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterApproved"
+                  :items="approvalOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Approval status"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterArchived"
+                  :items="archivedOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Archived"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterHasVariants"
+                  :items="variantOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Variants"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="filterTag"
+                  :items="tagOptions"
+                  item-title="title"
+                  item-value="value"
+                  label="Tag"
+                  variant="solo"
+                  density="comfortable"
+                  hide-details
+                  :menu-props="{ maxHeight: 240 }"
+                />
+              </v-col>
+            </v-row>
 
-              <v-select
-                v-model="filterDifficulty"
-                :items="difficultyOptions"
-                item-title="title"
-                item-value="value"
-                label="Difficulty"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-              />
-
-              <v-select
-                v-model="filterWorkspace"
-                :items="workspaceOptions"
-                item-title="title"
-                item-value="value"
-                label="Workspace"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-                :menu-props="{ maxHeight: 240 }"
-              />
-
-              <v-select
-                v-model="filterSession"
-                :items="sessionOptions"
-                item-title="title"
-                item-value="value"
-                label="Canvas"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-                :menu-props="{ maxHeight: 240 }"
-                :loading="sessionsLoading"
-                :disabled="filterWorkspace === 'all'"
-              />
-
-              <v-select
-                v-model="filterApproved"
-                :items="approvalOptions"
-                item-title="title"
-                item-value="value"
-                label="Approval status"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-              />
-
-              <v-select
-                v-model="filterArchived"
-                :items="archivedOptions"
-                item-title="title"
-                item-value="value"
-                label="Archived"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-              />
-
-              <v-select
-                v-model="filterHasVariants"
-                :items="variantOptions"
-                item-title="title"
-                item-value="value"
-                label="Variants"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-4"
-              />
-
-              <v-select
-                v-model="filterTag"
-                :items="tagOptions"
-                item-title="title"
-                item-value="value"
-                label="Tag"
-                variant="solo"
-                density="comfortable"
-                hide-details
-                class="mb-6"
-                :menu-props="{ maxHeight: 240 }"
-              />
-
+            <div class="filters-card__actions">
               <v-btn
-                block
                 variant="outlined"
                 color="primary"
                 prepend-icon="mdi-refresh"
@@ -132,7 +135,8 @@
               >
                 Reset Filters
               </v-btn>
-            </v-card-text>
+            </div>
+          </v-card-text>
           </v-card>
         </v-col>
 
@@ -515,6 +519,25 @@ onUnmounted(() => {
   border: 1px solid rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
+}
+
+.filters-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.filters-card__grid {
+  margin: 0 -4px;
+}
+
+.filters-card__grid :deep(.v-col) {
+  padding: 4px;
+}
+
+.filters-card__actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .questions-page__results .results-card {
