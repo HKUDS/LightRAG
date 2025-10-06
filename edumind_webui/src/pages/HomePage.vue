@@ -165,8 +165,9 @@ watch(
 
 .home-page__workspace-panel,
 .home-page__workspace-canvas {
-  height: 100%;
+  height: calc(100vh - 76px);
   display: flex;
+  min-height: 0; 
 }
 
 .home-page__brand-initials {

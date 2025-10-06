@@ -52,35 +52,37 @@
 
       <v-window v-model="tabModel" class="canvas-panel__window">
         <v-window-item v-for="tab in tabs" :key="tab.id" :value="tab.id">
-          <div v-if="isCanvasLoading(tab.id)" class="canvas-panel__loading">
-            <v-progress-circular color="primary" size="36" indeterminate />
-          </div>
-          <div v-else-if="tab.outputs.length === 0" class="canvas-panel__empty">
-            <v-sheet class="canvas-panel__empty-sheet" color="white" variant="outlined">
-              <v-avatar color="primary" size="56" variant="flat">
-                <v-icon size="28" color="white">mdi-compass-outline</v-icon>
-              </v-avatar>
-              <h3 class="text-subtitle-1 font-weight-semibold mt-4 mb-2">Your canvas is ready</h3>
-              <p class="text-body-2 text-medium-emphasis mb-0">
-                Trigger a tool from the left panel to see fresh content appear here.
-              </p>
-            </v-sheet>
-          </div>
-          <div v-else class="canvas-panel__list">
-            <template v-for="output in tab.outputs" :key="output.id">
-              <MCQCard
-                v-if="output.type === 'mcq'"
-                :mcq="output"
-                :show-actions="true"
-                @delete="handleDeleteOutput"
-              />
-              <AssignmentCard
-                v-else
-                :assignment="output"
-                :show-actions="true"
-                @delete="handleDeleteOutput"
-              />
-            </template>
+          <div class="canvas-panel__pane">
+            <div v-if="isCanvasLoading(tab.id)" class="canvas-panel__loading">
+              <v-progress-circular color="primary" size="36" indeterminate />
+            </div>
+            <div v-else-if="tab.outputs.length === 0" class="canvas-panel__empty">
+              <v-sheet class="canvas-panel__empty-sheet" color="white" variant="outlined">
+                <v-avatar color="primary" size="56" variant="flat">
+                  <v-icon size="28" color="white">mdi-compass-outline</v-icon>
+                </v-avatar>
+                <h3 class="text-subtitle-1 font-weight-semibold mt-4 mb-2">Your canvas is ready</h3>
+                <p class="text-body-2 text-medium-emphasis mb-0">
+                  Trigger a tool from the left panel to see fresh content appear here.
+                </p>
+              </v-sheet>
+            </div>
+            <div v-else class="canvas-panel__list">
+              <template v-for="output in tab.outputs" :key="output.id">
+                <MCQCard
+                  v-if="output.type === 'mcq'"
+                  :mcq="output"
+                  :show-actions="true"
+                  @delete="handleDeleteOutput"
+                />
+                <AssignmentCard
+                  v-else
+                  :assignment="output"
+                  :show-actions="true"
+                  @delete="handleDeleteOutput"
+                />
+              </template>
+            </div>
           </div>
         </v-window-item>
       </v-window>
@@ -180,10 +182,16 @@ const handleDeleteOutput = (outputId: string) => {
 
 .canvas-panel__body {
   flex: 1;
+  overflow: hidden;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 24px;
   gap: 16px;
+}
+
+.canvas-panel__tabs {
+  flex-shrink: 0;
 }
 
 .canvas-panel__tabs :deep(.v-tab__slider) {
@@ -206,17 +214,32 @@ const handleDeleteOutput = (outputId: string) => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;        
+}
+
+.canvas-panel__window :deep(.v-window__container) {
+  height: 100%;
+  display: flex;
 }
 
 .canvas-panel__window :deep(.v-window-item) {
   height: 100%;
+  display: flex;
+}
+
+.canvas-panel__pane {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .canvas-panel__loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  flex: 1;
   padding: 24px;
 }
 
@@ -224,7 +247,7 @@ const handleDeleteOutput = (outputId: string) => {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100%;
+  flex: 1;
   padding: 24px;
 }
 
@@ -244,9 +267,16 @@ const handleDeleteOutput = (outputId: string) => {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  height: 100%;
-  overflow-y: auto;
+  flex: 1;
+  min-height: 0;                 /* allow to shrink */
+  overflow-y: auto;              /* scroll here */
   padding-right: 8px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.canvas-panel__list > * {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 960px) {
