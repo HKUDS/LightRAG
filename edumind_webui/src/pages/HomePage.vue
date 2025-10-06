@@ -156,7 +156,7 @@ watch([routeWorkspaceId, workspaces], () => {
 .home-page__workspace-panel,
 .home-page__workspace-canvas {
   height: 100%;
-  min-height: 0;
+  display: flex;
 }
 
 .home-page__brand-initials {

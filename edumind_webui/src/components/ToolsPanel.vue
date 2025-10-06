@@ -409,10 +409,10 @@ watch(
 
 <style scoped>
 .tool-shell {
-  height: 100%;
   display: flex;
-  flex: 1;
   flex-direction: column;
+  height: 100%;
+  min-height: 0; 
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(10px);
@@ -420,6 +420,7 @@ watch(
 }
 
 .tool-shell__tabs {
+  flex: 0 0 auto;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
 }
 
