@@ -10,6 +10,7 @@ const defaultFilters = () => ({
   sessionId: 'all',
   approved: 'all',
   archived: 'false',
+  hasVariants: 'all',
 })
 
 const buildProjectHeaders = (projectId) => {
@@ -17,6 +18,48 @@ const buildProjectHeaders = (projectId) => {
     return {}
   }
   return { 'X-Workspace': projectId }
+}
+
+const normaliseCorrectAnswers = (value, optionCount) => {
+  const entries = Array.isArray(value) ? value : []
+  const unique = new Set()
+  entries.forEach((entry) => {
+    const index = Number(entry)
+    if (Number.isInteger(index) && index >= 0 && (optionCount === undefined || index < optionCount)) {
+      unique.add(index)
+    }
+  })
+  return Array.from(unique)
+}
+
+const normaliseVariants = (variants = []) => {
+  if (!Array.isArray(variants)) {
+    return []
+  }
+
+  return variants
+    .map((variant) => {
+      if (!variant) {
+        return null
+      }
+      const options = Array.isArray(variant.options)
+        ? variant.options.map((option) => String(option))
+        : []
+      const correctAnswersRaw =
+        variant.correct_answers || variant.correctIndexes || variant.correct_indexes
+      const correctAnswers = Array.isArray(correctAnswersRaw)
+        ? correctAnswersRaw.map((value) => Number(value)).filter((value) => !Number.isNaN(value))
+        : []
+
+      return {
+        id: variant.id || null,
+        difficulty_level: variant.difficulty_level || variant.difficultyLevel || null,
+        options,
+        correct_answers: correctAnswers,
+        rationale: variant.rationale || variant.ai_rational || '',
+      }
+    })
+    .filter((variant) => variant !== null)
 }
 
 const normaliseQuestion = (question) => {
@@ -49,6 +92,7 @@ const normaliseQuestion = (question) => {
     session_id: question.session_id || '',
     created_at: question.created_at || '',
     updated_at: question.updated_at || '',
+    variants: normaliseVariants(question.variants),
   }
 }
 
@@ -97,6 +141,10 @@ export const useQuestionsStore = defineStore('questions', {
           state.filters.approved === 'all' || question.isApproved === (state.filters.approved === 'true')
         const matchesArchived =
           state.filters.archived === 'all' || question.isArchived === (state.filters.archived === 'true')
+        const variantCount = Array.isArray(question.variants) ? question.variants.length : 0
+        const matchesVariants =
+          state.filters.hasVariants === 'all' ||
+          (state.filters.hasVariants === 'true' ? variantCount > 0 : variantCount === 0)
 
         return (
           matchesSearch &&
@@ -106,7 +154,8 @@ export const useQuestionsStore = defineStore('questions', {
           matchesWorkspace &&
           matchesSession &&
           matchesApproved &&
-          matchesArchived
+          matchesArchived &&
+          matchesVariants
         )
       })
     },
@@ -175,6 +224,14 @@ export const useQuestionsStore = defineStore('questions', {
       this.filters.archived = value || 'all'
       this.page = 1
     },
+    setFilterHasVariants(value) {
+      this.filters.hasVariants = value || 'all'
+      this.page = 1
+    },
+    setFilterHasVariants(value) {
+      this.filters.hasVariants = value || 'all'
+      this.page = 1
+    },
     normaliseQuestions(data) {
       const list = Array.isArray(data) ? data : []
       return list
@@ -210,6 +267,7 @@ export const useQuestionsStore = defineStore('questions', {
         approved,
         archived,
         type,
+        hasVariants,
       } = this.filters
 
       const query = {
@@ -223,6 +281,7 @@ export const useQuestionsStore = defineStore('questions', {
         isApproved: approved === 'all' ? undefined : approved === 'true',
         isArchived: archived === 'all' ? undefined : archived === 'true',
         type: type !== 'all' ? type : undefined,
+        hasVariants: hasVariants === 'all' ? undefined : hasVariants === 'true',
       }
 
       this.loading = true

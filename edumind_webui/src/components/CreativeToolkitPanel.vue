@@ -68,7 +68,7 @@ const panelModel = computed<string[]>({
 })
 
 const handleExecute = (toolId: ToolConfig['id']) => {
-  if (toolId === 'mcq-generator') {
+  if (toolId === 'mcq-generator' || toolId === 'distractor-generator') {
     return
   }
   homeStore.executeTool(toolId)

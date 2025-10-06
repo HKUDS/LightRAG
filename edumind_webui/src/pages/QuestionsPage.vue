@@ -99,6 +99,18 @@
               />
 
               <v-select
+                v-model="filterHasVariants"
+                :items="variantOptions"
+                item-title="title"
+                item-value="value"
+                label="Variants"
+                variant="solo"
+                density="comfortable"
+                hide-details
+                class="mb-4"
+              />
+
+              <v-select
                 v-model="filterTag"
                 :items="tagOptions"
                 item-title="title"
@@ -285,6 +297,11 @@ const filterArchived = computed({
   set: (value: string) => questionsStore.setFilterArchived(value),
 });
 
+const filterHasVariants = computed({
+  get: () => questionsStore.filters.hasVariants,
+  set: (value: string) => questionsStore.setFilterHasVariants(value),
+});
+
 const currentPage = computed({
   get: () => questionsStore.page,
   set: (value: number) => questionsStore.setPage(value),
@@ -343,6 +360,11 @@ const archivedOptions = [
   { title: 'Only archived', value: 'true' },
 ];
 
+const variantOptions = [
+  { title: 'All questions', value: 'all' },
+  { title: 'With variants only', value: 'true' },
+];
+
 const pageSizeOptions = [
   { title: '20 per page', value: 20 },
   { title: '40 per page', value: 40 },
@@ -398,7 +420,7 @@ watch(searchQuery, () => {
   scheduleFetch(400);
 });
 
-watch([filterType, filterDifficulty, filterTag, filterApproved, filterArchived, filterSession], () => {
+watch([filterType, filterDifficulty, filterTag, filterApproved, filterArchived, filterSession, filterHasVariants], () => {
   scheduleFetch();
 });
 
