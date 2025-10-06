@@ -134,10 +134,7 @@ export const useMcqGeneratorStore = defineStore('mcqGenerator', {
           return
         }
 
-        if (!homeStore.activeTab) {
-          homeStore.resetWorkspace()
-        }
-        homeStore.appendOutputs(outputs)
+        await homeStore.appendOutputs(outputs)
 
         this.lastMessage = response?.message || `Generated ${outputs.length} questions.`
       } catch (error) {

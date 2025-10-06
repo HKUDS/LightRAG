@@ -1,13 +1,8 @@
 import { defineStore } from 'pinia'
+import { sessionsApi } from '@/api'
 import { useAppStore } from '../AppStore'
-
-const createTabId = (index) => `canvas-${index}-${Math.random().toString(36).slice(2, 8)}`
-
-const buildInitialTab = () => ({
-  id: createTabId(1),
-  name: 'Canvas 1',
-  outputs: [],
-})
+import { useWorkspaceContextStore } from '../workspaceContext'
+import { useUserStore } from '../user'
 
 const pickRandom = (items) => items[Math.floor(Math.random() * items.length)]
 
@@ -35,7 +30,7 @@ const mcqPool = [
     options: ["Faraday's Law", "Newton's Law", "Ohm's Law", "Maxwell's Equation"],
     correctOptions: [2],
     difficultyLevel: 'medium',
-    aiRational: 'Ohm\'s Law states that voltage equals current multiplied by resistance, forming the foundation of circuit analysis.',
+    aiRational: "Ohm's Law states that voltage equals current multiplied by resistance, forming the foundation of circuit analysis.",
     source: 'Physics Core Concepts',
     tag: 'Physics',
   },
@@ -91,7 +86,7 @@ const flashcardPool = [
     tag: 'Neuroscience',
   },
   {
-    question: 'Explain the purpose of Bloom\'s taxonomy in instructional design.',
+    question: "Explain the purpose of Bloom's taxonomy in instructional design.",
     difficultyLevel: 'easy',
     aiRational: 'Supports quick recall of core pedagogical frameworks for lesson planning.',
     source: 'Teaching Methodologies Handbook',
@@ -152,17 +147,52 @@ const buildAssignmentPayload = (pool = assignmentPool) => {
   }
 }
 
-export const useHomeStore = defineStore('home', {
-  state: () => {
-    const firstTab = buildInitialTab()
-    return {
-      tools: toolCatalogue,
-      expandedToolIds: toolCatalogue.slice(0, 1).map((tool) => tool.id),
-      tabs: [firstTab],
-      activeTabId: firstTab.id,
-      tabCounter: 1,
+const extractCanvasIndex = (name = '') => {
+  const match = /canvas\s+(\d+)$/i.exec(name.trim())
+  if (!match) {
+    return null
+  }
+  const value = Number(match[1])
+  return Number.isNaN(value) ? null : value
+}
+
+const computeTabCounterFromTabs = (tabs = []) => {
+  return tabs.reduce((currentMax, tab) => {
+    const candidate = extractCanvasIndex(tab.name)
+    if (!candidate) {
+      return currentMax
     }
-  },
+    return Math.max(currentMax, candidate)
+  }, 0)
+}
+
+const buildProjectHeaders = (projectId) => {
+  if (!projectId) {
+    return {}
+  }
+  return { 'X-Workspace': projectId }
+}
+
+const mapCanvasToTab = (canvas, index) => ({
+  id: canvas?.id || '',
+  name: canvas?.name || canvas?.topic || `Canvas ${index + 1}`,
+  outputs: [],
+  meta: canvas || null,
+})
+
+export const useHomeStore = defineStore('home', {
+  state: () => ({
+    tools: toolCatalogue,
+    expandedToolIds: toolCatalogue.slice(0, 1).map((tool) => tool.id),
+    tabs: [],
+    activeTabId: '',
+    tabCounter: 0,
+    loading: false,
+    error: null,
+    creatingCanvas: false,
+    deletingCanvasIds: [],
+    currentProjectId: '',
+  }),
   getters: {
     activeTab(state) {
       if (!state.activeTabId && state.tabs.length) {
@@ -180,6 +210,7 @@ export const useHomeStore = defineStore('home', {
       const appStore = useAppStore()
       return this.tabs.length < appStore.maxCanvasTabs
     },
+    isDeletingCanvas: (state) => (canvasId) => state.deletingCanvasIds.includes(canvasId),
   },
   actions: {
     initialise() {
@@ -200,40 +231,189 @@ export const useHomeStore = defineStore('home', {
     setActiveTab(tabId) {
       this.activeTabId = tabId
     },
-    addTab() {
+    setCanvasCollection(canvases = []) {
+      const mappedTabs = canvases.map((canvas, index) => mapCanvasToTab(canvas, index))
+      this.tabs = mappedTabs
+      this.tabCounter = computeTabCounterFromTabs(mappedTabs)
+      if (!mappedTabs.length) {
+        this.activeTabId = ''
+        return
+      }
+      const currentTab = mappedTabs.find((tab) => tab.id === this.activeTabId)
+      this.activeTabId = currentTab ? currentTab.id : mappedTabs[0].id
+    },
+    async loadProjectCanvases({ projectId, force = false } = {}) {
+      if (this.loading) {
+        return
+      }
+
+      const workspaceStore = useWorkspaceContextStore()
+      const userStore = useUserStore()
+      const appStore = useAppStore()
+
+      const targetProjectId = projectId || workspaceStore.workspaceId
+      if (!targetProjectId) {
+        this.currentProjectId = ''
+        this.setCanvasCollection([])
+        return
+      }
+
+      if (!force && this.currentProjectId === targetProjectId && this.tabs.length) {
+        return
+      }
+
+      this.loading = true
+      this.error = null
+      this.currentProjectId = targetProjectId
+
+      try {
+        const response = await sessionsApi.listCanvas({
+          projectId: targetProjectId,
+          userId: userStore.userId,
+          limit: appStore.maxCanvasTabs,
+          headers: buildProjectHeaders(targetProjectId),
+        })
+
+        const canvases = Array.isArray(response?.canvases) ? response.canvases : []
+        this.setCanvasCollection(canvases)
+      } catch (error) {
+        console.error('Failed to load canvases', error)
+        this.error = error
+        this.setCanvasCollection([])
+      } finally {
+        this.loading = false
+      }
+    },
+    async ensureActiveCanvas() {
+      if (this.activeTab) {
+        return this.activeTab
+      }
+
+      if (this.currentProjectId) {
+        await this.loadProjectCanvases({ projectId: this.currentProjectId, force: true })
+        if (this.activeTab) {
+          return this.activeTab
+        }
+      }
+
+      if (!this.canAddTab) {
+        return null
+      }
+
+      try {
+        const tab = await this.addTab()
+        return tab
+      } catch (error) {
+        console.error('Failed to ensure active canvas', error)
+        return null
+      }
+    },
+    async addTab({ name } = {}) {
       if (!this.canAddTab) {
         return false
       }
 
-      this.tabCounter += 1
-      const newTab = {
-        id: createTabId(this.tabCounter),
-        name: `Canvas ${this.tabCounter}`,
-        outputs: [],
+      const workspaceStore = useWorkspaceContextStore()
+      const userStore = useUserStore()
+
+      const projectId = workspaceStore.workspaceId || this.currentProjectId
+      if (!projectId) {
+        this.error = new Error('Select a project before creating a canvas.')
+        return false
       }
 
-      this.tabs = [...this.tabs, newTab]
-      this.activeTabId = newTab.id
-      return true
+      const headers = buildProjectHeaders(projectId)
+      const trimmedName = typeof name === 'string' ? name.trim() : ''
+      const fallbackIndex = this.tabCounter + 1
+      const topic = trimmedName || `Canvas ${fallbackIndex}`
+
+      this.creatingCanvas = true
+      this.error = null
+
+      try {
+        const response = await sessionsApi.createSession({
+          payload: {
+            user_id: userStore.userId,
+            project_id: projectId,
+            topic,
+          },
+          headers,
+        })
+
+        const sessionId = response?.session_id
+        if (!sessionId) {
+          throw new Error('The server did not return a session identifier.')
+        }
+
+        let canvasMeta = null
+        try {
+          const fetched = await sessionsApi.fetchCanvas({ id: sessionId, headers })
+          canvasMeta = fetched?.canvas || null
+        } catch (fetchError) {
+          console.warn('Failed to fetch canvas metadata', fetchError)
+        }
+
+        const mappedTab = mapCanvasToTab(
+          canvasMeta || {
+            id: sessionId,
+            name: topic,
+            topic,
+            userId: userStore.userId,
+            projectId,
+          },
+          this.tabs.length
+        )
+
+        mappedTab.id = sessionId
+
+        const derivedIndex = extractCanvasIndex(mappedTab.name) || fallbackIndex
+        this.tabCounter = Math.max(this.tabCounter, derivedIndex)
+
+        this.tabs = [...this.tabs, mappedTab]
+        this.activeTabId = mappedTab.id
+        this.currentProjectId = projectId
+        return mappedTab
+      } catch (error) {
+        console.error('Failed to create canvas', error)
+        this.error = error
+        throw error
+      } finally {
+        this.creatingCanvas = false
+      }
     },
-    closeTab(tabId) {
-      if (this.tabs.length === 1) {
+    async closeTab(tabId) {
+      if (!tabId) {
         return false
       }
 
-      const tabIndex = this.tabs.findIndex((tab) => tab.id === tabId)
-      if (tabIndex === -1) {
+      const existingTab = this.tabs.find((tab) => tab.id === tabId)
+      if (!existingTab) {
         return false
       }
 
-      const updatedTabs = this.tabs.filter((tab) => tab.id !== tabId)
-      this.tabs = updatedTabs
+      const workspaceStore = useWorkspaceContextStore()
+      const projectId = workspaceStore.workspaceId || this.currentProjectId
+      const headers = buildProjectHeaders(projectId)
 
-      if (this.activeTabId === tabId) {
-        const fallbackTab = updatedTabs[Math.max(0, tabIndex - 1)] || updatedTabs[0] || null
-        this.activeTabId = fallbackTab ? fallbackTab.id : ''
+      this.deletingCanvasIds = Array.from(new Set([...this.deletingCanvasIds, tabId]))
+      this.error = null
+
+      try {
+        await sessionsApi.deleteSession({ id: tabId, headers })
+
+        this.tabs = this.tabs.filter((tab) => tab.id !== tabId)
+        if (this.activeTabId === tabId) {
+          this.activeTabId = this.tabs[0]?.id || ''
+        }
+        this.tabCounter = computeTabCounterFromTabs(this.tabs)
+        return true
+      } catch (error) {
+        console.error('Failed to delete canvas', error)
+        this.error = error
+        throw error
+      } finally {
+        this.deletingCanvasIds = this.deletingCanvasIds.filter((id) => id !== tabId)
       }
-      return true
     },
     discardActiveTabOutputs() {
       if (!this.activeTab) {
@@ -249,59 +429,48 @@ export const useHomeStore = defineStore('home', {
       tab.outputs = tab.outputs.filter((output) => output.id !== outputId)
     },
     resetWorkspace() {
-      this.tabs = [buildInitialTab()]
-      this.activeTabId = this.tabs[0].id
-      this.tabCounter = 1
+      this.setCanvasCollection([])
+      this.currentProjectId = ''
+      this.tabCounter = 0
     },
-    appendOutputs(outputs) {
+    async appendOutputs(outputs) {
       if (!Array.isArray(outputs) || outputs.length === 0) {
         return
       }
 
-      if (!this.activeTab) {
-        this.resetWorkspace()
+      const activeTab = await this.ensureActiveCanvas()
+      if (!activeTab) {
+        throw new Error('No canvas available to accept generated outputs.')
       }
 
-      if (this.activeTab) {
-        this.activeTab.outputs = [...this.activeTab.outputs, ...outputs]
-      }
+      activeTab.outputs = [...activeTab.outputs, ...outputs]
     },
-    appendOutputs(outputs) {
-      if (!Array.isArray(outputs) || outputs.length === 0) {
-        return
-      }
+    async executeTool(toolId) {
+      try {
+        const activeTab = await this.ensureActiveCanvas()
+        if (!activeTab) {
+          return null
+        }
 
-      if (!this.activeTab) {
-        this.resetWorkspace()
-      }
+        const generators = {
+          'mcq-generator': () => buildMcqPayload(),
+          'assignment-generator': () => buildAssignmentPayload(),
+          'quiz-builder': () => {
+            const choice = Math.random() > 0.5 ? buildMcqPayload() : buildAssignmentPayload(projectPool)
+            return choice
+          },
+          'flashcard-creator': () => buildAssignmentPayload(flashcardPool),
+        }
 
-      if (this.activeTab) {
-        this.activeTab.outputs = [...this.activeTab.outputs, ...outputs]
+        const generator = generators[toolId] || (() => buildMcqPayload())
+        const output = generator()
+        activeTab.outputs = [...activeTab.outputs, output]
+        return output
+      } catch (error) {
+        console.error('Failed to execute tool', error)
+        this.error = error
+        return null
       }
-    },
-    executeTool(toolId) {
-      if (!this.activeTab) {
-        this.resetWorkspace()
-      }
-
-      const generators = {
-        'mcq-generator': () => buildMcqPayload(),
-        'assignment-generator': () => buildAssignmentPayload(),
-        'quiz-builder': () => {
-          const choice = Math.random() > 0.5 ? buildMcqPayload() : buildAssignmentPayload(projectPool)
-          return choice
-        },
-        'flashcard-creator': () => buildAssignmentPayload(flashcardPool),
-      }
-
-      const generator = generators[toolId] || (() => buildMcqPayload())
-      const output = generator()
-
-      if (this.activeTab) {
-        this.activeTab.outputs = [...this.activeTab.outputs, output]
-      }
-
-      return output
     },
   },
 })

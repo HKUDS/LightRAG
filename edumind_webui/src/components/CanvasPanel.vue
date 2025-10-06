@@ -16,7 +16,8 @@
             color="primary"
             variant="flat"
             prepend-icon="mdi-plus-circle-outline"
-            :disabled="!canAddTab"
+            :disabled="!canAddTab || creatingCanvas"
+            :loading="creatingCanvas"
             @click="handleAddTab"
           >
             New Canvas
@@ -37,11 +38,12 @@
             <v-icon size="18">mdi-notebook-outline</v-icon>
             <span>{{ tab.name }}</span>
             <v-btn
-              v-if="tabs.length > 1"
               size="x-small"
               icon="mdi-close"
               variant="text"
               color="primary"
+              :loading="isDeletingCanvas(tab.id)"
+              :disabled="isDeletingCanvas(tab.id)"
               @click.stop="handleCloseTab(tab.id)"
             />
           </div>
@@ -91,7 +93,7 @@ import AssignmentCard from '@/components/AssignmentCard.vue';
 import { useHomeStore } from '@/stores';
 
 const homeStore = useHomeStore();
-const { tabs, activeTabId, activeTab, hasActiveOutputs, canAddTab } = storeToRefs(homeStore);
+const { tabs, activeTabId, activeTab, hasActiveOutputs, canAddTab, creatingCanvas } = storeToRefs(homeStore);
 
 const tabModel = computed<string>({
   get: () => activeTabId.value,
@@ -103,19 +105,20 @@ const tabModel = computed<string>({
 });
 
 const hasOutputs = computed(() => hasActiveOutputs.value);
+const isDeletingCanvas = (tabId: string) => homeStore.isDeletingCanvas(tabId);
 
-const handleAddTab = () => {
-  if (!canAddTab.value) {
+const handleAddTab = async () => {
+  if (!canAddTab.value || creatingCanvas.value) {
     return;
   }
-  homeStore.addTab();
+  try {
+    await homeStore.addTab();
+  } catch (error) {
+    console.error('Failed to create canvas', error);
+  }
 };
 
-const handleCloseTab = (tabId: string) => {
-  if (tabs.value.length === 1) {
-    return;
-  }
-
+const handleCloseTab = async (tabId: string) => {
   const targetTab = tabs.value.find((tab) => tab.id === tabId);
   if (!targetTab) {
     return;
@@ -123,7 +126,11 @@ const handleCloseTab = (tabId: string) => {
 
   const confirmed = window.confirm(`Close ${targetTab.name}? All outputs on this canvas will be removed.`);
   if (confirmed) {
-    homeStore.closeTab(tabId);
+    try {
+      await homeStore.closeTab(tabId);
+    } catch (error) {
+      console.error('Failed to close canvas', error);
+    }
   }
 };
 

@@ -58,6 +58,7 @@ const route = useRoute()
 
 const { appName, tagline, organization, organizationInitials } = storeToRefs(appStore)
 const { workspaces } = storeToRefs(dashboardStore)
+const { workspaceId } = storeToRefs(workspaceContextStore)
 
 const routeWorkspaceId = computed(() => {
   const value = route.query.workspaceId
@@ -84,7 +85,8 @@ const setWorkspaceContext = () => {
   }
 
   if (!targetId) {
-    targetId = 'default-workspace'
+    workspaceContextStore.resetWorkspace()
+    return
   }
 
   workspaceContextStore.setWorkspace({ id: targetId, name: targetName })
@@ -101,6 +103,14 @@ onMounted(() => {
 watch([routeWorkspaceId, workspaces], () => {
   setWorkspaceContext()
 })
+
+watch(
+  workspaceId,
+  (value) => {
+    homeStore.loadProjectCanvases({ projectId: value, force: true })
+  },
+  { immediate: true }
+)
 </script>
 
 <style scoped>
