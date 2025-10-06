@@ -76,6 +76,7 @@ class PostgreSQLDB:
 
         # Server settings
         self.server_settings = config.get("server_settings")
+        self.statement_cache_size = int(config.get("statement_cache_size"))
 
         if self.user is None or self.password is None or self.database is None:
             raise ValueError("Missing database user, password, or database")
@@ -161,7 +162,12 @@ class PostgreSQLDB:
                 "port": self.port,
                 "min_size": 1,
                 "max_size": self.max,
+                "statement_cache_size": self.statement_cache_size,
             }
+
+            logger.info(
+                f"PostgreSQL, statement LRU cache size set as: {self.statement_cache_size}"
+            )
 
             # Add SSL configuration if provided
             ssl_context = self._create_ssl_context()
@@ -1391,8 +1397,12 @@ class ClientManager:
             ),
             # Server settings for Supabase
             "server_settings": os.environ.get(
-                "POSTGRES_SERVER_OPTIONS",
+                "POSTGRES_SERVER_SETTINGS",
                 config.get("postgres", "server_options", fallback=None),
+            ),
+            "statement_cache_size": os.environ.get(
+                "POSTGRES_STATEMENT_CACHE_SIZE",
+                config.get("postgres", "statement_cache_size", fallback=None),
             ),
         }
 
