@@ -43,6 +43,19 @@ spec:
             - name: env-file
               mountPath: /app/.env
               subPath: .env
+          envFrom:
+          {{- range .Values.envFrom.secrets }}
+            - secretRef:
+                name: {{ .name }}
+          {{- end }}
+          {{- range .Values.envFrom.configmaps }}
+            - configMapRef:
+                name: {{ .name }}
+          {{- end }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: env-file
           secret:
@@ -60,3 +73,6 @@ spec:
         - name: inputs
           emptyDir: {}
         {{- end }}
+
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
