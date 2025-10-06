@@ -52,7 +52,10 @@
 
       <v-window v-model="tabModel" class="canvas-panel__window">
         <v-window-item v-for="tab in tabs" :key="tab.id" :value="tab.id">
-          <div v-if="tab.outputs.length === 0" class="canvas-panel__empty">
+          <div v-if="isCanvasLoading(tab.id)" class="canvas-panel__loading">
+            <v-progress-circular color="primary" size="36" indeterminate />
+          </div>
+          <div v-else-if="tab.outputs.length === 0" class="canvas-panel__empty">
             <v-sheet class="canvas-panel__empty-sheet" color="white" variant="outlined">
               <v-avatar color="primary" size="56" variant="flat">
                 <v-icon size="28" color="white">mdi-compass-outline</v-icon>
@@ -106,6 +109,7 @@ const tabModel = computed<string>({
 
 const hasOutputs = computed(() => hasActiveOutputs.value);
 const isDeletingCanvas = (tabId: string) => homeStore.isDeletingCanvas(tabId);
+const isCanvasLoading = (tabId: string) => homeStore.isCanvasLoading(tabId);
 
 const handleAddTab = async () => {
   if (!canAddTab.value || creatingCanvas.value) {
@@ -206,6 +210,14 @@ const handleDeleteOutput = (outputId: string) => {
 
 .canvas-panel__window :deep(.v-window-item) {
   height: 100%;
+}
+
+.canvas-panel__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
 }
 
 .canvas-panel__empty {

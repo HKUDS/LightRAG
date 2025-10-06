@@ -144,6 +144,11 @@ export const useMcqGeneratorStore = defineStore('mcqGenerator', {
         }
 
         await homeStore.appendOutputs(outputs)
+        try {
+          await homeStore.loadCanvasOutputs({ tabId: sessionId, force: true })
+        } catch (loadError) {
+          console.warn('Failed to refresh canvas questions', loadError)
+        }
 
         this.lastMessage = response?.message || `Generated ${outputs.length} questions.`
       } catch (error) {

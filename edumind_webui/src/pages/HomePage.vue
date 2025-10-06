@@ -107,7 +107,7 @@ watch([routeWorkspaceId, workspaces], () => {
 watch(
   workspaceId,
   (value) => {
-    homeStore.loadProjectCanvases({ projectId: value, force: true })
+    homeStore.loadProjectCanvases({ projectId: value, force: true }).catch(() => {})
   },
   { immediate: true }
 )
