@@ -1,37 +1,17 @@
 <template>
-  <div class="home-page">
-    <v-app-bar flat color="white" class="home-page__app-bar" height="76">
-      <v-container class="py-0" fluid>
-        <div class="home-page__bar">
-          <div class="home-page__brand">
-            <v-avatar color="primary" size="48" variant="flat">
-              <span class="home-page__brand-initials text-subtitle-1 font-weight-semibold">{{ organizationInitials }}</span>
-            </v-avatar>
-            <div>
-              <p class="text-overline text-uppercase text-medium-emphasis mb-1">{{ organization }}</p>
-              <h1 class="text-h5 font-weight-semibold mb-0">{{ appName }}</h1>
-            </div>
-          </div>
-          <div class="home-page__actions">
-            <p class="text-body-2 text-medium-emphasis mb-0">{{ tagline }}</p>
-            <v-btn
-              color="primary"
-              variant="flat"
-              class="px-6"
-              prepend-icon="mdi-file-document-multiple-outline"
-              :to="{ name: 'Questions' }"
-            >
-              View Question Library
-            </v-btn>
-          </div>
-        </div>
-      </v-container>
-    </v-app-bar>
+  <div class="studio-page">
+    <AppPageHeader
+      :title="appName"
+      :description="tagline"
+      action-label="Go to Questions Library"
+      action-icon="mdi-file-document-multiple-outline"
+      :action-to="{ name: 'Questions' }"
+    />
 
-    <v-container fluid class="home-page__content">
-      <div class="home-page__workspace">
-        <ToolsPanel class="home-page__workspace-panel" />
-        <CanvasPanel class="home-page__workspace-canvas" />
+    <v-container fluid class="studio-page__content">
+      <div class="studio-page__workspace">
+        <ToolsPanel class="studio-page__workspace-panel" />
+        <CanvasPanel class="studio-page__workspace-canvas" />
       </div>
     </v-container>
   </div>
@@ -43,6 +23,7 @@ import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import ToolsPanel from '@/components/ToolsPanel.vue'
 import CanvasPanel from '@/components/CanvasPanel.vue'
+import AppPageHeader from '@/components/AppPageHeader.vue'
 import {
   useAppStore,
   useHomeStore,
@@ -56,7 +37,7 @@ const dashboardStore = useDashboardStore()
 const workspaceContextStore = useWorkspaceContextStore()
 const route = useRoute()
 
-const { appName, tagline, organization, organizationInitials } = storeToRefs(appStore)
+const { appName, tagline } = storeToRefs(appStore)
 const { workspaces } = storeToRefs(dashboardStore)
 const { workspaceId } = storeToRefs(workspaceContextStore)
 
@@ -114,7 +95,7 @@ watch(
 </script>
 
 <style scoped>
-.home-page {
+.studio-page {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -122,31 +103,7 @@ watch(
   background-color: #ffffff;
 }
 
-.home-page__app-bar {
-  border-bottom: 1px solid rgba(22, 101, 52, 0.12);
-}
-
-.home-page__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  padding-inline: 16px;
-}
-
-.home-page__brand {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.home-page__actions {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.home-page__content {
+.studio-page__content {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -155,7 +112,7 @@ watch(
   overflow: hidden;
 }
 
-.home-page__workspace {
+.studio-page__workspace {
   flex: 1;
   display: grid;
   grid-template-columns: minmax(280px, 3fr) minmax(0, 7fr);
@@ -163,43 +120,26 @@ watch(
   min-height: 0;
 }
 
-.home-page__workspace-panel,
-.home-page__workspace-canvas {
-  height: calc(100vh - 76px);
+.studio-page__workspace-panel,
+.studio-page__workspace-canvas {
+  height: 100%;
   display: flex;
-  min-height: 0; 
-}
-
-.home-page__brand-initials {
-  color: #ffffff;
+  min-height: 0;
 }
 
 @media (max-width: 1280px) {
-  .home-page__workspace {
+  .studio-page__workspace {
     grid-template-columns: minmax(240px, 35%) minmax(0, 1fr);
   }
 }
 
 @media (max-width: 960px) {
-  .home-page__content {
+  .studio-page__content {
     padding: 24px 16px;
     overflow: auto;
   }
 
-  .home-page__bar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
-  }
-
-  .home-page__actions {
-    width: 100%;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
-  }
-
-  .home-page__workspace {
+  .studio-page__workspace {
     grid-template-columns: 1fr;
   }
 }

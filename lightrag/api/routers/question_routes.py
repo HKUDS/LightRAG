@@ -176,6 +176,7 @@ def create_question_routes(api_key: Optional[str] = None) -> APIRouter:
         user_id: Optional[str] = Query(None),
         session_id: Optional[str] = Query(None),
         project_id: Optional[str] = Query(None),
+        type: Optional[str] = Query(None, description="Filter by question type"),
         isApproved: Optional[bool] = Query(None),
         isArchived: Optional[bool] = Query(False),
         q: Optional[str] = Query(None, description="Full-text search on question_text (simple ILIKE)"),
@@ -195,6 +196,8 @@ def create_question_routes(api_key: Optional[str] = None) -> APIRouter:
                 where.append(QuestionModel.session_id == session_id)
             if project_id:
                 where.append(QuestionModel.project_id == project_id)
+            if type:
+                where.append(QuestionModel.type == type)
             if isApproved is not None:
                 where.append(QuestionModel.isApproved == isApproved)
             if isArchived is not None:

@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import DashboardPage from '@/pages/DashboardPage.vue';
-import HomePage from '@/pages/HomePage.vue';
+import StudioPage from '@/pages/StudioPage.vue';
 import QuestionsPage from '@/pages/QuestionsPage.vue';
 
 const routes = [
@@ -10,9 +10,13 @@ const routes = [
     component: DashboardPage
   },
   {
+    path: '/studio',
+    name: 'Studio',
+    component: StudioPage
+  },
+  {
     path: '/workspace',
-    name: 'Workspace',
-    component: HomePage
+    redirect: { name: 'Studio' }
   },
   {
     path: '/questions',

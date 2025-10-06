@@ -209,6 +209,7 @@ export const useQuestionsStore = defineStore('questions', {
         sessionId,
         approved,
         archived,
+        type,
       } = this.filters
 
       const query = {
@@ -221,6 +222,7 @@ export const useQuestionsStore = defineStore('questions', {
         session_id: sessionId !== 'all' ? sessionId : undefined,
         isApproved: approved === 'all' ? undefined : approved === 'true',
         isArchived: archived === 'all' ? undefined : archived === 'true',
+        type: type !== 'all' ? type : undefined,
       }
 
       this.loading = true

@@ -1,25 +1,12 @@
 <template>
   <div class="dashboard-page">
-    <v-app-bar flat color="white" class="dashboard-page__app-bar" height="76">
-      <v-container class="py-0" fluid>
-        <div class="dashboard-page__bar">
-          <div>
-            <p class="text-overline text-uppercase text-medium-emphasis mb-1">Your Spaces</p>
-            <h1 class="text-h5 font-weight-semibold mb-0">Workspace Dashboard</h1>
-          </div>
-          <!-- <div class="dashboard-page__actions">
-            <v-btn
-              color="primary"
-              variant="flat"
-              prepend-icon="mdi-notebook-edit-outline"
-              :to="{ name: 'Workspace' }"
-            >
-              Go to Canvas Studio
-            </v-btn>
-          </div> -->
-        </div>
-      </v-container>
-    </v-app-bar>
+    <AppPageHeader
+      title="Workspace Dashboard"
+      description="Curate your knowledge spaces and continue building content."
+      action-label="Go to Questions Library"
+      action-icon="mdi-file-document-multiple-outline"
+      :action-to="{ name: 'Questions' }"
+    />
 
     <v-container fluid class="dashboard-page__content">
       <div class="dashboard-page__intro">
@@ -84,7 +71,7 @@
                 variant="text"
                 color="primary"
                 prepend-icon="mdi-launch"
-                :to="{ name: 'Workspace', query: { workspaceId: workspace.id } }"
+              :to="{ name: 'Studio', query: { workspaceId: workspace.id } }"
               >
                 Open Workspace
               </v-btn>
@@ -106,6 +93,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
+import AppPageHeader from '@/components/AppPageHeader.vue'
 import { useDashboardStore } from '@/stores'
 
 const dashboardStore = useDashboardStore()
@@ -138,24 +126,6 @@ onMounted(() => {
   height: 100vh;
   background-color: #ffffff;
   overflow: hidden;
-}
-
-.dashboard-page__app-bar {
-  border-bottom: 1px solid rgba(22, 101, 52, 0.12);
-}
-
-.dashboard-page__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding-inline: 16px;
-}
-
-.dashboard-page__actions {
-  display: flex;
-  align-items: center;
-  gap: 16px;
 }
 
 .dashboard-page__content {

@@ -1,26 +1,10 @@
 <template>
   <div class="questions-page">
-    <v-app-bar flat color="white" class="questions-page__app-bar" height="76">
-      <v-container class="py-0" fluid>
-        <div class="questions-page__bar">
-          <div class="questions-page__bar-left">
-            <h1 class="text-h5 font-weight-semibold mb-1">Question Library</h1>
-            <p class="text-body-2 text-medium-emphasis mb-0">
-              Browse and refine every prompt your team has generated.
-            </p>
-          </div>
-          <v-btn
-            color="primary"
-            variant="flat"
-            class="px-6"
-            prepend-icon="mdi-arrow-left"
-            :to="{ name: 'Dashboard' }"
-          >
-            Back to Dashboard
-          </v-btn>
-        </div>
-      </v-container>
-    </v-app-bar>
+    <AppPageHeader
+      title="Question Library"
+      :description="headerDescription"
+      show-back
+    />
 
     <v-container fluid class="questions-page__content">
       <v-row class="questions-page__grid" align="stretch" justify="stretch">
@@ -230,6 +214,7 @@ import { computed, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import MCQCard from '@/components/MCQCard.vue';
 import AssignmentCard from '@/components/AssignmentCard.vue';
+import AppPageHeader from '@/components/AppPageHeader.vue';
 import { useQuestionsStore, useDashboardStore, useWorkspaceContextStore } from '@/stores';
 
 interface DatabaseQuestion {
@@ -258,6 +243,7 @@ const workspaceContextStore = useWorkspaceContextStore();
 const { loading, uniqueTags, filteredQuestions, resultsSummary, sessionsLoading } = storeToRefs(questionsStore);
 const { workspaces } = storeToRefs(dashboardStore);
 const totalQuestions = computed(() => questionsStore.totalQuestions);
+const headerDescription = 'Browse and refine every prompt your team has generated.';
 
 const searchQuery = computed({
   get: () => questionsStore.filters.searchQuery,
