@@ -70,7 +70,7 @@
             <div v-else class="canvas-panel__list">
               <template v-for="output in tab.outputs" :key="output.id">
                 <MCQCard
-                  v-if="output.type === 'mcq'"
+                  v-if="output.type === 'mcq' || output.type === 'multiple_response'"
                   :mcq="output"
                   :show-actions="true"
                   @delete="handleDeleteOutput"
