@@ -10,6 +10,27 @@
         </div>
       </div>
 
+      <div class="dashboard-page__actions-toolbar">
+        <v-btn
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-plus-circle-outline"
+          :disabled="loading || savingWorkspace"
+          @click="openCreateWorkspace"
+        >
+          Create Workspace
+        </v-btn>
+        <v-btn
+          color="primary"
+          variant="text"
+          prepend-icon="mdi-refresh"
+          :loading="loading"
+          @click="refresh"
+        >
+          Refresh
+        </v-btn>
+      </div>
+
       <div v-if="loading" class="dashboard-page__state">
         <v-progress-circular indeterminate color="primary" size="40" />
         <p class="text-body-2 text-medium-emphasis mt-3 mb-0">Loading workspaces…</p>
@@ -327,22 +348,6 @@ const applyHeader = () => {
     description: 'Curate your knowledge spaces and continue building content.',
     actions: [
       {
-        id: 'create-workspace',
-        label: 'Create Workspace',
-        icon: 'mdi-plus-circle-outline',
-        variant: 'flat',
-        onClick: openCreateWorkspace,
-        disabled: loading.value || savingWorkspace.value,
-      },
-      {
-        id: 'refresh-workspaces',
-        label: 'Refresh',
-        icon: 'mdi-refresh',
-        variant: 'text',
-        onClick: refresh,
-        loading: loading.value,
-      },
-      {
         id: 'go-questions',
         label: 'Go to Questions Library',
         icon: 'mdi-file-document-multiple-outline',
@@ -404,6 +409,14 @@ watch([loading, savingWorkspace, deletingWorkspace], () => {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.dashboard-page__actions-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .dashboard-page__state {
@@ -474,6 +487,10 @@ watch([loading, savingWorkspace, deletingWorkspace], () => {
 @media (max-width: 960px) {
   .dashboard-page__content {
     padding: 24px 16px;
+  }
+
+  .dashboard-page__actions-toolbar {
+    justify-content: flex-start;
   }
 }
 </style>

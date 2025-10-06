@@ -11,7 +11,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, onActivated, onDeactivated, watch, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import ToolsPanel from '@/components/ToolsPanel.vue'
 import CanvasPanel from '@/components/CanvasPanel.vue'
@@ -29,7 +29,6 @@ const dashboardStore = useDashboardStore()
 const workspaceContextStore = useWorkspaceContextStore()
 const headerStore = useHeaderStore()
 const route = useRoute()
-const router = useRouter()
 
 const { appName, tagline } = storeToRefs(appStore)
 const { workspaces } = storeToRefs(dashboardStore)
@@ -59,6 +58,7 @@ const setWorkspaceContext = () => {
     return
   }
   workspaceContextStore.setWorkspace({ id: targetId, name: targetName })
+  homeStore.loadProjectCanvases({ projectId: targetId, force: true }).catch(() => {})
 }
 
 const applyHeader = () => {
@@ -87,7 +87,6 @@ onMounted(() => {
 })
 
 onActivated(() => {
-  // Re-apply header and ensure workspace context is up to date when navigating back
   setWorkspaceContext()
   applyHeader()
 })
