@@ -78,13 +78,6 @@
 
       <v-window-item value="search" class="tool-shell__pane">
         <div class="chat-pane">
-          <div class="chat-pane__header">
-            <h3 class="text-subtitle-1 font-weight-semibold mb-1">Search with AI</h3>
-            <p class="text-body-2 text-medium-emphasis mb-0">
-              Ask a question to explore your workspace content.
-            </p>
-          </div>
-
           <div class="chat-pane__messages" ref="messagesContainer">
             <div v-if="chatError" class="chat-pane__state">
               <v-icon size="28" color="primary">mdi-alert-circle-outline</v-icon>
@@ -417,11 +410,13 @@ watch(
 <style scoped>
 .tool-shell {
   height: 100%;
-  display: flex flex-1;
+  display: flex;
+  flex: 1;
   flex-direction: column;
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(10px);
+  min-height: 0;
 }
 
 .tool-shell__tabs {
@@ -441,10 +436,6 @@ watch(
   display: none;
 }
 
-.tool-shell__tabs :deep(.v-slide-group__content) {
-  align-items: center;
-}
-
 .tool-shell__tabs :deep(.v-tab) {
   min-height: 40px;
   padding-block: 8px;
@@ -454,13 +445,31 @@ watch(
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
+
+.tool-shell__window :deep(.v-window) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.tool-shell__window :deep(.v-window__container),
+.tool-shell__window :deep(.v-window-item) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;         /* critical to enable inner scroll */
+}
+
 
 .tool-shell__pane {
   display: flex;
   flex-direction: column;
   padding: 20px;
   min-height: 0;
+  flex: 1;
 }
 
 .files-pane {
@@ -504,6 +513,7 @@ watch(
   flex-direction: column;
   gap: 20px;
   height: 100%;
+  min-height: 0;
 }
 
 .chat-pane__header {
@@ -513,8 +523,9 @@ watch(
 }
 
 .chat-pane__messages {
-  flex: 1;
-  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;         
+  overflow-y: auto;      
   display: flex;
   flex-direction: column;
   gap: 12px;
