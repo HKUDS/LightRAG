@@ -95,8 +95,17 @@ export const useMcqGeneratorStore = defineStore('mcqGenerator', {
       const userStore = useUserStore()
       const homeStore = useHomeStore()
 
+      const activeCanvas = await homeStore.ensureActiveCanvas()
+      if (!activeCanvas) {
+        this.error = new Error('Create a canvas before generating questions.')
+        return
+      }
+
+      const sessionId = activeCanvas.id || homeStore.activeTabId || 'default'
+      this.sessionId = sessionId
+
       const payload = {
-        session_id: `default`,
+        session_id: sessionId,
         project_id: this.projectId || workspaceStore.workspaceId,
         user_id: this.userId || userStore.userId,
         topics: this.topics,
