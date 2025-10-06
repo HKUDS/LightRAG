@@ -51,18 +51,71 @@ export const streamQuery = async ({ payload, headers = {}, query, signal, onChun
   }
 
   const reader = response.body.getReader()
+  let buffer = ''
+
+  const flushLine = (line) => {
+    if (!line) {
+      return
+    }
+
+    if (line === '[DONE]' || line === 'data: [DONE]') {
+      return
+    }
+
+    let payload = line
+    if (payload.startsWith('data:')) {
+      payload = payload.slice(5).trim()
+      if (!payload) {
+        return
+      }
+    }
+
+    let text = ''
+    try {
+      const json = JSON.parse(payload)
+      text =
+        json?.response ??
+        json?.delta ??
+        json?.content ??
+        json?.text ??
+        json?.choices?.[0]?.delta?.content ??
+        ''
+      if (Array.isArray(text)) {
+        text = text.join(' ')
+      }
+    } catch (error) {
+      text = payload
+    }
+
+    if (typeof text === 'string' && text && typeof onChunk === 'function') {
+      onChunk(text)
+    }
+  }
+
+  const processBuffer = () => {
+    let newlineIndex
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim()
+      buffer = buffer.slice(newlineIndex + 1)
+      flushLine(line)
+    }
+  }
+
   try {
     while (true) {
       const { value, done } = await reader.read()
       if (done) {
         break
       }
-      if (value && typeof onChunk === 'function') {
-        const chunk = decoder.decode(value, { stream: true })
-        if (chunk) {
-          onChunk(chunk)
-        }
+      if (value) {
+        buffer += decoder.decode(value, { stream: true })
+        processBuffer()
       }
+    }
+    buffer = buffer.trim()
+    if (buffer) {
+      flushLine(buffer)
+      buffer = ''
     }
   } finally {
     reader.releaseLock()

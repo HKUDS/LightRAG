@@ -61,6 +61,20 @@ export const useDocumentsStore = defineStore('documents', {
         idx === index ? value : entry
       )
     },
+    setUploadFiles(files) {
+      if (!files) {
+        this.uploadFiles = []
+        return
+      }
+
+      if (Array.isArray(files)) {
+        this.uploadFiles = files
+      } else if (files instanceof FileList) {
+        this.uploadFiles = Array.from(files)
+      } else {
+        this.uploadFiles = []
+      }
+    },
     async fetchDocuments() {
       const workspaceStore = useWorkspaceContextStore()
       if (!workspaceStore.hasWorkspace) {

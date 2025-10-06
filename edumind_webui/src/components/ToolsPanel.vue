@@ -88,7 +88,7 @@
             </p>
           </div>
 
-          <div class="chat-pane__messages">
+          <div class="chat-pane__messages" ref="messagesContainer">
             <div v-if="chatError" class="chat-pane__state">
               <v-icon size="28" color="primary">mdi-alert-circle-outline</v-icon>
               <p class="text-body-2 text-medium-emphasis mt-2 mb-0">{{ chatError.message || 'Something went wrong' }}</p>
@@ -115,6 +115,7 @@
               density="comfortable"
               rows="2"
               max-rows="4"
+              auto-grow
               placeholder="Type your question..."
               v-model="chatInput"
               :disabled="streaming"
@@ -147,7 +148,7 @@
             accept=".pdf,.doc,.docx,.txt,.md,.ppt,.pptx,.xls,.xlsx"
             label="Select files"
             prepend-inner-icon="mdi-paperclip"
-            v-model="uploadFiles"
+            v-model="uploadFilesModel"
           />
         </v-card-text>
         <v-card-actions class="justify-end">
@@ -191,7 +192,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { onMounted, watch, nextTick, ref, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import CreativeToolkitPanel from './CreativeToolkitPanel.vue'
 import {
@@ -224,6 +225,15 @@ const {
 } = storeToRefs(documentsStore)
 
 const { messages, inputValue: chatInput, streaming, error: chatError, hasMessages, canSend } = storeToRefs(chatStore)
+
+const messagesContainer = ref<HTMLElement | null>(null)
+
+const uploadFilesModel = computed({
+  get: () => uploadFiles.value,
+  set: (value: File[] | FileList | null) => {
+    documentsStore.setUploadFiles(value)
+  },
+})
 
 const chatBubbleClass = (role: string) => (role === 'user' ? 'chat-bubble--user' : 'chat-bubble--assistant')
 
@@ -304,12 +314,23 @@ watch(
   },
   { immediate: true }
 )
+
+watch(
+  () => messages.value.map((message) => `${message.id}:${message.content}`).join('|'),
+  async () => {
+    await nextTick()
+    const container = messagesContainer.value
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
+  }
+)
 </script>
 
 <style scoped>
 .tool-shell {
   height: 100%;
-  display: flex;
+  display: flex flex-1;
   flex-direction: column;
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.06);
@@ -326,6 +347,20 @@ watch(
   gap: 8px;
   text-transform: none;
   font-weight: 600;
+}
+
+.tool-shell__tabs :deep(.v-slide-group__prev),
+.tool-shell__tabs :deep(.v-slide-group__next) {
+  display: none;
+}
+
+.tool-shell__tabs :deep(.v-slide-group__content) {
+  align-items: center;
+}
+
+.tool-shell__tabs :deep(.v-tab) {
+  min-height: 40px;
+  padding-block: 8px;
 }
 
 .tool-shell__window {
