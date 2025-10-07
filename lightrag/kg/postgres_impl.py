@@ -2070,7 +2070,16 @@ class PGVectorStorage(BaseVectorStorage):
             return str(val).replace("'", "''")  # escape single quotes
 
         def build_single_condition(key, value):
-            if isinstance(value, (dict, list)):
+            if isinstance(value, list):
+                # If list contains only scalars, use IN clause
+                if all(isinstance(v, (str, int, float, bool)) for v in value):
+                    escaped_values = ", ".join(f"'{escape_str(str(v))}'" for v in value)
+                    return f"metadata->>'{key}' IN ({escaped_values})"
+                else:
+                    # fallback to JSON matching for complex types
+                    json_value = json.dumps(value).replace("'", "''")
+                    return f"metadata->'{key}' = '{json_value}'::jsonb"
+            elif isinstance(value, dict):
                 json_value = json.dumps(value).replace("'", "''")
                 return f"metadata->'{key}' = '{json_value}'::jsonb"
             elif isinstance(value, (int, float, bool)):
