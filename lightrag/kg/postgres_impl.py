@@ -936,6 +936,12 @@ class PostgreSQLDB:
                 logger.error(
                     f"PostgreSQL, Failed to create vector index, type: {self.vector_index_type}, Got: {e}"
                 )
+        
+        # Create GIN indexes for JSONB metadata columns
+        try:
+            await self._create_gin_metadata_indexes()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to create GIN metadata indexes: {e}")
         # Compatibility check - add metadata columns to LIGHTRAG_DOC_CHUNKS and LIGHTRAG_VDB_CHUNKS
         try:
             await self.add_metadata_to_tables()
@@ -1271,6 +1277,37 @@ class PostgreSQLDB:
                     )
             except Exception as e:
                 logger.error(f"Failed to create ivfflat index on {k}: {e}")
+
+    async def _create_gin_metadata_indexes(self):
+        """Create GIN indexes for JSONB metadata columns to speed up metadata filtering"""
+        metadata_tables = [
+            "LIGHTRAG_DOC_CHUNKS",
+            "LIGHTRAG_VDB_CHUNKS",
+            "LIGHTRAG_DOC_STATUS",
+        ]
+        
+        for table in metadata_tables:
+            index_name = f"idx_{table.lower()}_metadata_gin"
+            check_index_sql = f"""
+                SELECT 1 FROM pg_indexes
+                WHERE indexname = '{index_name}'
+                AND tablename = '{table.lower()}'
+            """
+            
+            try:
+                index_exists = await self.query(check_index_sql)
+                if not index_exists:
+                    create_index_sql = f"""
+                        CREATE INDEX CONCURRENTLY IF NOT EXISTS {index_name}
+                        ON {table} USING gin (metadata jsonb_path_ops)
+                    """
+                    logger.info(f"PostgreSQL, Creating GIN index {index_name} on table {table}")
+                    await self.execute(create_index_sql)
+                    logger.info(f"PostgreSQL, Successfully created GIN index {index_name} on table {table}")
+                else:
+                    logger.info(f"PostgreSQL, GIN index {index_name} already exists on table {table}")
+            except Exception as e:
+                logger.error(f"PostgreSQL, Failed to create GIN index on table {table}, Got: {e}")
 
     async def query(
         self,
@@ -4866,39 +4903,68 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     "relationships": """
-                SELECT r.source_id AS src_id,
-                    r.target_id AS tgt_id,
-                    EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                FROM LIGHTRAG_VDB_RELATION r
-                JOIN LIGHTRAG_VDB_CHUNKS c ON r.chunk_ids && ARRAY[c.id]
-                WHERE r.workspace = $1
-                AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                {metadata_filter_clause}
-                ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
-                LIMIT $3;
+                WITH top_relationships AS (
+                    SELECT
+                        r.id,
+                        r.source_id,
+                        r.target_id,
+                        r.create_time,
+                        r.metadata,
+                        r.chunk_ids
+                    FROM
+                        LIGHTRAG_VDB_RELATION r
+                    WHERE
+                        r.workspace = $1
+                        -- Apply the metadata filter here to reduce the set of relationships searched
+                        {metadata_filter_clause}
+                    ORDER BY
+                        r.content_vector <=> '[{embedding_string}]'::vector
+                    LIMIT $3
+                )
+                SELECT
+                    tr.source_id AS src_id,
+                    tr.target_id AS tgt_id,
+                    EXTRACT(EPOCH FROM tr.create_time)::BIGINT AS created_at
+                FROM
+                    top_relationships tr
+                    JOIN LIGHTRAG_VDB_CHUNKS c ON tr.chunk_ids && ARRAY[c.id];
                 """,
     "entities": """
-                SELECT e.entity_name,
-                    EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
-                FROM LIGHTRAG_VDB_ENTITY e
-                JOIN LIGHTRAG_VDB_CHUNKS c ON e.chunk_ids && ARRAY[c.id]
-                WHERE e.workspace = $1
-                AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                {metadata_filter_clause}
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
-                LIMIT $3;
+                WITH top_entities AS (
+                    SELECT 
+                        e.id,
+                        e.entity_name,
+                        e.create_time,
+                        e.metadata,
+                        e.chunk_ids
+                    FROM LIGHTRAG_VDB_ENTITY e
+                    WHERE 
+                        e.workspace = $1
+                        {metadata_filter_clause}
+                    ORDER BY
+                        e.content_vector <=> '[{embedding_string}]'::vector
+                    LIMIT $3)
+                SELECT
+                    te.entity_name,
+                    EXTRACT(EPOCH FROM te.create_time)::BIGINT AS created_at
+                FROM
+                    top_entities te
+                    JOIN LIGHTRAG_VDB_CHUNKS c ON te.chunk_ids && ARRAY[c.id];
                 """,
     "chunks": """
                 SELECT c.id,
                     c.content,
                     c.file_path,
                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at,
-                    c.metadata
+                    c.metadata,
+                    c.content_vector <=> '[{embedding_string}]'::vector AS distance
+
                 FROM LIGHTRAG_VDB_CHUNKS c
-                WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-                {metadata_filter_clause}
-                ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+                WHERE 
+                    c.workspace = $1
+                    {metadata_filter_clause}
+                ORDER BY 
+                    c.content_vector <=> '[{embedding_string}]'::vector
                 LIMIT $3;
               """,
     # DROP tables
