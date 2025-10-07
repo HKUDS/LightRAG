@@ -1,4 +1,4 @@
-import { resolveBaseUrl } from './http'
+import { resolveBaseUrl, getAuthToken } from './http'
 
 const decoder = new TextDecoder()
 
@@ -29,6 +29,7 @@ export const streamQuery = async ({ payload, headers = {}, query, signal, onChun
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${getAuthToken()}`,
       ...headers,
     },
     body: JSON.stringify(payload),

@@ -41,13 +41,25 @@
         </div>
       </div>
     </v-container>
+    <v-btn
+      v-if="userStore.isAuthenticated"
+      variant="flat"
+      style="margin: 16px"
+      prepend-icon="mdi-logout"
+      color="red"
+      @click="handleLogout"
+    >
+      Logout
+    </v-btn>
   </v-app-bar>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick } from 'vue';
 import { useRouter, type RouteLocationRaw } from 'vue-router';
 import { useAppStore } from '@/stores';
+import { useUserStore } from '@/stores';
+import { signOut } from '@/api/auth';
 
 interface HeaderAction {
   id: string;
@@ -78,6 +90,7 @@ const props = withDefaults(
 
 const router = useRouter();
 const appStore = useAppStore();
+const userStore = useUserStore();
 
 const organization = computed(() => appStore.organization);
 const organizationInitials = computed(() => appStore.organizationInitials);
@@ -96,6 +109,18 @@ const handleActionClick = (action: HeaderAction) => {
     action.onClick();
   }
 };
+
+const handleLogout = async () => {
+  try {
+    await signOut()
+  } catch (e) {
+    console.error(e)
+  } finally {
+    userStore.clearAuth()
+    await nextTick()
+    await router.push({ name: 'Login' })
+  }
+}
 </script>
 
 <style scoped>

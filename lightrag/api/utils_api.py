@@ -30,7 +30,15 @@ async def get_rag(
         - user_id is derived from the bearer token via auth_handler.
         - workspace priority: X-Workspace header > ?workspace= query > global_args.workspace > "".
     """
-    user_id = x_user_id
+    token_info = getattr(request.state, "auth", None)
+    token_username = token_info.get("username") if token_info else None
+    token_meta = token_info.get("metadata", {}) if token_info else {}
+    token_user_id = token_meta.get("user_id") or token_username
+
+    if token_user_id and x_user_id and x_user_id != token_user_id:
+        raise HTTPException(status_code=401, detail="X-User-ID mismatch")
+    
+    user_id = token_user_id or x_user_id or "guest"
     workspace = x_workspace or q_workspace or "default"
 
     manager = request.app.state.instance_manager
@@ -122,6 +130,8 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         if token:
             try:
                 token_info = auth_handler.validate_token(token)
+                # Store token info in request state for downstream use
+                request.state.auth = token_info
                 # Accept guest token if no auth is configured
                 if not auth_configured and token_info.get("role") == "guest":
                     return

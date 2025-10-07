@@ -43,6 +43,7 @@ watch(
 </script>
 
 <style scoped>
+
 .app-main {
   min-height: 100vh;
   background-color: #ffffff;

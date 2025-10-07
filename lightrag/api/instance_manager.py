@@ -48,6 +48,12 @@ from lightrag.kg.shared_storage import (
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
+from sqlalchemy.orm import Session
+from fastapi import Depends, HTTPException
+from sqlalchemy import select
+from .database import get_db
+from .models import User
+
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
@@ -613,11 +619,14 @@ def create_multi_workspace_app(args):
         }
 
     @app.post("/login")
-    async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    async def login(
+        form_data: OAuth2PasswordRequestForm = Depends(),
+        db: Session = Depends(get_db)
+    ):
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
-                username="guest", role="guest", metadata={"auth_mode": "disabled"}
+                username="guest", role="guest", metadata={"auth_mode": "disabled", "user_id": "guest"}
             )
             return {
                 "access_token": guest_token,
@@ -634,8 +643,9 @@ def create_multi_workspace_app(args):
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login
+        user = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
         user_token = auth_handler.create_token(
-            username=username, role="user", metadata={"auth_mode": "enabled"}
+            username=username, role="user", metadata={"auth_mode": "enabled", "user_id": user.id}
         )
         return {
             "access_token": user_token,

@@ -1,3 +1,5 @@
+import { getToken, decodeJwt } from '@/api/auth'
+
 const DEFAULT_TIMEOUT = 100000
 
 export const resolveBaseUrl = () => {
@@ -12,9 +14,7 @@ const appendQueryParams = (url, query) => {
   if (!query) {
     return url
   }
-
   const urlInstance = typeof url === 'string' ? new URL(url, window.location.origin) : new URL(url.toString())
-
   Object.entries(query).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') {
       return
@@ -55,6 +55,19 @@ const parseResponse = async (response) => {
   return text
 }
 
+const TOKEN_KEY = 'edumind_access_token'
+export const setAuthToken = (t) => sessionStorage.setItem(TOKEN_KEY, t)
+export const getAuthToken = () => sessionStorage.getItem(TOKEN_KEY) || ''
+export const clearAuthToken = () => sessionStorage.removeItem(TOKEN_KEY)
+
+function getUserIdFromToken() {
+  const t = getToken();
+  if (!t) return null;
+  const p = decodeJwt(t);
+  if (!p) return null;
+  return (p.metadata && p.metadata.user_id) ? p.metadata.user_id : "not found";
+}
+
 export const apiRequest = async (path, options = {}) => {
   const {
     method = 'GET',
@@ -64,31 +77,60 @@ export const apiRequest = async (path, options = {}) => {
     body,
     timeout = DEFAULT_TIMEOUT,
     signal,
+    auth = {},
   } = options
-
-  console.log('API Request:', { baseUrl, method, path, query, headers, body })
 
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
-
   if (signal) {
-    if (signal.aborted) {
-      controller.abort(signal.reason)
-    } else {
-      signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
-    }
+    if (signal.aborted) controller.abort(signal.reason)
+    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
   }
 
-  const target = appendQueryParams(`${baseUrl}${path}`, query)
+  const resolvedUserId = (auth.userId ?? getUserIdFromToken()) || null
+  const mergedQuery = {
+    ...(query || {}),
+    ...(query?.user_id === undefined && resolvedUserId ? { user_id: resolvedUserId } : {})
+  }
+
+  const target = appendQueryParams(`${baseUrl}${path}`, mergedQuery)
+
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
+  const isUrlEncoded = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams
+
+  const h = new Headers({
+    Accept: 'application/json',
+    ...headers,
+  })
+
+  // Content-Type rules
+  if (isFormData) {
+    // let browser set boundary
+  } else if (isUrlEncoded) {
+    if (!h.has('Content-Type')) h.set('Content-Type', 'application/x-www-form-urlencoded')
+  } else if (body !== undefined && !h.has('Content-Type')) {
+    h.set('Content-Type', 'application/json')
+  }
+
+  // --- Inject auth headers if present ---
+  const token = auth.token ?? getAuthToken()
+  if (token) h.set('Authorization', `Bearer ${token}`)
+
+  if (auth.apiKey ?? import.meta.env.VITE_LIGHTRAG_API_KEY) {
+    h.set('X-API-Key', auth.apiKey ?? import.meta.env.VITE_LIGHTRAG_API_KEY)
+  }
+
+  // Your backend prefers X-Workspace header (or ?workspace=)
+  const ws = auth.workspace ?? import.meta.env.VITE_DEFAULT_WORKSPACE
+  if (ws) h.set('X-Workspace', ws)
+
+  const userId = getUserIdFromToken();
+  if (auth.userId) h.set('X-User-ID', auth.userId)
 
   const requestOptions = {
     method,
-    headers: {
-      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...headers,
-    },
-    body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
+    headers: h,
+    body: isFormData ? body : isUrlEncoded ? body : body !== undefined ? JSON.stringify(body) : undefined,
     signal: controller.signal,
   }
 
