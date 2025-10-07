@@ -2383,7 +2383,6 @@ async def kg_query(
         - stream=True: response_iterator contains streaming response, raw_data contains complete data
         - default: content contains LLM response text, raw_data contains complete data
     """
-
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
 
@@ -2465,18 +2464,22 @@ async def kg_query(
             content=context_result.context, raw_data=context_result.raw_data
         )
 
+    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    response_type = (
+        query_param.response_type
+        if query_param.response_type
+        else "Multiple Paragraphs"
+    )
+
     # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
+        response_type=response_type,
+        user_prompt=user_prompt,
         context_data=context_result.context,
-        response_type=query_param.response_type,
     )
 
-    user_query = (
-        "\n\n".join([query, query_param.user_prompt])
-        if query_param.user_prompt
-        else query
-    )
+    user_query = query
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
@@ -2489,29 +2492,41 @@ async def kg_query(
         f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
     )
 
-    response = await use_model_func(
-        user_query,
-        system_prompt=sys_prompt,
-        history_messages=query_param.conversation_history,
-        enable_cot=True,
-        stream=query_param.stream,
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        hl_keywords_str,
+        ll_keywords_str,
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
     )
 
-    # Return unified result based on actual response type
-    if isinstance(response, str):
-        # Non-streaming response (string)
-        if len(response) > len(sys_prompt):
-            response = (
-                response.replace(sys_prompt, "")
-                .replace("user", "")
-                .replace("model", "")
-                .replace(query, "")
-                .replace("<system>", "")
-                .replace("</system>", "")
-                .strip()
-            )
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    )
 
-        # Cache response
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        logger.info(
+            " == LLM cache == Query cache hit, using cached response as query result"
+        )
+        response = cached_response
+    else:
+        response = await use_model_func(
+            user_query,
+            system_prompt=sys_prompt,
+            history_messages=query_param.conversation_history,
+            enable_cot=True,
+            stream=query_param.stream,
+        )
+
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
                 "mode": query_param.mode,
@@ -2521,8 +2536,8 @@ async def kg_query(
                 "max_entity_tokens": query_param.max_entity_tokens,
                 "max_relation_tokens": query_param.max_relation_tokens,
                 "max_total_tokens": query_param.max_total_tokens,
-                "hl_keywords": query_param.hl_keywords or [],
-                "ll_keywords": query_param.ll_keywords or [],
+                "hl_keywords": hl_keywords_str,
+                "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
             }
@@ -2536,6 +2551,20 @@ async def kg_query(
                     cache_type="query",
                     queryparam=queryparam_dict,
                 ),
+            )
+
+    # Return unified result based on actual response type
+    if isinstance(response, str):
+        # Non-streaming response (string)
+        if len(response) > len(sys_prompt):
+            response = (
+                response.replace(sys_prompt, "")
+                .replace("user", "")
+                .replace("model", "")
+                .replace(query, "")
+                .replace("<system>", "")
+                .replace("</system>", "")
+                .strip()
             )
 
         return QueryResult(content=response, raw_data=context_result.raw_data)
@@ -2596,8 +2625,6 @@ async def extract_keywords_only(
     args_hash = compute_args_hash(
         param.mode,
         text,
-        param.hl_keywords or [],
-        param.ll_keywords or [],
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -2673,8 +2700,6 @@ async def extract_keywords_only(
                 "max_entity_tokens": param.max_entity_tokens,
                 "max_relation_tokens": param.max_relation_tokens,
                 "max_total_tokens": param.max_total_tokens,
-                "hl_keywords": param.hl_keywords or [],
-                "ll_keywords": param.ll_keywords or [],
                 "user_prompt": param.user_prompt or "",
                 "enable_rerank": param.enable_rerank,
             }
@@ -3230,108 +3255,78 @@ async def _build_llm_context(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
+    # Get the system prompt template from PROMPTS or global_config
+    sys_prompt_template = global_config.get(
+        "system_prompt_template", PROMPTS["rag_response"]
+    )
+
+    kg_context_template = PROMPTS["kg_query_context"]
+    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+    response_type = (
+        query_param.response_type
+        if query_param.response_type
+        else "Multiple Paragraphs"
+    )
+
+    entities_str = "\n".join(
+        json.dumps(entity, ensure_ascii=False) for entity in entities_context
+    )
+    relations_str = "\n".join(
+        json.dumps(relation, ensure_ascii=False) for relation in relations_context
+    )
+
+    # Calculate preliminary kg context tokens
+    pre_kg_context = kg_context_template.format(
+        entities_str=entities_str,
+        relations_str=relations_str,
+        text_chunks_str="",
+        reference_list_str="",
+    )
+    kg_context_tokens = len(tokenizer.encode(pre_kg_context))
+
+    # Calculate preliminary system prompt tokens
+    pre_sys_prompt = sys_prompt_template.format(
+        context_data="",  # Empty for overhead calculation
+        response_type=response_type,
+        user_prompt=user_prompt,
+    )
+    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
+
+    # Calculate available tokens for text chunks
+    query_tokens = len(tokenizer.encode(query))
+    buffer_tokens = 200  # reserved for reference list and safety buffer
+    available_chunk_tokens = max_total_tokens - (
+        sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
+    )
+
+    logger.debug(
+        f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+    )
+
+    # Apply token truncation to chunks using the dynamic limit
+    truncated_chunks = await process_chunks_unified(
+        query=query,
+        unique_chunks=merged_chunks,
+        query_param=query_param,
+        global_config=global_config,
+        source_type=query_param.mode,
+        chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
+    )
+
+    # Generate reference list from truncated chunks using the new common function
+    reference_list, truncated_chunks = generate_reference_list_from_chunks(
+        truncated_chunks
+    )
+
+    # Rebuild text_units_context with truncated chunks
+    # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
     text_units_context = []
-    truncated_chunks = []
-
-    if merged_chunks:
-        # Calculate dynamic token limit for text chunks
-        entities_str = "\n".join(
-            json.dumps(entity, ensure_ascii=False) for entity in entities_context
-        )
-        relations_str = "\n".join(
-            json.dumps(relation, ensure_ascii=False) for relation in relations_context
-        )
-
-        # Calculate base context tokens (entities + relations + template)
-        kg_context_template = """-----Entities(KG)-----
-
-```json
-{entities_str}
-```
-
------Relationships(KG)-----
-
-```json
-{relations_str}
-```
-
------Document Chunks(DC)-----
-
-```json
-```
-
------Refrence Document List-----
-
-The reference documents list in Document Chunks(DC) is as follows (reference_id in square brackets):
-
-"""
-        kg_context = kg_context_template.format(
-            entities_str=entities_str, relations_str=relations_str
-        )
-        kg_context_tokens = len(tokenizer.encode(kg_context))
-
-        # Calculate system prompt template overhead
-        user_prompt = query_param.user_prompt if query_param.user_prompt else ""
-        response_type = (
-            query_param.response_type
-            if query_param.response_type
-            else "Multiple Paragraphs"
-        )
-
-        # Get the system prompt template from PROMPTS or global_config
-        sys_prompt_template = global_config.get(
-            "system_prompt_template", PROMPTS["rag_response"]
-        )
-
-        # Create sample system prompt for overhead calculation
-        sample_sys_prompt = sys_prompt_template.format(
-            context_data="",  # Empty for overhead calculation
-            response_type=response_type,
-            user_prompt=user_prompt,
-        )
-        sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
-
-        # Total system prompt overhead = template + query tokens
-        query_tokens = len(tokenizer.encode(query))
-        sys_prompt_overhead = sys_prompt_template_tokens + query_tokens
-
-        buffer_tokens = 100  # Safety buffer as requested
-
-        # Calculate available tokens for text chunks
-        used_tokens = kg_context_tokens + sys_prompt_overhead + buffer_tokens
-        available_chunk_tokens = max_total_tokens - used_tokens
-
-        logger.debug(
-            f"Token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
-        )
-
-        # Apply token truncation to chunks using the dynamic limit
-        truncated_chunks = await process_chunks_unified(
-            query=query,
-            unique_chunks=merged_chunks,
-            query_param=query_param,
-            global_config=global_config,
-            source_type=query_param.mode,
-            chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
-        )
-
-        # Generate reference list from truncated chunks using the new common function
-        reference_list, truncated_chunks = generate_reference_list_from_chunks(
-            truncated_chunks
-        )
-
-        # Rebuild text_units_context with truncated chunks
-        # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-        for i, chunk in enumerate(truncated_chunks):
-            text_units_context.append(
-                {
-                    "reference_id": chunk["reference_id"],
-                    "content": chunk["content"],
-                }
-            )
-
-        logger.debug(
-            f"Final chunk processing: {len(merged_chunks)} -> {len(text_units_context)} (chunk available tokens: {available_chunk_tokens})"
+    for i, chunk in enumerate(truncated_chunks):
+        text_units_context.append(
+            {
+                "reference_id": chunk["reference_id"],
+                "content": chunk["content"],
+            }
         )
 
     logger.info(
@@ -3368,48 +3363,23 @@ The reference documents list in Document Chunks(DC) is as follows (reference_id 
                 chunk_tracking_log.append("?0/0")
 
         if chunk_tracking_log:
-            logger.info(f"chunks S+F/O: {' '.join(chunk_tracking_log)}")
+            logger.info(f"Final chunks S+F/O: {' '.join(chunk_tracking_log)}")
 
-    entities_str = "\n".join(
-        json.dumps(entity, ensure_ascii=False) for entity in entities_context
-    )
-    relations_str = "\n".join(
-        json.dumps(relation, ensure_ascii=False) for relation in relations_context
-    )
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
-    reference_list_str = "\n\n".join(
+    reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list
         if ref["reference_id"]
     )
 
-    result = f"""-----Entities(KG)-----
-
-```json
-{entities_str}
-```
-
------Relationships(KG)-----
-
-```json
-{relations_str}
-```
-
------Document Chunks(DC)-----
-
-```json
-{text_units_str}
-```
-
------Refrence Document List-----
-
-Document Chunks (DC) reference documents : (Each entry begins with [reference_id])
-
-{reference_list_str}
-
-"""
+    result = kg_context_template.format(
+        entities_str=entities_str,
+        relations_str=relations_str,
+        text_chunks_str=text_units_str,
+        reference_list_str=reference_list_str,
+    )
 
     # Always return both context and complete data structure (unified approach)
     logger.debug(
@@ -3494,11 +3464,7 @@ async def _build_query_context(
         query_embedding=search_result["query_embedding"],
     )
 
-    if (
-        not merged_chunks
-        and not truncation_result["entities_context"]
-        and not truncation_result["relations_context"]
-    ):
+    if not merged_chunks:
         return None
 
     # Stage 4: Build final LLM context with dynamic token processing
@@ -4189,29 +4155,6 @@ async def naive_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    # Handle cache
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        query_param.hl_keywords or [],
-        query_param.ll_keywords or [],
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
-    )
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
-    )
-    if cached_result is not None:
-        cached_response, _ = cached_result  # Extract content, ignore timestamp
-        if not query_param.only_need_context and not query_param.only_need_prompt:
-            return QueryResult(content=cached_response)
-
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
@@ -4239,7 +4182,7 @@ async def naive_query(
     )
 
     # Calculate system prompt template tokens (excluding content_data)
-    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -4251,26 +4194,23 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Create a sample system prompt with empty content_data to calculate overhead
-    sample_sys_prompt = sys_prompt_template.format(
-        content_data="",  # Empty for overhead calculation
+    # Create a preliminary system prompt with empty content_data to calculate overhead
+    pre_sys_prompt = sys_prompt_template.format(
         response_type=response_type,
         user_prompt=user_prompt,
+        content_data="",  # Empty for overhead calculation
     )
-    sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
-
-    # Total system prompt overhead = template + query tokens
-    query_tokens = len(tokenizer.encode(query))
-    sys_prompt_overhead = sys_prompt_template_tokens + query_tokens
-
-    buffer_tokens = 100  # Safety buffer
 
     # Calculate available tokens for chunks
-    used_tokens = sys_prompt_overhead + buffer_tokens
-    available_chunk_tokens = max_total_tokens - used_tokens
+    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
+    query_tokens = len(tokenizer.encode(query))
+    buffer_tokens = 200  # reserved for reference list and safety buffer
+    available_chunk_tokens = max_total_tokens - (
+        sys_prompt_tokens + query_tokens + buffer_tokens
+    )
 
     logger.debug(
-        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        f"Naive query token allocation - Total: {max_total_tokens}, SysPrompt: {sys_prompt_tokens}, Query: {query_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
     )
 
     # Process chunks using unified processing with dynamic token limit
@@ -4324,56 +4264,87 @@ async def naive_query(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
-    reference_list_str = "\n\n".join(
+    reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list
         if ref["reference_id"]
     )
 
-    context_content = f"""
----Document Chunks(DC)---
-
-```json
-{text_units_str}
-```
-
------Refrence Document List-----
-
-{reference_list_str}
-
-"""
+    naive_context_template = PROMPTS["naive_query_context"]
+    context_content = naive_context_template.format(
+        text_chunks_str=text_units_str,
+        reference_list_str=reference_list_str,
+    )
 
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(content=context_content, raw_data=raw_data)
 
-    user_query = (
-        "\n\n".join([query, query_param.user_prompt])
-        if query_param.user_prompt
-        else query
+    sys_prompt = sys_prompt_template.format(
+        response_type=query_param.response_type,
+        user_prompt=user_prompt,
+        content_data=context_content,
     )
 
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
-    sys_prompt = sys_prompt_temp.format(
-        content_data=text_units_str,
-        response_type=query_param.response_type,
-    )
+    user_query = query
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
-    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(
-        f"[naive_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
     )
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+    )
+    if cached_result is not None:
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        logger.info(
+            " == LLM cache == Query cache hit, using cached response as query result"
+        )
+        response = cached_response
+    else:
+        response = await use_model_func(
+            user_query,
+            system_prompt=sys_prompt,
+            history_messages=query_param.conversation_history,
+            enable_cot=True,
+            stream=query_param.stream,
+        )
 
-    response = await use_model_func(
-        user_query,
-        system_prompt=sys_prompt,
-        history_messages=query_param.conversation_history,
-        enable_cot=True,
-        stream=query_param.stream,
-    )
+        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+            queryparam_dict = {
+                "mode": query_param.mode,
+                "response_type": query_param.response_type,
+                "top_k": query_param.top_k,
+                "chunk_top_k": query_param.chunk_top_k,
+                "max_entity_tokens": query_param.max_entity_tokens,
+                "max_relation_tokens": query_param.max_relation_tokens,
+                "max_total_tokens": query_param.max_total_tokens,
+                "user_prompt": query_param.user_prompt or "",
+                "enable_rerank": query_param.enable_rerank,
+            }
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    mode=query_param.mode,
+                    cache_type="query",
+                    queryparam=queryparam_dict,
+                ),
+            )
 
     # Return unified result based on actual response type
     if isinstance(response, str):
@@ -4388,33 +4359,6 @@ async def naive_query(
                 .replace("<system>", "")
                 .replace("</system>", "")
                 .strip()
-            )
-
-        # Cache response
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
-            queryparam_dict = {
-                "mode": query_param.mode,
-                "response_type": query_param.response_type,
-                "top_k": query_param.top_k,
-                "chunk_top_k": query_param.chunk_top_k,
-                "max_entity_tokens": query_param.max_entity_tokens,
-                "max_relation_tokens": query_param.max_relation_tokens,
-                "max_total_tokens": query_param.max_total_tokens,
-                "hl_keywords": query_param.hl_keywords or [],
-                "ll_keywords": query_param.ll_keywords or [],
-                "user_prompt": query_param.user_prompt or "",
-                "enable_rerank": query_param.enable_rerank,
-            }
-            await save_to_cache(
-                hashing_kv,
-                CacheData(
-                    args_hash=args_hash,
-                    content=response,
-                    prompt=query,
-                    mode=query_param.mode,
-                    cache_type="query",
-                    queryparam=queryparam_dict,
-                ),
             )
 
         return QueryResult(content=response, raw_data=raw_data)

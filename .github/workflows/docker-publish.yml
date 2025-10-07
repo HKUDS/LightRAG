@@ -35,6 +35,18 @@ jobs:
           echo "Found tag: $TAG"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Check if pre-release
+        id: check_prerelease
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          if [[ "$TAG" == *"rc"* ]] || [[ "$TAG" == *"dev"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "This is a pre-release version: $TAG"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "This is a stable release: $TAG"
+          fi
+
       - name: Update version in __init__.py
         run: |
           sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
@@ -48,7 +60,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ steps.get_tag.outputs.tag }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.check_prerelease.outputs.is_prerelease == 'false' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

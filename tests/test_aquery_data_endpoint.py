@@ -72,9 +72,9 @@ def parse_streaming_response(
 
             if "references" in data:
                 references = data["references"]
-            elif "response" in data:
+            if "response" in data:
                 response_chunks.append(data["response"])
-            elif "error" in data:
+            if "error" in data:
                 errors.append(data["error"])
 
         except json.JSONDecodeError:

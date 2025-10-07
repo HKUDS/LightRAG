@@ -352,7 +352,8 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    If proivded, this will be use instead of the default vaulue from prompt template.
+    Addition instructions for LLM. If provided, this will be inject into the prompt template.
+    It's purpose is the let user customize the way LLM generate the response.
     """
 
     enable_rerank: bool = True

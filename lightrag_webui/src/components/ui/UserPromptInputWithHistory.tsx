@@ -165,7 +165,7 @@ export default function UserPromptInputWithHistory({
 
       {/* Dropdown */}
       {isOpen && history.length > 0 && (
-        <div className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md shadow-lg max-h-60 overflow-auto min-w-0">
+        <div className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md shadow-lg max-h-96 overflow-auto min-w-0">
           {history.map((prompt, index) => (
             <div
               key={index}

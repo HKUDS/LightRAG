@@ -136,6 +136,33 @@ class ScanResponse(BaseModel):
         }
 
 
+class ReprocessResponse(BaseModel):
+    """Response model for reprocessing failed documents operation
+
+    Attributes:
+        status: Status of the reprocessing operation
+        message: Message describing the operation result
+        track_id: Tracking ID for monitoring reprocessing progress
+    """
+
+    status: Literal["reprocessing_started"] = Field(
+        description="Status of the reprocessing operation"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+    track_id: str = Field(
+        description="Tracking ID for monitoring reprocessing progress"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "reprocessing_started",
+                "message": "Reprocessing of failed documents has been initiated in background",
+                "track_id": "retry_20250729_170612_def456",
+            }
+        }
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
@@ -2232,20 +2259,24 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    # TODO: Deprecated
     @router.get(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )
     async def documents() -> DocsStatusesResponse:
         """
-        Get the status of all documents in the system.
+        Get the status of all documents in the system. This endpoint is deprecated; use /documents/paginated instead.
+        To prevent excessive resource consumption, a maximum of 1,000 records is returned.
 
         This endpoint retrieves the current status of all documents, grouped by their
-        processing status (PENDING, PROCESSING, PROCESSED, FAILED).
+        processing status (PENDING, PROCESSING, PROCESSED, FAILED). The results are
+        limited to 1000 total documents with fair distribution across all statuses.
 
         Returns:
             DocsStatusesResponse: A response object containing a dictionary where keys are
                                 DocStatus values and values are lists of DocStatusResponse
                                 objects representing documents in each status category.
+                                Maximum 1000 documents total will be returned.
 
         Raises:
             HTTPException: If an error occurs while retrieving document statuses (500).
@@ -2262,12 +2293,45 @@ def create_document_routes(
             results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
 
             response = DocsStatusesResponse()
+            total_documents = 0
+            max_documents = 1000
 
+            # Convert results to lists for easier processing
+            status_documents = []
             for idx, result in enumerate(results):
                 status = statuses[idx]
+                docs_list = []
                 for doc_id, doc_status in result.items():
+                    docs_list.append((doc_id, doc_status))
+                status_documents.append((status, docs_list))
+
+            # Fair distribution: round-robin across statuses
+            status_indices = [0] * len(
+                status_documents
+            )  # Track current index for each status
+            current_status_idx = 0
+
+            while total_documents < max_documents:
+                # Check if we have any documents left to process
+                has_remaining = False
+                for status_idx, (status, docs_list) in enumerate(status_documents):
+                    if status_indices[status_idx] < len(docs_list):
+                        has_remaining = True
+                        break
+
+                if not has_remaining:
+                    break
+
+                # Try to get a document from the current status
+                status, docs_list = status_documents[current_status_idx]
+                current_index = status_indices[current_status_idx]
+
+                if current_index < len(docs_list):
+                    doc_id, doc_status = docs_list[current_index]
+
                     if status not in response.statuses:
                         response.statuses[status] = []
+
                     response.statuses[status].append(
                         DocStatusResponse(
                             id=doc_id,
@@ -2283,6 +2347,13 @@ def create_document_routes(
                             file_path=doc_status.file_path,
                         )
                     )
+
+                    status_indices[current_status_idx] += 1
+                    total_documents += 1
+
+                # Move to next status (round-robin)
+                current_status_idx = (current_status_idx + 1) % len(status_documents)
+
             return response
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
@@ -2669,6 +2740,54 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/reprocess_failed",
+        response_model=ReprocessResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+        """
+        Reprocess failed and pending documents.
+
+        This endpoint triggers the document processing pipeline which automatically
+        picks up and reprocesses documents in the following statuses:
+        - FAILED: Documents that failed during previous processing attempts
+        - PENDING: Documents waiting to be processed
+        - PROCESSING: Documents with abnormally terminated processing (e.g., server crashes)
+
+        This is useful for recovering from server crashes, network errors, LLM service
+        outages, or other temporary failures that caused document processing to fail.
+
+        The processing happens in the background and can be monitored using the
+        returned track_id or by checking the pipeline status.
+
+        Returns:
+            ReprocessResponse: Response with status, message, and track_id
+
+        Raises:
+            HTTPException: If an error occurs while initiating reprocessing (500).
+        """
+        try:
+            # Generate track_id with "retry" prefix for retry operation
+            track_id = generate_track_id("retry")
+
+            # Start the reprocessing in the background
+            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+            logger.info(
+                f"Reprocessing of failed documents initiated with track_id: {track_id}"
+            )
+
+            return ReprocessResponse(
+                status="reprocessing_started",
+                message="Reprocessing of failed documents has been initiated in background",
+                track_id=track_id,
+            )
+
+        except Exception as e:
+            logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

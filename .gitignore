@@ -12,7 +12,6 @@ __pycache__/
 env/
 venv/
 *.env*
-.env_example
 
 # Build / Distribution
 dist/

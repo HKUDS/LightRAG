@@ -97,7 +97,7 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
@@ -114,10 +114,12 @@
     "documentManager": {
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
+      "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
+      "retryFailedButton": "إعادة المحاولة",
+      "retryFailedTooltip": "إعادة معالجة جميع المستندات الفاشلة",
       "refreshTooltip": "إعادة تعيين قائمة المستندات",
-      "pipelineStatusButton": "حالة خط المعالجة",
-      "pipelineStatusTooltip": "عرض حالة خط المعالجة",
+      "pipelineStatusButton": "خط المعالجة",
+      "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
       "emptyTitle": "لا توجد مستندات",
@@ -411,7 +413,7 @@
       "onlyNeedPromptTooltip": "إذا كان صحيحًا، يتم إرجاع المطالبة المولدة فقط دون إنتاج رد",
       "streamResponse": "تدفق الرد",
       "streamResponseTooltip": "إذا كان صحيحًا، يتيح إخراج التدفق للردود في الوقت الفعلي",
-      "userPrompt": "مطالبة مخصصة",
+      "userPrompt": "مطالبة إخراج إضافية",
       "userPromptTooltip": "تقديم متطلبات استجابة إضافية إلى نموذج اللغة الكبير (غير متعلقة بمحتوى الاستعلام، فقط لمعالجة المخرجات).",
       "userPromptPlaceholder": "أدخل مطالبة مخصصة (اختياري)",
       "enableRerank": "تمكين إعادة الترتيب",

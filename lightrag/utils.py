@@ -230,10 +230,9 @@ class LightragPathFilter(logging.Filter):
             path = record.args[2]
             status = record.args[4]
 
-            # Filter out successful GET requests to filtered paths
+            # Filter out successful GET/POST requests to filtered paths
             if (
-                method == "GET"
-                or method == "POST"
+                (method == "GET" or method == "POST")
                 and (status == 200 or status == 304)
                 and path in self.filtered_paths
             ):
@@ -1102,7 +1101,9 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     if existing_cache:
         existing_content = existing_cache.get("return")
         if existing_content == cache_data.content:
-            logger.info(f"Cache content unchanged for {flattened_key}, skipping update")
+            logger.warning(
+                f"Cache duplication detected for {flattened_key}, skipping update"
+            )
             return
 
     # Create cache entry with flattened structure
