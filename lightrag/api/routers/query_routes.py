@@ -351,6 +351,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Unified approach: always use aquery_llm for both cases
             result = await rag.aquery_llm(request.query, param=param)
 
+            # Debug logging to see what's in the result
+            import logging
+            logger = logging.getLogger("lightrag")
+            logger.debug(f"[API] Result structure: {list(result.keys())}")
+            logger.debug(f"[API] Result data section: {result.get('data', {}).keys()}")
+            logger.debug(f"[API] References in result: {result.get('data', {}).get('references', [])}")
+
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
             references = result.get("data", {}).get("references", [])
@@ -359,6 +366,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             response_content = llm_response.get("content", "")
             if not response_content:
                 response_content = "No relevant context found for the query."
+
+            # Debug logging for final response
+            logger.debug(f"[API] Final references being returned: {references}")
+            logger.debug(f"[API] include_references flag: {request.include_references}")
 
             # Return response with or without references based on request
             if request.include_references:
