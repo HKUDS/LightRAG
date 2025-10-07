@@ -71,7 +71,7 @@ class NetworkXStorage(BaseGraphStorage):
             )
         else:
             logger.info(
-                f"[{self.workspace}] Created new empty graph fiel: {self._graphml_xml_file}"
+                f"[{self.workspace}] Created new empty graph file: {self._graphml_xml_file}"
             )
         self._graph = preloaded_graph or nx.Graph()
 
