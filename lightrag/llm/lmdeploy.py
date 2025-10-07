@@ -56,6 +56,7 @@ async def lmdeploy_model_if_cache(
     prompt,
     system_prompt=None,
     history_messages=[],
+    enable_cot: bool = False,
     chat_template=None,
     model_format="hf",
     quant_policy=0,
@@ -89,6 +90,12 @@ async def lmdeploy_model_if_cache(
         do_sample (bool): Whether or not to use sampling, use greedy decoding otherwise.
             Default to be False, which means greedy decoding will be applied.
     """
+    if enable_cot:
+        from lightrag.utils import logger
+
+        logger.debug(
+            "enable_cot=True is not supported for lmdeploy and will be ignored."
+        )
     try:
         import lmdeploy
         from lmdeploy import version_info, GenerationConfig

@@ -16,6 +16,11 @@ interface SettingsState {
   documentsPageSize: number
   setDocumentsPageSize: (size: number) => void
 
+  // User prompt history
+  userPromptHistory: string[]
+  addUserPromptToHistory: (prompt: string) => void
+  setUserPromptHistory: (history: string[]) => void
+
   // Graph viewer settings
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
@@ -110,6 +115,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       documentsPageSize: 10,
 
       retrievalHistory: [],
+      userPromptHistory: [],
 
       querySettings: {
         mode: 'global',
@@ -196,12 +202,39 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setShowFileName: (show: boolean) => set({ showFileName: show }),
       setShowLegend: (show: boolean) => set({ showLegend: show }),
-      setDocumentsPageSize: (size: number) => set({ documentsPageSize: size })
+      setDocumentsPageSize: (size: number) => set({ documentsPageSize: size }),
+
+      // User prompt history methods
+      addUserPromptToHistory: (prompt: string) => {
+        if (!prompt.trim()) return
+
+        set((state) => {
+          const newHistory = [...state.userPromptHistory]
+
+          // Remove existing occurrence if found
+          const existingIndex = newHistory.indexOf(prompt)
+          if (existingIndex !== -1) {
+            newHistory.splice(existingIndex, 1)
+          }
+
+          // Add to beginning
+          newHistory.unshift(prompt)
+
+          // Keep only last 12 items
+          if (newHistory.length > 12) {
+            newHistory.splice(12)
+          }
+
+          return { userPromptHistory: newHistory }
+        })
+      },
+
+      setUserPromptHistory: (history: string[]) => set({ userPromptHistory: history })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 17,
+      version: 18,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -293,6 +326,10 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             state.querySettings.history_turns = 0
           }
+        }
+        if (version < 18) {
+          // Add userPromptHistory field for older versions
+          state.userPromptHistory = []
         }
         return state
       }

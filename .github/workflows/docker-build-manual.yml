@@ -1,4 +1,4 @@
-name: Build Docker Image manually
+name: Build Test Docker Image manually
 
 on:
   workflow_dispatch:
@@ -29,6 +29,12 @@ jobs:
           fi
           echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
           echo "image_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Update version in __init__.py
+        run: |
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
+          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
+          cat lightrag/__init__.py | grep __version__
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

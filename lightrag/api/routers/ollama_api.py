@@ -483,6 +483,12 @@ class OllamaAPI:
                 if not messages:
                     raise HTTPException(status_code=400, detail="No messages provided")
 
+                # Validate that the last message is from a user
+                if messages[-1].role != "user":
+                    raise HTTPException(
+                        status_code=400, detail="Last message must be from user role"
+                    )
+
                 # Get the last message as query and previous messages as history
                 query = messages[-1].content
                 # Convert OllamaMessage objects to dictionaries
@@ -499,7 +505,7 @@ class OllamaAPI:
                 prompt_tokens = estimate_tokens(cleaned_query)
 
                 param_dict = {
-                    "mode": mode,
+                    "mode": mode.value,
                     "stream": request.stream,
                     "only_need_context": only_need_context,
                     "conversation_history": conversation_history,
@@ -509,12 +515,6 @@ class OllamaAPI:
                 # Add user_prompt to param_dict
                 if user_prompt is not None:
                     param_dict["user_prompt"] = user_prompt
-
-                if (
-                    hasattr(self.rag, "args")
-                    and self.rag.args.history_turns is not None
-                ):
-                    param_dict["history_turns"] = self.rag.args.history_turns
 
                 query_param = QueryParam(**param_dict)
 

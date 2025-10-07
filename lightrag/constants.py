@@ -24,14 +24,17 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
-    "Organization",
     "Person",
-    "Equiment",
-    "Product",
-    "Technology",
+    "Creature",
+    "Organization",
     "Location",
     "Event",
-    "Category",
+    "Concept",
+    "Method",
+    "Content",
+    "Data",
+    "Artifact",
+    "NaturalObject",
 ]
 
 # Separator for graph fields
@@ -46,7 +49,8 @@ DEFAULT_MAX_TOTAL_TOKENS = 30000
 DEFAULT_COSINE_THRESHOLD = 0.2
 DEFAULT_RELATED_CHUNK_NUMBER = 5
 DEFAULT_KG_CHUNK_PICK_METHOD = "VECTOR"
-# Deprated: history message have negtive effect on query performance
+
+# TODO: Deprated. All conversation_history messages is send to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults
@@ -68,7 +72,7 @@ DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding function
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
 # Gunicorn worker timeout
-DEFAULT_TIMEOUT = 210
+DEFAULT_TIMEOUT = 300
 
 # Default llm and embedding timeout
 DEFAULT_LLM_TIMEOUT = 180

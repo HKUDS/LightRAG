@@ -1,11 +1,6 @@
-import sys
+from collections.abc import AsyncIterator
 
-if sys.version_info < (3, 9):
-    from typing import AsyncIterator
-else:
-    from collections.abc import AsyncIterator
-
-import pipmaster as pm  # Pipmaster for dynamic library install
+import pipmaster as pm
 
 # install specific modules
 if not pm.is_installed("ollama"):
@@ -43,8 +38,11 @@ async def _ollama_model_if_cache(
     prompt,
     system_prompt=None,
     history_messages=[],
+    enable_cot: bool = False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    if enable_cot:
+        logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
     stream = True if kwargs.get("stream") else False
 
     kwargs.pop("max_tokens", None)
@@ -123,7 +121,12 @@ async def _ollama_model_if_cache(
 
 
 async def ollama_model_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    enable_cot: bool = False,
+    keyword_extraction=False,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
@@ -134,6 +137,7 @@ async def ollama_model_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 

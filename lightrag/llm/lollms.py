@@ -39,10 +39,15 @@ async def lollms_model_if_cache(
     prompt,
     system_prompt=None,
     history_messages=[],
+    enable_cot: bool = False,
     base_url="http://localhost:9600",
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Client implementation for lollms generation."""
+    if enable_cot:
+        from lightrag.utils import logger
+
+        logger.debug("enable_cot=True is not supported for lollms and will be ignored.")
 
     stream = True if kwargs.get("stream") else False
     api_key = kwargs.pop("api_key", None)
@@ -98,7 +103,12 @@ async def lollms_model_if_cache(
 
 
 async def lollms_model_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    enable_cot: bool = False,
+    keyword_extraction=False,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Complete function for lollms model generation."""
 
@@ -119,6 +129,7 @@ async def lollms_model_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 

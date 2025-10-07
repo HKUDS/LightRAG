@@ -74,6 +74,12 @@ class PostgreSQLDB:
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
 
+        # Server settings
+        self.server_settings = config.get("server_settings")
+
+        # Statement LRU cache size (keep as-is, allow None for optional configuration)
+        self.statement_cache_size = config.get("statement_cache_size")
+
         if self.user is None or self.password is None or self.database is None:
             raise ValueError("Missing database user, password, or database")
 
@@ -160,6 +166,15 @@ class PostgreSQLDB:
                 "max_size": self.max,
             }
 
+            # Only add statement_cache_size if it's configured
+            if self.statement_cache_size is not None:
+                connection_params["statement_cache_size"] = int(
+                    self.statement_cache_size
+                )
+                logger.info(
+                    f"PostgreSQL, statement LRU cache size set as: {self.statement_cache_size}"
+                )
+
             # Add SSL configuration if provided
             ssl_context = self._create_ssl_context()
             if ssl_context is not None:
@@ -172,6 +187,24 @@ class PostgreSQLDB:
                 elif self.ssl_mode.lower() == "disable":
                     connection_params["ssl"] = False
                 logger.info(f"PostgreSQL, SSL mode set to: {self.ssl_mode}")
+
+            # Add server settings if provided
+            if self.server_settings:
+                try:
+                    settings = {}
+                    # The format is expected to be a query string, e.g., "key1=value1&key2=value2"
+                    pairs = self.server_settings.split("&")
+                    for pair in pairs:
+                        if "=" in pair:
+                            key, value = pair.split("=", 1)
+                            settings[key] = value
+                    if settings:
+                        connection_params["server_settings"] = settings
+                        logger.info(f"PostgreSQL, Server settings applied: {settings}")
+                except Exception as e:
+                    logger.warning(
+                        f"PostgreSQL, Failed to parse server_settings: {self.server_settings}, error: {e}"
+                    )
 
             self.pool = await asyncpg.create_pool(**connection_params)  # type: ignore
 
@@ -787,13 +820,13 @@ class PostgreSQLDB:
                 FROM information_schema.columns
                 WHERE table_name = $1 AND column_name = $2
                 """
-
+                params = {
+                    "table_name": migration["table"].lower(),
+                    "column_name": migration["column"],
+                }
                 column_info = await self.query(
                     check_column_sql,
-                    {
-                        "table_name": migration["table"].lower(),
-                        "column_name": migration["column"],
-                    },
+                    list(params.values()),
                 )
 
                 if not column_info:
@@ -828,8 +861,8 @@ class PostgreSQLDB:
 
                     # Execute the migration
                     alter_sql = f"""
-                    ALTER TABLE {migration['table']}
-                    ALTER COLUMN {migration['column']} TYPE {migration['new_type']}
+                    ALTER TABLE {migration["table"]}
+                    ALTER COLUMN {migration["column"]} TYPE {migration["new_type"]}
                     """
 
                     await self.execute(alter_sql)
@@ -1035,10 +1068,8 @@ class PostgreSQLDB:
                 WHERE table_name = $1
                 AND table_schema = 'public'
                 """
-
-                table_exists = await self.query(
-                    check_table_sql, {"table_name": table_name.lower()}
-                )
+                params = {"table_name": table_name.lower()}
+                table_exists = await self.query(check_table_sql, list(params.values()))
 
                 if not table_exists:
                     logger.info(f"Creating table {table_name}")
@@ -1121,7 +1152,8 @@ class PostgreSQLDB:
                 AND indexname = $1
                 """
 
-                existing = await self.query(check_sql, {"indexname": index["name"]})
+                params = {"indexname": index["name"]}
+                existing = await self.query(check_sql, list(params.values()))
 
                 if not existing:
                     logger.info(f"Creating pagination index: {index['description']}")
@@ -1217,7 +1249,7 @@ class PostgreSQLDB:
     async def query(
         self,
         sql: str,
-        params: dict[str, Any] | None = None,
+        params: list[Any] | None = None,
         multirows: bool = False,
         with_age: bool = False,
         graph_name: str | None = None,
@@ -1230,7 +1262,7 @@ class PostgreSQLDB:
 
             try:
                 if params:
-                    rows = await connection.fetch(sql, *params.values())
+                    rows = await connection.fetch(sql, *params)
                 else:
                     rows = await connection.fetch(sql)
 
@@ -1324,7 +1356,7 @@ class ClientManager:
             ),
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=20),
+                config.get("postgres", "max_connections", fallback=50),
             ),
             # SSL configuration
             "ssl_mode": os.environ.get(
@@ -1368,6 +1400,15 @@ class ClientManager:
                     "POSTGRES_IVFFLAT_LISTS",
                     config.get("postgres", "ivfflat_lists", fallback="100"),
                 )
+            ),
+            # Server settings for Supabase
+            "server_settings": os.environ.get(
+                "POSTGRES_SERVER_SETTINGS",
+                config.get("postgres", "server_options", fallback=None),
+            ),
+            "statement_cache_size": os.environ.get(
+                "POSTGRES_STATEMENT_CACHE_SIZE",
+                config.get("postgres", "statement_cache_size", fallback=None),
             ),
         }
 
@@ -1446,7 +1487,7 @@ class PGKVStorage(BaseKVStorage):
         params = {"workspace": self.workspace}
 
         try:
-            results = await self.db.query(sql, params, multirows=True)
+            results = await self.db.query(sql, list(params.values()), multirows=True)
 
             # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
             if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -1540,7 +1581,7 @@ class PGKVStorage(BaseKVStorage):
         """Get data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.workspace, "id": id}
-        response = await self.db.query(sql, params)
+        response = await self.db.query(sql, list(params.values()))
 
         if response and is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             # Parse llm_cache_list JSON string back to list
@@ -1620,7 +1661,7 @@ class PGKVStorage(BaseKVStorage):
             ids=",".join([f"'{id}'" for id in ids])
         )
         params = {"workspace": self.workspace}
-        results = await self.db.query(sql, params, multirows=True)
+        results = await self.db.query(sql, list(params.values()), multirows=True)
 
         if results and is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             # Parse llm_cache_list JSON string back to list for each result
@@ -1708,7 +1749,7 @@ class PGKVStorage(BaseKVStorage):
         )
         params = {"workspace": self.workspace}
         try:
-            res = await self.db.query(sql, params, multirows=True)
+            res = await self.db.query(sql, list(params.values()), multirows=True)
             if res:
                 exist_keys = [key["id"] for key in res]
             else:
@@ -1751,6 +1792,7 @@ class PGKVStorage(BaseKVStorage):
                 _data = {
                     "id": k,
                     "content": v["content"],
+                    "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
                     "workspace": self.workspace,
                 }
                 await self.db.execute(upsert_sql, _data)
@@ -2023,7 +2065,7 @@ class PGVectorStorage(BaseVectorStorage):
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
             "top_k": top_k,
         }
-        results = await self.db.query(sql, params=params, multirows=True)
+        results = await self.db.query(sql, params=list(params.values()), multirows=True)
         return results
 
     async def index_done_callback(self) -> None:
@@ -2120,7 +2162,7 @@ class PGVectorStorage(BaseVectorStorage):
         params = {"workspace": self.workspace, "id": id}
 
         try:
-            result = await self.db.query(query, params)
+            result = await self.db.query(query, list(params.values()))
             if result:
                 return dict(result)
             return None
@@ -2154,7 +2196,7 @@ class PGVectorStorage(BaseVectorStorage):
         params = {"workspace": self.workspace}
 
         try:
-            results = await self.db.query(query, params, multirows=True)
+            results = await self.db.query(query, list(params.values()), multirows=True)
             return [dict(record) for record in results]
         except Exception as e:
             logger.error(
@@ -2187,7 +2229,7 @@ class PGVectorStorage(BaseVectorStorage):
         params = {"workspace": self.workspace}
 
         try:
-            results = await self.db.query(query, params, multirows=True)
+            results = await self.db.query(query, list(params.values()), multirows=True)
             vectors_dict = {}
 
             for result in results:
@@ -2274,7 +2316,7 @@ class PGDocStatusStorage(DocStatusStorage):
         )
         params = {"workspace": self.workspace}
         try:
-            res = await self.db.query(sql, params, multirows=True)
+            res = await self.db.query(sql, list(params.values()), multirows=True)
             if res:
                 exist_keys = [key["id"] for key in res]
             else:
@@ -2292,7 +2334,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
         params = {"workspace": self.workspace, "id": id}
-        result = await self.db.query(sql, params, True)
+        result = await self.db.query(sql, list(params.values()), True)
         if result is None or result == []:
             return None
         else:
@@ -2338,7 +2380,7 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "SELECT * FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
         params = {"workspace": self.workspace, "ids": ids}
 
-        results = await self.db.query(sql, params, True)
+        results = await self.db.query(sql, list(params.values()), True)
 
         if not results:
             return []
@@ -2383,13 +2425,65 @@ class PGDocStatusStorage(DocStatusStorage):
 
         return processed_results
 
+    async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
+        """Get document by file path
+
+        Args:
+            file_path: The file path to search for
+
+        Returns:
+            Union[dict[str, Any], None]: Document data if found, None otherwise
+            Returns the same format as get_by_id method
+        """
+        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and file_path=$2"
+        params = {"workspace": self.workspace, "file_path": file_path}
+        result = await self.db.query(sql, list(params.values()), True)
+
+        if result is None or result == []:
+            return None
+        else:
+            # Parse chunks_list JSON string back to list
+            chunks_list = result[0].get("chunks_list", [])
+            if isinstance(chunks_list, str):
+                try:
+                    chunks_list = json.loads(chunks_list)
+                except json.JSONDecodeError:
+                    chunks_list = []
+
+            # Parse metadata JSON string back to dict
+            metadata = result[0].get("metadata", {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(result[0]["created_at"])
+            updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
+
+            return dict(
+                content_length=result[0]["content_length"],
+                content_summary=result[0]["content_summary"],
+                status=result[0]["status"],
+                chunks_count=result[0]["chunks_count"],
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=result[0]["file_path"],
+                chunks_list=chunks_list,
+                metadata=metadata,
+                error_msg=result[0].get("error_msg"),
+                track_id=result[0].get("track_id"),
+            )
+
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         sql = """SELECT status as "status", COUNT(1) as "count"
                    FROM LIGHTRAG_DOC_STATUS
                   where workspace=$1 GROUP BY STATUS
                  """
-        result = await self.db.query(sql, {"workspace": self.workspace}, True)
+        params = {"workspace": self.workspace}
+        result = await self.db.query(sql, list(params.values()), True)
         counts = {}
         for doc in result:
             counts[doc["status"]] = doc["count"]
@@ -2401,7 +2495,7 @@ class PGDocStatusStorage(DocStatusStorage):
         """all documents with a specific status"""
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.workspace, "status": status.value}
-        result = await self.db.query(sql, params, True)
+        result = await self.db.query(sql, list(params.values()), True)
 
         docs_by_status = {}
         for element in result:
@@ -2455,7 +2549,7 @@ class PGDocStatusStorage(DocStatusStorage):
         """Get all documents with a specific track_id"""
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and track_id=$2"
         params = {"workspace": self.workspace, "track_id": track_id}
-        result = await self.db.query(sql, params, True)
+        result = await self.db.query(sql, list(params.values()), True)
 
         docs_by_track_id = {}
         for element in result:
@@ -2555,7 +2649,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
         # Query for total count
         count_sql = f"SELECT COUNT(*) as total FROM LIGHTRAG_DOC_STATUS {where_clause}"
-        count_result = await self.db.query(count_sql, params)
+        count_result = await self.db.query(count_sql, list(params.values()))
         total_count = count_result["total"] if count_result else 0
 
         # Query for paginated data
@@ -2568,7 +2662,7 @@ class PGDocStatusStorage(DocStatusStorage):
         params["limit"] = page_size
         params["offset"] = offset
 
-        result = await self.db.query(data_sql, params, True)
+        result = await self.db.query(data_sql, list(params.values()), True)
 
         # Convert to (doc_id, DocProcessingStatus) tuples
         documents = []
@@ -2625,7 +2719,7 @@ class PGDocStatusStorage(DocStatusStorage):
             GROUP BY status
         """
         params = {"workspace": self.workspace}
-        result = await self.db.query(sql, params, True)
+        result = await self.db.query(sql, list(params.values()), True)
 
         counts = {}
         total_count = 0
@@ -3071,7 +3165,7 @@ class PGGraphStorage(BaseGraphStorage):
             if readonly:
                 data = await self.db.query(
                     query,
-                    params,
+                    list(params.values()) if params else None,
                     multirows=True,
                     with_age=True,
                     graph_name=self.graph_name,
@@ -3102,114 +3196,92 @@ class PGGraphStorage(BaseGraphStorage):
         return result
 
     async def has_node(self, node_id: str) -> bool:
-        entity_name_label = self._normalize_node_id(node_id)
+        query = f"""
+            SELECT EXISTS (
+              SELECT 1
+              FROM {self.graph_name}.base
+              WHERE ag_catalog.agtype_access_operator(
+                      VARIADIC ARRAY[properties, '"entity_id"'::agtype]
+                    ) = (to_json($1::text)::text)::agtype
+              LIMIT 1
+            ) AS node_exists;
+        """
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})
-                     RETURN count(n) > 0 AS node_exists
-                   $$) AS (node_exists bool)""" % (self.graph_name, entity_name_label)
-
-        single_result = (await self._query(query))[0]
-
-        return single_result["node_exists"]
+        params = {"node_id": node_id}
+        row = (await self._query(query, params=params))[0]
+        return bool(row["node_exists"])
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        src_label = self._normalize_node_id(source_node_id)
-        tgt_label = self._normalize_node_id(target_node_id)
-
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
-                     RETURN COUNT(r) > 0 AS edge_exists
-                   $$) AS (edge_exists bool)""" % (
-            self.graph_name,
-            src_label,
-            tgt_label,
-        )
-
-        single_result = (await self._query(query))[0]
-
-        return single_result["edge_exists"]
+        query = f"""
+            WITH a AS (
+              SELECT id AS vid
+              FROM {self.graph_name}.base
+              WHERE ag_catalog.agtype_access_operator(
+                      VARIADIC ARRAY[properties, '"entity_id"'::agtype]
+                    ) = (to_json($1::text)::text)::agtype
+            ),
+            b AS (
+              SELECT id AS vid
+              FROM {self.graph_name}.base
+              WHERE ag_catalog.agtype_access_operator(
+                      VARIADIC ARRAY[properties, '"entity_id"'::agtype]
+                    ) = (to_json($2::text)::text)::agtype
+            )
+            SELECT EXISTS (
+              SELECT 1
+              FROM {self.graph_name}."DIRECTED" d
+              JOIN a ON d.start_id = a.vid
+              JOIN b ON d.end_id   = b.vid
+              LIMIT 1
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM {self.graph_name}."DIRECTED" d
+              JOIN a ON d.end_id   = a.vid
+              JOIN b ON d.start_id = b.vid
+              LIMIT 1
+            ) AS edge_exists;
+        """
+        params = {
+            "source_node_id": source_node_id,
+            "target_node_id": target_node_id,
+        }
+        row = (await self._query(query, params=params))[0]
+        return bool(row["edge_exists"])
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties"""
 
         label = self._normalize_node_id(node_id)
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})
-                     RETURN n
-                   $$) AS (n agtype)""" % (self.graph_name, label)
-        record = await self._query(query)
-        if record:
-            node = record[0]
-            node_dict = node["n"]["properties"]
 
-            # Process string result, parse it to JSON dictionary
-            if isinstance(node_dict, str):
-                try:
-                    node_dict = json.loads(node_dict)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"[{self.workspace}] Failed to parse node string: {node_dict}"
-                    )
-
-            return node_dict
+        result = await self.get_nodes_batch(node_ids=[label])
+        if result and node_id in result:
+            return result[node_id]
         return None
 
     async def node_degree(self, node_id: str) -> int:
         label = self._normalize_node_id(node_id)
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})-[r]-()
-                     RETURN count(r) AS total_edge_count
-                   $$) AS (total_edge_count integer)""" % (self.graph_name, label)
-        record = (await self._query(query))[0]
-        if record:
-            edge_count = int(record["total_edge_count"])
-            return edge_count
+        result = await self.node_degrees_batch(node_ids=[label])
+        if result and node_id in result:
+            return result[node_id]
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        src_degree = await self.node_degree(src_id)
-        trg_degree = await self.node_degree(tgt_id)
-
-        # Convert None to 0 for addition
-        src_degree = 0 if src_degree is None else src_degree
-        trg_degree = 0 if trg_degree is None else trg_degree
-
-        degrees = int(src_degree) + int(trg_degree)
-
-        return degrees
+        result = await self.edge_degrees_batch(edges=[(src_id, tgt_id)])
+        if result and (src_id, tgt_id) in result:
+            return result[(src_id, tgt_id)]
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes"""
-
         src_label = self._normalize_node_id(source_node_id)
         tgt_label = self._normalize_node_id(target_node_id)
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
-                     RETURN properties(r) as edge_properties
-                     LIMIT 1
-                   $$) AS (edge_properties agtype)""" % (
-            self.graph_name,
-            src_label,
-            tgt_label,
-        )
-        record = await self._query(query)
-        if record and record[0] and record[0]["edge_properties"]:
-            result = record[0]["edge_properties"]
-
-            # Process string result, parse it to JSON dictionary
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"[{self.workspace}] Failed to parse edge string: {result}"
-                    )
-
-            return result
+        result = await self.get_edges_batch([{"src": src_label, "tgt": tgt_label}])
+        if result and (src_label, tgt_label) in result:
+            return result[(src_label, tgt_label)]
+        return None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
@@ -4281,6 +4353,113 @@ class PGGraphStorage(BaseGraphStorage):
             edges.append(edge_properties)
         return edges
 
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """Get popular labels by node degree (most connected entities) using native SQL for performance."""
+        try:
+            # Native SQL query to calculate node degrees directly from AGE's underlying tables
+            # This is significantly faster than using the cypher() function wrapper
+            query = f"""
+            WITH node_degrees AS (
+                SELECT
+                    node_id,
+                    COUNT(*) AS degree
+                FROM (
+                    SELECT start_id AS node_id FROM {self.graph_name}._ag_label_edge
+                    UNION ALL
+                    SELECT end_id AS node_id FROM {self.graph_name}._ag_label_edge
+                ) AS all_edges
+                GROUP BY node_id
+            )
+            SELECT
+                (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
+            FROM
+                node_degrees d
+            JOIN
+                {self.graph_name}._ag_label_vertex v ON d.node_id = v.id
+            WHERE
+                ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
+            ORDER BY
+                d.degree DESC,
+                label ASC
+            LIMIT $1;
+            """
+            results = await self._query(query, params={"limit": limit})
+            labels = [
+                result["label"] for result in results if result and "label" in result
+            ]
+
+            logger.debug(
+                f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
+            )
+            return labels
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
+            return []
+
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """Search labels with fuzzy matching using native, parameterized SQL for performance and security."""
+        query_lower = query.lower().strip()
+        if not query_lower:
+            return []
+
+        try:
+            # Re-implementing with the correct agtype access operator and full scoring logic.
+            sql_query = f"""
+            WITH ranked_labels AS (
+                SELECT
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text AS label,
+                    LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) AS label_lower
+                FROM
+                    {self.graph_name}._ag_label_vertex
+                WHERE
+                    ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]) IS NOT NULL
+                    AND LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) ILIKE $1
+            )
+            SELECT
+                label
+            FROM (
+                SELECT
+                    label,
+                    CASE
+                        WHEN label_lower = $2 THEN 1000
+                        WHEN label_lower LIKE $3 THEN 500
+                        ELSE (100 - LENGTH(label))
+                    END +
+                    CASE
+                        WHEN label_lower LIKE $4 OR label_lower LIKE $5 THEN 50
+                        ELSE 0
+                    END AS score
+                FROM
+                    ranked_labels
+            ) AS scored_labels
+            ORDER BY
+                score DESC,
+                label ASC
+            LIMIT $6;
+            """
+            params = (
+                f"%{query_lower}%",  # For the main ILIKE clause ($1)
+                query_lower,  # For exact match ($2)
+                f"{query_lower}%",  # For prefix match ($3)
+                f"% {query_lower}%",  # For word boundary (space) ($4)
+                f"%_{query_lower}%",  # For word boundary (underscore) ($5)
+                limit,  # For LIMIT ($6)
+            )
+            results = await self._query(sql_query, params=dict(enumerate(params, 1)))
+            labels = [
+                result["label"] for result in results if result and "label" in result
+            ]
+
+            logger.debug(
+                f"[{self.workspace}] Search query '{query}' returned {len(labels)} results (limit: {limit})"
+            )
+            return labels
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error searching labels with query '{query}': {str(e)}"
+            )
+            return []
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         async with get_graph_db_lock():
@@ -4452,7 +4631,8 @@ TABLES = {
 
 SQL_TEMPLATES = {
     # SQL for KVStorage
-    "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content
+    "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content,
+                                COALESCE(doc_name, '') as file_path
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -4467,7 +4647,8 @@ SQL_TEMPLATES = {
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
-    "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content
+    "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content,
+                                 COALESCE(doc_name, '') as file_path
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id IN ({ids})
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -4503,10 +4684,12 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_FULL_RELATIONS WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
-    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, workspace)
-                        VALUES ($1, $2, $3)
+    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace)
+                        VALUES ($1, $2, $3, $4)
                         ON CONFLICT (workspace,id) DO UPDATE
-                           SET content = $2, update_time = CURRENT_TIMESTAMP
+                           SET content = $2,
+                               doc_name = $3,
+                               update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
                                       VALUES ($1, $2, $3, $4, $5, $6, $7)

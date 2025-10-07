@@ -140,18 +140,6 @@ docker compose up
 ```
 > 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
-### 启动时自动扫描
-
-当使用 `--auto-scan-at-startup` 参数启动LightRAG Server时，系统将自动：
-
-1. 扫描输入目录中的新文件
-2. 为尚未在数据库中的新文档建立索引
-3. 使所有内容立即可用于 RAG 查询
-
-这种工作模式给启动一个临时的RAG任务提供给了方便。
-
-> `--input-dir` 参数指定要扫描的输入目录。您可以从 webui 触发输入目录扫描。
-
 ### 启动多个LightRAG实例
 
 有两种方式可以启动多个LightRAG实例。第一种方式是为每个实例配置一个完全独立的工作环境。此时需要为每个实例创建一个独立的工作目录，然后在这个工作目录上放置一个当前实例专用的`.env`配置文件。不同实例的配置文件中的服务器监听端口不能重复，然后在工作目录上执行 lightrag-server 启动服务即可。
@@ -290,7 +278,17 @@ LIGHTRAG_API_KEY=your-secure-api-key-here
 WHITELIST_PATHS=/health,/api/*
 ```
 
-> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。
+> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。
+
+API Key使用的请求头是 `X-API-Key` 。以下是使用API访问LightRAG Server的一个例子：
+
+```
+curl -X 'POST' \
+  'http://localhost:9621/documents/scan' \
+  -H 'accept: application/json' \
+  -H 'X-API-Key: your-secure-api-key-here-123' \
+  -d ''
+```
 
 * 账户凭证（Web 界面需要登录后才能访问）
 
@@ -372,7 +370,20 @@ lightrag-server --llm-binding ollama --help
 lightrag-server --embedding-binding ollama --help
 ```
 
-> 请使用openai兼容方式访问OpenRouter或vLLM部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给OpenRouter或vLLM传递额外的参数，实现推理模式的关闭或者其它个性化控制。
+> 请使用openai兼容方式访问OpenRouter、vLLM或SLang部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给OpenRouter、vLLM或SGLang推理框架传递额外的参数，实现推理模式的关闭或者其它个性化控制。
+
+设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：
+
+```
+# For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
+OPENAI_LLM_MAX_TOKENS=9000
+
+# For Ollama Deployed Modeles
+OLLAMA_LLM_NUM_PREDICT=9000
+
+# For OpenAI o1-mini or newer modles
+OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
+```
 
 ### 实体提取配置
 
@@ -419,7 +430,6 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --ssl-keyfile | None | SSL 私钥文件路径（如果启用 --ssl 则必需） |
 | --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai、aws_bedrock） |
 | --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、aws_bedrock） |
-| auto-scan-at-startup | - | 扫描输入目录中的新文件并开始索引 |
 
 ### Reranking 配置
 
