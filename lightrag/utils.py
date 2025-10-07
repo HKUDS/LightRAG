@@ -2832,6 +2832,10 @@ def convert_to_user_format(
         },  # Placeholder, will be set by calling functions
     }
 
+    logger.debug(f"[convert_to_user_format] References received: {len(references)} items")
+    for i, ref in enumerate(references):
+        logger.debug(f"[convert_to_user_format]   Reference {i+1}: {ref}")
+    
     return {
         "status": "success",
         "message": "Query processed successfully",
@@ -2847,16 +2851,19 @@ def convert_to_user_format(
 
 def generate_reference_list_from_chunks(
     chunks: list[dict],
+    target_doc_ids: list[str] = None,
 ) -> tuple[list[dict], list[dict]]:
     """
     Generate reference list from chunks, prioritizing by occurrence frequency.
-
+    
     This function extracts file_paths from chunks, counts their occurrences,
     sorts by frequency and first appearance order, creates reference_id mappings,
-    and builds a reference_list structure.
+    and builds a reference_list structure. If target_doc_ids is provided, only
+    references from those documents will be included.
 
     Args:
         chunks: List of chunk dictionaries with file_path information
+        target_doc_ids: Optional list of document IDs to filter references by
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
@@ -2887,25 +2894,93 @@ def generate_reference_list_from_chunks(
     sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
     unique_file_paths = [item[0] for item in sorted_file_paths]
 
-    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
+    # 3. Filter file paths by target document IDs if provided
+    if target_doc_ids:
+        # Convert target_doc_ids to set for faster lookup
+        target_doc_ids_set = set(target_doc_ids)
+        
+        # Debug logging to understand what we're working with
+        logger.debug(f"[REFERENCE FILTERING] Target document IDs: {target_doc_ids}")
+        logger.debug(f"[REFERENCE FILTERING] Available chunks:")
+        for i, chunk in enumerate(chunks):
+            chunk_full_doc_id = chunk.get("full_doc_id", "")
+            chunk_file_path = chunk.get("file_path", "")
+            logger.debug(f"[REFERENCE FILTERING]   Chunk {i+1}: file_path='{chunk_file_path}', full_doc_id='{chunk_full_doc_id}'")
+        
+        # Filter file paths to only include those from target documents
+        # Since Qdrant doesn't store full_doc_id, we need to look it up from file_path
+        filtered_file_paths = []
+        file_path_to_doc_id_cache = {}  # Cache for file_path -> doc_id mapping
+        
+        for file_path in unique_file_paths:
+            file_path_matches = False
+            matching_chunks = []
+            
+            # Try to get document ID for this file path
+            doc_id_for_file_path = None
+            
+            # First, check if we already have full_doc_id in any chunk with this file_path
+            for chunk in chunks:
+                chunk_file_path = chunk.get("file_path", "")
+                chunk_full_doc_id = chunk.get("full_doc_id", "")
+                
+                if chunk_file_path == file_path and chunk_full_doc_id:
+                    doc_id_for_file_path = chunk_full_doc_id
+                    break
+            
+            # If we don't have full_doc_id, we can't determine the document ID from file_path alone
+            # For now, we'll skip filtering by document ID if full_doc_id is not available
+            if not doc_id_for_file_path:
+                logger.debug(f"[REFERENCE FILTERING] No doc_id found for file_path '{file_path}' - skipping document ID filtering")
+                # Since we can't determine the document ID, we'll include this file_path
+                # This means references won't be filtered when using vector databases that don't store full_doc_id
+                file_path_matches = True
+                matching_chunks.append("doc_id=unknown")
+            
+            # Check if this file_path belongs to any target document
+            if doc_id_for_file_path and doc_id_for_file_path in target_doc_ids_set:
+                file_path_matches = True
+                matching_chunks.append(f"doc_id={doc_id_for_file_path}")
+                logger.debug(f"[REFERENCE FILTERING] File path '{file_path}' matches target document '{doc_id_for_file_path}'")
+            else:
+                logger.debug(f"[REFERENCE FILTERING] File path '{file_path}' does not match any target documents (doc_id: {doc_id_for_file_path})")
+            
+            if file_path_matches:
+                filtered_file_paths.append(file_path)
+        
+        unique_file_paths = filtered_file_paths
+        logger.info(f"[REFERENCE FILTERING] Filtered references to {len(unique_file_paths)} file paths from target documents: {target_doc_ids}")
+
+    # 4. Create mapping from file_path to reference_id (prioritized by frequency)
     file_path_to_ref_id = {}
     for i, file_path in enumerate(unique_file_paths):
         file_path_to_ref_id[file_path] = str(i + 1)
 
-    # 4. Add reference_id field to each chunk
+    # 5. Add reference_id field to each chunk (only for chunks from target documents)
     updated_chunks = []
     for chunk in chunks:
         chunk_copy = chunk.copy()
         file_path = chunk_copy.get("file_path", "")
-        if file_path and file_path != "unknown_source":
+        full_doc_id = chunk_copy.get("full_doc_id", "")
+        
+        # Only assign reference_id if:
+        # 1. The file_path is in our filtered list (meaning it has chunks from target documents)
+        # 2. This specific chunk belongs to a target document
+        if (file_path and file_path != "unknown_source" and 
+            file_path in file_path_to_ref_id and 
+            (not target_doc_ids or full_doc_id in target_doc_ids_set)):
             chunk_copy["reference_id"] = file_path_to_ref_id[file_path]
         else:
             chunk_copy["reference_id"] = ""
         updated_chunks.append(chunk_copy)
 
-    # 5. Build reference_list
+    # 6. Build reference_list
     reference_list = []
     for i, file_path in enumerate(unique_file_paths):
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
+    
+    logger.debug(f"[REFERENCE FILTERING] Final reference list: {len(reference_list)} references")
+    for ref in reference_list:
+        logger.debug(f"[REFERENCE FILTERING]   Reference {ref['reference_id']}: {ref['file_path']}")
 
     return reference_list, updated_chunks

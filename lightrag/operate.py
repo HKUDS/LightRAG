@@ -3225,7 +3225,7 @@ async def _build_llm_context(
 
     # Generate reference list from truncated chunks using the new common function
     reference_list, truncated_chunks = generate_reference_list_from_chunks(
-        truncated_chunks
+        truncated_chunks, target_doc_ids=query_param.ids
     )
 
     # Rebuild text_units_context with truncated chunks
@@ -3295,6 +3295,10 @@ async def _build_llm_context(
     logger.debug(
         f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
     )
+    logger.debug(f"[_build_llm_context] Reference list being passed: {len(reference_list)} items")
+    for i, ref in enumerate(reference_list):
+        logger.debug(f"[_build_llm_context]   Reference {i+1}: {ref}")
+    
     final_data = convert_to_user_format(
         entities_context,
         relations_context,
@@ -3307,6 +3311,9 @@ async def _build_llm_context(
     logger.debug(
         f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
     )
+    logger.debug(f"[_build_llm_context] Final data references: {len(final_data.get('data', {}).get('references', []))} items")
+    for i, ref in enumerate(final_data.get('data', {}).get('references', [])):
+        logger.debug(f"[_build_llm_context]   Final reference {i+1}: {ref}")
     return result, final_data
 
 
@@ -4297,7 +4304,7 @@ async def naive_query(
 
     # Generate reference list from processed chunks using the new common function
     reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
-        processed_chunks
+        processed_chunks, target_doc_ids=query_param.ids
     )
 
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
