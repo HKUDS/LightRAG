@@ -2167,10 +2167,10 @@ async def extract_entities(
             final_result,
             chunk_key,
             timestamp,
-            file_path,
-            metadata,
+            file_path=file_path,
             tuple_delimiter=context_base["tuple_delimiter"],
             completion_delimiter=context_base["completion_delimiter"],
+            metadata=metadata,
         )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
@@ -2192,10 +2192,10 @@ async def extract_entities(
                 glean_result,
                 chunk_key,
                 timestamp,
-                file_path,
-                metadata=metadata,
+                file_path=file_path,
                 tuple_delimiter=context_base["tuple_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
+                metadata=metadata,
             )
 
             # Merge results - compare description lengths to choose better version
