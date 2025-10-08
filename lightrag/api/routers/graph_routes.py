@@ -25,6 +25,22 @@ class RelationUpdateRequest(BaseModel):
     updated_data: Dict[str, Any]
 
 
+class EntityMergeRequest(BaseModel):
+    entities_to_change: list[str]
+    entity_to_change_into: str
+
+
+class EntityCreateRequest(BaseModel):
+    entity_name: str
+    entity_data: Dict[str, Any]
+
+
+class RelationCreateRequest(BaseModel):
+    source_entity: str
+    target_entity: str
+    relation_data: Dict[str, Any]
+
+
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -223,6 +239,171 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error updating relation: {str(e)}"
+            )
+
+    @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
+    async def create_entity(request: EntityCreateRequest):
+        """
+        Create a new entity in the knowledge graph
+
+        Args:
+            request (EntityCreateRequest): Request containing:
+                - entity_name: Name of the entity
+                - entity_data: Dictionary of entity properties (e.g., description, entity_type)
+
+        Returns:
+            Dict: Created entity information
+
+        Example:
+            {
+                "entity_name": "Tesla",
+                "entity_data": {
+                    "description": "Electric vehicle manufacturer",
+                    "entity_type": "ORGANIZATION"
+                }
+            }
+        """
+        try:
+            # Check if entity already exists
+            exists = await rag.chunk_entity_relation_graph.has_node(request.entity_name)
+            if exists:
+                raise ValueError(f"Entity '{request.entity_name}' already exists")
+
+            # Prepare entity data
+            entity_data = request.entity_data.copy()
+            entity_data["entity_id"] = request.entity_name
+
+            # Create the entity
+            await rag.chunk_entity_relation_graph.upsert_node(
+                request.entity_name, entity_data
+            )
+
+            return {
+                "status": "success",
+                "message": f"Entity '{request.entity_name}' created successfully",
+                "data": entity_data,
+            }
+        except ValueError as ve:
+            logger.error(f"Validation error creating entity '{request.entity_name}': {str(ve)}")
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(f"Error creating entity '{request.entity_name}': {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error creating entity: {str(e)}"
+            )
+
+    @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
+    async def create_relation(request: RelationCreateRequest):
+        """
+        Create a new relationship between two entities in the knowledge graph
+
+        Args:
+            request (RelationCreateRequest): Request containing:
+                - source_entity: Source entity name
+                - target_entity: Target entity name
+                - relation_data: Dictionary of relation properties (e.g., description, keywords, weight)
+
+        Returns:
+            Dict: Created relation information
+
+        Example:
+            {
+                "source_entity": "Elon Musk",
+                "target_entity": "Tesla",
+                "relation_data": {
+                    "description": "Elon Musk is the CEO of Tesla",
+                    "keywords": "CEO, founder",
+                    "weight": 1.0
+                }
+            }
+        """
+        try:
+            # Check if both entities exist
+            source_exists = await rag.chunk_entity_relation_graph.has_node(
+                request.source_entity
+            )
+            target_exists = await rag.chunk_entity_relation_graph.has_node(
+                request.target_entity
+            )
+
+            if not source_exists:
+                raise ValueError(f"Source entity '{request.source_entity}' does not exist")
+            if not target_exists:
+                raise ValueError(f"Target entity '{request.target_entity}' does not exist")
+
+            # Create the relationship
+            await rag.chunk_entity_relation_graph.upsert_edge(
+                request.source_entity, request.target_entity, request.relation_data
+            )
+
+            return {
+                "status": "success",
+                "message": f"Relation created successfully between '{request.source_entity}' and '{request.target_entity}'",
+                "data": {
+                    "source": request.source_entity,
+                    "target": request.target_entity,
+                    **request.relation_data,
+                },
+            }
+        except ValueError as ve:
+            logger.error(
+                f"Validation error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(ve)}"
+            )
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(
+                f"Error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(e)}"
+            )
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error creating relation: {str(e)}"
+            )
+
+    @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
+    async def merge_entities(request: EntityMergeRequest):
+        """
+        Merge multiple entities into a single entity, preserving all relationships.
+
+        This endpoint is useful for consolidating duplicate or misspelled entities.
+        All relationships from the source entities will be transferred to the target entity.
+
+        Args:
+            request (EntityMergeRequest): Request containing:
+                - entities_to_change: List of entity names to be removed
+                - entity_to_change_into: Name of the target entity to merge into
+
+        Returns:
+            Dict: Result of the merge operation with merged entity information
+
+        Example:
+            {
+                "entities_to_change": ["Elon Msk", "Ellon Musk"],
+                "entity_to_change_into": "Elon Musk"
+            }
+        """
+        try:
+            result = await rag.amerge_entities(
+                source_entities=request.entities_to_change,
+                target_entity=request.entity_to_change_into,
+            )
+            return {
+                "status": "success",
+                "message": f"Successfully merged {len(request.entities_to_change)} entities into '{request.entity_to_change_into}'",
+                "data": result,
+            }
+        except ValueError as ve:
+            logger.error(
+                f"Validation error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(ve)}"
+            )
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(
+                f"Error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(e)}"
+            )
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error merging entities: {str(e)}"
             )
 
     return router
