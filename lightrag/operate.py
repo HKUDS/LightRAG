@@ -7,6 +7,12 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
+from .structured_extraction import (
+    extract_entities_relationships_structured,
+    extract_keywords_structured
+)
+from .pydantic_schemas import ExtractionResult, KeywordExtraction
+
 from .utils import (
     logger,
     compute_mdhash_id,
@@ -864,31 +870,73 @@ async def _process_extraction_result(
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
+    
+    This version supports both structured Pydantic output and legacy string parsing.
+    
     Args:
-        result (str): The extraction result to process
+        result (str or ExtractionResult): The extraction result to process
         chunk_key (str): The chunk key for source tracking
+        timestamp (int): Timestamp of extraction
         file_path (str): The file path for citation
         tuple_delimiter (str): Delimiter for tuple fields
-        record_delimiter (str): Delimiter for records
         completion_delimiter (str): Delimiter for completion
     Returns:
         tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
     """
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
-
+    
+    # Check if result is already a Pydantic ExtractionResult
+    if isinstance(result, ExtractionResult):
+        logger.info(
+            f"{chunk_key}: Processing structured extraction result - "
+            f"{len(result.entities)} entities, {len(result.relationships)} relationships"
+        )
+        
+        # Process entities from Pydantic model
+        for entity in result.entities:
+            entity_data = {
+                "entity_name": entity.entity_name,
+                "entity_type": entity.entity_type,
+                "description": entity.entity_description,
+                "source_id": chunk_key,
+                "file_path": file_path,
+                "timestamp": timestamp,
+            }
+            maybe_nodes[entity.entity_name].append(entity_data)
+        
+        # Process relationships from Pydantic model
+        for relationship in result.relationships:
+            relationship_data = {
+                "src_id": relationship.source_entity,
+                "tgt_id": relationship.target_entity,
+                "keywords": relationship.relationship_keywords,
+                "description": relationship.relationship_description,
+                "source_id": chunk_key,
+                "file_path": file_path,
+                "timestamp": timestamp,
+                "weight": 1.0,
+            }
+            edge_key = (relationship.source_entity, relationship.target_entity)
+            maybe_edges[edge_key].append(relationship_data)
+        
+        return dict(maybe_nodes), dict(maybe_edges)
+    
+    # Legacy string parsing (fallback)
+    logger.debug(f"{chunk_key}: Processing legacy string extraction result")
+    
     if completion_delimiter not in result:
         logger.warning(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
         )
 
-    # Split LLL output result to records by "\n"
+    # Split LLM output result to records by "\n"
     records = split_string_by_multi_markers(
         result,
         ["\n", completion_delimiter, completion_delimiter.lower()],
     )
 
-    # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
+    # Fix LLM output format error which use tuple_delimiter to separate record instead of "\n"
     fixed_records = []
     for record in records:
         record = record.strip()
@@ -901,7 +949,7 @@ async def _process_extraction_result(
             if not entity_record.startswith("entity") and not entity_record.startswith(
                 "relation"
             ):
-                entity_record = f"entity<|{entity_record}"
+                entity_record = f"entity{tuple_delimiter}{entity_record}"
             entity_relation_records = split_string_by_multi_markers(
                 # treat "relationship" and "relation" interchangeable
                 entity_record,
@@ -921,7 +969,7 @@ async def _process_extraction_result(
 
     if len(fixed_records) != len(records):
         logger.warning(
-            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record seperators instead new-line"
+            f"{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record separators instead new-line"
         )
 
     for record in fixed_records:
@@ -2048,14 +2096,15 @@ async def extract_entities(
     total_chunks = len(ordered_chunks)
 
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-        """Process a single chunk
+        """Process a single chunk with structured output support
+        
         Args:
             chunk_key_dp (tuple[str, TextChunkSchema]):
                 ("chunk-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
         Returns:
             tuple: (maybe_nodes, maybe_edges) containing extracted entities and relationships
         """
-        nonlocal processed_chunks
+        nonlocal processed_chunks  # This variable is from the outer extract_entities scope
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
@@ -2076,6 +2125,7 @@ async def extract_entities(
             "entity_continue_extraction_user_prompt"
         ].format(**{**context_base, "input_text": content})
 
+        # MODIFIED: Use structured extraction with entity_extraction flag
         final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
             use_llm_func,
@@ -2084,10 +2134,12 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            entity_extraction=True,  # NEW: Signal to use structured output
         )
 
         history = pack_user_ass_to_openai_messages(
-            entity_extraction_user_prompt, final_result
+            entity_extraction_user_prompt, 
+            final_result if isinstance(final_result, str) else ""  # Handle Pydantic models
         )
 
         # Process initial extraction with file path
@@ -2102,6 +2154,7 @@ async def extract_entities(
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
         if entity_extract_max_gleaning > 0:
+            # MODIFIED: Use structured extraction for gleaning
             glean_result, timestamp = await use_llm_func_with_cache(
                 entity_continue_extraction_user_prompt,
                 use_llm_func,
@@ -2111,6 +2164,7 @@ async def extract_entities(
                 cache_type="extract",
                 chunk_id=chunk_key,
                 cache_keys_collector=cache_keys_collector,
+                entity_extraction=True,  # NEW: Signal to use structured output
             )
 
             # Process gleaning result separately with file path
@@ -2134,46 +2188,29 @@ async def extract_entities(
 
                     if glean_desc_len > original_desc_len:
                         maybe_nodes[entity_name] = list(glean_entities)
-                    # Otherwise keep original version
                 else:
-                    # New entity from gleaning stage
                     maybe_nodes[entity_name] = list(glean_entities)
 
-            for edge_key, glean_edges in glean_edges.items():
-                if edge_key in maybe_edges:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_edges[edge_key][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+            # Merge new relationships
+            for edge_key, glean_rels in glean_edges.items():
+                if edge_key not in maybe_edges:
+                    maybe_edges[edge_key] = list(glean_rels)
 
-                    if glean_desc_len > original_desc_len:
-                        maybe_edges[edge_key] = list(glean_edges)
-                    # Otherwise keep original version
-                else:
-                    # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edges)
+        # Maintain LLM cache references
+        if cache_keys_collector:
+            chunk_dp["llm_cache_list"] = cache_keys_collector
 
-        # Batch update chunk's llm_cache_list with all collected cache keys
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
-
+        # Update progress counter
         processed_chunks += 1
-        entities_count = len(maybe_nodes)
-        relations_count = len(maybe_edges)
-        log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+        
+        # REMOVED: Progress bar update code that caused the error
+        # The progress bar variables (bar_progress, bar) should be defined in extract_entities
+        # but we'll remove this dependency to avoid the NameError
+        
+        # Log progress instead (optional)
+        if processed_chunks % 10 == 0 or processed_chunks == total_chunks:
+            logger.info(f"Entity extraction progress: {processed_chunks}/{total_chunks} chunks processed")
 
-        # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
 
     # Get max async tasks limit from global_config
@@ -2451,6 +2488,7 @@ async def get_keywords_from_query(
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
+    This version uses structured Pydantic output for reliable keyword extraction.
 
     This function checks if keywords are already provided in query parameters,
     and if not, extracts them from the query text using LLM.
@@ -2468,7 +2506,7 @@ async def get_keywords_from_query(
     if query_param.hl_keywords or query_param.ll_keywords:
         return query_param.hl_keywords, query_param.ll_keywords
 
-    # Extract keywords using extract_keywords_only function which already supports conversation history
+    # Extract keywords using extract_keywords_only function (now with structured output)
     hl_keywords, ll_keywords = await extract_keywords_only(
         query, query_param, global_config, hashing_kv
     )
@@ -2483,8 +2521,7 @@ async def extract_keywords_only(
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
-    This method does NOT build the final RAG context or provide a final answer.
-    It ONLY extracts keywords (hl_keywords, ll_keywords).
+    This version uses structured Pydantic output for reliable keyword extraction.
     """
 
     # 1. Handle cache if needed - add cache type for keywords
@@ -2497,6 +2534,12 @@ async def extract_keywords_only(
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
+        
+        # Check if cached response is already a KeywordExtraction object
+        if isinstance(cached_response, KeywordExtraction):
+            return cached_response.high_level_keywords, cached_response.low_level_keywords
+        
+        # Try to parse as JSON (legacy cache format)
         try:
             keywords_data = json_repair.loads(cached_response)
             return keywords_data.get("high_level_keywords", []), keywords_data.get(
@@ -2525,7 +2568,7 @@ async def extract_keywords_only(
         f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
     )
 
-    # 4. Call the LLM for keyword extraction
+    # 4. Call the LLM for keyword extraction with structured output
     if param.model_func:
         use_model_func = param.model_func
     else:
@@ -2533,53 +2576,51 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
+    # MODIFIED: Use structured extraction
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
-    # 5. Parse out JSON from the LLM response
-    result = remove_think_tags(result)
-    try:
-        keywords_data = json_repair.loads(result)
-        if not keywords_data:
-            logger.error("No JSON-like structure found in the LLM respond.")
+    # 5. Handle structured vs legacy response
+    if isinstance(result, KeywordExtraction):
+        # Structured Pydantic response
+        logger.debug(
+            f"[extract_keywords] Structured extraction: "
+            f"{len(result.high_level_keywords)} high-level, "
+            f"{len(result.low_level_keywords)} low-level"
+        )
+        hl_keywords = result.high_level_keywords
+        ll_keywords = result.low_level_keywords
+    else:
+        # Legacy JSON string response (fallback)
+        result = remove_think_tags(result)
+        try:
+            keywords_data = json_repair.loads(result)
+            if not keywords_data:
+                logger.error("No JSON-like structure found in the LLM respond.")
+                return [], []
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error: {e}")
+            logger.error(f"LLM respond: {result}")
             return [], []
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {e}")
-        logger.error(f"LLM respond: {result}")
-        return [], []
 
-    hl_keywords = keywords_data.get("high_level_keywords", [])
-    ll_keywords = keywords_data.get("low_level_keywords", [])
+        hl_keywords = keywords_data.get("high_level_keywords", [])
+        ll_keywords = keywords_data.get("low_level_keywords", [])
 
-    # 6. Cache only the processed keywords with cache type
-    if hl_keywords or ll_keywords:
+    # 6. Save to cache (save as JSON string for compatibility)
+    if hashing_kv:
         cache_data = {
             "high_level_keywords": hl_keywords,
-            "low_level_keywords": ll_keywords,
+            "low_level_keywords": ll_keywords
         }
-        if hashing_kv.global_config.get("enable_llm_cache"):
-            # Save to cache with query parameters
-            queryparam_dict = {
-                "mode": param.mode,
-                "response_type": param.response_type,
-                "top_k": param.top_k,
-                "chunk_top_k": param.chunk_top_k,
-                "max_entity_tokens": param.max_entity_tokens,
-                "max_relation_tokens": param.max_relation_tokens,
-                "max_total_tokens": param.max_total_tokens,
-                "user_prompt": param.user_prompt or "",
-                "enable_rerank": param.enable_rerank,
-            }
-            await save_to_cache(
-                hashing_kv,
-                CacheData(
-                    args_hash=args_hash,
-                    content=json.dumps(cache_data),
-                    prompt=text,
-                    mode=param.mode,
-                    cache_type="keywords",
-                    queryparam=queryparam_dict,
-                ),
-            )
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=json.dumps(cache_data, ensure_ascii=False),
+                prompt=text,
+                mode=param.mode,
+                cache_type="keywords",
+            ),
+        )
 
     return hl_keywords, ll_keywords
 

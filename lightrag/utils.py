@@ -27,6 +27,7 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
+from lightrag.pydantic_schemas import ExtractionResult, KeywordExtraction
 
 # Initialize logger with basic configuration
 logger = logging.getLogger("lightrag")
@@ -1601,6 +1602,8 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    entity_extraction: bool = False,  # NEW: Flag for entity extraction
+    keyword_extraction: bool = False,  # NEW: Flag for keyword extraction
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -1610,15 +1613,17 @@ async def use_llm_func_with_cache(
     This function applies text sanitization to prevent UTF-8 encoding errors for all LLM providers.
 
     Args:
-        input_text: Input text to send to LLM
+        user_prompt: Input text to send to LLM
         use_llm_func: LLM function with higher priority
         llm_response_cache: Cache storage instance
+        system_prompt: System prompt for LLM
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
         chunk_id: Chunk identifier to store in cache
-        text_chunks_storage: Text chunks storage to update llm_cache_list
         cache_keys_collector: Optional list to collect cache keys for batch processing
+        entity_extraction: NEW - If True, signal LLM to use structured entity extraction
+        keyword_extraction: NEW - If True, signal LLM to use structured keyword extraction
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -1670,11 +1675,11 @@ async def use_llm_func_with_cache(
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
 
-            # Add cache key to collector if provided
             if cache_keys_collector is not None:
                 cache_keys_collector.append(cache_key)
 
             return content, timestamp
+        
         statistic_data["llm_call"] += 1
 
         # Call LLM with sanitized input
@@ -1683,33 +1688,75 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        
+        # Pass through structured output flags
+        if entity_extraction:
+            kwargs["entity_extraction"] = True
+        if keyword_extraction:
+            kwargs["keyword_extraction"] = True
 
-        res: str = await use_llm_func(
+        res = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
 
-        res = remove_think_tags(res)
+        # IMPORTANT: Check if result is a Pydantic model BEFORE calling remove_think_tags
+        # ExtractionResult and KeywordExtraction are imported at module level above
+        if not isinstance(res, (ExtractionResult, KeywordExtraction)):
+            res = remove_think_tags(res)
 
-        # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+            # Convert Pydantic models to JSON for caching
+            cache_content = res
+            if isinstance(res, ExtractionResult):
+                cache_content = res.model_dump_json()
+            elif isinstance(res, KeywordExtraction):
+                cache_content = res.model_dump_json()
+            
             await save_to_cache(
                 llm_response_cache,
                 CacheData(
                     args_hash=arg_hash,
-                    content=res,
+                    content=cache_content,
                     prompt=_prompt,
                     cache_type=cache_type,
                     chunk_id=chunk_id,
                 ),
             )
 
-            # Add cache key to collector if provided
             if cache_keys_collector is not None:
                 cache_keys_collector.append(cache_key)
 
         return res, current_timestamp
+
+    # When cache is disabled
+    kwargs = {}
+    if safe_history_messages:
+        kwargs["history_messages"] = safe_history_messages
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    
+    if entity_extraction:
+        kwargs["entity_extraction"] = True
+    if keyword_extraction:
+        kwargs["keyword_extraction"] = True
+
+    try:
+        res = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
+    except Exception as e:
+        error_msg = f"[LLM func] {str(e)}"
+        raise type(e)(error_msg) from e
+
+    current_timestamp = int(time.time())
+
+    # Check if result is Pydantic model before remove_think_tags
+    if not isinstance(res, (ExtractionResult, KeywordExtraction)):
+        res = remove_think_tags(res)
+
+    return res, current_timestamp
 
     # When cache is disabled, directly call LLM with sanitized input
     kwargs = {}
@@ -1717,6 +1764,12 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    
+    # NEW: Pass through structured output flags
+    if entity_extraction:
+        kwargs["entity_extraction"] = True
+    if keyword_extraction:
+        kwargs["keyword_extraction"] = True
 
     try:
         res = await use_llm_func(
@@ -1730,7 +1783,12 @@ async def use_llm_func_with_cache(
 
     # Generate timestamp for non-cached LLM call
     current_timestamp = int(time.time())
-    return remove_think_tags(res), current_timestamp
+
+    # NEW: Don't apply remove_think_tags to Pydantic models
+    if not isinstance(res, (ExtractionResult, KeywordExtraction)):
+        res = remove_think_tags(res)
+
+    return res, current_timestamp
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
