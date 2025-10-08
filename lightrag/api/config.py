@@ -326,6 +326,17 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
+    args.query_binding = get_env_value("QUERY_BINDING", args.llm_binding)
+    args.query_model = get_env_value("QUERY_MODEL", args.llm_model)
+    args.query_binding_host = get_env_value(
+        "QUERY_BINDING_HOST",
+        get_default_host(args.query_binding)
+        if args.query_binding != args.llm_binding
+        else args.llm_binding_host,
+    )
+    args.query_binding_api_key = get_env_value(
+        "QUERY_BINDING_API_KEY", args.llm_binding_api_key
+    )
     args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
     args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
 
