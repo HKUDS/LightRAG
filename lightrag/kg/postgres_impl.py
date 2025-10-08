@@ -4907,55 +4907,59 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = EXCLUDED.update_time
                      """,
-    "relationships": """
-                WITH top_relationships AS (
-                    SELECT
-                        r.id,
-                        r.source_id,
-                        r.target_id,
-                        r.create_time,
-                        r.metadata,
-                        r.chunk_ids
-                    FROM
-                        LIGHTRAG_VDB_RELATION r
-                    WHERE
-                        r.workspace = $1
-                        -- Apply the metadata filter here to reduce the set of relationships searched
-                        {metadata_filter_clause}
-                    ORDER BY
-                        r.content_vector <=> '[{embedding_string}]'::vector
-                    LIMIT $3
-                )
-                SELECT
-                    tr.source_id AS src_id,
-                    tr.target_id AS tgt_id,
-                    EXTRACT(EPOCH FROM tr.create_time)::BIGINT AS created_at
-                FROM
-                    top_relationships tr
-                    JOIN LIGHTRAG_VDB_CHUNKS c ON tr.chunk_ids && ARRAY[c.id];
-                """,
-    "entities": """
-                WITH top_entities AS (
+"relationships": """
+                WITH filtered_chunks AS (
+                    -- Step 1: Select only the chunk IDs that match the metadata filter
                     SELECT 
-                        e.id,
-                        e.entity_name,
-                        e.create_time,
-                        e.metadata,
-                        e.chunk_ids
-                    FROM LIGHTRAG_VDB_ENTITY e
+                        c.id
+                    FROM 
+                        LIGHTRAG_VDB_CHUNKS c
                     WHERE 
-                        e.workspace = $1
+                        c.workspace = $1
                         {metadata_filter_clause}
-                    ORDER BY
-                        e.content_vector <=> '[{embedding_string}]'::vector
-                    LIMIT $3)
+                )
+                -- Step 2 & 3: Join relationships with the filtered chunks and rank by similarity
                 SELECT
-                    te.entity_name,
-                    EXTRACT(EPOCH FROM te.create_time)::BIGINT AS created_at
+                    r.source_id AS src_id,
+                    r.target_id AS tgt_id,
+                    EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
                 FROM
-                    top_entities te
-                    JOIN LIGHTRAG_VDB_CHUNKS c ON te.chunk_ids && ARRAY[c.id];
-                """,
+                    LIGHTRAG_VDB_RELATION r
+                JOIN
+                    filtered_chunks fc ON r.chunk_ids && ARRAY[fc.id] -- Find relationships linked to our valid chunks
+                WHERE
+                    r.workspace = $1
+                    AND r.content_vector <=> '[{embedding_string}]'::vector < $2
+                ORDER BY
+                    r.content_vector <=> '[{embedding_string}]'::vector -- Rank the resulting relationships
+                LIMIT $3;
+            """,
+"entities": """
+                WITH filtered_chunks AS (
+                    -- Step 1: Select only the chunk IDs that match the metadata filter
+                    SELECT 
+                        c.id
+                    FROM 
+                        LIGHTRAG_VDB_CHUNKS c
+                    WHERE 
+                        c.workspace = $1
+                        {metadata_filter_clause}
+                )
+                -- Step 2 & 3: Join entities with the filtered chunks and rank by similarity
+                SELECT
+                    e.entity_name,
+                    EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
+                FROM
+                    LIGHTRAG_VDB_ENTITY e
+                JOIN
+                    filtered_chunks fc ON e.chunk_ids && ARRAY[fc.id]
+                WHERE
+                    e.workspace = $1
+                    AND e.content_vector <=> '[{embedding_string}]'::vector < $2
+                ORDER BY
+                    e.content_vector <=> '[{embedding_string}]'::vector
+                LIMIT $3;
+            """,
     "chunks": """
                 SELECT c.id,
                     c.content,
@@ -4968,10 +4972,11 @@ SQL_TEMPLATES = {
                 WHERE 
                     c.workspace = $1
                     {metadata_filter_clause}
+                    AND c.content_vector <=> '[{embedding_string}]'::vector < $2
                 ORDER BY 
                     c.content_vector <=> '[{embedding_string}]'::vector
                 LIMIT $3;
-              """,
+            """,
     # DROP tables
     "drop_specifiy_table_workspace": """
         DELETE FROM {table_name} WHERE workspace=$1
