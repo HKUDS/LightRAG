@@ -2,6 +2,7 @@ from __future__ import annotations
 from functools import partial
 
 import asyncio
+import re
 import json
 import json_repair
 from typing import Any, AsyncIterator, overload, Literal
@@ -2069,7 +2070,7 @@ async def extract_entities(
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
-    async def _process_extraction_result(
+    '''async def _process_extraction_result(
         result: str,
         chunk_key: str,
         file_path: str = "unknown_source",
@@ -2116,7 +2117,7 @@ async def extract_entities(
                     if_relation
                 )
 
-        return maybe_nodes, maybe_edges
+        return maybe_nodes, maybe_edges'''
 
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         """Process a single chunk
