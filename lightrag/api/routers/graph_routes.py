@@ -284,7 +284,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "data": entity_data,
             }
         except ValueError as ve:
-            logger.error(f"Validation error creating entity '{request.entity_name}': {str(ve)}")
+            logger.error(
+                f"Validation error creating entity '{request.entity_name}': {str(ve)}"
+            )
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
             logger.error(f"Error creating entity '{request.entity_name}': {str(e)}")
@@ -328,9 +330,13 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
             if not source_exists:
-                raise ValueError(f"Source entity '{request.source_entity}' does not exist")
+                raise ValueError(
+                    f"Source entity '{request.source_entity}' does not exist"
+                )
             if not target_exists:
-                raise ValueError(f"Target entity '{request.target_entity}' does not exist")
+                raise ValueError(
+                    f"Target entity '{request.target_entity}' does not exist"
+                )
 
             # Create the relationship
             await rag.chunk_entity_relation_graph.upsert_edge(

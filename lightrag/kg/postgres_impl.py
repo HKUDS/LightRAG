@@ -828,8 +828,8 @@ class PostgreSQLDB:
 
                     # Execute the migration
                     alter_sql = f"""
-                    ALTER TABLE {migration['table']}
-                    ALTER COLUMN {migration['column']} TYPE {migration['new_type']}
+                    ALTER TABLE {migration["table"]}
+                    ALTER COLUMN {migration["column"]} TYPE {migration["new_type"]}
                     """
 
                     await self.execute(alter_sql)
