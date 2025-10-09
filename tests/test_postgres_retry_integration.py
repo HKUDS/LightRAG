@@ -16,8 +16,9 @@ import os
 import time
 from dotenv import load_dotenv
 from unittest.mock import patch
-import asyncpg
 from lightrag.kg.postgres_impl import PostgreSQLDB
+
+asyncpg = pytest.importorskip("asyncpg")
 
 # Load environment variables
 load_dotenv(dotenv_path=".env", override=False)
