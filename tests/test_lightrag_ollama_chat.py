@@ -13,6 +13,7 @@ import requests
 import json
 import argparse
 import time
+import pytest
 from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -217,6 +218,29 @@ def get_base_url(endpoint: str = "chat") -> str:
     return f"http://{server['host']}:{server['port']}/api/{endpoint}"
 
 
+def is_server_available() -> bool:
+    """Check if the Ollama server is available"""
+    try:
+        url = get_base_url("chat")
+        response = requests.post(
+            url, json={"model": "test", "messages": [], "stream": False}, timeout=5
+        )
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"Server returned status code {response.status_code}")
+            return False
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        return False
+
+
+# Pytest marker for tests that require server
+requires_server = pytest.mark.skipif(
+    not is_server_available(),
+    reason="Ollama server not available at configured host:port",
+)
+
+
 def create_chat_request_data(
     content: str,
     stream: bool = False,
@@ -293,6 +317,7 @@ def run_test(func: Callable, name: str) -> None:
         raise
 
 
+@requires_server
 def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
@@ -317,6 +342,7 @@ def test_non_stream_chat() -> None:
     )
 
 
+@requires_server
 def test_stream_chat() -> None:
     """Test streaming call to /api/chat endpoint
 
@@ -377,6 +403,7 @@ def test_stream_chat() -> None:
     print()
 
 
+@requires_server
 def test_query_modes() -> None:
     """Test different query mode prefixes
 
@@ -436,6 +463,7 @@ def create_error_test_data(error_type: str) -> Dict[str, Any]:
     return error_data.get(error_type, error_data["empty_messages"])
 
 
+@requires_server
 def test_stream_error_handling() -> None:
     """Test error handling for streaming responses
 
@@ -482,6 +510,7 @@ def test_stream_error_handling() -> None:
     response.close()
 
 
+@requires_server
 def test_error_handling() -> None:
     """Test error handling for non-streaming responses
 
@@ -529,6 +558,7 @@ def test_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
+@requires_server
 def test_non_stream_generate() -> None:
     """Test non-streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -548,6 +578,7 @@ def test_non_stream_generate() -> None:
     print(json.dumps(response_json, ensure_ascii=False, indent=2))
 
 
+@requires_server
 def test_stream_generate() -> None:
     """Test streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -588,6 +619,7 @@ def test_stream_generate() -> None:
     print()
 
 
+@requires_server
 def test_generate_with_system() -> None:
     """Test generate with system prompt"""
     url = get_base_url("generate")
@@ -616,6 +648,7 @@ def test_generate_with_system() -> None:
     )
 
 
+@requires_server
 def test_generate_error_handling() -> None:
     """Test error handling for generate endpoint"""
     url = get_base_url("generate")
@@ -641,6 +674,7 @@ def test_generate_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
+@requires_server
 def test_generate_concurrent() -> None:
     """Test concurrent generate requests"""
     import asyncio

@@ -24,6 +24,16 @@ load_dotenv(dotenv_path=".env", override=False)
 @final
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
+    def __init__(self, namespace, global_config, embedding_func, workspace=None):
+        super().__init__(
+            namespace=namespace,
+            workspace=workspace or "base",
+            global_config=global_config,
+            embedding_func=embedding_func,
+        )
+        # Initialize attributes that would normally be set by __post_init__
+        self.__post_init__()
+
     @staticmethod
     def load_nx_graph(file_name) -> nx.Graph:
         if os.path.exists(file_name):

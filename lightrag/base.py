@@ -571,7 +571,9 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         return all_edges
 
     @abstractmethod
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+    async def upsert_node(
+        self, node_id: str, node_data: dict[str, str | int | float]
+    ) -> None:
         """Insert a new node or update an existing node in the graph.
 
         Importance notes for in-memory storage:
@@ -586,7 +588,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        edge_data: dict[str, str | int | float],
     ) -> None:
         """Insert a new edge or update an existing edge in the graph.
 
