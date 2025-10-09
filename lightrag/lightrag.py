@@ -550,7 +550,7 @@ class LightRAG:
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
+            meta_fields={"full_doc_id", "content", "file_path", "start_page", "end_page", "pages"},
         )
 
         # Initialize document status storage
@@ -1011,6 +1011,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        page_data_list: list[list[dict[str, Any]]] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1025,6 +1026,8 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            page_data_list: Optional list of page metadata for each document. Each entry is a list of dicts with
+                          {"page_number": int, "content": str, "char_start": int, "char_end": int}
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1050,6 +1053,16 @@ class LightRAG:
         else:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
+        
+        # Handle page_data_list
+        if page_data_list is not None:
+            if len(page_data_list) != len(input):
+                raise ValueError(
+                    "Number of page_data entries must match the number of documents"
+                )
+        else:
+            # If no page data provided, use empty lists
+            page_data_list = [None] * len(input)
 
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
@@ -1063,31 +1076,32 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
+            for id_, doc, path, page_data in zip(ids, input, file_paths, page_data_list):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
+                    unique_contents[cleaned_content] = (id_, path, page_data)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
-                for content, (id_, file_path) in unique_contents.items()
+                id_: {"content": content, "file_path": file_path, "page_data": page_data}
+                for content, (id_, file_path, page_data) in unique_contents.items()
             }
         else:
             # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+            for doc, path, page_data in zip(input, file_paths, page_data_list):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
+                    unique_content_with_paths[cleaned_content] = (path, page_data)
 
             # Generate contents dict of MD5 hash IDs and documents with paths
             contents = {
                 compute_mdhash_id(content, prefix="doc-"): {
                     "content": content,
                     "file_path": path,
+                    "page_data": page_data,
                 }
-                for content, path in unique_content_with_paths.items()
+                for content, (path, page_data) in unique_content_with_paths.items()
             }
 
         # 2. Generate document initial status (without content)
@@ -1142,6 +1156,7 @@ class LightRAG:
             doc_id: {
                 "content": contents[doc_id]["content"],
                 "file_path": contents[doc_id]["file_path"],
+                "page_data": contents[doc_id].get("page_data"),  # Optional page metadata
             }
             for doc_id in new_docs.keys()
         }
@@ -1525,6 +1540,7 @@ class LightRAG:
                                     f"Document content not found in full_docs for doc_id: {doc_id}"
                                 )
                             content = content_data["content"]
+                            page_data = content_data.get("page_data")  # Optional page metadata
 
                             # Generate chunks from document
                             chunks: dict[str, Any] = {
@@ -1541,6 +1557,7 @@ class LightRAG:
                                     split_by_character_only,
                                     self.chunk_overlap_token_size,
                                     self.chunk_token_size,
+                                    page_data,  # Pass page metadata to chunking function
                                 )
                             }
 

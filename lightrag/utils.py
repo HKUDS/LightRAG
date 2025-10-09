@@ -2817,6 +2817,13 @@ def convert_to_user_format(
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
         }
+        # Add page metadata if available
+        if chunk.get("start_page") is not None:
+            chunk_data["start_page"] = chunk.get("start_page")
+        if chunk.get("end_page") is not None:
+            chunk_data["end_page"] = chunk.get("end_page")
+        if chunk.get("pages") is not None:
+            chunk_data["pages"] = chunk.get("pages")
         formatted_chunks.append(chunk_data)
 
     logger.debug(
@@ -2845,67 +2852,73 @@ def convert_to_user_format(
     }
 
 
-def generate_reference_list_from_chunks(
-    chunks: list[dict],
-) -> tuple[list[dict], list[dict]]:
-    """
-    Generate reference list from chunks, prioritizing by occurrence frequency.
-
-    This function extracts file_paths from chunks, counts their occurrences,
-    sorts by frequency and first appearance order, creates reference_id mappings,
-    and builds a reference_list structure.
-
-    Args:
-        chunks: List of chunk dictionaries with file_path information
-
-    Returns:
-        tuple: (reference_list, updated_chunks_with_reference_ids)
-            - reference_list: List of dicts with reference_id and file_path
-            - updated_chunks_with_reference_ids: Original chunks with reference_id field added
-    """
+def generate_reference_list_from_chunks(chunks: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Generate reference list from chunks, showing exact chunk page ranges."""
     if not chunks:
         return [], []
 
-    # 1. Extract all valid file_paths and count their occurrences
-    file_path_counts = {}
-    for chunk in chunks:
-        file_path = chunk.get("file_path", "")
-        if file_path and file_path != "unknown_source":
-            file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
+    def _create_chunk_references(chunks: list[dict]) -> tuple[list[dict], dict[str, str]]:
+        """Create references based on actual chunk page ranges instead of file aggregation."""
+        chunk_ref_map = {}  # Maps (file_path, page_range) -> reference_id
+        references = []
+        ref_id_counter = 1
+        
+        for chunk in chunks:
+            file_path = chunk.get("file_path", "")
+            if file_path == "unknown_source":
+                continue
+                
+            # Get page data for this specific chunk
+            chunk_pages = chunk.get("pages")
+            if chunk_pages and isinstance(chunk_pages, list):
+                # Create a unique key for this file + page range combination
+                page_range_key = (file_path, tuple(sorted(chunk_pages)))
+                
+                if page_range_key not in chunk_ref_map:
+                    # Create new reference for this file + page range
+                    chunk_ref_map[page_range_key] = str(ref_id_counter)
+                    
+                    # Build page range display
+                    sorted_pages = sorted(chunk_pages)
+                    if len(sorted_pages) == 1:
+                        page_display = {"pages": sorted_pages, "start_page": sorted_pages[0], "end_page": sorted_pages[0]}
+                    else:
+                        page_display = {"pages": sorted_pages, "start_page": sorted_pages[0], "end_page": sorted_pages[-1]}
+                    
+                    references.append({
+                        "reference_id": str(ref_id_counter),
+                        "file_path": file_path,
+                        **page_display
+                    })
+                    ref_id_counter += 1
+        
+        return references, {f"{file_path}_{'-'.join(map(str, pages))}": ref_id 
+                          for (file_path, pages), ref_id in chunk_ref_map.items()}
 
-    # 2. Sort file paths by frequency (descending), then by first appearance order
-    # Create a list of (file_path, count, first_index) tuples
-    file_path_with_indices = []
-    seen_paths = set()
-    for i, chunk in enumerate(chunks):
-        file_path = chunk.get("file_path", "")
-        if file_path and file_path != "unknown_source" and file_path not in seen_paths:
-            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
-            seen_paths.add(file_path)
+    def _add_reference_ids_to_chunks(chunks: list[dict], chunk_ref_map: dict[str, str]) -> list[dict]:
+        """Add reference_id field to chunks based on their specific page ranges."""
+        updated = []
+        for chunk in chunks:
+            chunk_copy = chunk.copy()
+            file_path = chunk_copy.get("file_path", "")
+            
+            if file_path != "unknown_source":
+                chunk_pages = chunk_copy.get("pages")
+                if chunk_pages and isinstance(chunk_pages, list):
+                    # Create the same key used in reference creation
+                    page_key = f"{file_path}_{'-'.join(map(str, sorted(chunk_pages)))}"
+                    chunk_copy["reference_id"] = chunk_ref_map.get(page_key, "")
+                else:
+                    # Fallback: find any reference for this file (no page data)
+                    chunk_copy["reference_id"] = ""
+            else:
+                chunk_copy["reference_id"] = ""
+                
+            updated.append(chunk_copy)
+        return updated
 
-    # Sort by count (descending), then by first appearance index (ascending)
-    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
-    unique_file_paths = [item[0] for item in sorted_file_paths]
-
-    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
-    file_path_to_ref_id = {}
-    for i, file_path in enumerate(unique_file_paths):
-        file_path_to_ref_id[file_path] = str(i + 1)
-
-    # 4. Add reference_id field to each chunk
-    updated_chunks = []
-    for chunk in chunks:
-        chunk_copy = chunk.copy()
-        file_path = chunk_copy.get("file_path", "")
-        if file_path and file_path != "unknown_source":
-            chunk_copy["reference_id"] = file_path_to_ref_id[file_path]
-        else:
-            chunk_copy["reference_id"] = ""
-        updated_chunks.append(chunk_copy)
-
-    # 5. Build reference_list
-    reference_list = []
-    for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
-
+    # Main execution flow
+    reference_list, chunk_ref_map = _create_chunk_references(chunks)
+    updated_chunks = _add_reference_ids_to_chunks(chunks, chunk_ref_map)
+    
     return reference_list, updated_chunks
