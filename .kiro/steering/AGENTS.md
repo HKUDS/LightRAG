@@ -104,4 +104,3 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 6. Keep each PR focused on a single concern and update documentation (`README.md`, `docs/`, `.env.example`) when behaviour or configuration changes.
 
 Follow this playbook to keep LightRAG contributions predictable, testable, and production-ready.
-
