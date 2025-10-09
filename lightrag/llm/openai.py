@@ -610,14 +610,14 @@ async def openai_embed(
         response = await openai_async_client.embeddings.create(
             model=model, input=texts, encoding_format="base64"
         )
-        
+
         if token_tracker and hasattr(response, "usage"):
             token_counts = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
             token_tracker.add_usage(token_counts)
-        
+
         return np.array(
             [
                 np.array(dp.embedding, dtype=np.float32)
