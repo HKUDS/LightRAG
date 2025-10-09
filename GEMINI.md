@@ -1,6 +1,6 @@
 # Project Guide for AI Agents
 
-This Agments.md file provides operational guidance for AI assistants collaborating on the LightRAG codebase. Use it to understand the repository layout, preferred tooling, and expectations for adding or modifying functionality.
+This AGENTS.md file provides operational guidance for AI assistants collaborating on the LightRAG codebase. Use it to understand the repository layout, preferred tooling, and expectations for adding or modifying functionality.
 
 ## Core Purpose
 
@@ -9,7 +9,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 ## Project Structure for Navigation
 
 - `/lightrag`: Core Python package (ingestion, querying, storage abstractions, utilities). Key modules include `lightrag/lightrag.py` orchestration, `operate.py` pipeline helpers, `kg/` storage backends, `llm/` bindings, and `utils*.py`.
-- `/lightrag/api`: FastAPI with Gunicorn for production. FastAPI service for LightRAG , auth, WebUI assets live in  `lightrag_server.py`. Routers live in `routers/`, shared helpers in `utils_api.py`. Gunicorn startup logic lives in `run_with_gunicorn.py`.
+- `/lightrag/api`: FastAPI with Gunicorn for production. FastAPI service for LightRAG , auth, WebUI assets live in `lightrag_server.py`. Routers live in `routers/`, shared helpers in `utils_api.py`. Gunicorn startup logic lives in `run_with_gunicorn.py`.
 - `/lightrag_webui`: React 19 + TypeScript + Tailwind front-end built with Vite/Bun. Uses component folders under `src/` and configuration via `env.*.sample`.
 - `/inputs`, `/rag_storage`, `/dickens`, `/temp`: data directories. Treat contents as mutable working data; avoid committing generated artefacts.
 - `/tests` and root-level `test_*.py`: Integration and smoke-test scripts (graph storage, API endpoints, behaviour regressions). Many expect specific environment variables or services.
@@ -41,9 +41,8 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 
 ## Frontend Development
 
-* **Package Manager**: **ALWAYS USE BUN** - Never use npm or yarn unless Bun is unavailable
+- **Package Manager**: **ALWAYS USE BUN** - Never use npm or yarn unless Bun is unavailable
   **Commands**:
-
   - `bun install` - Install dependencies
 
   - `bun run dev` - Start development server
@@ -56,9 +55,8 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 
   - `bun run preview` - Preview production build
 
-
-* **Pattern**: All frontend operations must use Bun commands
-* **Testing**: Use `bun test` for all frontend testing
+- **Pattern**: All frontend operations must use Bun commands
+- **Testing**: Use `bun test` for all frontend testing
 
 ## Coding Conventions
 
@@ -79,9 +77,9 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
   - **Why**: Prevents different lock keys for same relationship pair processed in different orders
   - **Apply to**: Any function that uses locks with multiple parameters
 * Priority Queue Implementation
-  * **Pattern**: Use priority-based task queuing for LLM requests
-  * **Benefits**: Critical operations get higher priority
-  * **Implementation**: Lower priority values = higher priority
+  - **Pattern**: Use priority-based task queuing for LLM requests
+  - **Benefits**: Critical operations get higher priority
+  - **Implementation**: Lower priority values = higher priority
 
 ## Testing and Quality Gates
 
