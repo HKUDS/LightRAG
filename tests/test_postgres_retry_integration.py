@@ -16,9 +16,8 @@ import os
 import time
 from dotenv import load_dotenv
 from unittest.mock import patch
+import asyncpg
 from lightrag.kg.postgres_impl import PostgreSQLDB
-
-asyncpg = pytest.importorskip("asyncpg")
 
 # Load environment variables
 load_dotenv(dotenv_path=".env", override=False)
@@ -38,19 +37,6 @@ class TestPostgresRetryIntegration:
             "database": os.getenv("POSTGRES_DATABASE", "postgres"),
             "workspace": os.getenv("POSTGRES_WORKSPACE", "test_retry"),
             "max_connections": int(os.getenv("POSTGRES_MAX_CONNECTIONS", "10")),
-            # Connection retry configuration
-            "connection_retry_attempts": min(
-                10, int(os.getenv("POSTGRES_CONNECTION_RETRIES", "3"))
-            ),
-            "connection_retry_backoff": min(
-                5.0, float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "0.5"))
-            ),
-            "connection_retry_backoff_max": min(
-                60.0, float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "5.0"))
-            ),
-            "pool_close_timeout": min(
-                30.0, float(os.getenv("POSTGRES_POOL_CLOSE_TIMEOUT", "5.0"))
-            ),
         }
 
     @pytest.fixture
