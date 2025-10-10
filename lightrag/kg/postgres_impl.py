@@ -2150,12 +2150,18 @@ class PGVectorStorage(BaseVectorStorage):
             return ""
             
         def build_single_condition(key, value):
-            if isinstance(value, (list, dict)):
-                # Use GIN-optimized containment operator
-                json_value = json.dumps(value)
-                return f"metadata @> '{{\"{ key}\" : {json_value}}}'"
+            #Check and build "IN" conditions for the operand
+            if isinstance(value, list):
+                if not value:
+                    return "1=0"
+                
+                in_conditions = [
+                    f"metadata @> '{{\"{key}\": {json.dumps(v)}}}'" for v in value
+                ]
+                return f"({ ' OR '.join(in_conditions) })"
+            
             else:
-                # Use containment for scalars too - faster with GIN index
+                # Use for scalars and dictionaries
                 json_value = json.dumps(value)
                 return f"metadata @> '{{\"{ key}\" : {json_value}}}'"
 
