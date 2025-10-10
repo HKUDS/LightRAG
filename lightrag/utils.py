@@ -2852,56 +2852,74 @@ def convert_to_user_format(
     }
 
 
-def generate_reference_list_from_chunks(chunks: list[dict]) -> tuple[list[dict], list[dict]]:
+def generate_reference_list_from_chunks(
+    chunks: list[dict],
+) -> tuple[list[dict], list[dict]]:
     """Generate reference list from chunks, showing exact chunk page ranges."""
     if not chunks:
         return [], []
 
-    def _create_chunk_references(chunks: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    def _create_chunk_references(
+        chunks: list[dict],
+    ) -> tuple[list[dict], dict[str, str]]:
         """Create references based on actual chunk page ranges instead of file aggregation."""
         chunk_ref_map = {}  # Maps (file_path, page_range) -> reference_id
         references = []
         ref_id_counter = 1
-        
+
         for chunk in chunks:
             file_path = chunk.get("file_path", "")
             if file_path == "unknown_source":
                 continue
-                
+
             # Get page data for this specific chunk
             chunk_pages = chunk.get("pages")
             if chunk_pages and isinstance(chunk_pages, list):
                 # Create a unique key for this file + page range combination
                 page_range_key = (file_path, tuple(sorted(chunk_pages)))
-                
+
                 if page_range_key not in chunk_ref_map:
                     # Create new reference for this file + page range
                     chunk_ref_map[page_range_key] = str(ref_id_counter)
-                    
+
                     # Build page range display
                     sorted_pages = sorted(chunk_pages)
                     if len(sorted_pages) == 1:
-                        page_display = {"pages": sorted_pages, "start_page": sorted_pages[0], "end_page": sorted_pages[0]}
+                        page_display = {
+                            "pages": sorted_pages,
+                            "start_page": sorted_pages[0],
+                            "end_page": sorted_pages[0],
+                        }
                     else:
-                        page_display = {"pages": sorted_pages, "start_page": sorted_pages[0], "end_page": sorted_pages[-1]}
-                    
-                    references.append({
-                        "reference_id": str(ref_id_counter),
-                        "file_path": file_path,
-                        **page_display
-                    })
-                    ref_id_counter += 1
-        
-        return references, {f"{file_path}_{'-'.join(map(str, pages))}": ref_id 
-                          for (file_path, pages), ref_id in chunk_ref_map.items()}
+                        page_display = {
+                            "pages": sorted_pages,
+                            "start_page": sorted_pages[0],
+                            "end_page": sorted_pages[-1],
+                        }
 
-    def _add_reference_ids_to_chunks(chunks: list[dict], chunk_ref_map: dict[str, str]) -> list[dict]:
+                    references.append(
+                        {
+                            "reference_id": str(ref_id_counter),
+                            "file_path": file_path,
+                            **page_display,
+                        }
+                    )
+                    ref_id_counter += 1
+
+        return references, {
+            f"{file_path}_{'-'.join(map(str, pages))}": ref_id
+            for (file_path, pages), ref_id in chunk_ref_map.items()
+        }
+
+    def _add_reference_ids_to_chunks(
+        chunks: list[dict], chunk_ref_map: dict[str, str]
+    ) -> list[dict]:
         """Add reference_id field to chunks based on their specific page ranges."""
         updated = []
         for chunk in chunks:
             chunk_copy = chunk.copy()
             file_path = chunk_copy.get("file_path", "")
-            
+
             if file_path != "unknown_source":
                 chunk_pages = chunk_copy.get("pages")
                 if chunk_pages and isinstance(chunk_pages, list):
@@ -2913,12 +2931,12 @@ def generate_reference_list_from_chunks(chunks: list[dict]) -> tuple[list[dict],
                     chunk_copy["reference_id"] = ""
             else:
                 chunk_copy["reference_id"] = ""
-                
+
             updated.append(chunk_copy)
         return updated
 
     # Main execution flow
     reference_list, chunk_ref_map = _create_chunk_references(chunks)
     updated_chunks = _add_reference_ids_to_chunks(chunks, chunk_ref_map)
-    
+
     return reference_list, updated_chunks

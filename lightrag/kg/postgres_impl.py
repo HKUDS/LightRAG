@@ -1784,7 +1784,9 @@ class PGKVStorage(BaseKVStorage):
                     "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
                     "start_page": v.get("start_page"),  # Optional page fields
                     "end_page": v.get("end_page"),
-                    "pages": json.dumps(v.get("pages")) if v.get("pages") is not None else None,
+                    "pages": json.dumps(v.get("pages"))
+                    if v.get("pages") is not None
+                    else None,
                     "create_time": current_time,
                     "update_time": current_time,
                 }
@@ -1797,7 +1799,9 @@ class PGKVStorage(BaseKVStorage):
                     "content": v["content"],
                     "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
                     "workspace": self.workspace,
-                    "page_data": json.dumps(v.get("page_data")) if v.get("page_data") is not None else None,
+                    "page_data": json.dumps(v.get("page_data"))
+                    if v.get("page_data") is not None
+                    else None,
                 }
                 await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -1955,7 +1959,9 @@ class PGVectorStorage(BaseVectorStorage):
                 "file_path": item["file_path"],
                 "start_page": item.get("start_page"),  # Optional page fields
                 "end_page": item.get("end_page"),
-                "pages": json.dumps(item.get("pages")) if item.get("pages") is not None else None,
+                "pages": json.dumps(item.get("pages"))
+                if item.get("pages") is not None
+                else None,
                 "create_time": current_time,
                 "update_time": current_time,
             }

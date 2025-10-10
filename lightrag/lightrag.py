@@ -550,7 +550,14 @@ class LightRAG:
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path", "start_page", "end_page", "pages"},
+            meta_fields={
+                "full_doc_id",
+                "content",
+                "file_path",
+                "start_page",
+                "end_page",
+                "pages",
+            },
         )
 
         # Initialize document status storage
@@ -1053,7 +1060,7 @@ class LightRAG:
         else:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
-        
+
         # Handle page_data_list
         if page_data_list is not None:
             if len(page_data_list) != len(input):
@@ -1076,14 +1083,20 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path, page_data in zip(ids, input, file_paths, page_data_list):
+            for id_, doc, path, page_data in zip(
+                ids, input, file_paths, page_data_list
+            ):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_contents:
                     unique_contents[cleaned_content] = (id_, path, page_data)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path, "page_data": page_data}
+                id_: {
+                    "content": content,
+                    "file_path": file_path,
+                    "page_data": page_data,
+                }
                 for content, (id_, file_path, page_data) in unique_contents.items()
             }
         else:
@@ -1156,7 +1169,9 @@ class LightRAG:
             doc_id: {
                 "content": contents[doc_id]["content"],
                 "file_path": contents[doc_id]["file_path"],
-                "page_data": contents[doc_id].get("page_data"),  # Optional page metadata
+                "page_data": contents[doc_id].get(
+                    "page_data"
+                ),  # Optional page metadata
             }
             for doc_id in new_docs.keys()
         }
@@ -1540,7 +1555,9 @@ class LightRAG:
                                     f"Document content not found in full_docs for doc_id: {doc_id}"
                                 )
                             content = content_data["content"]
-                            page_data = content_data.get("page_data")  # Optional page metadata
+                            page_data = content_data.get(
+                                "page_data"
+                            )  # Optional page metadata
 
                             # Generate chunks from document
                             chunks: dict[str, Any] = {
