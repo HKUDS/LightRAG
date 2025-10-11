@@ -7,6 +7,7 @@
 asyncpg>=0.29.0
 neo4j>=5.0.0
 pymilvus>=2.6.2
+protobuf>=5.27.2,<6.0.0  # Required for pymilvus compatibility
 pymongo>=4.0.0
 qdrant-client>=1.7.0
 # Storage backend dependencies
