@@ -18,7 +18,7 @@ ollama>=0.1.0
 # LLM provider dependencies
 openai>=1.0.0
 openpyxl>=3.0.0
-pymilvus==2.5.2
+pymilvus>=2.6.2
 pymongo>=4.0.0
 pypdf2>=3.0.0
 python-docx>=0.8.11
