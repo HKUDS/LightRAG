@@ -736,7 +736,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             return set(keys) - existing_ids
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
+        ordered_results: list[dict[str, Any] | None] = []
         async with self._get_redis_connection() as redis:
             try:
                 pipe = redis.pipeline()
@@ -747,15 +747,17 @@ class RedisDocStatusStorage(DocStatusStorage):
                 for result_data in results:
                     if result_data:
                         try:
-                            result.append(json.loads(result_data))
+                            ordered_results.append(json.loads(result_data))
                         except json.JSONDecodeError as e:
                             logger.error(
                                 f"[{self.workspace}] JSON decode error in get_by_ids: {e}"
                             )
-                            continue
+                            ordered_results.append(None)
+                    else:
+                        ordered_results.append(None)
             except Exception as e:
                 logger.error(f"[{self.workspace}] Error in get_by_ids: {e}")
-        return result
+        return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""

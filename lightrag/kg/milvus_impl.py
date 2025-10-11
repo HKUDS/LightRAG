@@ -1258,7 +1258,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 output_fields=output_fields,
             )
 
-            return result or []
+            if not result:
+                return []
+
+            result_map: dict[str, dict[str, Any]] = {}
+            for row in result:
+                if not row:
+                    continue
+                row_id = row.get("id")
+                if row_id is not None:
+                    result_map[str(row_id)] = row
+
+            ordered_results: list[dict[str, Any] | None] = []
+            for requested_id in ids:
+                ordered_results.append(result_map.get(str(requested_id)))
+
+            return ordered_results
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"

@@ -409,15 +409,31 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 with_payload=True,
             )
 
-            # Ensure each result contains created_at field
-            payloads = []
+            # Ensure each result contains created_at field and preserve caller ordering
+            payload_by_original_id: dict[str, dict[str, Any]] = {}
+            payload_by_qdrant_id: dict[str, dict[str, Any]] = {}
+
             for point in results:
-                payload = point.payload
+                payload = dict(point.payload or {})
                 if "created_at" not in payload:
                     payload["created_at"] = None
-                payloads.append(payload)
 
-            return payloads
+                qdrant_point_id = str(point.id) if point.id is not None else ""
+                if qdrant_point_id:
+                    payload_by_qdrant_id[qdrant_point_id] = payload
+
+                original_id = payload.get("id")
+                if original_id is not None:
+                    payload_by_original_id[str(original_id)] = payload
+
+            ordered_payloads: list[dict[str, Any] | None] = []
+            for requested_id, qdrant_id in zip(ids, qdrant_ids):
+                payload = payload_by_original_id.get(str(requested_id))
+                if payload is None:
+                    payload = payload_by_qdrant_id.get(str(qdrant_id))
+                ordered_payloads.append(payload)
+
+            return ordered_payloads
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
