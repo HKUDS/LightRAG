@@ -120,15 +120,23 @@ services:
   lightrag:
     container_name: lightrag
     image: ghcr.io/hkuds/lightrag:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - ghcr.io/hkuds/lightrag:latest
     ports:
       - "${PORT:-9621}:9621"
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
+      - ./data/tiktoken:/app/data/tiktoken
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
     env_file:
       - .env
+    environment:
+      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -142,6 +150,10 @@ docker compose up
 ```
 
 > You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+
+### Offline Deployment
+
+ For offline or air-gapped environments, see the [Offline Deployment Guide](./../../docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 ### Starting Multiple LightRAG Instances
 
