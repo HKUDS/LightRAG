@@ -10,7 +10,7 @@ from ..kg.shared_storage import get_data_init_lock, get_storage_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
-    pm.install("pymilvus==2.5.2")
+    pm.install("pymilvus>=2.6.2")
 
 import configparser
 from pymilvus import MilvusClient, DataType, CollectionSchema, FieldSchema  # type: ignore
