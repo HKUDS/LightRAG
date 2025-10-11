@@ -93,7 +93,7 @@ offline-storage = [
     # Storage backend dependencies
     "redis>=5.0.0",
     "neo4j>=5.0.0",
-    "pymilvus==2.5.2",
+    "pymilvus>=2.6.2",
     "pymongo>=4.0.0",
     "asyncpg>=0.29.0",
     "qdrant-client>=1.7.0",
