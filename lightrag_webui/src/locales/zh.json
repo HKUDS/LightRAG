@@ -335,14 +335,14 @@
     },
     "search": {
       "placeholder": "页面内搜索节点...",
-      "message": "还有 {count} 个"
+      "message": "还有 {{count}} 个"
     },
     "graphLabels": {
       "selectTooltip": "获取节点(标签)子图",
       "noLabels": "未找到匹配的节点",
       "label": "搜索节点名称",
       "placeholder": "搜索节点名称...",
-      "andOthers": "还有 {count} 个",
+      "andOthers": "还有 {{count}} 个",
       "refreshGlobalTooltip": "刷新全图数据和重置搜索历史",
       "refreshCurrentLabelTooltip": "刷新当前页面图数据",
       "refreshingTooltip": "正在刷新数据..."
