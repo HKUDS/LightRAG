@@ -1,0 +1,13 @@
+# LightRAG Offline Dependencies - Storage Backends
+# Install with: pip install -r requirements-offline-storage.txt
+# For offline installation:
+#   pip download -r requirements-offline-storage.txt -d ./packages
+#   pip install --no-index --find-links=./packages -r requirements-offline-storage.txt
+
+asyncpg>=0.29.0
+neo4j>=5.0.0
+pymilvus==2.5.2
+pymongo>=4.0.0
+qdrant-client>=1.7.0
+# Storage backend dependencies
+redis>=5.0.0

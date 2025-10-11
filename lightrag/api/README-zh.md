@@ -118,15 +118,23 @@ services:
   lightrag:
     container_name: lightrag
     image: ghcr.io/hkuds/lightrag:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - ghcr.io/hkuds/lightrag:latest
     ports:
       - "${PORT:-9621}:9621"
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
+      - ./data/tiktoken:/app/data/tiktoken
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
     env_file:
       - .env
+    environment:
+      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -139,6 +147,10 @@ docker compose up
 # 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
 > 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+
+### 离线部署
+
+对于离线或隔离环境，请参阅[离线部署指南](./../../docs/OfflineDeployment.md)，了解如何预先安装所有依赖项和缓存文件。
 
 ### 启动多个LightRAG实例
 
