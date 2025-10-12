@@ -2571,11 +2571,12 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
-        """Delete a document and all its related data, including chunks, graph elements, and cached entries.
+        """Delete a document and all its related data, including chunks, graph elements.
 
         This method orchestrates a comprehensive deletion process for a given document ID.
         It ensures that not only the document itself but also all its derived and associated
-        data across different storage layers are removed. If entities or relationships are partially affected, it triggers.
+        data across different storage layers are removed or rebuiled. If entities or relationships
+        are partially affected, they will be rebuilded using LLM cached from remaining documents.
 
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
