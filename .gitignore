@@ -65,6 +65,10 @@ download_models_hf.py
 lightrag-dev/
 gui/
 
+# Frontend build output (built during PyPI release)
+lightrag/api/webui/*
+!lightrag/api/webui/.gitkeep
+
 # unit-test files
 test_*
 
