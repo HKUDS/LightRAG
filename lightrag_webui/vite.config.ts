@@ -1,30 +1,12 @@
 import { defineConfig } from 'vite'
 import path from 'path'
-import { existsSync, mkdirSync } from 'fs'
 import { webuiPrefix } from '@/lib/constants'
 import react from '@vitejs/plugin-react-swc'
 import tailwindcss from '@tailwindcss/vite'
 
-const ensureWebuiDir = () => ({
-  name: 'ensure-webui-dir',
-  apply: 'build' as const,
-  buildStart() {
-    const outDir = path.resolve(__dirname, '../lightrag/api/webui')
-    if (!existsSync(outDir)) {
-      mkdirSync(outDir, { recursive: true })
-    }
-  },
-  closeBundle() {
-    const outDir = path.resolve(__dirname, '../lightrag/api/webui')
-    if (!existsSync(outDir)) {
-      mkdirSync(outDir, { recursive: true })
-    }
-  }
-})
-
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), ensureWebuiDir()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src')
