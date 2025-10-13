@@ -39,7 +39,7 @@ pip install -e ".[api]"
 
 # Build frontend when needed (can be done anytime)
 cd lightrag_webui
-bun install
+bun install --frozen-lockfile
 bun run build
 cd ..
 ```
@@ -66,7 +66,7 @@ cd LightRAG
 
 # ⚠️ MUST build frontend FIRST
 cd lightrag_webui
-bun install
+bun install --frozen-lockfile
 bun run build
 cd ..
 
@@ -92,7 +92,7 @@ pip install ".[api]"
 ```bash
 # Build frontend first
 cd lightrag_webui
-bun install
+bun install --frozen-lockfile --production
 bun run build
 cd ..
 
@@ -119,52 +119,6 @@ When creating a release on GitHub:
 4. **Publishes to PyPI** using existing trusted publisher setup
 
 **No manual intervention required!**
-
----
-
-## Error Handling
-
-### Error: WebUI Not Built (Normal Install)
-
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║                    ⚠️  ERROR: WebUI Not Built                            ║
-╚══════════════════════════════════════════════════════════════════════════╝
-
-For normal installation (pip install .), you must build the frontend first:
-
-    cd lightrag_webui
-    bun install
-    bun run build
-    cd ..
-
-Then run the installation again.
-
-💡 TIP: For development, use editable mode instead:
-   pip install -e ".[api]"
-```
-
-**Solution:**
-- Build the frontend first, then install
-- OR use development mode (`pip install -e ".[api]"`)
-
-### Info: Development Mode Without Frontend
-
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║  ℹ️  Development Mode - WebUI not built yet                             ║
-╚══════════════════════════════════════════════════════════════════════════╝
-
-You're installing in development mode. You can build the frontend later:
-
-    cd lightrag_webui
-    bun install
-    bun run build
-
-The changes will take effect immediately (symlink mode).
-```
-
-**This is informational only** - installation continues successfully.
 
 ---
 
@@ -208,7 +162,6 @@ LightRAG/
 ├── lightrag/
 │   └── api/
 │       └── webui/           # Frontend build output (gitignored)
-│           ├── .gitkeep     # Preserves directory structure
 │           ├── index.html   # Built files (after running bun run build)
 │           └── assets/      # Built assets
 │

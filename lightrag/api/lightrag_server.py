@@ -159,7 +159,7 @@ def check_frontend_build():
             "Please build the frontend code first using the following commands:\n"
         )
         ASCIIColors.cyan("    cd lightrag_webui")
-        ASCIIColors.cyan("    bun install")
+        ASCIIColors.cyan("    bun install --frozen-lockfile")
         ASCIIColors.cyan("    bun run build")
         ASCIIColors.cyan("    cd ..")
         ASCIIColors.yellow("\nThen restart the service.\n")
