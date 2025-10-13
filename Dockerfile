@@ -32,6 +32,11 @@ RUN pip install --user --no-cache-dir openai ollama tiktoken
 # Install depndencies for default document loader
 RUN pip install --user --no-cache-dir pypdf2 python-docx python-pptx openpyxl
 
+# TODO this and all above might better be part of a "uv pip install extras" part of the pyproj.toml file
+RUN pip install --user --no-cache-dir raganything
+
+
+
 # Final stage
 FROM python:3.12-slim
 

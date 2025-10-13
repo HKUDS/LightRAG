@@ -73,3 +73,9 @@ test_*
 memory-bank
 memory-bank/
 .clinerules
+
+
+# these should be part of gitignore and docker ignore and be built, in the Dockerfile as separate step and copied over to the final python docker image
+# TODO how it the api version handled that is inside the webui folder
+# TODO are there other side effects in place?
+lightrag/api/webui/assets/
