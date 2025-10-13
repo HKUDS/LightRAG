@@ -1,4 +1,5 @@
 """Minimal setup.py for backward compatibility with frontend build check"""
+
 from pathlib import Path
 from setuptools import setup
 from setuptools.command.build_py import build_py
@@ -13,12 +14,12 @@ def check_webui_exists():
 
 class BuildPyCommand(build_py):
     """Check WebUI build status before packaging/installation"""
-    
+
     def run(self):
         # Check if running in development mode
-        is_develop = any(arg in sys.argv for arg in ['develop', 'egg_info'])
-        is_editable = '--editable' in sys.argv or '-e' in sys.argv
-        
+        is_develop = any(arg in sys.argv for arg in ["develop", "egg_info"])
+        is_editable = "--editable" in sys.argv or "-e" in sys.argv
+
         if is_develop or is_editable:
             # Development mode: friendly reminder
             if not check_webui_exists():
@@ -55,19 +56,19 @@ Then run the installation again.
 
 💡 TIP: For development, use editable mode instead:
    pip install -e ".[api]"
-   
+
    This allows you to build the frontend after installation.
 
 ╚══════════════════════════════════════════════════════════════════════════╝
 """)
                 sys.exit(1)
-        
+
         print("✅ Proceeding with package build...")
         build_py.run(self)
 
 
 setup(
     cmdclass={
-        'build_py': BuildPyCommand,
+        "build_py": BuildPyCommand,
     }
 )
