@@ -21,7 +21,7 @@ LightRAG WebUI is a React-based web interface for interacting with the LightRAG 
     Run the following command to build the project:
 
     ```bash
-    bun run build --emptyOutDir
+    bun run build
     ```
 
     This command will bundle the project and output the built files to the `lightrag/api/webui` directory.

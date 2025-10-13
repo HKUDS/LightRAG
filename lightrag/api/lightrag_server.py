@@ -145,7 +145,35 @@ class LLMConfigCache:
                 self.ollama_embedding_options = {}
 
 
+def check_frontend_build():
+    """Check if frontend is built before starting server"""
+    webui_dir = Path(__file__).parent / "webui"
+    index_html = webui_dir / "index.html"
+
+    if not index_html.exists():
+        ASCIIColors.red("\n" + "=" * 80)
+        ASCIIColors.red("ERROR: Frontend Not Built")
+        ASCIIColors.red("=" * 80)
+        ASCIIColors.yellow("The WebUI frontend has not been built yet.")
+        ASCIIColors.yellow(
+            "Please build the frontend code first using the following commands:\n"
+        )
+        ASCIIColors.cyan("    cd lightrag_webui")
+        ASCIIColors.cyan("    bun install --frozen-lockfile")
+        ASCIIColors.cyan("    bun run build")
+        ASCIIColors.cyan("    cd ..")
+        ASCIIColors.yellow("\nThen restart the service.\n")
+        ASCIIColors.cyan(
+            "Note: Make sure you have Bun installed. Visit https://bun.sh for installation."
+        )
+        ASCIIColors.red("=" * 80 + "\n")
+        sys.exit(1)  # Exit immediately
+
+
 def create_app(args):
+    # Check frontend build first
+    check_frontend_build()
+
     # Setup logging
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)

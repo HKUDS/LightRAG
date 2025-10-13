@@ -27,9 +27,18 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
-# create a Python virtual environment if necessary
+# Create a Python virtual environment
+uv venv --seed --python 3.12
+source .venv/bin/acivate
+
 # Install in editable mode with API support
 pip install -e ".[api]"
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile --production
+bun run build
+cd ..
 ```
 
 ### Before Starting LightRAG Server

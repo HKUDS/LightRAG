@@ -21,15 +21,24 @@ pip install "lightrag-hku[api]"
 * 从源代码安装
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/HKUDS/lightrag.git
 
-# 切换到仓库目录
+# Change to the repository directory
 cd lightrag
 
-# 如有必要，创建 Python 虚拟环境
-# 以可编辑模式安装并支持 API
+# Create a Python virtual environment
+uv venv --seed --python 3.12
+source .venv/bin/acivate
+
+# Install in editable mode with API support
 pip install -e ".[api]"
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile --production
+bun run build
+cd ..
 ```
 
 ### 启动 LightRAG 服务器前的准备
