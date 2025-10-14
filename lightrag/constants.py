@@ -13,6 +13,7 @@ DEFAULT_MAX_GRAPH_NODES = 1000
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
+DEFAULT_MAX_CHUNK_IDS_PER_ENTITY = 500 # Applies to Both Graph + Vector DBs
 
 DEFAULT_MAX_SOURCE_IDS_PER_ENTITY = 3
 DEFAULT_MAX_SOURCE_IDS_PER_RELATION = 3
