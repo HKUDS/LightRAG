@@ -2469,13 +2469,15 @@ def truncate_entity_source_id(chunk_ids: set, entity_name: str) -> set:
     """Limit chunk_ids, for entities that appear a HUGE no of times (To not break VDB hard upper limits)"""
     already_len: int = len(chunk_ids)
 
-    if already_len >= DEFAULT_MAX_CHUNK_IDS_PER_ENTITY:
+    max_chunk_ids_per_entity = get_env_value("MAX_CHUNK_IDS_PER_ENTITY", DEFAULT_MAX_CHUNK_IDS_PER_ENTITY, int)
+
+    if already_len >= max_chunk_ids_per_entity:
         logger.warning(
-            f"Chunk Ids already exceeds {DEFAULT_MAX_CHUNK_IDS_PER_ENTITY} for {entity_name}, "
+            f"Chunk Ids already exceeds {max_chunk_ids_per_entity } for {entity_name}, "
             f"current size: {already_len} entries."
         )
     
-    truncated_chunk_ids = set(list(chunk_ids)[0:DEFAULT_MAX_CHUNK_IDS_PER_ENTITY])
+    truncated_chunk_ids = set(list(chunk_ids)[0:max_chunk_ids_per_entity ])
 
     return truncated_chunk_ids
 
