@@ -406,7 +406,7 @@ class DocStatusResponse(BaseModel):
                 "id": "doc_123456",
                 "content_summary": "Research paper on machine learning",
                 "content_length": 15240,
-                "status": "PROCESSED",
+                "status": "processed",
                 "created_at": "2025-03-31T12:34:56",
                 "updated_at": "2025-03-31T12:35:30",
                 "track_id": "upload_20250729_170612_abc123",
@@ -439,7 +439,7 @@ class DocsStatusesResponse(BaseModel):
                             "id": "doc_123",
                             "content_summary": "Pending document",
                             "content_length": 5000,
-                            "status": "PENDING",
+                            "status": "pending",
                             "created_at": "2025-03-31T10:00:00",
                             "updated_at": "2025-03-31T10:00:00",
                             "track_id": "upload_20250331_100000_abc123",
@@ -449,12 +449,27 @@ class DocsStatusesResponse(BaseModel):
                             "file_path": "pending_doc.pdf",
                         }
                     ],
+                    "PREPROCESSED": [
+                        {
+                            "id": "doc_789",
+                            "content_summary": "Document pending final indexing",
+                            "content_length": 7200,
+                            "status": "multimodal_processed",
+                            "created_at": "2025-03-31T09:30:00",
+                            "updated_at": "2025-03-31T09:35:00",
+                            "track_id": "upload_20250331_093000_xyz789",
+                            "chunks_count": 10,
+                            "error": None,
+                            "metadata": None,
+                            "file_path": "preprocessed_doc.pdf",
+                        }
+                    ],
                     "PROCESSED": [
                         {
                             "id": "doc_456",
                             "content_summary": "Processed document",
                             "content_length": 8000,
-                            "status": "PROCESSED",
+                            "status": "processed",
                             "created_at": "2025-03-31T09:00:00",
                             "updated_at": "2025-03-31T09:05:00",
                             "track_id": "insert_20250331_090000_def456",
@@ -626,6 +641,7 @@ class PaginatedDocsResponse(BaseModel):
                 "status_counts": {
                     "PENDING": 10,
                     "PROCESSING": 5,
+                    "PREPROCESSED": 5,
                     "PROCESSED": 130,
                     "FAILED": 5,
                 },
@@ -648,6 +664,7 @@ class StatusCountsResponse(BaseModel):
                 "status_counts": {
                     "PENDING": 10,
                     "PROCESSING": 5,
+                    "PREPROCESSED": 5,
                     "PROCESSED": 130,
                     "FAILED": 5,
                 }
@@ -2210,7 +2227,7 @@ def create_document_routes(
         To prevent excessive resource consumption, a maximum of 1,000 records is returned.
 
         This endpoint retrieves the current status of all documents, grouped by their
-        processing status (PENDING, PROCESSING, PROCESSED, FAILED). The results are
+        processing status (PENDING, PROCESSING, PREPROCESSED, PROCESSED, FAILED). The results are
         limited to 1000 total documents with fair distribution across all statuses.
 
         Returns:
@@ -2226,6 +2243,7 @@ def create_document_routes(
             statuses = (
                 DocStatus.PENDING,
                 DocStatus.PROCESSING,
+                DocStatus.PREPROCESSED,
                 DocStatus.PROCESSED,
                 DocStatus.FAILED,
             )
