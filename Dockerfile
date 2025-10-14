@@ -1,4 +1,17 @@
-# Build stage
+# Frontend build stage
+FROM oven/bun:1 AS frontend-builder
+
+WORKDIR /app
+
+# Copy frontend source code
+COPY lightrag_webui/ ./lightrag_webui/
+
+# Build frontend
+RUN cd lightrag_webui && \
+    bun install --frozen-lockfile && \
+    bun run build
+
+# Python build stage
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -19,6 +32,9 @@ RUN apt-get update && apt-get install -y \
 COPY pyproject.toml .
 COPY setup.py .
 COPY lightrag/ ./lightrag/
+
+# Copy frontend build output from frontend-builder stage
+COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
 # Install dependencies
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -47,7 +63,7 @@ RUN pip install --upgrade pip setuptools wheel
 
 # Copy only necessary files from builder
 COPY --from=builder /root/.local /root/.local
-COPY ./lightrag ./lightrag
+COPY --from=builder /app/lightrag ./lightrag
 COPY setup.py .
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
