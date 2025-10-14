@@ -26,7 +26,7 @@ jobs:
       - name: Build Frontend WebUI
         run: |
           cd lightrag_webui
-          bun install --frozen-lockfile --production
+          bun install --frozen-lockfile
           bun run build
           cd ..
 
