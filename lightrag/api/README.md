@@ -36,7 +36,7 @@ pip install -e ".[api]"
 
 # Build front-end artifacts
 cd lightrag_webui
-bun install --frozen-lockfile --production
+bun install --frozen-lockfile
 bun run build
 cd ..
 ```

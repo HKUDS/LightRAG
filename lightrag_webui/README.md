@@ -13,7 +13,7 @@ LightRAG WebUI is a React-based web interface for interacting with the LightRAG 
     In the `lightrag_webui` directory, run the following command to install project dependencies:
 
     ```bash
-    bun install --frozen-lockfile --production
+    bun install --frozen-lockfile
     ```
 
 3. **Build the Project:**
