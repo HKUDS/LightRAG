@@ -53,7 +53,6 @@ from .constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
-    DEFAULT_MAX_CHUNK_IDS_PER_ENTITY,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
