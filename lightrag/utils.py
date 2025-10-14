@@ -26,6 +26,7 @@ from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
+    DEFAULT_MAX_CHUNK_IDS_PER_ENTITY,
 )
 
 # Initialize logger with basic configuration
@@ -2463,6 +2464,20 @@ async def process_chunks_unified(
         final_chunks.append(chunk_with_id)
 
     return final_chunks
+
+def truncate_entity_source_id(chunk_ids: set, entity_name: str) -> set:
+    """Limit chunk_ids, for entities that appear a HUGE no of times (To not break VDB hard upper limits)"""
+    already_len: int = len(chunk_ids)
+
+    if already_len >= DEFAULT_MAX_CHUNK_IDS_PER_ENTITY:
+        logger.warning(
+            f"Chunk Ids already exceeds {DEFAULT_MAX_CHUNK_IDS_PER_ENTITY} for {entity_name}, "
+            f"current size: {already_len} entries."
+        )
+    
+    truncated_chunk_ids = set(list(chunk_ids)[0:DEFAULT_MAX_CHUNK_IDS_PER_ENTITY])
+
+    return truncated_chunk_ids
 
 
 def build_file_path(already_file_paths, data_list, target):
