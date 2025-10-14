@@ -27,6 +27,7 @@ from .utils import (
     pick_by_vector_similarity,
     process_chunks_unified,
     build_file_path,
+    truncate_entity_source_id,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
     fix_tuple_delimiter_corruption,
@@ -52,6 +53,7 @@ from .constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_MAX_CHUNK_IDS_PER_ENTITY,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
@@ -1371,9 +1373,11 @@ async def _merge_nodes_then_upsert(
         logger.error(f"Entity {entity_name} has no description")
         description = "(no description)"
 
-    source_id = GRAPH_FIELD_SEP.join(
-        set([dp["source_id"] for dp in nodes_data] + already_source_ids)
-    )
+    merged_source_ids: set = set([dp["source_id"] for dp in nodes_data] + already_source_ids)
+
+    source_ids = truncate_entity_source_id(merged_source_ids, entity_name)
+    source_id = GRAPH_FIELD_SEP.join(source_ids)
+
     file_path = build_file_path(already_file_paths, nodes_data, entity_name)
 
     node_data = dict(
@@ -1658,6 +1662,7 @@ async def merge_nodes_and_edges(
                 [entity_name], namespace=namespace, enable_logging=False
             ):
                 try:
+                    logger.info(f"Inserting {entity_name} in Graph")
                     # Graph database operation (critical path, must succeed)
                     entity_data = await _merge_nodes_then_upsert(
                         entity_name,
@@ -1685,6 +1690,8 @@ async def merge_nodes_and_edges(
                             }
                         }
 
+
+                        logger.info(f"Inserting {entity_name} in Graph")
                         # Use safe operation wrapper - VDB failure must throw exception
                         await safe_vdb_operation_with_exception(
                             operation=lambda: entity_vdb.upsert(data_for_vdb),
