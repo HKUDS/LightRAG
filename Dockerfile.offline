@@ -43,8 +43,8 @@ COPY lightrag/ ./lightrag/
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install base and API extras so CLI helpers work during build
-RUN uv sync --frozen --no-dev --extra api
+# Install base, API, and offline extras so CLI helpers work during build
+RUN uv sync --frozen --no-dev --extra api --extra offline
 
 # Prepare offline cache directory and pre-populate tiktoken data
 # Use uv run to execute commands from the virtual environment
@@ -75,7 +75,7 @@ ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
 # Install dependencies with uv sync (uses locked versions from uv.lock)
 # IMPORTANT: Must be done BEFORE creating data/ directory to avoid setuptools error
-RUN uv sync --frozen --no-dev --extra api
+RUN uv sync --frozen --no-dev --extra api --extra offline
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
