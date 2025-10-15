@@ -86,8 +86,6 @@ docker-compose up
 
 LightRAG provide an docker image can be deployment in offline environments where internet access is limited or unavailable. All you need to do is modify `docker-compose.yml`: change image tag from `latest` to `offline`.
 
-> The offline Docker image does not include `docling` because its large size made integration into LightRAG internally impractical. This approach has been deprecated, and `docling` will be provided as a standalone service moving forward.
-
 ## 📦 Build Multi-Architecture Docker Images
 
 ### Prerequisites
