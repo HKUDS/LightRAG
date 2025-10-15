@@ -1,0 +1,160 @@
+# Exact version constraints based on successful local installation with uv pip install ".[offline]"
+# Generated: 2025-10-15
+# Use with: pip install --constraint constraints-offline.txt -r requirements-offline.txt
+
+# Core ML/AI packages
+torch==2.2.2
+transformers==4.57.1
+tokenizers==0.22.1
+torchvision==0.17.2
+huggingface-hub==0.35.3
+safetensors==0.6.2
+accelerate==1.10.1
+
+# LLM Provider packages
+openai==1.109.1
+anthropic==0.69.0
+ollama==0.6.0
+zhipuai==2.1.5.20250825
+voyageai==0.3.5
+
+# AWS/Boto packages
+aioboto3==15.2.0
+aiobotocore==2.24.2
+boto3==1.40.18
+botocore==1.40.18
+
+# LlamaIndex packages
+llama-index==0.14.4
+llama-index-core==0.14.4
+llama-index-cli==0.5.3
+llama-index-embeddings-openai==0.5.1
+llama-index-indices-managed-llama-cloud==0.9.4
+llama-index-instrumentation==0.4.2
+llama-index-llms-openai==0.6.4
+llama-index-readers-file==0.5.4
+llama-index-readers-llama-parse==0.5.1
+llama-index-workflows==2.8.0
+llama-cloud==0.1.35
+llama-cloud-services==0.6.54
+llama-parse==0.6.54
+
+# Document processing packages
+docling==2.57.0
+docling-core==2.48.4
+docling-ibm-models==3.9.1
+docling-parse==4.5.0
+pypdf==6.1.1
+pypdfium2==4.30.0
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+lxml==5.4.0
+
+# Storage backends
+redis==6.4.0
+neo4j==6.0.2
+pymilvus==2.6.2
+pymongo==4.15.3
+asyncpg
+qdrant-client==1.15.1
+
+# Data processing
+pandas==2.2.3
+numpy
+scipy==1.16.2
+
+# Computer vision
+opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+pillow==11.3.0
+
+# NLP packages
+nltk==3.9.2
+langchain-core==0.3.79
+langchain-text-splitters==0.3.11
+langsmith==0.4.35
+
+# Authentication
+pyjwt==2.8.0
+
+# Utility packages
+aioitertools==0.12.0
+aiolimiter==1.2.1
+aiosqlite==0.21.0
+beautifulsoup4==4.14.2
+cachetools==6.2.1
+colorama==0.4.6
+colorlog==6.9.0
+dataclasses-json==0.6.7
+defusedxml==0.7.1
+deprecated==1.2.18
+dill==0.4.0
+dirtyjson==1.0.8
+dnspython==2.8.0
+docstring-parser==0.17.0
+faker==37.11.0
+filetype==1.2.0
+fsspec==2025.9.0
+greenlet==3.2.4
+griffe==1.14.0
+grpcio==1.75.1
+h2==4.3.0
+hpack==4.1.0
+hyperframe==6.1.0
+jinja2==3.1.6
+jmespath==1.0.1
+joblib==1.5.2
+jsonlines==3.1.0
+jsonpatch==1.33
+jsonpointer==3.0.0
+jsonref==1.1.0
+jsonschema==4.25.1
+jsonschema-specifications==2025.9.1
+latex2mathml==3.78.1
+markdown-it-py==4.0.0
+marko==2.2.1
+markupsafe==3.0.3
+marshmallow==3.26.1
+mdurl==0.1.2
+mpire==2.10.2
+mpmath==1.3.0
+multiprocess==0.70.18
+mypy-extensions==1.1.1
+nest-asyncio==1.6.0
+omegaconf==2.3.0
+orjson==3.11.3
+pluggy==1.6.0
+polyfactory==2.22.2
+portalocker==3.2.0
+protobuf==6.32.1
+pyclipper==1.3.0.post6
+pydantic-settings==2.11.0
+pygments==2.19.2
+pylatexenc==2.10
+rapidocr==3.4.2
+referencing==0.37.0
+requests-toolbelt==1.0.0
+rich==14.2.0
+rpds-py==0.27.1
+rtree==1.4.1
+s3transfer==0.13.1
+semchunk==2.2.2
+shapely==2.1.2
+shellingham==1.5.4
+soupsieve==2.8
+sqlalchemy==2.0.44
+striprtf==0.0.26
+sympy==1.14.0
+tabulate==0.9.0
+typer==0.19.2
+typing-inspect==0.9.0
+ujson==5.11.0
+wrapt==1.17.3
+zstandard==0.25.0
+antlr4-python3-runtime==4.9.3
+
+# Special packages (platform-specific)
+# Note: These may not be available on all platforms
+# ocrmac==1.0.0  # macOS only
+# pyobjc-* packages are macOS only
