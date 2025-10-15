@@ -57,6 +57,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ steps.offline_tag.outputs.offline_tag }}
+            type=raw,value=offline
 
       - name: Build and push offline Docker image
         uses: docker/build-push-action@v5
