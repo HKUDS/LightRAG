@@ -10,25 +10,25 @@
 # LLM provider dependencies (with version constraints matching pyproject.toml)
 aioboto3>=12.0.0,<16.0.0
 anthropic>=0.18.0,<1.0.0
+
+# Storage backend dependencies
+asyncpg>=0.29.0,<1.0.0
+
+# Document processing dependencies
+docling>=1.0.0,<3.0.0
 llama-index>=0.9.0,<1.0.0
+neo4j>=5.0.0,<7.0.0
 ollama>=0.1.0,<1.0.0
 openai>=1.0.0,<2.0.0
+openpyxl>=3.0.0,<4.0.0
+pymilvus>=2.6.2,<3.0.0
+pymongo>=4.0.0,<5.0.0
+pypdf2>=3.0.0
+python-docx>=0.8.11,<2.0.0
+python-pptx>=0.6.21,<2.0.0
+qdrant-client>=1.7.0,<2.0.0
+redis>=5.0.0,<7.0.0
 torch>=2.0.0,<2.3.0
 transformers>=4.30.0,<5.0.0
 voyageai>=0.2.0,<1.0.0
 zhipuai>=2.0.0,<3.0.0
-
-# Storage backend dependencies
-asyncpg>=0.29.0,<1.0.0
-neo4j>=5.0.0,<7.0.0
-pymilvus>=2.6.2,<3.0.0
-pymongo>=4.0.0,<5.0.0
-qdrant-client>=1.7.0,<2.0.0
-redis>=5.0.0,<7.0.0
-
-# Document processing dependencies
-docling>=1.0.0,<3.0.0
-openpyxl>=3.0.0,<4.0.0
-pypdf2>=3.0.0
-python-docx>=0.8.11,<2.0.0
-python-pptx>=0.6.21,<2.0.0
