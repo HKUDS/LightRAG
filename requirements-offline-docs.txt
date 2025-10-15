@@ -3,10 +3,12 @@
 # For offline installation:
 #   pip download -r requirements-offline-docs.txt -d ./packages
 #   pip install --no-index --find-links=./packages -r requirements-offline-docs.txt
+#
+# Recommended: Use pip install lightrag-hku[offline-docs] for the same effect
+# Or use constraints: pip install --constraint constraints-offline.txt -r requirements-offline-docs.txt
 
-# Document processing dependencies
-docling>=1.0.0
-openpyxl>=3.0.0
+# Document processing dependencies (with version constraints matching pyproject.toml)
+openpyxl>=3.0.0,<4.0.0
 pypdf2>=3.0.0
-python-docx>=0.8.11
-python-pptx>=0.6.21
+python-docx>=0.8.11,<2.0.0
+python-pptx>=0.6.21,<2.0.0

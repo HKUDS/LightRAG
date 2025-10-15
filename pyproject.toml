@@ -29,7 +29,7 @@ dependencies = [
     "nano-vectordb",
     "networkx",
     "numpy",
-    "pandas>=2.0.0",
+    "pandas>=2.0.0,<2.3.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -51,8 +51,8 @@ api = [
     "nano-vectordb",
     "networkx",
     "numpy",
-    "openai",
-    "pandas>=2.0.0",
+    "openai>=1.0.0,<2.0.0",
+    "pandas>=2.0.0,<2.3.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -72,7 +72,7 @@ api = [
     "jiter",
     "passlib[bcrypt]",
     "psutil",
-    "PyJWT",
+    "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
     "python-multipart",
     "pytz",
@@ -82,34 +82,33 @@ api = [
 # Offline deployment dependencies (layered design for flexibility)
 offline-docs = [
     # Document processing dependencies
-    "docling>=1.0.0",
     "pypdf2>=3.0.0",
-    "python-docx>=0.8.11",
-    "python-pptx>=0.6.21",
-    "openpyxl>=3.0.0",
+    "python-docx>=0.8.11,<2.0.0",
+    "python-pptx>=0.6.21,<2.0.0",
+    "openpyxl>=3.0.0,<4.0.0",
 ]
 
 offline-storage = [
     # Storage backend dependencies
-    "redis>=5.0.0",
-    "neo4j>=5.0.0",
-    "pymilvus>=2.6.2",
-    "pymongo>=4.0.0",
-    "asyncpg>=0.29.0",
-    "qdrant-client>=1.7.0",
+    "redis>=5.0.0,<7.0.0",
+    "neo4j>=5.0.0,<7.0.0",
+    "pymilvus>=2.6.2,<3.0.0",
+    "pymongo>=4.0.0,<5.0.0",
+    "asyncpg>=0.29.0,<1.0.0",
+    "qdrant-client>=1.7.0,<2.0.0",
 ]
 
 offline-llm = [
     # LLM provider dependencies
-    "openai>=1.0.0",
-    "anthropic>=0.18.0",
-    "ollama>=0.1.0",
-    "zhipuai>=2.0.0",
-    "aioboto3>=12.0.0",
-    "voyageai>=0.2.0",
-    "llama-index>=0.9.0",
-    "transformers>=4.30.0",
-    "torch>=2.0.0",
+    "openai>=1.0.0,<2.0.0",
+    "anthropic>=0.18.0,<1.0.0",
+    "ollama>=0.1.0,<1.0.0",
+    "zhipuai>=2.0.0,<3.0.0",
+    "aioboto3>=12.0.0,<16.0.0",
+    "voyageai>=0.2.0,<1.0.0",
+    "llama-index>=0.9.0,<1.0.0",
+    "transformers>=4.30.0,<5.0.0",
+    "torch>=2.0.0,<2.3.0",
 ]
 
 offline = [
@@ -130,6 +129,7 @@ Repository = "https://github.com/HKUDS/LightRAG"
 
 [tool.setuptools.packages.find]
 include = ["lightrag*"]
+exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*", "output_complete*", "rag_storage*", "inputs*"]
 
 [tool.setuptools]
 include-package-data = true
