@@ -82,9 +82,9 @@ docker-compose down
 docker-compose up
 ```
 
-### Offline deployment
+### Offline docker deployment
 
-Software packages requiring `transformers`, `torch`, or `cuda` will is not preinstalled in the dokcer images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, can not be used in an off line enviroment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
+LightRAG provide an docker image can be deployment in offline environments where internet access is limited or unavailable. All you need to do is modify `docker-compose.yml`: change image tag from `latest` to `offline`.
 
 ## 📦 Build Multi-Architecture Docker Images
 
@@ -165,13 +165,12 @@ docker buildx build \
   .
 ```
 
-**Lite image:**
-
+**Offline image:**
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --file Dockerfile.lite \
-  --tag ghcr.io/hkuds/lightrag:lite \
+  --file Dockerfile.offline \
+  --tag ghcr.io/hkuds/lightrag:offline \
   --load \
   .
 ```
@@ -192,12 +191,12 @@ docker buildx build \
   .
 ```
 
-**Lite image:**
+**Offline image:**
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --file Dockerfile.lite \
-  --tag ghcr.io/hkuds/lightrag:lite \
+  --file Dockerfile.offline \
+  --tag ghcr.io/hkuds/lightrag:offline \
   --push \
   .
 ```
@@ -213,9 +212,10 @@ VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
 # Build with multiple tags
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --file Dockerfile \
-  --tag ghcr.io/hkuds/lightrag:latest \
-  --tag ghcr.io/hkuds/lightrag:${VERSION} \
+  --file Dockerfile.offline \
+  --tag ghcr.io/hkuds/lightrag:offline \
+  --tag ghcr.io/hkuds/lightrag:${VERSION}-offline \
+  --tag ghcr.io/hkuds/lightrag:offline-latest \
   --push \
   .
 ```
@@ -226,12 +226,25 @@ After building, verify the multi-architecture manifest:
 
 ```bash
 # Inspect image manifest
-docker buildx imagetools inspect ghcr.io/hkuds/lightrag:latest
+docker buildx imagetools inspect ghcr.io/hkuds/lightrag:offline
 
 # Expected output shows multiple platforms:
 # Name:      ghcr.io/hkuds/lightrag:offline
 # MediaType: application/vnd.docker.distribution.manifest.list.v2+json
 # Platforms: linux/amd64, linux/arm64
+```
+
+Pull and test specific architectures:
+
+```bash
+# Pull AMD64 version
+docker pull --platform linux/amd64 ghcr.io/hkuds/lightrag:offline
+
+# Pull ARM64 version
+docker pull --platform linux/arm64 ghcr.io/hkuds/lightrag:offline
+
+# Test run
+docker run --rm -p 9621:9621 ghcr.io/hkuds/lightrag:offline
 ```
 
 ### 5. Troubleshooting
@@ -308,3 +321,54 @@ docker buildx prune
 4. **Monitor resources**: Ensure sufficient disk space before building
 5. **Test both architectures**: Pull and test each platform variant
 6. **Use .dockerignore**: Exclude unnecessary files to speed up build context transfer
+
+### 9. Build Script Example
+
+For convenience, create a build script `build-and-push.sh`:
+
+```bash
+#!/bin/bash
+set -e
+
+# Configuration
+IMAGE_NAME="ghcr.io/hkuds/lightrag"
+DOCKERFILE="Dockerfile.offline"
+TAG="offline"
+
+# Get version
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+
+echo "Building ${IMAGE_NAME}:${TAG} (version: ${VERSION})"
+
+# Create builder if not exists
+if ! docker buildx inspect multiarch-builder &>/dev/null; then
+    echo "Creating buildx builder..."
+    docker buildx create --name multiarch-builder --use
+    docker buildx inspect --bootstrap
+else
+    docker buildx use multiarch-builder
+fi
+
+# Build and push
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --file ${DOCKERFILE} \
+  --tag ${IMAGE_NAME}:${TAG} \
+  --tag ${IMAGE_NAME}:${VERSION}-${TAG} \
+  --push \
+  .
+
+echo "✓ Build complete!"
+echo "Image pushed: ${IMAGE_NAME}:${TAG}"
+echo "Version tag: ${IMAGE_NAME}:${VERSION}-${TAG}"
+
+# Verify
+docker buildx imagetools inspect ${IMAGE_NAME}:${TAG}
+```
+
+Make it executable and run:
+
+```bash
+chmod +x build-and-push.sh
+./build-and-push.sh
+```
