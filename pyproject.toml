@@ -82,7 +82,6 @@ api = [
 # Offline deployment dependencies (layered design for flexibility)
 offline-docs = [
     # Document processing dependencies
-    "docling>=1.0.0,<3.0.0",
     "pypdf2>=3.0.0",
     "python-docx>=0.8.11,<2.0.0",
     "python-pptx>=0.6.21,<2.0.0",
