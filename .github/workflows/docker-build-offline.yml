@@ -1,0 +1,77 @@
+name: Build Offline Docker Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push-offline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="sha-$(git rev-parse --short HEAD)"
+            echo "No tags found, using commit SHA: $LATEST_TAG"
+          else
+            echo "Latest tag found: $LATEST_TAG"
+          fi
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Prepare offline tag
+        id: offline_tag
+        run: |
+          OFFLINE_TAG="${{ steps.get_tag.outputs.tag }}-offline"
+          echo "Offline image tag: $OFFLINE_TAG"
+          echo "offline_tag=$OFFLINE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Update version in __init__.py
+        run: |
+          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
+          cat lightrag/__init__.py | grep __version__
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.offline_tag.outputs.offline_tag }}
+
+      - name: Build and push offline Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.offline
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image details
+        run: |
+          echo "Offline Docker image built and pushed successfully!"
+          echo "Image tag: ghcr.io/${{ github.repository }}:${{ steps.offline_tag.outputs.offline_tag }}"
+          echo "Base Git tag used: ${{ steps.get_tag.outputs.tag }}"

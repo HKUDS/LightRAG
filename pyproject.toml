@@ -130,6 +130,7 @@ Repository = "https://github.com/HKUDS/LightRAG"
 
 [tool.setuptools.packages.find]
 include = ["lightrag*"]
+exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*", "output_complete*", "rag_storage*", "inputs*"]
 
 [tool.setuptools]
 include-package-data = true
