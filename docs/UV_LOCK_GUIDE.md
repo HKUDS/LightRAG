@@ -110,6 +110,16 @@ RUN uv sync --frozen --no-dev --extra api
 `--frozen` guarantees reproducible builds because uv will refuse to deviate from the locked versions.
 `--extra api` install API server
 
+## Generating a lock file that includes offline dependencies
+
+If you need `uv.lock` to capture the optional offline stacks, regenerate it with the relevant extras enabled:
+
+```bash
+uv lock --extra api --extra offline
+```
+
+This command resolves the base project requirements plus both the `api` and `offline` optional dependency sets, ensuring downstream `uv sync --frozen --extra api --extra offline` installs work without further resolution.
+
 ## Frequently asked questions
 
 - **`uv.lock` is almost 1 MB. Does that matter?**

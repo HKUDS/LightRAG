@@ -6,84 +6,79 @@ WORKDIR /app
 # Copy frontend source code
 COPY lightrag_webui/ ./lightrag_webui/
 
-# Build frontend
-RUN cd lightrag_webui && \
-    bun install --frozen-lockfile && \
-    bun run build
+# Build frontend assets for inclusion in the API package
+RUN cd lightrag_webui \
+    && bun install --frozen-lockfile \
+    && bun run build
 
-# Python build stage
-FROM python:3.12-slim AS builder
+# Python build stage - using uv for package installation
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
 
-# Upgrade pip、setuptools and wheel to the latest version
-RUN pip install --upgrade pip setuptools wheel
-
-# Install Rust and required build dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
-    pkg-config \
+# Install system dependencies required by some wheels
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    && . $HOME/.cargo/env
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
-# Copy pyproject.toml and source code for dependency installation
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+
+# Ensure shared data directory exists for uv caches
+RUN mkdir -p /root/.local/share/uv
+
+# Copy project metadata and sources
 COPY pyproject.toml .
 COPY setup.py .
+COPY uv.lock .
 COPY lightrag/ ./lightrag/
 
-# Copy frontend build output from frontend-builder stage
+# Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install dependencies
-ENV PATH="/root/.cargo/bin:${PATH}"
-RUN pip install --user --no-cache-dir --use-pep517 .
-RUN pip install --user --no-cache-dir --use-pep517 .[api]
-
-# Install depndencies for default storage
-RUN pip install --user --no-cache-dir nano-vectordb networkx
-# Install depndencies for default LLM
-RUN pip install --user --no-cache-dir openai ollama tiktoken
-# Install depndencies for default document loader
-RUN pip install --user --no-cache-dir pypdf2 python-docx python-pptx openpyxl
+# Install project dependencies (base + API extras)
+RUN uv sync --frozen --no-dev --extra api
 
 # Final stage
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Install uv for package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Upgrade pip and setuptools
-RUN pip install --upgrade pip setuptools wheel
+ENV UV_SYSTEM_PYTHON=1
 
-# Copy only necessary files from builder
+# Copy installed packages and application code
 COPY --from=builder /root/.local /root/.local
+COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/lightrag ./lightrag
+COPY pyproject.toml .
 COPY setup.py .
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY uv.lock .
 
-# Copy scripts directory for demo tenant initialization
-COPY scripts/ /app/scripts/
+# Ensure the installed scripts are on PATH
+ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
-RUN pip install --use-pep517 ".[api]"
-# Make scripts executable
-RUN chmod +x /app/docker-entrypoint.sh && \
-    find /app/scripts -name "*.py" -type f -exec chmod +x {} \;
+# Sync dependencies inside the final image using uv
+RUN uv sync --frozen --no-dev --extra api
 
-# Create necessary directories
+# Create persistent data directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs
 
 # Docker data directories
 ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 
-# Expose the default port
+# Expose API port
 EXPOSE 9621
 
-# Set entrypoint to our script
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+# Set entrypoint
+ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
