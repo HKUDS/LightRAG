@@ -14,11 +14,8 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
-      # - ./data/tiktoken:/app/data/tiktoken
     env_file:
       - .env
-    environment:
-      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
