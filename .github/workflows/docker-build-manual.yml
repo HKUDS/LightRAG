@@ -2,6 +2,12 @@ name: Build Test Docker Image manually
 
 on:
   workflow_dispatch:
+    inputs:
+      _notes_:
+        description: '⚠️ Please create a new git tag before building the docker image.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
