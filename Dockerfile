@@ -38,13 +38,19 @@ RUN mkdir -p /root/.local/share/uv
 COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
+
+# Install project dependencies (base + API extras) without the project to improve caching
+RUN uv sync --frozen --no-dev --extra api --no-install-project --no-editable
+
+# Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install project dependencies (base + API extras)
-RUN uv sync --frozen --no-dev --extra api
+# Sync project in non-editable mode and ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Final stage
 FROM python:3.12-slim
@@ -68,7 +74,8 @@ COPY uv.lock .
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
 # Sync dependencies inside the final image using uv
-RUN uv sync --frozen --no-dev --extra api
+RUN uv sync --frozen --no-dev --extra api --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Create persistent data directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs

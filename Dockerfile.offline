@@ -38,13 +38,19 @@ RUN mkdir -p /root/.local/share/uv
 COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
+
+# Install base, API, and offline extras without the project to improve caching
+RUN uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
+
+# Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install base, API, and offline extras so CLI helpers work during build
-RUN uv sync --frozen --no-dev --extra api --extra offline
+# Sync project in non-editable mode and ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Prepare offline cache directory and pre-populate tiktoken data
 # Use uv run to execute commands from the virtual environment
@@ -74,8 +80,9 @@ COPY uv.lock .
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
 # Install dependencies with uv sync (uses locked versions from uv.lock)
-# IMPORTANT: Must be done BEFORE creating data/ directory to avoid setuptools error
-RUN uv sync --frozen --no-dev --extra api --extra offline
+# And ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
