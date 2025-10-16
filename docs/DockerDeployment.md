@@ -165,6 +165,8 @@ docker buildx build \
   .
 ```
 
+> **Note**: `--load` loads the image to local Docker, but only supports single platform. For multi-platform, use `--push` instead.
+
 **Lite image:**
 
 ```bash
@@ -176,7 +178,7 @@ docker buildx build \
   .
 ```
 
-> **Note**: `--load` loads the image to local Docker, but only supports single platform. For multi-platform, use `--push` instead.
+> The lite version Docker image includes only the default storage and LLM drivers, minimizing image size.
 
 #### B. Build and Push to Registry
 
