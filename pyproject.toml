@@ -23,7 +23,6 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
-    "dotenv",
     "future",
     "json_repair",
     "nano-vectordb",
@@ -45,7 +44,6 @@ api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "dotenv",
     "future",
     "json_repair",
     "nano-vectordb",
