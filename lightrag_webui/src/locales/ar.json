@@ -139,6 +139,7 @@
       "status": {
         "all": "الكل",
         "completed": "مكتمل",
+        "preprocessed": "مُعالج مسبقًا",
         "processing": "قيد المعالجة",
         "pending": "معلق",
         "failed": "فشل"

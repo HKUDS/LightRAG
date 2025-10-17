@@ -1,10 +1,10 @@
-name: Build Test Docker Image manually
+name: Build Lite Docker Image
 
 on:
   workflow_dispatch:
     inputs:
       _notes_:
-        description: '⚠️ Please create a new git tag before building the docker image.'
+        description: '⚠️ Create lite Docker images only after non-trivial version releases.'
         required: false
         type: boolean
         default: false
@@ -14,18 +14,17 @@ permissions:
   packages: write
 
 jobs:
-  build-and-push:
+  build-and-push-lite:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for tags
+          fetch-depth: 0
 
       - name: Get latest tag
         id: get_tag
         run: |
-          # Get the latest tag, fallback to commit SHA if no tags exist
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -z "$LATEST_TAG" ]; then
             LATEST_TAG="sha-$(git rev-parse --short HEAD)"
@@ -34,12 +33,17 @@ jobs:
             echo "Latest tag found: $LATEST_TAG"
           fi
           echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-          echo "image_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Prepare lite tag
+        id: lite_tag
+        run: |
+          LITE_TAG="${{ steps.get_tag.outputs.tag }}-lite"
+          echo "Lite image tag: $LITE_TAG"
+          echo "lite_tag=$LITE_TAG" >> $GITHUB_OUTPUT
 
       - name: Update version in __init__.py
         run: |
           sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
-          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
           cat lightrag/__init__.py | grep __version__
 
       - name: Set up Docker Buildx
@@ -58,23 +62,23 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ steps.get_tag.outputs.tag }}
+            type=raw,value=${{ steps.lite_tag.outputs.lite_tag }}
+            type=raw,value=lite
 
-      - name: Build and push Docker image
+      - name: Build and push lite Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.lite
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
 
       - name: Output image details
         run: |
-          echo "Docker image built and pushed successfully!"
-          echo "Image tags:"
-          echo "  - ghcr.io/${{ github.repository }}:${{ steps.get_tag.outputs.tag }}"
-          echo "Latest Git tag used: ${{ steps.get_tag.outputs.tag }}"
+          echo "Lite Docker image built and pushed successfully!"
+          echo "Image tag: ghcr.io/${{ github.repository }}:${{ steps.lite_tag.outputs.lite_tag }}"
+          echo "Base Git tag used: ${{ steps.get_tag.outputs.tag }}"

@@ -21,6 +21,7 @@ from typing import (
     List,
     Dict,
 )
+from lightrag.prompt import PROMPTS
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
@@ -2293,20 +2294,35 @@ class LightRAG:
         else:
             raise ValueError(f"Unknown mode {data_param.mode}")
 
-        # Extract raw_data from QueryResult
-        final_data = query_result.raw_data if query_result else {}
-
-        # Log final result counts - adapt to new data format from convert_to_user_format
-        if final_data and "data" in final_data:
-            data_section = final_data["data"]
-            entities_count = len(data_section.get("entities", []))
-            relationships_count = len(data_section.get("relationships", []))
-            chunks_count = len(data_section.get("chunks", []))
-            logger.debug(
-                f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
-            )
+        if query_result is None:
+            no_result_message = "Query returned no results"
+            if data_param.mode == "naive":
+                no_result_message = "No relevant document chunks found."
+            final_data: dict[str, Any] = {
+                "status": "failure",
+                "message": no_result_message,
+                "data": {},
+                "metadata": {
+                    "failure_reason": "no_results",
+                    "mode": data_param.mode,
+                },
+            }
+            logger.info("[aquery_data] Query returned no results.")
         else:
-            logger.warning("[aquery_data] No data section found in query result")
+            # Extract raw_data from QueryResult
+            final_data = query_result.raw_data or {}
+
+            # Log final result counts - adapt to new data format from convert_to_user_format
+            if final_data and "data" in final_data:
+                data_section = final_data["data"]
+                entities_count = len(data_section.get("entities", []))
+                relationships_count = len(data_section.get("relationships", []))
+                chunks_count = len(data_section.get("chunks", []))
+                logger.debug(
+                    f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
+                )
+            else:
+                logger.warning("[aquery_data] No data section found in query result")
 
         await self._query_done()
         return final_data
@@ -2409,16 +2425,19 @@ class LightRAG:
                     "status": "failure",
                     "message": "Query returned no results",
                     "data": {},
-                    "metadata": {},
+                    "metadata": {
+                        "failure_reason": "no_results",
+                        "mode": param.mode,
+                    },
                     "llm_response": {
-                        "content": None,
+                        "content": PROMPTS["fail_response"],
                         "response_iterator": None,
                         "is_streaming": False,
                     },
                 }
 
             # Extract structured data from query result
-            raw_data = query_result.raw_data if query_result else {}
+            raw_data = query_result.raw_data or {}
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
@@ -2623,7 +2642,12 @@ class LightRAG:
                 )
 
             # Check document status and log warning for non-completed documents
-            doc_status = doc_status_data.get("status")
+            raw_status = doc_status_data.get("status")
+            try:
+                doc_status = DocStatus(raw_status)
+            except ValueError:
+                doc_status = raw_status
+
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
                     warning_msg = (
@@ -2633,12 +2657,23 @@ class LightRAG:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: PROCESSING)"
                     )
+                elif doc_status == DocStatus.PREPROCESSED:
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: PREPROCESSED)"
+                    )
                 elif doc_status == DocStatus.FAILED:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: FAILED)"
                     )
                 else:
-                    warning_msg = f"Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
+                    status_text = (
+                        doc_status.value
+                        if isinstance(doc_status, DocStatus)
+                        else str(doc_status)
+                    )
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: {status_text})"
+                    )
                 logger.info(warning_msg)
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:

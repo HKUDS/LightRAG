@@ -139,6 +139,7 @@
       "status": {
         "all": "全部",
         "completed": "已完成",
+        "preprocessed": "预处理",
         "processing": "处理中",
         "pending": "等待中",
         "failed": "失败"
