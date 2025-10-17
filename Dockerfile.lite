@@ -11,16 +11,17 @@ RUN cd lightrag_webui \
     && bun install --frozen-lockfile \
     && bun run build
 
-# Python build stage
-FROM python:3.12-slim AS builder
+# Python build stage - using uv for package installation
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
 
-# Upgrade packaging tools and install system deps (Rust is required by some wheels)
-RUN pip install --upgrade pip setuptools wheel \
-    && apt-get update \
+# Install system dependencies required by some wheels
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
         build-essential \
@@ -30,27 +31,31 @@ RUN pip install --upgrade pip setuptools wheel \
 
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 
+# Ensure shared data directory exists for uv caches
+RUN mkdir -p /root/.local/share/uv
+
 # Copy project metadata and sources
 COPY pyproject.toml .
 COPY setup.py .
-COPY requirements-offline*.txt ./
-COPY constraints-offline.txt .
+COPY uv.lock .
+
+# Install project dependencies (base + API extras) without the project to improve caching
+RUN uv sync --frozen --no-dev --extra api --no-install-project --no-editable
+
+# Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install LightRAG with API extras and all offline dependencies in a single step
-# This prevents version conflicts from multiple installation passes
-# Use constraints file for reproducible builds with exact versions
-RUN pip install --user --no-cache-dir --use-pep517 \
-    --upgrade-strategy=only-if-needed \
-    --constraint constraints-offline.txt \
-    .[api] -r requirements-offline.txt
+# Sync project in non-editable mode and ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
-# Prepare offline cache directory and pre-populate tiktoken data
+# Prepare tiktoken cache directory and pre-populate tokenizer data
+# Ignore exit code 2 which indicates assets already cached
 RUN mkdir -p /app/data/tiktoken \
-    && lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
+    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
     if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
@@ -58,34 +63,34 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --upgrade pip setuptools wheel
+# Install uv for package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV UV_SYSTEM_PYTHON=1
 
 # Copy installed packages and application code
 COPY --from=builder /root/.local /root/.local
+COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/lightrag ./lightrag
 COPY pyproject.toml .
 COPY setup.py .
-COPY requirements-offline*.txt ./
-COPY constraints-offline.txt .
+COPY uv.lock .
 
 # Ensure the installed scripts are on PATH
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
-# Install editable package for runtime (re-using cached wheels) and verify extras
-# IMPORTANT: Must be done BEFORE creating data/ directory to avoid setuptools error
-# Use single installation to prevent version conflicts with exact version constraints
-RUN pip install --no-cache-dir --use-pep517 \
-    --upgrade-strategy=only-if-needed \
-    --constraint constraints-offline.txt \
-    ".[api]" -r requirements-offline.txt
+# Sync dependencies inside the final image using uv
+# And ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
-# Create persistent data directories AFTER package installation
+# Create persistent data directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
 
-# Copy offline cache into the newly created directory
+# Copy cached tokenizer assets prepared in the builder stage
 COPY --from=builder /app/data/tiktoken /app/data/tiktoken
 
-# Point to the prepared cache
+# Docker data directories
 ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken
 ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
@@ -93,4 +98,5 @@ ENV INPUT_DIR=/app/data/inputs
 # Expose API port
 EXPOSE 9621
 
+# Set entrypoint
 ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]

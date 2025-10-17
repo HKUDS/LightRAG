@@ -3332,7 +3332,11 @@ async def _build_query_context(
         query_embedding=search_result["query_embedding"],
     )
 
-    if not merged_chunks:
+    if (
+        not merged_chunks
+        and not truncation_result["entities_context"]
+        and not truncation_result["relations_context"]
+    ):
         return None
 
     # Stage 4: Build final LLM context with dynamic token processing

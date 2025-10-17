@@ -118,36 +118,10 @@ lightrag-gunicorn --workers 4
 
 ### 使用 Docker 启动 LightRAG 服务器
 
-* 配置 .env 文件：
-    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
-* 创建一个名为 docker-compose.yml 的文件：
-
-```yaml
-services:
-  lightrag:
-    container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-      tags:
-        - ghcr.io/hkuds/lightrag:latest
-    ports:
-      - "${PORT:-9621}:9621"
-    volumes:
-      - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
-      - ./data/tiktoken:/app/data/tiktoken
-      - ./config.ini:/app/config.ini
-      - ./.env:/app/.env
-    env_file:
-      - .env
-    environment:
-      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
+使用 Docker Compose 是部署和运行 LightRAG Server 最便捷的方式。
+- 创建一个项目目录。
+- 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
+- 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
 
 * 通过以下命令启动 LightRAG 服务器：
 
@@ -155,11 +129,11 @@ services:
 docker compose up
 # 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
-> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./../../docs/DockerDeployment.md).
 
 ### 离线部署
 
-对于离线或隔离环境，请参阅[离线部署指南](./../../docs/OfflineDeployment.md)，了解如何预先安装所有依赖项和缓存文件。
+官方的 LightRAG Docker 镜像完全兼容离线或隔离网络环境。如需搭建自己的离线部署环境，请参考 [离线部署指南](./../../docs/OfflineDeployment.md)。
 
 ### 启动多个LightRAG实例
 
