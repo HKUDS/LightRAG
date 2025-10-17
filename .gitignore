@@ -9,9 +9,10 @@ __pycache__/
 
 # Virtual Environment
 .venv/
-env/
 venv/
-*.env*
+
+# Enviroment Variable Files
+.env
 
 # Build / Distribution
 dist/
