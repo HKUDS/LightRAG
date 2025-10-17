@@ -2611,9 +2611,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|>, <||#> -> <|#|> (one extra characters outside pipes)
+    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|> (one extra characters outside pipes)
     record = re.sub(
-        rf"<.?\|{escaped_delimiter_core}\|*?>",
+        rf"<.?\|{escaped_delimiter_core}\|.?>",
         tuple_delimiter,
         record,
     )
@@ -2633,7 +2633,6 @@ def fix_tuple_delimiter_corruption(
     )
 
     # Fix: <|#| -> <|#|>, <|#|| -> <|#|> (missing closing >)
-
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|+(?!>)",
         tuple_delimiter,
@@ -2643,6 +2642,13 @@ def fix_tuple_delimiter_corruption(
     # Fix <|#: -> <|#|> (missing closing >)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}:(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <||#> -> <|#|> (double pipe at start, missing pipe at end)
+    record = re.sub(
+        rf"<\|+{escaped_delimiter_core}>",
         tuple_delimiter,
         record,
     )
