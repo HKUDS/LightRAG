@@ -2465,6 +2465,26 @@ async def process_chunks_unified(
     return final_chunks
 
 
+def truncate_entity_source_id(
+    chunk_ids: set, entity_name: str, global_config: dict
+) -> set:
+    """Limit chunk_ids, for entities that appear a HUGE no of times (To not break VDB hard upper limits)"""
+    already_len: int = len(chunk_ids)
+
+    max_chunk_ids_per_entity = global_config["max_source_ids_per_entity"]
+
+    if already_len <= max_chunk_ids_per_entity:
+        return chunk_ids
+
+    logger.warning(
+        f"Source Ids already exceeds {max_chunk_ids_per_entity } for {entity_name}, "
+        f"current size: {already_len}, truncating..."
+    )
+
+    truncated_chunk_ids = set(list(chunk_ids)[0:max_chunk_ids_per_entity])
+    return truncated_chunk_ids
+
+
 def build_file_path(already_file_paths, data_list, target):
     """Build file path string with UTF-8 byte length limit and deduplication
 
