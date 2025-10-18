@@ -683,6 +683,14 @@ class OllamaAPI:
                 else:
                     first_chunk_time = time.time_ns()
 
+                    # Check if query-specific LLM is configured
+                    if (
+                        hasattr(raw_request.app.state, "query_llm_func")
+                        and raw_request.app.state.query_llm_func
+                    ):
+                        query_param.model_func = raw_request.app.state.query_llm_func
+                        logger.debug("Using query-specific LLM for Ollama chat")
+
                     # Determine if the request is prefix with "/bypass" or from Open WebUI's session title and session keyword generation task
                     match_result = re.search(
                         r"\n<chat_history>\nUSER:", cleaned_query, re.MULTILINE

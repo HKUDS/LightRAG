@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
@@ -267,7 +267,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text(request: QueryRequest):
+    async def query_text(request: QueryRequest, req: Request):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
@@ -342,6 +342,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             )  # Ensure stream=False for non-streaming endpoint
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
+
+            # Use query-specific LLM if available
+            if (
+                hasattr(req.app.state, "query_llm_func")
+                and req.app.state.query_llm_func
+            ):
+                param.model_func = req.app.state.query_llm_func
 
             # Unified approach: always use aquery_llm for both cases
             result = await rag.aquery_llm(request.query, param=param)
@@ -438,7 +445,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text_stream(request: QueryRequest):
+    async def query_text_stream(request: QueryRequest, req: Request):
         """
         Advanced RAG query endpoint with flexible streaming response.
 
@@ -559,6 +566,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Use the stream parameter from the request, defaulting to True if not specified
             stream_mode = request.stream if request.stream is not None else True
             param = request.to_query_params(stream_mode)
+
+            # Use query-specific LLM if available
+            if (
+                hasattr(req.app.state, "query_llm_func")
+                and req.app.state.query_llm_func
+            ):
+                param.model_func = req.app.state.query_llm_func
 
             from fastapi.responses import StreamingResponse
 
@@ -907,7 +921,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_data(request: QueryRequest):
+    async def query_data(request: QueryRequest, req: Request):
         """
         Advanced data retrieval endpoint for structured RAG analysis.
 
@@ -1002,6 +1016,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         try:
             param = request.to_query_params(False)  # No streaming for data endpoint
+
+            # Use query-specific LLM if available (for keyword extraction)
+            if (
+                hasattr(req.app.state, "query_llm_func")
+                and req.app.state.query_llm_func
+            ):
+                param.model_func = req.app.state.query_llm_func
+
             response = await rag.aquery_data(request.query, param=param)
 
             # aquery_data returns the new format with status, message, data, and metadata
