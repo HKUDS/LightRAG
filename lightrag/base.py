@@ -77,6 +77,10 @@ class TextChunkSchema(TypedDict):
     content: str
     full_doc_id: str
     chunk_order_index: int
+    # Page tracking fields (optional for backward compatibility)
+    start_page: int | None  # 1-based page number where chunk starts
+    end_page: int | None  # 1-based page number where chunk ends (inclusive)
+    pages: list[int] | None  # List of all pages this chunk spans [start, end]
 
 
 T = TypeVar("T")

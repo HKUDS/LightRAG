@@ -228,7 +228,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
-  - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - **MANDATORY**: Generate a "### References" section at the end of EVERY response. Copy the citations EXACTLY as they appear in the `Reference Document List` section of the Context. Only use references that are explicitly provided in the Reference Document List - do not create or invent any references.
   - Do not generate anything after the reference section.
 
 2. Content & Grounding:
@@ -240,21 +240,27 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
-4. References Section Format:
-  - The References section should be under heading: `### References`
-  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
-  - The Document Title in the citation must retain its original language.
-  - Output each citation on an individual line
-  - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any comment, summary, or explanation after the references.
+4. References Section Format (MANDATORY - MUST ALWAYS INCLUDE):
+  - **ALWAYS** end your response with a `### References` section - THIS IS REQUIRED
+  - **ONLY USE REFERENCES FROM THE PROVIDED REFERENCE DOCUMENT LIST** - Do not create or invent any references
+  - **COPY the citations EXACTLY as shown in the `Reference Document List`** - including any page numbers like "(p. 5)" or "(pp. 3-5)"
+  - **CRITICAL**: When you see page numbers in citations like "(p. 5)" or "(pp. 3-5)", you MUST include them in your References section
+  - Reference list entries should adhere to the format: `- [n] Document Title (p. X)` or `- [n] Document Title (pp. X-Y)`
+  - Do not include a caret (`^`) after opening square bracket (`[`)
+  - The Document Title in the citation must retain its original language
+  - Output each citation on an individual line starting with a dash (`-`)
+  - Provide maximum of 5 most relevant citations from the Reference Document List
+  - **NEVER** omit page numbers if they are present in the Reference Document List
+  - **NEVER** create references that are not in the Reference Document List
+  - Do not generate footnotes section or any comment, summary, or explanation after the references
 
-5. Reference Section Example:
+5. Reference Section Example (copy the format shown in Reference Document List):
 ```
 ### References
 
-- [1] Document Title One
-- [2] Document Title Two
-- [3] Document Title Three
+- [1] document.pdf (pp. 1-3)
+- [2] report.pdf (p. 5)
+- [3] notes.txt
 ```
 
 6. Additional Instructions: {user_prompt}
@@ -282,7 +288,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
-  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - **MANDATORY**: Generate a "### References" section at the end of EVERY response. Copy the citations EXACTLY as they appear in the `Reference Document List` section of the Context. Only use references that are explicitly provided in the Reference Document List - do not create or invent any references.
   - Do not generate anything after the reference section.
 
 2. Content & Grounding:
@@ -294,21 +300,27 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
-4. References Section Format:
-  - The References section should be under heading: `### References`
-  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
-  - The Document Title in the citation must retain its original language.
-  - Output each citation on an individual line
-  - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any comment, summary, or explanation after the references.
+4. References Section Format (MANDATORY - MUST ALWAYS INCLUDE):
+  - **ALWAYS** end your response with a `### References` section - THIS IS REQUIRED
+  - **ONLY USE REFERENCES FROM THE PROVIDED REFERENCE DOCUMENT LIST** - Do not create or invent any references
+  - **COPY the citations EXACTLY as shown in the `Reference Document List`** - including any page numbers like "(p. 5)" or "(pp. 3-5)"
+  - **CRITICAL**: When you see page numbers in citations like "(p. 5)" or "(pp. 3-5)", you MUST include them in your References section
+  - Reference list entries should adhere to the format: `- [n] Document Title (p. X)` or `- [n] Document Title (pp. X-Y)`
+  - Do not include a caret (`^`) after opening square bracket (`[`)
+  - The Document Title in the citation must retain its original language
+  - Output each citation on an individual line starting with a dash (`-`)
+  - Provide maximum of 5 most relevant citations from the Reference Document List
+  - **NEVER** omit page numbers if they are present in the Reference Document List
+  - **NEVER** create references that are not in the Reference Document List
+  - Do not generate footnotes section or any comment, summary, or explanation after the references
 
-5. Reference Section Example:
+5. Reference Section Example (copy the format shown in Reference Document List):
 ```
 ### References
 
-- [1] Document Title One
-- [2] Document Title Two
-- [3] Document Title Three
+- [1] document.pdf (pp. 1-3)
+- [2] report.pdf (p. 5)
+- [3] notes.txt
 ```
 
 6. Additional Instructions: {user_prompt}
