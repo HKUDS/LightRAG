@@ -1,8 +1,10 @@
 import os
 import re
+import json
 from dataclasses import dataclass
-from typing import final
+from typing import final, Any
 import configparser
+
 
 
 from tenacity import (
@@ -14,7 +16,7 @@ from tenacity import (
 
 import logging
 from ..utils import logger
-from ..base import BaseGraphStorage
+from ..base import BaseGraphStorage, MetadataFilter
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
@@ -423,6 +425,89 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 await result.consume()  # Ensure results are consumed even on error
                 raise
+
+    async def get_nodes_by_metadata_filter(self, metadata_filter: MetadataFilter | None) -> list[str]:
+        """Get node IDs that match the given metadata filter with logical expressions."""
+        workspace_label = self._get_workspace_label()
+        
+        # Build metadata conditions
+        params = {}
+        condition, params = self._build_metadata_conditions(metadata_filter, params)
+        
+        if not condition:
+            # If no condition, return empty list for safety
+            return []
+        
+        # Build the query
+        query = f"""
+        MATCH (n:`{workspace_label}`)
+        WHERE {condition}
+        RETURN n.entity_id AS entity_id
+        """
+        
+        async with self._driver.session(database=self._DATABASE) as session:
+            result = await session.run(query, params)
+            return [record["entity_id"] async for record in result]
+
+    def _build_metadata_conditions(
+        self, 
+        metadata_filter: MetadataFilter | None, 
+        params: dict[str, Any],
+        node_var: str = "n"
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Build Cypher WHERE conditions from a MetadataFilter.
+        
+        Args:
+            metadata_filter: The MetadataFilter object
+            params: Dictionary to collect parameters for the query
+            node_var: The variable name for the node in the Cypher query
+            
+        Returns:
+            Tuple of (condition_string, updated_params)
+        """
+        if metadata_filter is None:
+            return "", params
+        
+        conditions = []
+        
+        for operand in metadata_filter.operands:
+            if isinstance(operand, MetadataFilter):
+                # Recursive call for nested filters
+                sub_condition, params = self._build_metadata_conditions(operand, params, node_var)
+                if sub_condition:
+                    conditions.append(f"({sub_condition})")
+            else:
+                # Simple key-value pair
+                for key, value in operand.items():
+                    prop_name = f"meta_{key}"  # Using our prefix
+                    param_name = f"{prop_name}_{len(params)}"
+                    
+                    if value is None:
+                        # Check for existence of the key
+                        conditions.append(f"{node_var}.{prop_name} IS NOT NULL")
+                    else:
+                        # Check for specific value
+                        conditions.append(f"{node_var}.{prop_name} = ${param_name}")
+                        params[param_name] = value
+        
+        if not conditions:
+            return "", params
+        
+        # Join conditions with the operator
+        if metadata_filter.operator == "AND":
+            condition = " AND ".join(conditions)
+        elif metadata_filter.operator == "OR":
+            condition = " OR ".join(conditions)
+        elif metadata_filter.operator == "NOT":
+            if len(conditions) == 1:
+                condition = f"NOT ({conditions[0]})"
+            else:
+                condition = f"NOT ({' AND '.join(conditions)})"
+        else:
+            raise ValueError(f"Unknown operator: {metadata_filter.operator}")
+        
+        return condition, params
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties
@@ -962,7 +1047,11 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+    async def upsert_node(
+        self,
+        node_id: str,
+        node_data: dict[str, str],
+    ) -> None:
         """
         Upsert a node in the Neo4j database.
 
@@ -971,8 +1060,25 @@ class Neo4JStorage(BaseGraphStorage):
             node_data: Dictionary of node properties
         """
         workspace_label = self._get_workspace_label()
-        properties = node_data
-        entity_type = properties["entity_type"]
+        properties = node_data.copy()
+
+        metadata = properties.pop("metadata", None)
+        for key, value in metadata.items():
+            neo4j_key = key
+
+            # Handle complex data types by converting them to strings
+            if isinstance(value, (dict, list)):
+                try:
+                    properties[neo4j_key] = json.dumps(value)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to serialize metadata field {key} for node {node_id}: {e}"
+                    )
+                    properties[neo4j_key] = str(value)
+            else:
+                properties[neo4j_key] = value
+
+        entity_type = properties.get("entity_type", "Unknown")
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
 
@@ -992,7 +1098,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 await session.execute_write(execute_upsert)
         except Exception as e:
-            logger.error(f"[{self.workspace}] Error during upsert: {str(e)}")
+            logger.error(f"[{self.workspace}] Error during node upsert: {str(e)}")
             raise
 
     @retry(
@@ -1026,12 +1132,23 @@ class Neo4JStorage(BaseGraphStorage):
         Raises:
             ValueError: If either source or target node does not exist or is not unique
         """
+        edge_properties = edge_data
+        workspace_label = self._get_workspace_label()
+
+        # Extract metadata if present and handle it properly
+        metadata = edge_properties.pop("metadata", None)
+        if metadata and isinstance(metadata, dict):
+            # Serialize metadata to JSON string
+            try:
+                edge_properties["metadata"] = json.dumps(metadata)
+            except Exception as e:
+                logger.warning(f"Failed to serialize metadata: {e}")
+                edge_properties["metadata"] = str(metadata)
+
         try:
-            edge_properties = edge_data
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
-                    workspace_label = self._get_workspace_label()
                     query = f"""
                     MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
                     WITH source

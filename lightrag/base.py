@@ -15,9 +15,10 @@ from typing import (
     Dict,
     List,
     AsyncIterator,
+    Union,
 )
 from .utils import EmbeddingFunc
-from .types import KnowledgeGraph
+from .types import KnowledgeGraph, MetadataFilter
 from .constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_TOP_K,
@@ -37,6 +38,11 @@ from .constants import (
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+
+
+
+
 
 
 class OllamaServerInfos:
@@ -163,6 +169,9 @@ class QueryParam:
     Default is True to enable reranking when rerank model is available.
     """
 
+    metadata_filter: MetadataFilter | None = None
+    """Metadata for filtering nodes and edges, allowing for more precise querying."""
+
     include_references: bool = False
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
@@ -223,7 +232,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self, query: str, top_k: int, query_embedding: list[float] = None, metadata_filter: MetadataFilter | None = None
     ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results.
 
@@ -444,6 +453,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             A list of (source_id, target_id) tuples representing edges,
             or None if the node doesn't exist
         """
+
+    async def get_nodes_by_metadata_filter(self, metadata_filter: MetadataFilter | None) -> list[str]:
+        """Get node IDs that match the given metadata filter with logical expressions."""
+        # Default implementation - subclasses should override this method
+        # This is a placeholder that will be overridden by specific implementations
+        raise NotImplementedError("Subclasses must implement get_nodes_by_metadata_filter")
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """Get nodes as a batch using UNWIND

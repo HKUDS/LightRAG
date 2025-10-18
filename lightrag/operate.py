@@ -2,6 +2,7 @@ from __future__ import annotations
 from functools import partial
 
 import asyncio
+import re
 import json
 import json_repair
 from typing import Any, AsyncIterator, overload, Literal
@@ -323,6 +324,7 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    metadata: dict[str, Any] | None = None,
 ):
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
@@ -376,6 +378,7 @@ async def _handle_single_entity_extraction(
             source_id=chunk_key,
             file_path=file_path,
             timestamp=timestamp,
+            metadata=metadata,
         )
 
     except ValueError as e:
@@ -395,6 +398,7 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    metadata: dict[str, Any] | None = None,
 ):
     if (
         len(record_attributes) != 5 or "relation" not in record_attributes[0]
@@ -458,6 +462,8 @@ async def _handle_single_relationship_extraction(
             source_id=edge_source_id,
             file_path=file_path,
             timestamp=timestamp,
+            metadata=metadata,
+
         )
 
     except ValueError as e:
@@ -862,6 +868,7 @@ async def _process_extraction_result(
     file_path: str = "unknown_source",
     tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
     Args:
@@ -943,7 +950,7 @@ async def _process_extraction_result(
 
         # Try to parse as entity
         entity_data = await _handle_single_entity_extraction(
-            record_attributes, chunk_key, timestamp, file_path
+            record_attributes, chunk_key, timestamp, file_path, metadata
         )
         if entity_data is not None:
             maybe_nodes[entity_data["entity_name"]].append(entity_data)
@@ -951,7 +958,7 @@ async def _process_extraction_result(
 
         # Try to parse as relationship
         relationship_data = await _handle_single_relationship_extraction(
-            record_attributes, chunk_key, timestamp, file_path
+            record_attributes, chunk_key, timestamp, file_path, metadata
         )
         if relationship_data is not None:
             maybe_edges[
@@ -1295,6 +1302,7 @@ async def _merge_nodes_then_upsert(
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
+    metadata: dict[str, Any] | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     already_entity_types = []
@@ -1382,6 +1390,7 @@ async def _merge_nodes_then_upsert(
         description=description,
         source_id=source_id,
         file_path=file_path,
+        metadata=metadata,  # Add metadata here
         created_at=int(time.time()),
     )
     await knowledge_graph_inst.upsert_node(
@@ -1402,6 +1411,7 @@ async def _merge_edges_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     added_entities: list = None,  # New parameter to track entities added during edge processing
+    metadata: dict | None = None,
 ):
     if src_id == tgt_id:
         return None
@@ -1534,6 +1544,7 @@ async def _merge_edges_then_upsert(
                 "description": description,
                 "entity_type": "UNKNOWN",
                 "file_path": file_path,
+                "metadata": metadata,  # Add metadata here
                 "created_at": int(time.time()),
             }
             await knowledge_graph_inst.upsert_node(need_insert_id, node_data=node_data)
@@ -1546,6 +1557,7 @@ async def _merge_edges_then_upsert(
                     "description": description,
                     "source_id": source_id,
                     "file_path": file_path,
+                    "metadata": metadata,  # Add metadata here
                     "created_at": int(time.time()),
                 }
                 added_entities.append(entity_data)
@@ -1559,6 +1571,7 @@ async def _merge_edges_then_upsert(
             keywords=keywords,
             source_id=source_id,
             file_path=file_path,
+            metadata=metadata,  # Add metadata here
             created_at=int(time.time()),
         ),
     )
@@ -1570,6 +1583,7 @@ async def _merge_edges_then_upsert(
         keywords=keywords,
         source_id=source_id,
         file_path=file_path,
+        metadata=metadata,  # Add metadata here
         created_at=int(time.time()),
     )
 
@@ -1591,6 +1605,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
+    metadata: dict | None = None,  # Added metadata parameter
 ) -> None:
     """Two-phase merge: process all entities first, then all relationships
 
@@ -1614,6 +1629,7 @@ async def merge_nodes_and_edges(
         current_file_number: Current file number for logging
         total_files: Total files for logging
         file_path: File path for logging
+        metadata: Document metadata to be attached to entities and relationships
     """
 
     # Collect all nodes and edges from all chunks
@@ -1667,6 +1683,7 @@ async def merge_nodes_and_edges(
                         pipeline_status,
                         pipeline_status_lock,
                         llm_response_cache,
+                        metadata,
                     )
 
                     # Vector database operation (equally critical, must succeed)
@@ -1682,6 +1699,7 @@ async def merge_nodes_and_edges(
                                 "file_path": entity_data.get(
                                     "file_path", "unknown_source"
                                 ),
+                                "metadata": metadata,
                             }
                         }
 
@@ -1797,7 +1815,8 @@ async def merge_nodes_and_edges(
                         pipeline_status,
                         pipeline_status_lock,
                         llm_response_cache,
-                        added_entities,  # Pass list to collect added entities
+                        added_entities,
+                        metadata,
                     )
 
                     if edge_data is None:
@@ -1818,6 +1837,7 @@ async def merge_nodes_and_edges(
                                     "file_path", "unknown_source"
                                 ),
                                 "weight": edge_data.get("weight", 1.0),
+                                "metadata": metadata,
                             }
                         }
 
@@ -1967,13 +1987,14 @@ async def merge_nodes_and_edges(
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-            # Update storage
+            # Update storage with metadata
             if final_entity_names:
                 await full_entities_storage.upsert(
                     {
                         doc_id: {
                             "entity_names": list(final_entity_names),
                             "count": len(final_entity_names),
+                            "metadata": metadata,  # Add metadata here
                         }
                     }
                 )
@@ -1986,6 +2007,7 @@ async def merge_nodes_and_edges(
                                 list(pair) for pair in final_relation_pairs
                             ],
                             "count": len(final_relation_pairs),
+                            "metadata": metadata,  # Add metadata here
                         }
                     }
                 )
@@ -2010,6 +2032,7 @@ async def merge_nodes_and_edges(
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
+    metadata: dict[str, Any] | None = None,
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
@@ -2046,6 +2069,55 @@ async def extract_entities(
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
+
+    '''async def _process_extraction_result(
+        result: str,
+        chunk_key: str,
+        file_path: str = "unknown_source",
+        metadata: dict[str, Any] | None = None,
+    ):
+        """Process a single extraction result (either initial or gleaning)
+        Args:
+            result (str): The extraction result to process
+            chunk_key (str): The chunk key for source tracking
+            file_path (str): The file path for citation
+            metadata (dict, optional): Additional metadata to include in extracted entities/relationships.
+        Returns:
+            tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+        """
+        maybe_nodes = defaultdict(list)
+        maybe_edges = defaultdict(list)
+
+        records = split_string_by_multi_markers(
+            result,
+            [context_base["record_delimiter"], context_base["completion_delimiter"]],
+        )
+
+        for record in records:
+            record = re.search(r"\((.*)\)", record)
+            if record is None:
+                continue
+            record = record.group(1)
+            record_attributes = split_string_by_multi_markers(
+                record, [context_base["tuple_delimiter"]]
+            )
+
+            if_entities = await _handle_single_entity_extraction(
+                record_attributes, chunk_key, file_path, metadata
+            )
+            if if_entities is not None:
+                maybe_nodes[if_entities["entity_name"]].append(if_entities)
+                continue
+
+            if_relation = await _handle_single_relationship_extraction(
+                record_attributes, chunk_key, file_path, metadata
+            )
+            if if_relation is not None:
+                maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
+                    if_relation
+                )
+
+        return maybe_nodes, maybe_edges'''
 
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         """Process a single chunk
@@ -2090,14 +2162,15 @@ async def extract_entities(
             entity_extraction_user_prompt, final_result
         )
 
-        # Process initial extraction with file path
+        # Process initial extraction with file path and metadata
         maybe_nodes, maybe_edges = await _process_extraction_result(
             final_result,
             chunk_key,
             timestamp,
-            file_path,
+            file_path=file_path,
             tuple_delimiter=context_base["tuple_delimiter"],
             completion_delimiter=context_base["completion_delimiter"],
+            metadata=metadata,
         )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
@@ -2113,14 +2186,16 @@ async def extract_entities(
                 cache_keys_collector=cache_keys_collector,
             )
 
-            # Process gleaning result separately with file path
+
+            # Process gleaning result separately with file path and metadata
             glean_nodes, glean_edges = await _process_extraction_result(
                 glean_result,
                 chunk_key,
                 timestamp,
-                file_path,
+                file_path=file_path,
                 tuple_delimiter=context_base["tuple_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
+                metadata=metadata,
             )
 
             # Merge results - compare description lengths to choose better version
@@ -2236,6 +2311,39 @@ async def extract_entities(
     return chunk_results
 
 
+@overload
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: Literal[True] = False,
+) -> dict[str, Any]: ...
+
+
+@overload
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    metadata_filters: list | None = None,
+    return_raw_data: Literal[False] = False,
+) -> str | AsyncIterator[str]: ...
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2287,6 +2395,33 @@ async def kg_query(
         use_model_func = global_config["llm_model_func"]
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
+
+    # Handle cache
+    args_hash = compute_args_hash(
+        query_param.mode,
+        query,
+        query_param.response_type,
+        query_param.top_k,
+        query_param.chunk_top_k,
+        query_param.max_entity_tokens,
+        query_param.max_relation_tokens,
+        query_param.max_total_tokens,
+        query_param.hl_keywords or [],
+        query_param.ll_keywords or [],
+        query_param.user_prompt or "",
+        query_param.enable_rerank,
+        query_param.metadata_filter,
+    )
+    cached_result = await handle_cache(
+        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
+    )
+    if (
+        cached_result is not None
+        and not query_param.only_need_context
+        and not query_param.only_need_prompt
+    ):
+        cached_response, _ = cached_result  # Extract content, ignore timestamp
+        return QueryResult(content=cached_response)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -2614,7 +2749,7 @@ async def _get_vector_context(
         cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
         results = await chunks_vdb.query(
-            query, top_k=search_top_k, query_embedding=query_embedding
+            query, top_k=search_top_k, query_embedding=query_embedding, metadata_filter=query_param.metadata_filter
         )
         if not results:
             logger.info(
@@ -2631,6 +2766,7 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    "metadata": result.get("metadata")
                 }
                 valid_chunks.append(chunk_with_metadata)
 
@@ -3400,10 +3536,15 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+
+    results = await entities_vdb.query(query, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter)
 
     if not len(results):
         return [], []
+
+    # Extract all entity IDs from your results list
+    node_ids = [r["entity_name"] for r in results]
+
 
     # Extract all entity IDs from your results list
     node_ids = [r["entity_name"] for r in results]
@@ -3676,7 +3817,7 @@ async def _get_edge_data(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    results = await relationships_vdb.query(keywords, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter)
 
     if not len(results):
         return [], []

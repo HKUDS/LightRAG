@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
+from lightrag.types import MetadataFilter
 from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
@@ -20,6 +21,11 @@ class QueryRequest(BaseModel):
     query: str = Field(
         min_length=3,
         description="The query text",
+    )
+
+    metadata_filter: MetadataFilter | None = Field(
+        default=None,
+        description="Optional metadata filter for nodes and edges. Can be a MetadataFilter object or a dict that will be converted to MetadataFilter.",
     )
 
     mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
@@ -74,7 +80,7 @@ class QueryRequest(BaseModel):
     )
 
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
-        default=None,
+        default=[],
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
@@ -117,6 +123,16 @@ class QueryRequest(BaseModel):
                 raise ValueError("Each message 'role' must be a non-empty string.")
         return conversation_history
 
+    @field_validator("metadata_filter", mode="before")
+    @classmethod
+    def metadata_filter_convert(cls, v):
+        """Convert dict inputs to MetadataFilter objects."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return MetadataFilter.from_dict(v)
+        return v
+
     def to_query_params(self, is_stream: bool) -> "QueryParam":
         """Converts a QueryRequest instance into a QueryParam instance."""
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
@@ -125,6 +141,11 @@ class QueryRequest(BaseModel):
         # Ensure `mode` and `stream` are set explicitly
         param = QueryParam(**request_data)
         param.stream = is_stream
+
+        # Ensure metadata_filter remains as MetadataFilter object if it exists
+        if self.metadata_filter:
+            param.metadata_filter = self.metadata_filter
+
         return param
 
 

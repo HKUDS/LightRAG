@@ -11,7 +11,12 @@ import configparser
 import ssl
 import itertools
 
-from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+from lightrag.types import (
+    KnowledgeGraph,
+    KnowledgeGraphNode,
+    KnowledgeGraphEdge,
+    MetadataFilter,
+)
 
 from tenacity import (
     AsyncRetrying,
@@ -1108,6 +1113,20 @@ class PostgreSQLDB:
                 logger.error(
                     f"PostgreSQL, Failed to create vector index, type: {self.vector_index_type}, Got: {e}"
                 )
+        
+        # Create GIN indexes for JSONB metadata columns
+        try:
+            await self._create_gin_metadata_indexes()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to create GIN metadata indexes: {e}")
+        # Compatibility check - add metadata columns to LIGHTRAG_DOC_CHUNKS and LIGHTRAG_VDB_CHUNKS
+        try:
+            await self.add_metadata_to_tables()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to add metadata columns to existing tables: {e}"
+            )
+
         # After all tables are created, attempt to migrate timestamp fields
         try:
             await self._migrate_timestamp_columns()
@@ -1186,6 +1205,52 @@ class PostgreSQLDB:
             logger.error(
                 f"PostgreSQL, Failed to create full entities/relations tables: {e}"
             )
+
+    async def add_metadata_to_tables(self):
+        """Add metadata columns to LIGHTRAG_DOC_CHUNKS and LIGHTRAG_VDB_CHUNKS tables if they don't exist"""
+        tables_to_check = [
+            {
+                "name": "LIGHTRAG_DOC_CHUNKS",
+                "description": "Document chunks storage table",
+            },
+            {
+                "name": "LIGHTRAG_VDB_CHUNKS",
+                "description": "Vector database chunks storage table",
+            },
+        ]
+
+        for table_info in tables_to_check:
+            table_name = table_info["name"]
+            try:
+                # Check if metadata column exists
+                check_column_sql = """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = $1
+                AND column_name = 'metadata'
+                """
+
+                column_info = await self.query(
+                    check_column_sql, {"table_name": table_name.lower()}
+                )
+
+                if not column_info:
+                    logger.info(f"Adding metadata column to {table_name} table")
+                    add_column_sql = f"""
+                    ALTER TABLE {table_name}
+                    ADD COLUMN metadata JSONB NULL DEFAULT '{{}}'::jsonb
+                    """
+                    await self.execute(add_column_sql)
+                    logger.info(
+                        f"Successfully added metadata column to {table_name} table"
+                    )
+                else:
+                    logger.debug(
+                        f"metadata column already exists in {table_name} table"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to add metadata column to {table_name}: {e}")
 
     async def _migrate_create_full_entities_relations_tables(self):
         """Create LIGHTRAG_FULL_ENTITIES and LIGHTRAG_FULL_RELATIONS tables if they don't exist"""
@@ -1389,6 +1454,37 @@ class PostgreSQLDB:
                     )
             except Exception as e:
                 logger.error(f"Failed to create ivfflat index on {k}: {e}")
+
+    async def _create_gin_metadata_indexes(self):
+        """Create GIN indexes for JSONB metadata columns to speed up metadata filtering"""
+        metadata_tables = [
+            "LIGHTRAG_DOC_CHUNKS",
+            "LIGHTRAG_VDB_CHUNKS",
+            "LIGHTRAG_DOC_STATUS",
+        ]
+        
+        for table in metadata_tables:
+            index_name = f"idx_{table.lower()}_metadata_gin"
+            check_index_sql = f"""
+                SELECT 1 FROM pg_indexes
+                WHERE indexname = '{index_name}'
+                AND tablename = '{table.lower()}'
+            """
+            
+            try:
+                index_exists = await self.query(check_index_sql)
+                if not index_exists:
+                    create_index_sql = f"""
+                        CREATE INDEX CONCURRENTLY IF NOT EXISTS {index_name}
+                        ON {table} USING gin (metadata jsonb_path_ops)
+                    """
+                    logger.info(f"PostgreSQL, Creating GIN index {index_name} on table {table}")
+                    await self.execute(create_index_sql)
+                    logger.info(f"PostgreSQL, Successfully created GIN index {index_name} on table {table}")
+                else:
+                    logger.info(f"PostgreSQL, GIN index {index_name} already exists on table {table}")
+            except Exception as e:
+                logger.error(f"PostgreSQL, Failed to create GIN index on table {table}, Got: {e}")
 
     async def query(
         self,
@@ -1992,6 +2088,7 @@ class PGKVStorage(BaseKVStorage):
                     "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
                     "create_time": current_time,
                     "update_time": current_time,
+                    "metadata": json.dumps(v.get("metadata", {})),
                 }
                 await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
@@ -2159,6 +2256,7 @@ class PGVectorStorage(BaseVectorStorage):
                 "file_path": item["file_path"],
                 "create_time": current_time,
                 "update_time": current_time,
+                "metadata": json.dumps(item.get("metadata", {})),
             }
         except Exception as e:
             logger.error(
@@ -2253,9 +2351,59 @@ class PGVectorStorage(BaseVectorStorage):
 
             await self.db.execute(upsert_sql, data)
 
+    ############# Metadata building function #################
+    @staticmethod
+    def build_metadata_filter_clause(metadata_filter):
+        if not metadata_filter:
+            return ""
+            
+        def build_single_condition(key, value):
+            #Check and build "IN" conditions for the operand
+            if isinstance(value, list):
+                if not value:
+                    return "1=0"
+                
+                in_conditions = [
+                    f"metadata @> '{{\"{key}\": {json.dumps(v)}}}'" for v in value
+                ]
+                return f"({ ' OR '.join(in_conditions) })"
+            
+            else:
+                # Use for scalars and dictionaries
+                json_value = json.dumps(value)
+                return f"metadata @> '{{\"{ key}\" : {json_value}}}'"
+
+        try:
+            if isinstance(metadata_filter, dict):
+                conditions = [build_single_condition(k, v) for k, v in metadata_filter.items()]
+                return " AND " + " AND ".join(conditions) if conditions else ""
+            elif hasattr(metadata_filter, 'operands'):
+                sub_conditions = []
+                for operand in metadata_filter.operands:
+                    if isinstance(operand, dict):
+                        conds = [build_single_condition(k, v) for k, v in operand.items()]
+                        if conds:
+                            sub_conditions.append("(" + " AND ".join(conds) + ")")
+                
+                if sub_conditions:
+                    op = getattr(metadata_filter, 'operator', 'AND').upper()
+                    connector = " OR " if op == "OR" else " AND "
+                    prefix = " AND NOT (" if op == "NOT" else " AND ("
+                    return prefix + connector.join(sub_conditions) + ")"
+            return ""
+        except Exception:
+            # Simple fallback
+            if isinstance(metadata_filter, dict):
+                return f" AND metadata @> '{json.dumps(metadata_filter)}'"
+            return ""
+
     #################### query method ###############
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        metadata_filter: MetadataFilter | None = None,
     ) -> list[dict[str, Any]]:
         if query_embedding is not None:
             embedding = query_embedding
@@ -2266,8 +2414,11 @@ class PGVectorStorage(BaseVectorStorage):
             embedding = embeddings[0]
 
         embedding_string = ",".join(map(str, embedding))
-
-        sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
+        metadata_filter_clause = self.build_metadata_filter_clause(metadata_filter) if metadata_filter else ""
+        sql = SQL_TEMPLATES[self.namespace].format(
+            embedding_string=embedding_string,
+            metadata_filter_clause=metadata_filter_clause,
+        )
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
@@ -4758,6 +4909,7 @@ TABLES = {
                     content TEXT,
                     file_path TEXT NULL,
                     llm_cache_list JSONB NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NULL DEFAULT '{}'::jsonb,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
@@ -4773,6 +4925,7 @@ TABLES = {
                     content TEXT,
                     content_vector VECTOR({os.environ.get("EMBEDDING_DIM", 1024)}),
                     file_path TEXT NULL,
+                    metadata JSONB NULL DEFAULT '{{}}'::jsonb,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_VDB_CHUNKS_PK PRIMARY KEY (workspace, id)
@@ -4938,8 +5091,8 @@ SQL_TEMPLATES = {
                                      """,
     "upsert_text_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, file_path, llm_cache_list,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      create_time, update_time, metadata)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
@@ -4947,7 +5100,8 @@ SQL_TEMPLATES = {
                       content = EXCLUDED.content,
                       file_path=EXCLUDED.file_path,
                       llm_cache_list=EXCLUDED.llm_cache_list,
-                      update_time = EXCLUDED.update_time
+                      update_time = EXCLUDED.update_time,
+                      metadata = EXCLUDED.metadata
                      """,
     "upsert_full_entities": """INSERT INTO LIGHTRAG_FULL_ENTITIES (workspace, id, entity_names, count,
                       create_time, update_time)
@@ -4968,8 +5122,8 @@ SQL_TEMPLATES = {
     # SQL for VectorStorage
     "upsert_chunk": """INSERT INTO LIGHTRAG_VDB_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      create_time, update_time, metadata)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
@@ -4977,7 +5131,8 @@ SQL_TEMPLATES = {
                       content = EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
                       file_path=EXCLUDED.file_path,
-                      update_time = EXCLUDED.update_time
+                      update_time = EXCLUDED.update_time,
+                      metadata = EXCLUDED.metadata
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path, create_time, update_time)
@@ -5002,36 +5157,72 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = EXCLUDED.update_time
                      """,
-    "relationships": """
-                     SELECT r.source_id AS src_id,
-                            r.target_id AS tgt_id,
-                            EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                     FROM LIGHTRAG_VDB_RELATION r
-                     WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
-                     LIMIT $3;
-                     """,
-    "entities": """
-                SELECT e.entity_name,
-                       EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
-                FROM LIGHTRAG_VDB_ENTITY e
-                WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+"relationships": """
+                WITH filtered_chunks AS (
+                    SELECT 
+                        c.id
+                    FROM 
+                        LIGHTRAG_VDB_CHUNKS c
+                    WHERE 
+                        c.workspace = $1
+                        {metadata_filter_clause}
+                )
+                SELECT
+                    r.source_id AS src_id,
+                    r.target_id AS tgt_id,
+                    EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
+                FROM
+                    LIGHTRAG_VDB_RELATION r
+                JOIN
+                    filtered_chunks fc ON r.chunk_ids && ARRAY[fc.id] -- Find relationships linked to our valid chunks
+                WHERE
+                    r.workspace = $1
+                    AND r.content_vector <=> '[{embedding_string}]'::vector < $2
+                ORDER BY
+                    r.content_vector <=> '[{embedding_string}]'::vector -- Rank the resulting relationships
                 LIMIT $3;
-                """,
+            """,
+"entities": """
+                WITH filtered_chunks AS (
+                    SELECT 
+                        c.id
+                    FROM 
+                        LIGHTRAG_VDB_CHUNKS c
+                    WHERE 
+                        c.workspace = $1
+                        {metadata_filter_clause}
+                )
+                SELECT
+                    e.entity_name,
+                    EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
+                FROM
+                    LIGHTRAG_VDB_ENTITY e
+                JOIN
+                    filtered_chunks fc ON e.chunk_ids && ARRAY[fc.id]
+                WHERE
+                    e.workspace = $1
+                    AND e.content_vector <=> '[{embedding_string}]'::vector < $2
+                ORDER BY
+                    e.content_vector <=> '[{embedding_string}]'::vector
+                LIMIT $3;
+            """,
     "chunks": """
-              SELECT c.id,
-                     c.content,
-                     c.file_path,
-                     EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
-              FROM LIGHTRAG_VDB_CHUNKS c
-              WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
-              LIMIT $3;
-              """,
+                SELECT c.id,
+                    c.content,
+                    c.file_path,
+                    EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at,
+                    c.metadata,
+                    c.content_vector <=> '[{embedding_string}]'::vector AS distance
+
+                FROM LIGHTRAG_VDB_CHUNKS c
+                WHERE 
+                    c.workspace = $1
+                    {metadata_filter_clause}
+                    AND c.content_vector <=> '[{embedding_string}]'::vector < $2
+                ORDER BY 
+                    c.content_vector <=> '[{embedding_string}]'::vector
+                LIMIT $3;
+            """,
     # DROP tables
     "drop_specifiy_table_workspace": """
         DELETE FROM {table_name} WHERE workspace=$1

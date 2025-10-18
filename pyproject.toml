@@ -26,6 +26,7 @@ dependencies = [
     "future",
     "json_repair",
     "nano-vectordb",
+    "neo4j>=5.28.2",
     "networkx",
     "numpy",
     "pandas>=2.0.0,<2.3.0",
