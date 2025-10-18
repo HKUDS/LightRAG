@@ -1845,7 +1845,7 @@ class PGKVStorage(BaseKVStorage):
         """Get data by ids"""
         if not ids:
             return []
-        
+
         sql = SQL_TEMPLATES["get_by_ids_" + self.namespace]
         params = {"workspace": self.workspace, "ids": ids}
         results = await self.db.query(sql, list(params.values()), multirows=True)
@@ -1952,7 +1952,7 @@ class PGKVStorage(BaseKVStorage):
         """Filter out duplicated content"""
         if not keys:
             return set()
-        
+
         table_name = namespace_to_table_name(self.namespace)
         sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
         params = {"workspace": self.workspace, "ids": list(keys)}
@@ -2536,7 +2536,7 @@ class PGDocStatusStorage(DocStatusStorage):
         """Filter out duplicated content"""
         if not keys:
             return set()
-        
+
         table_name = namespace_to_table_name(self.namespace)
         sql = f"SELECT id FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
         params = {"workspace": self.workspace, "ids": list(keys)}
