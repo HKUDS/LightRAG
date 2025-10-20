@@ -1589,17 +1589,12 @@ async def _merge_nodes_then_upsert(
         dd_message = f"dd:{deduplicated_num}"
 
     if skip_summary_due_to_limit:
+        logger.info(f"Skipped `{entity_name}`: KEEP old chunks")
         description = (
             already_node.get("description", "(no description)")
             if already_node
             else "(no description)"
         )
-        status_message = f"Skip merge for `{entity_name}`: KEEP limit reached"
-        logger.debug(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
         existing_node_data = dict(already_node or {})
         if not existing_node_data:
             existing_node_data = {
@@ -1914,17 +1909,12 @@ async def _merge_edges_then_upsert(
         dd_message = f"dd:{deduplicated_num}"
 
     if skip_summary_due_to_limit:
+        logger.info(f"Skipped `{src_id}`~`{tgt_id}`: KEEP old chunks")
         description = (
             already_edge.get("description", "(no description)")
             if already_edge
             else "(no description)"
         )
-        status_message = f"Skip merge for `{src_id}`~`{tgt_id}`: KEEP limit reached"
-        logger.debug(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
         existing_edge_data = dict(already_edge or {})
         if not existing_edge_data:
             existing_edge_data = {
