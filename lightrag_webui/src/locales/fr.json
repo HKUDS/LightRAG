@@ -318,9 +318,9 @@
           "description": "Description",
           "entity_id": "Nom",
           "entity_type": "Type",
-          "source_id": "ID source",
+          "source_id": "C-ID",
           "Neighbour": "Voisin",
-          "file_path": "Source",
+          "file_path": "File",
           "keywords": "Keys",
           "weight": "Poids"
         }
