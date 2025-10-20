@@ -26,7 +26,6 @@ from lightrag.utils import (
     pick_by_weighted_polling,
     pick_by_vector_similarity,
     process_chunks_unified,
-    build_file_path,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
     fix_tuple_delimiter_corruption,
@@ -56,6 +55,8 @@ from lightrag.constants import (
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
@@ -1156,7 +1157,8 @@ async def _rebuild_single_entity(
     # Process cached entity data
     descriptions = []
     entity_types = []
-    file_paths = set()
+    file_paths_list = []
+    seen_paths = set()
 
     for entity_data in all_entity_data:
         if entity_data.get("description"):
@@ -1164,7 +1166,35 @@ async def _rebuild_single_entity(
         if entity_data.get("entity_type"):
             entity_types.append(entity_data["entity_type"])
         if entity_data.get("file_path"):
-            file_paths.add(entity_data["file_path"])
+            file_path = entity_data["file_path"]
+            if file_path and file_path not in seen_paths:
+                file_paths_list.append(file_path)
+                seen_paths.add(file_path)
+
+    # Apply MAX_FILE_PATHS limit
+    max_file_paths = global_config.get("max_file_paths")
+    file_path_placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+    limit_method = global_config.get("source_ids_limit_method")
+
+    original_count = len(file_paths_list)
+    if original_count > max_file_paths:
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            # FIFO: keep tail (newest), discard head
+            file_paths_list = file_paths_list[-max_file_paths:]
+        else:
+            # KEEP: keep head (earliest), discard tail
+            file_paths_list = file_paths_list[:max_file_paths]
+
+        file_paths_list.append(
+            f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+        )
+        logger.info(
+            f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+        )
+
+    file_paths = set(file_paths_list)
 
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
@@ -1284,7 +1314,8 @@ async def _rebuild_single_relationship(
     descriptions = []
     keywords = []
     weights = []
-    file_paths = set()
+    file_paths_list = []
+    seen_paths = set()
 
     for rel_data in all_relationship_data:
         if rel_data.get("description"):
@@ -1294,7 +1325,35 @@ async def _rebuild_single_relationship(
         if rel_data.get("weight"):
             weights.append(rel_data["weight"])
         if rel_data.get("file_path"):
-            file_paths.add(rel_data["file_path"])
+            file_path = rel_data["file_path"]
+            if file_path and file_path not in seen_paths:
+                file_paths_list.append(file_path)
+                seen_paths.add(file_path)
+
+    # Apply count limit
+    max_file_paths = global_config.get("max_file_paths")
+    file_path_placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+    limit_method = global_config.get("source_ids_limit_method")
+
+    original_count = len(file_paths_list)
+    if original_count > max_file_paths:
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            # FIFO: keep tail (newest), discard head
+            file_paths_list = file_paths_list[-max_file_paths:]
+        else:
+            # KEEP: keep head (earliest), discard tail
+            file_paths_list = file_paths_list[:max_file_paths]
+
+        file_paths_list.append(
+            f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+        )
+        logger.info(
+            f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+        )
+
+    file_paths = set(file_paths_list)
 
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
@@ -1467,23 +1526,22 @@ async def _merge_nodes_then_upsert(
             }
         )
 
-    limit_method = (
-        global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
-    )
+    limit_method = global_config.get("source_ids_limit_method")
+    max_source_limit = global_config.get("max_source_ids_per_entity")
     source_ids = apply_source_ids_limit(
         full_source_ids,
-        global_config["max_source_ids_per_entity"],
+        max_source_limit,
         limit_method,
         identifier=f"`{entity_name}`",
     )
 
-    # Only apply filtering in IGNORE_NEW mode
+    # Only apply filtering in KEEP(ignore new) mode
     if limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP:
         allowed_source_ids = set(source_ids)
         filtered_nodes = []
         for dp in nodes_data:
             source_id = dp.get("source_id")
-            # Skip descriptions sourced from chunks dropped by the IGNORE_NEW cap
+            # Skip descriptions sourced from chunks dropped by the limitation cap
             if (
                 source_id
                 and source_id not in allowed_source_ids
@@ -1496,7 +1554,6 @@ async def _merge_nodes_then_upsert(
         # In FIFO mode, keep all node descriptions - truncation happens at source_ids level only
         nodes_data = list(nodes_data)
 
-    max_source_limit = global_config["max_source_ids_per_entity"]
     skip_summary_due_to_limit = (
         limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP
         and len(existing_full_source_ids) >= max_source_limit
@@ -1566,7 +1623,7 @@ async def _merge_nodes_then_upsert(
             truncation_info = f"{limit_method}:{len(source_ids)}/{len(full_source_ids)}"
 
         if dd_message or truncation_info:
-            status_message += f"({','.join([truncation_info, dd_message])})"
+            status_message += f" ({', '.join([truncation_info, dd_message])})"
 
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
@@ -1583,7 +1640,65 @@ async def _merge_nodes_then_upsert(
 
     source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-    file_path = build_file_path(already_file_paths, nodes_data, entity_name)
+    # Build file_path with count limit
+    if skip_summary_due_to_limit:
+        # Skip limit, keep original file_path
+        file_path = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+    else:
+        # Collect and apply limit
+        file_paths_list = []
+        seen_paths = set()
+
+        # Get placeholder to filter it out
+        file_path_placeholder = global_config.get(
+            "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+        )
+
+        # Collect from already_file_paths, excluding placeholder
+        for fp in already_file_paths:
+            # Skip placeholders (format: "...{placeholder}(showing X of Y)...")
+            if (
+                fp
+                and not fp.startswith(f"...{file_path_placeholder}")
+                and fp not in seen_paths
+            ):
+                file_paths_list.append(fp)
+                seen_paths.add(fp)
+
+        # Collect from new data
+        for dp in nodes_data:
+            file_path_item = dp.get("file_path")
+            if file_path_item and file_path_item not in seen_paths:
+                file_paths_list.append(file_path_item)
+                seen_paths.add(file_path_item)
+
+        # Apply count limit
+        max_file_paths = global_config.get("max_file_paths")
+
+        if len(file_paths_list) > max_file_paths:
+            limit_method = global_config.get(
+                "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
+            )
+            file_path_placeholder = global_config.get(
+                "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+            )
+            original_count = len(file_paths_list)
+
+            if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+                # FIFO: keep tail (newest), discard head
+                file_paths_list = file_paths_list[-max_file_paths:]
+            else:
+                # KEEP: keep head (earliest), discard tail
+                file_paths_list = file_paths_list[:max_file_paths]
+
+            file_paths_list.append(
+                f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+            )
+            logger.info(
+                f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+            )
+
+        file_path = GRAPH_FIELD_SEP.join(file_paths_list)
 
     node_data = dict(
         entity_id=entity_name,
@@ -1686,10 +1801,12 @@ async def _merge_edges_then_upsert(
             }
         )
 
+    limit_method = global_config.get("source_ids_limit_method")
+    max_source_limit = global_config.get("max_source_ids_per_relation")
     source_ids = apply_source_ids_limit(
         full_source_ids,
-        global_config["max_source_ids_per_relation"],
-        global_config.get("source_ids_limit_method"),
+        max_source_limit,
+        limit_method,
         identifier=f"`{src_id}`~`{tgt_id}`",
     )
     limit_method = (
@@ -1715,7 +1832,6 @@ async def _merge_edges_then_upsert(
         # In FIFO mode, keep all edge descriptions - truncation happens at source_ids level only
         edges_data = list(edges_data)
 
-    max_source_limit = global_config["max_source_ids_per_relation"]
     skip_summary_due_to_limit = (
         limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP
         and len(existing_full_source_ids) >= max_source_limit
@@ -1791,7 +1907,7 @@ async def _merge_edges_then_upsert(
             truncation_info = f"{limit_method}:{len(source_ids)}/{len(full_source_ids)}"
 
         if dd_message or truncation_info:
-            status_message += f"({','.join([truncation_info, dd_message])})"
+            status_message += f" ({', '.join([truncation_info, dd_message])})"
 
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
@@ -1822,7 +1938,66 @@ async def _merge_edges_then_upsert(
     keywords = ",".join(sorted(all_keywords))
 
     source_id = GRAPH_FIELD_SEP.join(source_ids)
-    file_path = build_file_path(already_file_paths, edges_data, f"{src_id}-{tgt_id}")
+
+    # Build file_path with count limit
+    if skip_summary_due_to_limit:
+        # Skip limit, keep original file_path
+        file_path = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+    else:
+        # Collect and apply limit
+        file_paths_list = []
+        seen_paths = set()
+
+        # Get placeholder to filter it out
+        file_path_placeholder = global_config.get(
+            "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+        )
+
+        # Collect from already_file_paths, excluding placeholder
+        for fp in already_file_paths:
+            # Skip placeholders (format: "...{placeholder}(showing X of Y)...")
+            if (
+                fp
+                and not fp.startswith(f"...{file_path_placeholder}")
+                and fp not in seen_paths
+            ):
+                file_paths_list.append(fp)
+                seen_paths.add(fp)
+
+        # Collect from new data
+        for dp in edges_data:
+            file_path_item = dp.get("file_path")
+            if file_path_item and file_path_item not in seen_paths:
+                file_paths_list.append(file_path_item)
+                seen_paths.add(file_path_item)
+
+        # Apply count limit
+        max_file_paths = global_config.get("max_file_paths")
+
+        if len(file_paths_list) > max_file_paths:
+            limit_method = global_config.get(
+                "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
+            )
+            file_path_placeholder = global_config.get(
+                "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+            )
+            original_count = len(file_paths_list)
+
+            if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+                # FIFO: keep tail (newest), discard head
+                file_paths_list = file_paths_list[-max_file_paths:]
+            else:
+                # KEEP: keep head (earliest), discard tail
+                file_paths_list = file_paths_list[:max_file_paths]
+
+            file_paths_list.append(
+                f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+            )
+            logger.info(
+                f"Limited `{src_id}`~`{tgt_id}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+            )
+
+        file_path = GRAPH_FIELD_SEP.join(file_paths_list)
 
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):

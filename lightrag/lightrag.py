@@ -47,6 +47,8 @@ from lightrag.constants import (
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
 
@@ -392,6 +394,14 @@ class LightRAG:
         )
     )
     """Strategy for enforcing source_id limits: IGNORE_NEW or FIFO."""
+
+    max_file_paths: int = field(
+        default=get_env_value("MAX_FILE_PATHS", DEFAULT_MAX_FILE_PATHS, int)
+    )
+    """Maximum number of file paths to store in entity/relation file_path field."""
+
+    file_path_more_placeholder: str = field(default=DEFAULT_FILE_PATH_MORE_PLACEHOLDER)
+    """Placeholder text when file paths exceed max_file_paths limit."""
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {

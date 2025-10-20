@@ -35,7 +35,6 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_MAX_FILE_PATH_LENGTH,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -2582,65 +2581,6 @@ def parse_relation_chunk_key(key: str) -> tuple[str, str]:
     if len(parts) != 2:
         raise ValueError(f"Invalid relation chunk key: {key}")
     return parts[0], parts[1]
-
-
-def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with UTF-8 byte length limit and deduplication
-
-    Args:
-        already_file_paths: List of existing file paths
-        data_list: List of data items containing file_path
-        target: Target name for logging warnings
-
-    Returns:
-        str: Combined file paths separated by GRAPH_FIELD_SEP
-    """
-    # set: deduplication
-    file_paths_set = {fp for fp in already_file_paths if fp}
-
-    # string: filter empty value and keep file order in already_file_paths
-    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
-
-    # Check if initial file_paths already exceeds byte length limit
-    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
-        logger.warning(
-            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"current size: {len(file_paths.encode('utf-8'))} bytes"
-        )
-
-    # ignored file_paths
-    file_paths_ignore = ""
-    # add file_paths
-    for dp in data_list:
-        cur_file_path = dp.get("file_path")
-        # empty
-        if not cur_file_path:
-            continue
-
-        # skip duplicate item
-        if cur_file_path in file_paths_set:
-            continue
-        # add
-        file_paths_set.add(cur_file_path)
-
-        # check the UTF-8 byte length
-        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-        if (
-            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
-            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
-        ):
-            # append
-            file_paths += new_addition
-        else:
-            # ignore
-            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
-
-    if file_paths_ignore:
-        logger.warning(
-            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"ignoring file path: {file_paths_ignore}"
-        )
-    return file_paths
 
 
 def generate_track_id(prefix: str = "upload") -> str:
