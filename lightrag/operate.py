@@ -1188,7 +1188,7 @@ async def _rebuild_single_entity(
             file_paths_list = file_paths_list[:max_file_paths]
 
         file_paths_list.append(
-            f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+            f"...{file_path_placeholder}({limit_method} {max_file_paths}/{original_count})..."
         )
         logger.info(
             f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
@@ -1347,7 +1347,7 @@ async def _rebuild_single_relationship(
             file_paths_list = file_paths_list[:max_file_paths]
 
         file_paths_list.append(
-            f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+            f"...{file_path_placeholder}({limit_method} {max_file_paths}/{original_count})..."
         )
         logger.info(
             f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
@@ -1623,7 +1623,9 @@ async def _merge_nodes_then_upsert(
             truncation_info = f"{limit_method}:{len(source_ids)}/{len(full_source_ids)}"
 
         if dd_message or truncation_info:
-            status_message += f" ({', '.join([truncation_info, dd_message])})"
+            status_message += (
+                f" ({', '.join(filter(None, [truncation_info, dd_message]))})"
+            )
 
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
@@ -1692,7 +1694,7 @@ async def _merge_nodes_then_upsert(
                 file_paths_list = file_paths_list[:max_file_paths]
 
             file_paths_list.append(
-                f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+                f"...{file_path_placeholder}({limit_method} {max_file_paths}/{original_count})..."
             )
             logger.info(
                 f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
@@ -1907,7 +1909,9 @@ async def _merge_edges_then_upsert(
             truncation_info = f"{limit_method}:{len(source_ids)}/{len(full_source_ids)}"
 
         if dd_message or truncation_info:
-            status_message += f" ({', '.join([truncation_info, dd_message])})"
+            status_message += (
+                f" ({', '.join(filter(None, [truncation_info, dd_message]))})"
+            )
 
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
@@ -1991,7 +1995,7 @@ async def _merge_edges_then_upsert(
                 file_paths_list = file_paths_list[:max_file_paths]
 
             file_paths_list.append(
-                f"...{file_path_placeholder}(showing {max_file_paths} of {original_count})..."
+                f"...{file_path_placeholder}({limit_method} {max_file_paths}/{original_count})..."
             )
             logger.info(
                 f"Limited `{src_id}`~`{tgt_id}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
