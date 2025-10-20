@@ -1656,113 +1656,6 @@ class PGKVStorage(BaseKVStorage):
                 self.db = None
 
     ################ QUERY METHODS ################
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for get_all: {self.namespace}"
-            )
-            return {}
-
-        sql = f"SELECT * FROM {table_name} WHERE workspace=$1"
-        params = {"workspace": self.workspace}
-
-        try:
-            results = await self.db.query(sql, list(params.values()), multirows=True)
-
-            # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
-            if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-                processed_results = {}
-                for row in results:
-                    create_time = row.get("create_time", 0)
-                    update_time = row.get("update_time", 0)
-                    # Map field names and add cache_type for compatibility
-                    processed_row = {
-                        **row,
-                        "return": row.get("return_value", ""),
-                        "cache_type": row.get("original_prompt", "unknow"),
-                        "original_prompt": row.get("original_prompt", ""),
-                        "chunk_id": row.get("chunk_id"),
-                        "mode": row.get("mode", "default"),
-                        "create_time": create_time,
-                        "update_time": create_time if update_time == 0 else update_time,
-                    }
-                    processed_results[row["id"]] = processed_row
-                return processed_results
-
-            # For text_chunks namespace, parse llm_cache_list JSON string back to list
-            if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-                processed_results = {}
-                for row in results:
-                    llm_cache_list = row.get("llm_cache_list", [])
-                    if isinstance(llm_cache_list, str):
-                        try:
-                            llm_cache_list = json.loads(llm_cache_list)
-                        except json.JSONDecodeError:
-                            llm_cache_list = []
-                    row["llm_cache_list"] = llm_cache_list
-                    create_time = row.get("create_time", 0)
-                    update_time = row.get("update_time", 0)
-                    row["create_time"] = create_time
-                    row["update_time"] = (
-                        create_time if update_time == 0 else update_time
-                    )
-                    processed_results[row["id"]] = row
-                return processed_results
-
-            # For FULL_ENTITIES namespace, parse entity_names JSON string back to list
-            if is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
-                processed_results = {}
-                for row in results:
-                    entity_names = row.get("entity_names", [])
-                    if isinstance(entity_names, str):
-                        try:
-                            entity_names = json.loads(entity_names)
-                        except json.JSONDecodeError:
-                            entity_names = []
-                    row["entity_names"] = entity_names
-                    create_time = row.get("create_time", 0)
-                    update_time = row.get("update_time", 0)
-                    row["create_time"] = create_time
-                    row["update_time"] = (
-                        create_time if update_time == 0 else update_time
-                    )
-                    processed_results[row["id"]] = row
-                return processed_results
-
-            # For FULL_RELATIONS namespace, parse relation_pairs JSON string back to list
-            if is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
-                processed_results = {}
-                for row in results:
-                    relation_pairs = row.get("relation_pairs", [])
-                    if isinstance(relation_pairs, str):
-                        try:
-                            relation_pairs = json.loads(relation_pairs)
-                        except json.JSONDecodeError:
-                            relation_pairs = []
-                    row["relation_pairs"] = relation_pairs
-                    create_time = row.get("create_time", 0)
-                    update_time = row.get("update_time", 0)
-                    row["create_time"] = create_time
-                    row["update_time"] = (
-                        create_time if update_time == 0 else update_time
-                    )
-                    processed_results[row["id"]] = row
-                return processed_results
-
-            # For other namespaces, return as-is
-            return {row["id"]: row for row in results}
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving all data from {self.namespace}: {e}"
-            )
-            return {}
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
@@ -1833,6 +1726,38 @@ class PGKVStorage(BaseKVStorage):
                 except json.JSONDecodeError:
                     relation_pairs = []
             response["relation_pairs"] = relation_pairs
+            create_time = response.get("create_time", 0)
+            update_time = response.get("update_time", 0)
+            response["create_time"] = create_time
+            response["update_time"] = create_time if update_time == 0 else update_time
+
+        # Special handling for ENTITY_CHUNKS namespace
+        if response and is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
+            # Parse chunk_ids JSON string back to list
+            chunk_ids = response.get("chunk_ids", [])
+            if isinstance(chunk_ids, str):
+                try:
+                    chunk_ids = json.loads(chunk_ids)
+                except json.JSONDecodeError:
+                    chunk_ids = []
+            response["chunk_ids"] = chunk_ids
+            create_time = response.get("create_time", 0)
+            update_time = response.get("update_time", 0)
+            response["create_time"] = create_time
+            response["update_time"] = create_time if update_time == 0 else update_time
+
+        # Special handling for RELATION_CHUNKS namespace
+        if response and is_namespace(
+            self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS
+        ):
+            # Parse chunk_ids JSON string back to list
+            chunk_ids = response.get("chunk_ids", [])
+            if isinstance(chunk_ids, str):
+                try:
+                    chunk_ids = json.loads(chunk_ids)
+                except json.JSONDecodeError:
+                    chunk_ids = []
+            response["chunk_ids"] = chunk_ids
             create_time = response.get("create_time", 0)
             update_time = response.get("update_time", 0)
             response["create_time"] = create_time
@@ -1946,6 +1871,38 @@ class PGKVStorage(BaseKVStorage):
                 result["create_time"] = create_time
                 result["update_time"] = create_time if update_time == 0 else update_time
 
+        # Special handling for ENTITY_CHUNKS namespace
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
+            for result in results:
+                # Parse chunk_ids JSON string back to list
+                chunk_ids = result.get("chunk_ids", [])
+                if isinstance(chunk_ids, str):
+                    try:
+                        chunk_ids = json.loads(chunk_ids)
+                    except json.JSONDecodeError:
+                        chunk_ids = []
+                result["chunk_ids"] = chunk_ids
+                create_time = result.get("create_time", 0)
+                update_time = result.get("update_time", 0)
+                result["create_time"] = create_time
+                result["update_time"] = create_time if update_time == 0 else update_time
+
+        # Special handling for RELATION_CHUNKS namespace
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
+            for result in results:
+                # Parse chunk_ids JSON string back to list
+                chunk_ids = result.get("chunk_ids", [])
+                if isinstance(chunk_ids, str):
+                    try:
+                        chunk_ids = json.loads(chunk_ids)
+                    except json.JSONDecodeError:
+                        chunk_ids = []
+                result["chunk_ids"] = chunk_ids
+                create_time = result.get("create_time", 0)
+                update_time = result.get("update_time", 0)
+                result["create_time"] = create_time
+                result["update_time"] = create_time if update_time == 0 else update_time
+
         return _order_results(results)
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
@@ -2050,10 +2007,60 @@ class PGKVStorage(BaseKVStorage):
                     "update_time": current_time,
                 }
                 await self.db.execute(upsert_sql, _data)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
+            # Get current UTC time and convert to naive datetime for database storage
+            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            for k, v in data.items():
+                upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
+                _data = {
+                    "workspace": self.workspace,
+                    "id": k,
+                    "chunk_ids": json.dumps(v["chunk_ids"]),
+                    "count": v["count"],
+                    "create_time": current_time,
+                    "update_time": current_time,
+                }
+                await self.db.execute(upsert_sql, _data)
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
+            # Get current UTC time and convert to naive datetime for database storage
+            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+            for k, v in data.items():
+                upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
+                _data = {
+                    "workspace": self.workspace,
+                    "id": k,
+                    "chunk_ids": json.dumps(v["chunk_ids"]),
+                    "count": v["count"],
+                    "create_time": current_time,
+                    "update_time": current_time,
+                }
+                await self.db.execute(upsert_sql, _data)
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(
+                f"[{self.workspace}] Unknown namespace for is_empty check: {self.namespace}"
+            )
+            return True
+
+        sql = f"SELECT EXISTS(SELECT 1 FROM {table_name} WHERE workspace=$1 LIMIT 1) as has_data"
+
+        try:
+            result = await self.db.query(sql, [self.workspace])
+            return not result.get("has_data", False) if result else True
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -2969,6 +2976,28 @@ class PGDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(
+                f"[{self.workspace}] Unknown namespace for is_empty check: {self.namespace}"
+            )
+            return True
+
+        sql = f"SELECT EXISTS(SELECT 1 FROM {table_name} WHERE workspace=$1 LIMIT 1) as has_data"
+
+        try:
+            result = await self.db.query(sql, [self.workspace])
+            return not result.get("has_data", False) if result else True
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -4721,6 +4750,8 @@ NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_TEXT_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
     NameSpace.KV_STORE_FULL_ENTITIES: "LIGHTRAG_FULL_ENTITIES",
     NameSpace.KV_STORE_FULL_RELATIONS: "LIGHTRAG_FULL_RELATIONS",
+    NameSpace.KV_STORE_ENTITY_CHUNKS: "LIGHTRAG_ENTITY_CHUNKS",
+    NameSpace.KV_STORE_RELATION_CHUNKS: "LIGHTRAG_RELATION_CHUNKS",
     NameSpace.KV_STORE_LLM_RESPONSE_CACHE: "LIGHTRAG_LLM_CACHE",
     NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_VDB_CHUNKS",
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
@@ -4861,6 +4892,28 @@ TABLES = {
                     CONSTRAINT LIGHTRAG_FULL_RELATIONS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
+    "LIGHTRAG_ENTITY_CHUNKS": {
+        "ddl": """CREATE TABLE LIGHTRAG_ENTITY_CHUNKS (
+                    id VARCHAR(512),
+                    workspace VARCHAR(255),
+                    chunk_ids JSONB,
+                    count INTEGER,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_ENTITY_CHUNKS_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_RELATION_CHUNKS": {
+        "ddl": """CREATE TABLE LIGHTRAG_RELATION_CHUNKS (
+                    id VARCHAR(512),
+                    workspace VARCHAR(255),
+                    chunk_ids JSONB,
+                    count INTEGER,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_RELATION_CHUNKS_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
 }
 
 
@@ -4918,6 +4971,26 @@ SQL_TEMPLATES = {
                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_FULL_RELATIONS WHERE workspace=$1 AND id = ANY($2)
                                 """,
+    "get_by_id_entity_chunks": """SELECT id, chunk_ids, count,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_ENTITY_CHUNKS WHERE workspace=$1 AND id=$2
+                               """,
+    "get_by_id_relation_chunks": """SELECT id, chunk_ids, count,
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id=$2
+                               """,
+    "get_by_ids_entity_chunks": """SELECT id, chunk_ids, count,
+                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                 FROM LIGHTRAG_ENTITY_CHUNKS WHERE workspace=$1 AND id = ANY($2)
+                                """,
+    "get_by_ids_relation_chunks": """SELECT id, chunk_ids, count,
+                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
+                                 FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
+                                """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace)
                         VALUES ($1, $2, $3, $4)
@@ -4962,6 +5035,22 @@ SQL_TEMPLATES = {
                       VALUES ($1, $2, $3, $4, $5, $6)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET relation_pairs=EXCLUDED.relation_pairs,
+                      count=EXCLUDED.count,
+                      update_time = EXCLUDED.update_time
+                     """,
+    "upsert_entity_chunks": """INSERT INTO LIGHTRAG_ENTITY_CHUNKS (workspace, id, chunk_ids, count,
+                      create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET chunk_ids=EXCLUDED.chunk_ids,
+                      count=EXCLUDED.count,
+                      update_time = EXCLUDED.update_time
+                     """,
+    "upsert_relation_chunks": """INSERT INTO LIGHTRAG_RELATION_CHUNKS (workspace, id, chunk_ids, count,
+                      create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET chunk_ids=EXCLUDED.chunk_ids,
                       count=EXCLUDED.count,
                       update_time = EXCLUDED.update_time
                      """,
