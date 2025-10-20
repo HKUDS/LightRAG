@@ -8,6 +8,7 @@ import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
+    GeminiLLMOptions,
     OllamaEmbeddingOptions,
     OllamaLLMOptions,
     OpenAILLMOptions,
@@ -63,6 +64,9 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "gemini": os.getenv(
+            "LLM_BINDING_HOST", "https://generativelanguage.googleapis.com"
+        ),
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
@@ -226,6 +230,7 @@ def parse_args() -> argparse.Namespace:
             "openai-ollama",
             "azure_openai",
             "aws_bedrock",
+            "gemini",
         ],
         help="LLM binding type (default: from env or ollama)",
     )
@@ -280,6 +285,16 @@ def parse_args() -> argparse.Namespace:
             pass
     elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
         OpenAILLMOptions.add_args(parser)
+
+    if "--llm-binding" in sys.argv:
+        try:
+            idx = sys.argv.index("--llm-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "gemini":
+                GeminiLLMOptions.add_args(parser)
+        except IndexError:
+            pass
+    elif os.environ.get("LLM_BINDING") == "gemini":
+        GeminiLLMOptions.add_args(parser)
 
     args = parser.parse_args()
 
