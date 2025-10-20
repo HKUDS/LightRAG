@@ -13,7 +13,16 @@ DEFAULT_MAX_GRAPH_NODES = 1000
 # Default values for extraction settings
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
-DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
+
+DEFAULT_MAX_SOURCE_IDS_PER_ENTITY = 3
+DEFAULT_MAX_SOURCE_IDS_PER_RELATION = 3
+SOURCE_IDS_LIMIT_METHOD_KEEP = "KEEP"
+SOURCE_IDS_LIMIT_METHOD_FIFO = "FIFO"
+DEFAULT_SOURCE_IDS_LIMIT_METHOD = SOURCE_IDS_LIMIT_METHOD_KEEP
+VALID_SOURCE_IDS_LIMIT_METHODS = {
+    SOURCE_IDS_LIMIT_METHOD_KEEP,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
+}
 
 # Number of description fragments to trigger LLM summary
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
@@ -38,7 +47,7 @@ DEFAULT_ENTITY_TYPES = [
     "NaturalObject",
 ]
 
-# Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
+# Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
 
 # Query and retrieval configuration defaults
@@ -58,27 +67,8 @@ DEFAULT_HISTORY_TURNS = 0
 DEFAULT_MIN_RERANK_SCORE = 0.0
 DEFAULT_RERANK_BINDING = "null"
 
-# Default source ids limit in meta data for entity and relation
-DEFAULT_MAX_SOURCE_IDS_PER_ENTITY = 300
-DEFAULT_MAX_SOURCE_IDS_PER_RELATION = 300
-### control chunk_ids limitation method: FIFO, FIFO
-###    FIFO: First in first out
-###    KEEP: Keep oldest (less merge action and faster)
-SOURCE_IDS_LIMIT_METHOD_KEEP = "KEEP"
-SOURCE_IDS_LIMIT_METHOD_FIFO = "FIFO"
-DEFAULT_SOURCE_IDS_LIMIT_METHOD = SOURCE_IDS_LIMIT_METHOD_FIFO
-VALID_SOURCE_IDS_LIMIT_METHODS = {
-    SOURCE_IDS_LIMIT_METHOD_KEEP,
-    SOURCE_IDS_LIMIT_METHOD_FIFO,
-}
-# Maximum number of file paths stored in entity/relation file_path field (For displayed only, does not affect query performance)
-DEFAULT_MAX_FILE_PATHS = 100
-
-# Field length of file_path in Milvus Schema for entity and relation (Should not be changed)
-# file_path must store all file paths up to the DEFAULT_MAX_FILE_PATHS limit within the metadata.
+# File path configuration for vector and graph database(Should not be changed, used in Milvus Schema)
 DEFAULT_MAX_FILE_PATH_LENGTH = 32768
-# Placeholder for more file paths in meta data for entity and relation (Should not be changed)
-DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
 
 # Default temperature for LLM
 DEFAULT_TEMPERATURE = 1.0

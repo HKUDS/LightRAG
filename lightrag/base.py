@@ -378,6 +378,14 @@ class BaseKVStorage(StorageNameSpace, ABC):
             None
         """
 
+    @abstractmethod
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
+        """
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):

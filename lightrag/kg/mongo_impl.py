@@ -174,22 +174,6 @@ class MongoKVStorage(BaseKVStorage):
         existing_ids = {str(x["_id"]) async for x in cursor}
         return keys - existing_ids
 
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        cursor = self._data.find({})
-        result = {}
-        async for doc in cursor:
-            doc_id = doc.pop("_id")
-            # Ensure time fields are present for all documents
-            doc.setdefault("create_time", 0)
-            doc.setdefault("update_time", 0)
-            result[doc_id] = doc
-        return result
-
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
         if not data:
@@ -234,6 +218,20 @@ class MongoKVStorage(BaseKVStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        try:
+            # Use count_documents with limit 1 for efficiency
+            count = await self._data.count_documents({}, limit=1)
+            return count == 0
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     async def delete(self, ids: list[str]) -> None:
         """Delete documents with specified IDs
@@ -462,6 +460,20 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        try:
+            # Use count_documents with limit 1 for efficiency
+            count = await self._data.count_documents({}, limit=1)
+            return count == 0
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.

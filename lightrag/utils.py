@@ -1,8 +1,6 @@
 from __future__ import annotations
 import weakref
 
-import sys
-
 import asyncio
 import html
 import csv
@@ -37,39 +35,11 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MAX_FILE_PATH_LENGTH,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
-
-# Precompile regex pattern for JSON sanitization (module-level, compiled once)
-_SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
-
-
-class SafeStreamHandler(logging.StreamHandler):
-    """StreamHandler that gracefully handles closed streams during shutdown.
-
-    This handler prevents "ValueError: I/O operation on closed file" errors
-    that can occur when pytest or other test frameworks close stdout/stderr
-    before Python's logging cleanup runs.
-    """
-
-    def flush(self):
-        """Flush the stream, ignoring errors if the stream is closed."""
-        try:
-            super().flush()
-        except (ValueError, OSError):
-            # Stream is closed or otherwise unavailable, silently ignore
-            pass
-
-    def close(self):
-        """Close the handler, ignoring errors if the stream is already closed."""
-        try:
-            super().close()
-        except (ValueError, OSError):
-            # Stream is closed or otherwise unavailable, silently ignore
-            pass
-
 
 # Initialize logger with basic configuration
 logger = logging.getLogger("lightrag")
@@ -78,7 +48,7 @@ logger.setLevel(logging.INFO)
 
 # Add console handler if no handlers exist
 if not logger.handlers:
-    console_handler = SafeStreamHandler()
+    console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     formatter = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(formatter)
@@ -86,33 +56,6 @@ if not logger.handlers:
 
 # Set httpx logging level to WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-def _patch_ascii_colors_console_handler() -> None:
-    """Prevent ascii_colors from printing flush errors during interpreter exit."""
-
-    try:
-        from ascii_colors import ConsoleHandler
-    except ImportError:
-        return
-
-    if getattr(ConsoleHandler, "_lightrag_patched", False):
-        return
-
-    original_handle_error = ConsoleHandler.handle_error
-
-    def _safe_handle_error(self, message: str) -> None:  # type: ignore[override]
-        exc_type, _, _ = sys.exc_info()
-        if exc_type in (ValueError, OSError) and "close" in message.lower():
-            return
-        original_handle_error(self, message)
-
-    ConsoleHandler.handle_error = _safe_handle_error  # type: ignore[assignment]
-    ConsoleHandler._lightrag_patched = True  # type: ignore[attr-defined]
-
-
-_patch_ascii_colors_console_handler()
-
 
 # Global import for pypinyin with startup-time logging
 try:
@@ -341,8 +284,8 @@ def setup_logger(
     logger_instance.handlers = []  # Clear existing handlers
     logger_instance.propagate = False
 
-    # Add console handler with safe stream handling
-    console_handler = SafeStreamHandler()
+    # Add console handler
+    console_handler = logging.StreamHandler()
     console_handler.setFormatter(simple_formatter)
     console_handler.setLevel(level)
     logger_instance.addHandler(console_handler)
@@ -408,69 +351,12 @@ class TaskState:
 
 @dataclass
 class EmbeddingFunc:
-    """Embedding function wrapper with dimension validation
-    This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
-    This class should not be wrapped multiple times.
-
-    Args:
-        embedding_dim: Expected dimension of the embeddings
-        func: The actual embedding function to wrap
-        max_token_size: Optional token limit for the embedding model
-        send_dimensions: Whether to inject embedding_dim as a keyword argument
-    """
-
     embedding_dim: int
     func: callable
-    max_token_size: int | None = None  # Token limit for the embedding model
-    send_dimensions: bool = (
-        False  # Control whether to send embedding_dim to the function
-    )
+    max_token_size: int | None = None  # deprecated keep it for compatible only
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
-        # Only inject embedding_dim when send_dimensions is True
-        if self.send_dimensions:
-            # Check if user provided embedding_dim parameter
-            if "embedding_dim" in kwargs:
-                user_provided_dim = kwargs["embedding_dim"]
-                # If user's value differs from class attribute, output warning
-                if (
-                    user_provided_dim is not None
-                    and user_provided_dim != self.embedding_dim
-                ):
-                    logger.warning(
-                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
-                        f"using declared embedding_dim={self.embedding_dim} from decorator"
-                    )
-
-            # Inject embedding_dim from decorator
-            kwargs["embedding_dim"] = self.embedding_dim
-
-        # Call the actual embedding function
-        result = await self.func(*args, **kwargs)
-
-        # Validate embedding dimensions using total element count
-        total_elements = result.size  # Total number of elements in the numpy array
-        expected_dim = self.embedding_dim
-
-        # Check if total elements can be evenly divided by embedding_dim
-        if total_elements % expected_dim != 0:
-            raise ValueError(
-                f"Embedding dimension mismatch detected: "
-                f"total elements ({total_elements}) cannot be evenly divided by "
-                f"expected dimension ({expected_dim}). "
-            )
-
-        # Optional: Verify vector count matches input text count
-        actual_vectors = total_elements // expected_dim
-        if args and isinstance(args[0], (list, tuple)):
-            expected_vectors = len(args[0])
-            if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
-
-        return result
+        return await self.func(*args, **kwargs)
 
 
 def compute_args_hash(*args: Any) -> str:
@@ -1021,123 +907,9 @@ def load_json(file_name):
         return json.load(f)
 
 
-def _sanitize_string_for_json(text: str) -> str:
-    """Remove characters that cannot be encoded in UTF-8 for JSON serialization.
-
-    Uses regex for optimal performance with zero-copy optimization for clean strings.
-    Fast detection path for clean strings (99% of cases) with efficient removal for dirty strings.
-
-    Args:
-        text: String to sanitize
-
-    Returns:
-        Original string if clean (zero-copy), sanitized string if dirty
-    """
-    if not text:
-        return text
-
-    # Fast path: Check if sanitization is needed using C-level regex search
-    if not _SURROGATE_PATTERN.search(text):
-        return text  # Zero-copy for clean strings - most common case
-
-    # Slow path: Remove problematic characters using C-level regex substitution
-    return _SURROGATE_PATTERN.sub("", text)
-
-
-class SanitizingJSONEncoder(json.JSONEncoder):
-    """
-    Custom JSON encoder that sanitizes data during serialization.
-
-    This encoder cleans strings during the encoding process without creating
-    a full copy of the data structure, making it memory-efficient for large datasets.
-    """
-
-    def encode(self, o):
-        """Override encode method to handle simple string cases"""
-        if isinstance(o, str):
-            return json.encoder.encode_basestring(_sanitize_string_for_json(o))
-        return super().encode(o)
-
-    def iterencode(self, o, _one_shot=False):
-        """
-        Override iterencode to sanitize strings during serialization.
-        This is the core method that handles complex nested structures.
-        """
-        # Preprocess: sanitize all strings in the object
-        sanitized = self._sanitize_for_encoding(o)
-
-        # Call parent's iterencode with sanitized data
-        for chunk in super().iterencode(sanitized, _one_shot):
-            yield chunk
-
-    def _sanitize_for_encoding(self, obj):
-        """
-        Recursively sanitize strings in an object.
-        Creates new objects only when necessary to avoid deep copies.
-
-        Args:
-            obj: Object to sanitize
-
-        Returns:
-            Sanitized object with cleaned strings
-        """
-        if isinstance(obj, str):
-            return _sanitize_string_for_json(obj)
-
-        elif isinstance(obj, dict):
-            # Create new dict with sanitized keys and values
-            new_dict = {}
-            for k, v in obj.items():
-                clean_k = _sanitize_string_for_json(k) if isinstance(k, str) else k
-                clean_v = self._sanitize_for_encoding(v)
-                new_dict[clean_k] = clean_v
-            return new_dict
-
-        elif isinstance(obj, (list, tuple)):
-            # Sanitize list/tuple elements
-            cleaned = [self._sanitize_for_encoding(item) for item in obj]
-            return type(obj)(cleaned) if isinstance(obj, tuple) else cleaned
-
-        else:
-            # Numbers, booleans, None, etc. remain unchanged
-            return obj
-
-
 def write_json(json_obj, file_name):
-    """
-    Write JSON data to file with optimized sanitization strategy.
-
-    This function uses a two-stage approach:
-    1. Fast path: Try direct serialization (works for clean data ~99% of time)
-    2. Slow path: Use custom encoder that sanitizes during serialization
-
-    The custom encoder approach avoids creating a deep copy of the data,
-    making it memory-efficient. When sanitization occurs, the caller should
-    reload the cleaned data from the file to update shared memory.
-
-    Args:
-        json_obj: Object to serialize (may be a shallow copy from shared memory)
-        file_name: Output file path
-
-    Returns:
-        bool: True if sanitization was applied (caller should reload data),
-              False if direct write succeeded (no reload needed)
-    """
-    try:
-        # Strategy 1: Fast path - try direct serialization
-        with open(file_name, "w", encoding="utf-8") as f:
-            json.dump(json_obj, f, indent=2, ensure_ascii=False)
-        return False  # No sanitization needed, no reload required
-
-    except (UnicodeEncodeError, UnicodeDecodeError) as e:
-        logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
-
-    # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
     with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
-
-    logger.info(f"JSON sanitization applied during write: {file_name}")
-    return True  # Sanitization applied, reload recommended
+        json.dump(json_obj, f, indent=2, ensure_ascii=False)
 
 
 class TokenizerInterface(Protocol):
@@ -2024,7 +1796,7 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
         remove Chinese quotes
-        remove English quotes in and around chinese
+        remove English queotes in and around chinese
         Convert non-breaking spaces to regular spaces
         Convert narrow non-breaking spaces after non-digits to regular spaces
 
@@ -2780,52 +2552,6 @@ def apply_source_ids_limit(
     return truncated
 
 
-def compute_incremental_chunk_ids(
-    existing_full_chunk_ids: list[str],
-    old_chunk_ids: list[str],
-    new_chunk_ids: list[str],
-) -> list[str]:
-    """
-    Compute incrementally updated chunk IDs based on changes.
-
-    This function applies delta changes (additions and removals) to an existing
-    list of chunk IDs while maintaining order and ensuring deduplication.
-    Delta additions from new_chunk_ids are placed at the end.
-
-    Args:
-        existing_full_chunk_ids: Complete list of existing chunk IDs from storage
-        old_chunk_ids: Previous chunk IDs from source_id (chunks being replaced)
-        new_chunk_ids: New chunk IDs from updated source_id (chunks being added)
-
-    Returns:
-        Updated list of chunk IDs with deduplication
-
-    Example:
-        >>> existing = ['chunk-1', 'chunk-2', 'chunk-3']
-        >>> old = ['chunk-1', 'chunk-2']
-        >>> new = ['chunk-2', 'chunk-4']
-        >>> compute_incremental_chunk_ids(existing, old, new)
-        ['chunk-3', 'chunk-2', 'chunk-4']
-    """
-    # Calculate changes
-    chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
-    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
-
-    # Apply changes to full chunk_ids
-    # Step 1: Remove chunks that are no longer needed
-    updated_chunk_ids = [
-        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
-    ]
-
-    # Step 2: Add new chunks (preserving order from new_chunk_ids)
-    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
-    for cid in new_chunk_ids:
-        if cid in chunks_to_add and cid not in updated_chunk_ids:
-            updated_chunk_ids.append(cid)
-
-    return updated_chunk_ids
-
-
 def subtract_source_ids(
     source_ids: Iterable[str],
     ids_to_remove: Collection[str],
@@ -2856,6 +2582,65 @@ def parse_relation_chunk_key(key: str) -> tuple[str, str]:
     if len(parts) != 2:
         raise ValueError(f"Invalid relation chunk key: {key}")
     return parts[0], parts[1]
+
+
+def build_file_path(already_file_paths, data_list, target):
+    """Build file path string with UTF-8 byte length limit and deduplication
+
+    Args:
+        already_file_paths: List of existing file paths
+        data_list: List of data items containing file_path
+        target: Target name for logging warnings
+
+    Returns:
+        str: Combined file paths separated by GRAPH_FIELD_SEP
+    """
+    # set: deduplication
+    file_paths_set = {fp for fp in already_file_paths if fp}
+
+    # string: filter empty value and keep file order in already_file_paths
+    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+
+    # Check if initial file_paths already exceeds byte length limit
+    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
+        logger.warning(
+            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"current size: {len(file_paths.encode('utf-8'))} bytes"
+        )
+
+    # ignored file_paths
+    file_paths_ignore = ""
+    # add file_paths
+    for dp in data_list:
+        cur_file_path = dp.get("file_path")
+        # empty
+        if not cur_file_path:
+            continue
+
+        # skip duplicate item
+        if cur_file_path in file_paths_set:
+            continue
+        # add
+        file_paths_set.add(cur_file_path)
+
+        # check the UTF-8 byte length
+        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
+        if (
+            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
+            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
+        ):
+            # append
+            file_paths += new_addition
+        else:
+            # ignore
+            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
+
+    if file_paths_ignore:
+        logger.warning(
+            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"ignoring file path: {file_paths_ignore}"
+        )
+    return file_paths
 
 
 def generate_track_id(prefix: str = "upload") -> str:
