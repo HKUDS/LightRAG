@@ -84,26 +84,6 @@ class JsonKVStorage(BaseKVStorage):
                 write_json(data_dict, self._file_name)
                 await clear_all_update_flags(self.final_namespace)
 
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        async with self._storage_lock:
-            result = {}
-            for key, value in self._data.items():
-                if value:
-                    # Create a copy to avoid modifying the original data
-                    data = dict(value)
-                    # Ensure time fields are present, provide default values for old data
-                    data.setdefault("create_time", 0)
-                    data.setdefault("update_time", 0)
-                    result[key] = data
-                else:
-                    result[key] = value
-            return result
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
             result = self._data.get(id)
@@ -199,6 +179,15 @@ class JsonKVStorage(BaseKVStorage):
 
             if any_deleted:
                 await set_all_update_flags(self.final_namespace)
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
+        """
+        async with self._storage_lock:
+            return len(self._data) == 0
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources

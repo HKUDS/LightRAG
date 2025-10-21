@@ -318,9 +318,9 @@
           "description": "描述",
           "entity_id": "名称",
           "entity_type": "类型",
-          "source_id": "信源ID",
+          "source_id": "C-ID",
           "Neighbour": "邻接",
-          "file_path": "信源",
+          "file_path": "文件",
           "keywords": "Keys",
           "weight": "权重"
         }
