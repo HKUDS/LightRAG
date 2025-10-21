@@ -887,13 +887,13 @@ class LightRAG:
             need_entity_migration = await self.entity_chunks.is_empty()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"Failed to check entity chunks storage: {exc}")
-            need_entity_migration = True
+            raise exc
 
         try:
             need_relation_migration = await self.relation_chunks.is_empty()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"Failed to check relation chunks storage: {exc}")
-            need_relation_migration = True
+            raise exc
 
         if not need_entity_migration and not need_relation_migration:
             return

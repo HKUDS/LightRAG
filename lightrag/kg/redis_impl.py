@@ -368,12 +368,13 @@ class RedisKVStorage(BaseKVStorage):
         Returns:
             bool: True if storage is empty, False otherwise
         """
-        pattern = f"{self.namespace}:{self.workspace}:*"
+        pattern = f"{self.final_namespace}:*"
         try:
-            # Use scan to check if any keys exist
-            async for key in self.redis.scan_iter(match=pattern, count=1):
-                return False  # Found at least one key
-            return True  # No keys found
+            async with self._get_redis_connection() as redis:
+                # Use scan to check if any keys exist
+                async for key in redis.scan_iter(match=pattern, count=1):
+                    return False  # Found at least one key
+                return True  # No keys found
         except Exception as e:
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
