@@ -1026,7 +1026,7 @@ async def _rebuild_single_entity(
     async def _update_entity_storage(
         final_description: str,
         entity_type: str,
-        file_paths: set[str],
+        file_paths: list[str],
         source_chunk_ids: list[str],
         truncation_info: str = "",
     ):
@@ -1195,8 +1195,6 @@ async def _rebuild_single_entity(
             f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
         )
 
-    file_paths = set(file_paths_list)
-
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
     entity_types = list(dict.fromkeys(entity_types))
@@ -1231,7 +1229,7 @@ async def _rebuild_single_entity(
     await _update_entity_storage(
         final_description,
         entity_type,
-        file_paths,
+        file_paths_list,
         limited_chunk_ids,
         truncation_info,
     )
@@ -1354,8 +1352,6 @@ async def _rebuild_single_relationship(
             f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
         )
 
-    file_paths = set(file_paths_list)
-
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
     keywords = list(dict.fromkeys(keywords))
@@ -1398,8 +1394,8 @@ async def _rebuild_single_relationship(
         "keywords": combined_keywords,
         "weight": weight,
         "source_id": GRAPH_FIELD_SEP.join(limited_chunk_ids),
-        "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths if fp])
-        if file_paths
+        "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths_list if fp])
+        if file_paths_list
         else current_relationship.get("file_path", "unknown_source"),
         "truncate": truncation_info,
     }
