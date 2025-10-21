@@ -1650,11 +1650,12 @@ async def _merge_nodes_then_upsert(
         if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
             # FIFO: keep tail (newest), discard head
             file_paths_list = file_paths_list[-max_file_paths:]
+            file_paths_list.append(f"...{file_path_placeholder}...(FIFO)")
         else:
             # KEEP: keep head (earliest), discard tail
             file_paths_list = file_paths_list[:max_file_paths]
+            file_paths_list.append(f"...{file_path_placeholder}...(KEEP Old)")
 
-        file_paths_list.append(f"...{file_path_placeholder}({limit_method})...")
         logger.info(
             f"Limited `{entity_name}`: file_path {original_count_str} -> {max_file_paths} ({limit_method})"
         )
@@ -1676,7 +1677,7 @@ async def _merge_nodes_then_upsert(
         if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
             truncation_info = truncation_info_log
         else:
-            truncation_info = "Keep Old Chunks"
+            truncation_info = "KEEP Old"
 
     deduplicated_num = already_fragment + len(nodes_data) - num_fragment
     dd_message = ""
@@ -1971,15 +1972,12 @@ async def _merge_edges_then_upsert(
         if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
             # FIFO: keep tail (newest), discard head
             file_paths_list = file_paths_list[-max_file_paths:]
+            file_paths_list.append(f"...{file_path_placeholder}...(FIFO)")
         else:
             # KEEP: keep head (earliest), discard tail
             file_paths_list = file_paths_list[:max_file_paths]
+            file_paths_list.append(f"...{file_path_placeholder}...(KEEP Old)")
 
-        # Add + sign if has_placeholder is True, indicating actual file count is higher
-
-        file_paths_list.append(
-            f"...{file_path_placeholder}({limit_method}:{max_file_paths}/{original_count_str})..."
-        )
         logger.info(
             f"Limited `{src_id}`~`{tgt_id}`: file_path {original_count_str} -> {max_file_paths} ({limit_method})"
         )
@@ -2001,7 +1999,7 @@ async def _merge_edges_then_upsert(
         if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
             truncation_info = truncation_info_log
         else:
-            truncation_info = "Keep Old Chunks"
+            truncation_info = "KEEP Old"
 
     deduplicated_num = already_fragment + len(edges_data) - num_fragment
     dd_message = ""
