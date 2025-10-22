@@ -15,34 +15,26 @@ LightRAG 服务器旨在提供 Web 界面和 API 支持。Web 界面便于文档
 * 从 PyPI 安装
 
 ```bash
-# 使用 uv (推荐)
-uv pip install "lightrag-hku[api]"
-
-# 或使用 pip
-# pip install "lightrag-hku[api]"
+pip install "lightrag-hku[api]"
 ```
 
 * 从源代码安装
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/HKUDS/lightrag.git
 
-# 进入仓库目录
+# Change to the repository directory
 cd lightrag
 
-# 使用 uv (推荐)
-# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
-uv sync --extra api
-source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
-# Windows 系统: .venv\Scripts\activate
+# Create a Python virtual environment
+uv venv --seed --python 3.12
+source .venv/bin/activate
 
-# 或使用 pip 与虚拟环境
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[api]"
+# Install in editable mode with API support
+pip install -e ".[api]"
 
-# 构建前端代码
+# Build front-end artifacts
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
@@ -192,16 +184,24 @@ MAX_ASYNC=4
 
 ### 将 Lightrag 安装为 Linux 服务
 
-从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
+从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的 WorkingDirectory 和 ExecStart：
 
 ```text
-# Set Enviroment to your Python virtual enviroment
-Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
-WorkingDirectory=/home/netman/lightrag-xyj
-# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
-ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
+Description=LightRAG Ollama Service
+WorkingDirectory=<lightrag 安装目录>
+ExecStart=<lightrag 安装目录>/lightrag/api/lightrag-api
 ```
-> ExecStart命令必须是 lightrag-gunicorn 或 lightrag-server 中的一个，不能使用其它脚本包裹它们。因为停止服务必须要求主进程必须是这两个进程。
+
+修改您的服务启动脚本：`lightrag-api`。根据需要更改 python 虚拟环境激活命令：
+
+```shell
+#!/bin/bash
+
+# 您的 python 虚拟环境激活命令
+source /home/netman/lightrag-xyj/venv/bin/activate
+# 启动 lightrag api 服务器
+lightrag-server
+```
 
 安装 LightRAG 服务。如果您的系统是 Ubuntu，以下命令将生效：
 
@@ -407,10 +407,6 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
 在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `env.exampl`e文件。
-
-### 在不同存储类型之间迁移LLM缓存
-
-当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
 
 ### LightRag API 服务器命令行选项
 
