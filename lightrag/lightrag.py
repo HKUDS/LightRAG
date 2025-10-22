@@ -3302,14 +3302,14 @@ class LightRAG:
                         pipeline_status["history_messages"].append(cache_log_message)
                     log_message = cache_log_message
                 except Exception as cache_delete_error:
-                    logger.error(
-                        "Failed to delete LLM cache for document %s: %s",
-                        doc_id,
-                        cache_delete_error,
-                    )
-                    raise Exception(
+                    log_message = (
                         f"Failed to delete LLM cache for document {doc_id}: {cache_delete_error}"
-                    ) from cache_delete_error
+                    )
+                    logger.error(log_message)
+                    logger.error(traceback.format_exc())
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
             return DeletionResult(
                 status="success",
