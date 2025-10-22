@@ -29,7 +29,7 @@ cd lightrag
 
 # Create a Python virtual environment
 uv venv --seed --python 3.12
-source .venv/bin/acivate
+source .venv/bin/activate
 
 # Install in editable mode with API support
 pip install -e ".[api]"
