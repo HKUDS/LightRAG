@@ -70,6 +70,7 @@
       "confirmButton": "YES",
       "deleteFileOption": "Also delete uploaded files",
       "deleteFileTooltip": "Check this option to also delete the corresponding uploaded files on the server",
+      "deleteLLMCacheOption": "Also delete extracted LLM cache",
       "success": "Document deletion pipeline started successfully",
       "failed": "Delete Documents Failed:\n{{message}}",
       "error": "Delete Documents Failed:\n{{error}}",

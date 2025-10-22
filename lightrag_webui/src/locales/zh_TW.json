@@ -70,6 +70,7 @@
       "confirmButton": "確定",
       "deleteFileOption": "同時刪除上傳檔案",
       "deleteFileTooltip": "選取此選項將同時刪除伺服器上對應的上傳檔案",
+      "deleteLLMCacheOption": "同時刪除實體關係擷取 LLM 快取",
       "success": "文件刪除流水線啟動成功",
       "failed": "刪除文件失敗：\n{{message}}",
       "error": "刪除文件失敗：\n{{error}}",

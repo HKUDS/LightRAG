@@ -70,6 +70,7 @@
       "confirmButton": "OUI",
       "deleteFileOption": "Supprimer également les fichiers téléchargés",
       "deleteFileTooltip": "Cochez cette option pour supprimer également les fichiers téléchargés correspondants sur le serveur",
+      "deleteLLMCacheOption": "Supprimer également le cache LLM d'extraction",
       "success": "Pipeline de suppression de documents démarré avec succès",
       "failed": "Échec de la suppression des documents :\n{{message}}",
       "error": "Échec de la suppression des documents :\n{{error}}",

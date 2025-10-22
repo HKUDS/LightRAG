@@ -70,6 +70,7 @@
       "confirmButton": "确定",
       "deleteFileOption": "同时删除上传文件",
       "deleteFileTooltip": "选中此选项将同时删除服务器上对应的上传文件",
+      "deleteLLMCacheOption": "同时删除实体关系抽取 LLM 缓存",
       "success": "文档删除流水线启动成功",
       "failed": "删除文档失败：\n{{message}}",
       "error": "删除文档失败：\n{{error}}",
