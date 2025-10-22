@@ -336,6 +336,10 @@ class DeleteDocRequest(BaseModel):
         default=False,
         description="Whether to delete the corresponding file in the upload directory.",
     )
+    delete_llm_cache: bool = Field(
+        default=False,
+        description="Whether to delete cached LLM extraction results for the documents.",
+    )
 
     @field_validator("doc_ids", mode="after")
     @classmethod
@@ -1487,6 +1491,7 @@ async def background_delete_documents(
     doc_manager: DocumentManager,
     doc_ids: List[str],
     delete_file: bool = False,
+    delete_llm_cache: bool = False,
 ):
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
@@ -1521,6 +1526,10 @@ async def background_delete_documents(
         )
         # Use slice assignment to clear the list in place
         pipeline_status["history_messages"][:] = ["Starting document deletion process"]
+        if delete_llm_cache:
+            pipeline_status["history_messages"].append(
+                "LLM cache cleanup requested for this deletion job"
+            )
 
     try:
         # Loop through each document ID and delete them one by one
@@ -1534,7 +1543,9 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
-                result = await rag.adelete_by_doc_id(doc_id)
+                result = await rag.adelete_by_doc_id(
+                    doc_id, delete_llm_cache=delete_llm_cache
+                )
                 file_path = (
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
@@ -2344,36 +2355,26 @@ def create_document_routes(
         Delete documents and all their associated data by their IDs using background processing.
 
         Deletes specific documents and all their associated data, including their status,
-        text chunks, vector embeddings, and any related graph data.
+        text chunks, vector embeddings, and any related graph data. When requested,
+        cached LLM extraction responses are removed after graph deletion/rebuild completes.
         The deletion process runs in the background to avoid blocking the client connection.
-        It is disabled when llm cache for entity extraction is disabled.
 
         This operation is irreversible and will interact with the pipeline status.
 
         Args:
-            delete_request (DeleteDocRequest): The request containing the document IDs and delete_file options.
+            delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
             background_tasks: FastAPI BackgroundTasks for async processing
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
                 - status="deletion_started": The document deletion has been initiated in the background.
                 - status="busy": The pipeline is busy with another operation.
-                - status="not_allowed": Operation not allowed when LLM cache for entity extraction is disabled.
 
         Raises:
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
         doc_ids = delete_request.doc_ids
-
-        # The rag object is initialized from the server startup args,
-        # so we can access its properties here.
-        if not rag.enable_llm_cache_for_entity_extract:
-            return DeleteDocByIdResponse(
-                status="not_allowed",
-                message="Operation not allowed when LLM cache for entity extraction is disabled.",
-                doc_id=", ".join(delete_request.doc_ids),
-            )
 
         try:
             from lightrag.kg.shared_storage import get_namespace_data
@@ -2395,6 +2396,7 @@ def create_document_routes(
                 doc_manager,
                 doc_ids,
                 delete_request.delete_file,
+                delete_request.delete_llm_cache,
             )
 
             return DeleteDocByIdResponse(
