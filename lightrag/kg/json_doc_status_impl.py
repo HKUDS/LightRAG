@@ -187,6 +187,20 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         await self.index_done_callback()
 
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+
+        Raises:
+            StorageNotInitializedError: If storage is not initialized
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            return len(self._data) == 0
+
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:
             return self._data.get(id)

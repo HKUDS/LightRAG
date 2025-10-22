@@ -318,10 +318,10 @@
           "description": "الوصف",
           "entity_id": "الاسم",
           "entity_type": "النوع",
-          "source_id": "معرف المصدر",
+          "source_id": "C-ID",
           "Neighbour": "الجار",
-          "file_path": "المصدر",
-          "keywords": "الكلمات الرئيسية",
+          "file_path": "File",
+          "keywords": "Keyword",
           "weight": "الوزن"
         }
       },

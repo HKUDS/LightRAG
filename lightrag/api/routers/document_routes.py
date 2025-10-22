@@ -2003,6 +2003,8 @@ def create_document_routes(
                 rag.full_docs,
                 rag.full_entities,
                 rag.full_relations,
+                rag.entity_chunks,
+                rag.relation_chunks,
                 rag.entities_vdb,
                 rag.relationships_vdb,
                 rag.chunks_vdb,

@@ -304,51 +304,6 @@ class RedisKVStorage(BaseKVStorage):
                 logger.error(f"[{self.workspace}] JSON decode error in batch get: {e}")
                 return [None] * len(ids)
 
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        async with self._get_redis_connection() as redis:
-            try:
-                # Get all keys for this namespace
-                keys = await redis.keys(f"{self.final_namespace}:*")
-
-                if not keys:
-                    return {}
-
-                # Get all values in batch
-                pipe = redis.pipeline()
-                for key in keys:
-                    pipe.get(key)
-                values = await pipe.execute()
-
-                # Build result dictionary
-                result = {}
-                for key, value in zip(keys, values):
-                    if value:
-                        # Extract the ID part (after namespace:)
-                        key_id = key.split(":", 1)[1]
-                        try:
-                            data = json.loads(value)
-                            # Ensure time fields are present for all documents
-                            data.setdefault("create_time", 0)
-                            data.setdefault("update_time", 0)
-                            result[key_id] = data
-                        except json.JSONDecodeError as e:
-                            logger.error(
-                                f"[{self.workspace}] JSON decode error for key {key}: {e}"
-                            )
-                            continue
-
-                return result
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error getting all data from Redis: {e}"
-                )
-                return {}
-
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._get_redis_connection() as redis:
             pipe = redis.pipeline()
@@ -407,8 +362,25 @@ class RedisKVStorage(BaseKVStorage):
         # Redis handles persistence automatically
         pass
 
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        pattern = f"{self.final_namespace}:*"
+        try:
+            async with self._get_redis_connection() as redis:
+                # Use scan to check if any keys exist
+                async for key in redis.scan_iter(match=pattern, count=1):
+                    return False  # Found at least one key
+                return True  # No keys found
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
+
     async def delete(self, ids: list[str]) -> None:
-        """Delete entries with specified IDs"""
+        """Delete specific records from storage by their IDs"""
         if not ids:
             return
 
@@ -867,6 +839,23 @@ class RedisDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         """Redis handles persistence automatically"""
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        pattern = f"{self.final_namespace}:*"
+        try:
+            async with self._get_redis_connection() as redis:
+                # Use scan to check if any keys exist
+                async for key in redis.scan_iter(match=pattern, count=1):
+                    return False  # Found at least one key
+                return True  # No keys found
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     @redis_retry
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

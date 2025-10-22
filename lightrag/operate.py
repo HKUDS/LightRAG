@@ -7,7 +7,7 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
-from .utils import (
+from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
@@ -26,14 +26,16 @@ from .utils import (
     pick_by_weighted_polling,
     pick_by_vector_similarity,
     process_chunks_unified,
-    build_file_path,
     safe_vdb_operation_with_exception,
     create_prefixed_exception,
     fix_tuple_delimiter_corruption,
     convert_to_user_format,
     generate_reference_list_from_chunks,
+    apply_source_ids_limit,
+    merge_source_ids,
+    make_relation_chunk_key,
 )
-from .base import (
+from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
@@ -42,8 +44,8 @@ from .base import (
     QueryResult,
     QueryContextResult,
 )
-from .prompt import PROMPTS
-from .constants import (
+from lightrag.prompt import PROMPTS
+from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
@@ -52,8 +54,12 @@ from .constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
+    SOURCE_IDS_LIMIT_METHOD_KEEP,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_MAX_FILE_PATHS,
 )
-from .kg.shared_storage import get_storage_keyed_lock
+from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
 
@@ -473,8 +479,8 @@ async def _handle_single_relationship_extraction(
 
 
 async def _rebuild_knowledge_from_chunks(
-    entities_to_rebuild: dict[str, set[str]],
-    relationships_to_rebuild: dict[tuple[str, str], set[str]],
+    entities_to_rebuild: dict[str, list[str]],
+    relationships_to_rebuild: dict[tuple[str, str], list[str]],
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
@@ -483,6 +489,8 @@ async def _rebuild_knowledge_from_chunks(
     global_config: dict[str, str],
     pipeline_status: dict | None = None,
     pipeline_status_lock=None,
+    entity_chunks_storage: BaseKVStorage | None = None,
+    relation_chunks_storage: BaseKVStorage | None = None,
 ) -> None:
     """Rebuild entity and relationship descriptions from cached extraction results with parallel processing
 
@@ -491,8 +499,8 @@ async def _rebuild_knowledge_from_chunks(
     controlled by llm_model_max_async and using get_storage_keyed_lock for data consistency.
 
     Args:
-        entities_to_rebuild: Dict mapping entity_name -> set of remaining chunk_ids
-        relationships_to_rebuild: Dict mapping (src, tgt) -> set of remaining chunk_ids
+        entities_to_rebuild: Dict mapping entity_name -> list of remaining chunk_ids
+        relationships_to_rebuild: Dict mapping (src, tgt) -> list of remaining chunk_ids
         knowledge_graph_inst: Knowledge graph storage
         entities_vdb: Entity vector database
         relationships_vdb: Relationship vector database
@@ -501,6 +509,8 @@ async def _rebuild_knowledge_from_chunks(
         global_config: Global configuration containing llm_model_max_async
         pipeline_status: Pipeline status dictionary
         pipeline_status_lock: Lock for pipeline status
+        entity_chunks_storage: KV storage maintaining full chunk IDs per entity
+        relation_chunks_storage: KV storage maintaining full chunk IDs per relation
     """
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
@@ -640,10 +650,11 @@ async def _rebuild_knowledge_from_chunks(
                         chunk_entities=chunk_entities,
                         llm_response_cache=llm_response_cache,
                         global_config=global_config,
+                        entity_chunks_storage=entity_chunks_storage,
                     )
                     rebuilt_entities_count += 1
                     status_message = (
-                        f"Rebuilt `{entity_name}` from {len(chunk_ids)} chunks"
+                        f"Rebuild `{entity_name}` from {len(chunk_ids)} chunks"
                     )
                     logger.info(status_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
@@ -681,16 +692,11 @@ async def _rebuild_knowledge_from_chunks(
                         chunk_relationships=chunk_relationships,
                         llm_response_cache=llm_response_cache,
                         global_config=global_config,
+                        relation_chunks_storage=relation_chunks_storage,
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
                     )
                     rebuilt_relationships_count += 1
-                    status_message = (
-                        f"Rebuilt `{src} - {tgt}` from {len(chunk_ids)} chunks"
-                    )
-                    logger.info(status_message)
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
                 except Exception as e:
                     failed_relationships_count += 1
                     status_message = f"Failed to rebuild `{src} - {tgt}`: {e}"
@@ -1001,10 +1007,13 @@ async def _rebuild_single_entity(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     entity_name: str,
-    chunk_ids: set[str],
+    chunk_ids: list[str],
     chunk_entities: dict,
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
+    entity_chunks_storage: BaseKVStorage | None = None,
+    pipeline_status: dict | None = None,
+    pipeline_status_lock=None,
 ) -> None:
     """Rebuild a single entity from cached extraction results"""
 
@@ -1015,7 +1024,11 @@ async def _rebuild_single_entity(
 
     # Helper function to update entity in both graph and vector storage
     async def _update_entity_storage(
-        final_description: str, entity_type: str, file_paths: set[str]
+        final_description: str,
+        entity_type: str,
+        file_paths: list[str],
+        source_chunk_ids: list[str],
+        truncation_info: str = "",
     ):
         try:
             # Update entity in graph storage (critical path)
@@ -1023,10 +1036,12 @@ async def _rebuild_single_entity(
                 **current_entity,
                 "description": final_description,
                 "entity_type": entity_type,
-                "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
+                "source_id": GRAPH_FIELD_SEP.join(source_chunk_ids),
                 "file_path": GRAPH_FIELD_SEP.join(file_paths)
                 if file_paths
                 else current_entity.get("file_path", "unknown_source"),
+                "created_at": int(time.time()),
+                "truncate": truncation_info,
             }
             await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
@@ -1059,9 +1074,33 @@ async def _rebuild_single_entity(
             logger.error(error_msg)
             raise  # Re-raise exception
 
-    # Collect all entity data from relevant chunks
+    # normalized_chunk_ids = merge_source_ids([], chunk_ids)
+    normalized_chunk_ids = chunk_ids
+
+    if entity_chunks_storage is not None and normalized_chunk_ids:
+        await entity_chunks_storage.upsert(
+            {
+                entity_name: {
+                    "chunk_ids": normalized_chunk_ids,
+                    "count": len(normalized_chunk_ids),
+                }
+            }
+        )
+
+    limit_method = (
+        global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
+    )
+
+    limited_chunk_ids = apply_source_ids_limit(
+        normalized_chunk_ids,
+        global_config["max_source_ids_per_entity"],
+        limit_method,
+        identifier=f"`{entity_name}`",
+    )
+
+    # Collect all entity data from relevant (limited) chunks
     all_entity_data = []
-    for chunk_id in chunk_ids:
+    for chunk_id in limited_chunk_ids:
         if chunk_id in chunk_entities and entity_name in chunk_entities[chunk_id]:
             all_entity_data.extend(chunk_entities[chunk_id][entity_name])
 
@@ -1108,13 +1147,19 @@ async def _rebuild_single_entity(
             final_description = current_entity.get("description", "")
 
         entity_type = current_entity.get("entity_type", "UNKNOWN")
-        await _update_entity_storage(final_description, entity_type, file_paths)
+        await _update_entity_storage(
+            final_description,
+            entity_type,
+            file_paths,
+            limited_chunk_ids,
+        )
         return
 
     # Process cached entity data
     descriptions = []
     entity_types = []
-    file_paths = set()
+    file_paths_list = []
+    seen_paths = set()
 
     for entity_data in all_entity_data:
         if entity_data.get("description"):
@@ -1122,7 +1167,33 @@ async def _rebuild_single_entity(
         if entity_data.get("entity_type"):
             entity_types.append(entity_data["entity_type"])
         if entity_data.get("file_path"):
-            file_paths.add(entity_data["file_path"])
+            file_path = entity_data["file_path"]
+            if file_path and file_path not in seen_paths:
+                file_paths_list.append(file_path)
+                seen_paths.add(file_path)
+
+    # Apply MAX_FILE_PATHS limit
+    max_file_paths = global_config.get("max_file_paths")
+    file_path_placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+    limit_method = global_config.get("source_ids_limit_method")
+
+    original_count = len(file_paths_list)
+    if original_count > max_file_paths:
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            # FIFO: keep tail (newest), discard head
+            file_paths_list = file_paths_list[-max_file_paths:]
+        else:
+            # KEEP: keep head (earliest), discard tail
+            file_paths_list = file_paths_list[:max_file_paths]
+
+        file_paths_list.append(
+            f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
+        )
+        logger.info(
+            f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+        )
 
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
@@ -1148,7 +1219,31 @@ async def _rebuild_single_entity(
     else:
         final_description = current_entity.get("description", "")
 
-    await _update_entity_storage(final_description, entity_type, file_paths)
+    if len(limited_chunk_ids) < len(normalized_chunk_ids):
+        truncation_info = (
+            f"{limit_method} {len(limited_chunk_ids)}/{len(normalized_chunk_ids)}"
+        )
+    else:
+        truncation_info = ""
+
+    await _update_entity_storage(
+        final_description,
+        entity_type,
+        file_paths_list,
+        limited_chunk_ids,
+        truncation_info,
+    )
+
+    # Log rebuild completion with truncation info
+    status_message = f"Rebuild `{entity_name}` from {len(chunk_ids)} chunks"
+    if truncation_info:
+        status_message += f" ({truncation_info})"
+    logger.info(status_message)
+    # Update pipeline status
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = status_message
+            pipeline_status["history_messages"].append(status_message)
 
 
 async def _rebuild_single_relationship(
@@ -1156,10 +1251,13 @@ async def _rebuild_single_relationship(
     relationships_vdb: BaseVectorStorage,
     src: str,
     tgt: str,
-    chunk_ids: set[str],
+    chunk_ids: list[str],
     chunk_relationships: dict,
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
+    relation_chunks_storage: BaseKVStorage | None = None,
+    pipeline_status: dict | None = None,
+    pipeline_status_lock=None,
 ) -> None:
     """Rebuild a single relationship from cached extraction results
 
@@ -1172,9 +1270,33 @@ async def _rebuild_single_relationship(
     if not current_relationship:
         return
 
+    # normalized_chunk_ids = merge_source_ids([], chunk_ids)
+    normalized_chunk_ids = chunk_ids
+
+    if relation_chunks_storage is not None and normalized_chunk_ids:
+        storage_key = make_relation_chunk_key(src, tgt)
+        await relation_chunks_storage.upsert(
+            {
+                storage_key: {
+                    "chunk_ids": normalized_chunk_ids,
+                    "count": len(normalized_chunk_ids),
+                }
+            }
+        )
+
+    limit_method = (
+        global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
+    )
+    limited_chunk_ids = apply_source_ids_limit(
+        normalized_chunk_ids,
+        global_config["max_source_ids_per_relation"],
+        limit_method,
+        identifier=f"`{src}`~`{tgt}`",
+    )
+
     # Collect all relationship data from relevant chunks
     all_relationship_data = []
-    for chunk_id in chunk_ids:
+    for chunk_id in limited_chunk_ids:
         if chunk_id in chunk_relationships:
             # Check both (src, tgt) and (tgt, src) since relationships can be bidirectional
             for edge_key in [(src, tgt), (tgt, src)]:
@@ -1191,7 +1313,8 @@ async def _rebuild_single_relationship(
     descriptions = []
     keywords = []
     weights = []
-    file_paths = set()
+    file_paths_list = []
+    seen_paths = set()
 
     for rel_data in all_relationship_data:
         if rel_data.get("description"):
@@ -1201,7 +1324,33 @@ async def _rebuild_single_relationship(
         if rel_data.get("weight"):
             weights.append(rel_data["weight"])
         if rel_data.get("file_path"):
-            file_paths.add(rel_data["file_path"])
+            file_path = rel_data["file_path"]
+            if file_path and file_path not in seen_paths:
+                file_paths_list.append(file_path)
+                seen_paths.add(file_path)
+
+    # Apply count limit
+    max_file_paths = global_config.get("max_file_paths")
+    file_path_placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+    limit_method = global_config.get("source_ids_limit_method")
+
+    original_count = len(file_paths_list)
+    if original_count > max_file_paths:
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            # FIFO: keep tail (newest), discard head
+            file_paths_list = file_paths_list[-max_file_paths:]
+        else:
+            # KEEP: keep head (earliest), discard tail
+            file_paths_list = file_paths_list[:max_file_paths]
+
+        file_paths_list.append(
+            f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
+        )
+        logger.info(
+            f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
+        )
 
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
@@ -1229,6 +1378,13 @@ async def _rebuild_single_relationship(
         # fallback to keep current(unchanged)
         final_description = current_relationship.get("description", "")
 
+    if len(limited_chunk_ids) < len(normalized_chunk_ids):
+        truncation_info = (
+            f"{limit_method} {len(limited_chunk_ids)}/{len(normalized_chunk_ids)}"
+        )
+    else:
+        truncation_info = ""
+
     # Update relationship in graph storage
     updated_relationship_data = {
         **current_relationship,
@@ -1237,10 +1393,11 @@ async def _rebuild_single_relationship(
         else current_relationship.get("description", ""),
         "keywords": combined_keywords,
         "weight": weight,
-        "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
-        "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths if fp])
-        if file_paths
+        "source_id": GRAPH_FIELD_SEP.join(limited_chunk_ids),
+        "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths_list if fp])
+        if file_paths_list
         else current_relationship.get("file_path", "unknown_source"),
+        "truncate": truncation_info,
     }
     await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
@@ -1286,15 +1443,36 @@ async def _rebuild_single_relationship(
         logger.error(error_msg)
         raise  # Re-raise exception
 
+    # Log rebuild completion with truncation info
+    status_message = f"Rebuild `{src} - {tgt}` from {len(chunk_ids)} chunks"
+    if truncation_info:
+        status_message += f" ({truncation_info})"
+    # Add truncation info from apply_source_ids_limit if truncation occurred
+    if len(limited_chunk_ids) < len(normalized_chunk_ids):
+        truncation_info = (
+            f" ({limit_method}:{len(limited_chunk_ids)}/{len(normalized_chunk_ids)})"
+        )
+        status_message += truncation_info
+
+    logger.info(status_message)
+
+    # Update pipeline status
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = status_message
+            pipeline_status["history_messages"].append(status_message)
+
 
 async def _merge_nodes_then_upsert(
     entity_name: str,
     nodes_data: list[dict],
     knowledge_graph_inst: BaseGraphStorage,
+    entity_vdb: BaseVectorStorage | None,
     global_config: dict,
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
+    entity_chunks_storage: BaseKVStorage | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     already_entity_types = []
@@ -1302,6 +1480,7 @@ async def _merge_nodes_then_upsert(
     already_description = []
     already_file_paths = []
 
+    # 1. Get existing node data from knowledge graph
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node:
         already_entity_types.append(already_node["entity_type"])
@@ -1309,22 +1488,102 @@ async def _merge_nodes_then_upsert(
         already_file_paths.extend(already_node["file_path"].split(GRAPH_FIELD_SEP))
         already_description.extend(already_node["description"].split(GRAPH_FIELD_SEP))
 
+    new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
+
+    existing_full_source_ids = []
+    if entity_chunks_storage is not None:
+        stored_chunks = await entity_chunks_storage.get_by_id(entity_name)
+        if stored_chunks and isinstance(stored_chunks, dict):
+            existing_full_source_ids = [
+                chunk_id for chunk_id in stored_chunks.get("chunk_ids", []) if chunk_id
+            ]
+
+    if not existing_full_source_ids:
+        existing_full_source_ids = [
+            chunk_id for chunk_id in already_source_ids if chunk_id
+        ]
+
+    # 2. Merging new source ids with existing ones
+    full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
+
+    if entity_chunks_storage is not None and full_source_ids:
+        await entity_chunks_storage.upsert(
+            {
+                entity_name: {
+                    "chunk_ids": full_source_ids,
+                    "count": len(full_source_ids),
+                }
+            }
+        )
+
+    # 3. Finalize source_id by applying source ids limit
+    limit_method = global_config.get("source_ids_limit_method")
+    max_source_limit = global_config.get("max_source_ids_per_entity")
+    source_ids = apply_source_ids_limit(
+        full_source_ids,
+        max_source_limit,
+        limit_method,
+        identifier=f"`{entity_name}`",
+    )
+
+    # 4. Only keep nodes not filter by apply_source_ids_limit if limit_method is KEEP
+    if limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP:
+        allowed_source_ids = set(source_ids)
+        filtered_nodes = []
+        for dp in nodes_data:
+            source_id = dp.get("source_id")
+            # Skip descriptions sourced from chunks dropped by the limitation cap
+            if (
+                source_id
+                and source_id not in allowed_source_ids
+                and source_id not in existing_full_source_ids
+            ):
+                continue
+            filtered_nodes.append(dp)
+        nodes_data = filtered_nodes
+    else:  # In FIFO mode, keep all nodes - truncation happens at source_ids level only
+        nodes_data = list(nodes_data)
+
+    # 5. Check if we need to skip summary due to source_ids limit
+    if (
+        limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP
+        and len(existing_full_source_ids) >= max_source_limit
+        and not nodes_data
+    ):
+        if already_node:
+            logger.info(
+                f"Skipped `{entity_name}`: KEEP old chunks {already_source_ids}/{len(full_source_ids)}"
+            )
+            existing_node_data = dict(already_node)
+            return existing_node_data
+        else:
+            logger.error(f"Internal Error: already_node missing for `{entity_name}`")
+            raise ValueError(
+                f"Internal Error: already_node missing for `{entity_name}`"
+            )
+
+    # 6.1 Finalize source_id
+    source_id = GRAPH_FIELD_SEP.join(source_ids)
+
+    # 6.2 Finalize entity type by highest count
     entity_type = sorted(
         Counter(
             [dp["entity_type"] for dp in nodes_data] + already_entity_types
         ).items(),
         key=lambda x: x[1],
         reverse=True,
-    )[0][0]  # Get the entity type with the highest count
+    )[0][0]
 
-    # Deduplicate by description, keeping first occurrence
+    # 7. Deduplicate nodes by description, keeping first occurrence in the same document
     unique_nodes = {}
     for dp in nodes_data:
-        desc = dp["description"]
+        desc = dp.get("description")
+        if not desc:
+            continue
         if desc not in unique_nodes:
             unique_nodes[desc] = dp
 
-    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
+    # Sort description by timestamp, then by description length when timestamps are the same
     sorted_nodes = sorted(
         unique_nodes.values(),
         key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
@@ -1333,49 +1592,113 @@ async def _merge_nodes_then_upsert(
 
     # Combine already_description with sorted new sorted descriptions
     description_list = already_description + sorted_descriptions
+    if not description_list:
+        logger.error(f"Entity {entity_name} has no description")
+        raise ValueError(f"Entity {entity_name} has no description")
 
-    num_fragment = len(description_list)
-    already_fragment = len(already_description)
-    deduplicated_num = already_fragment + len(nodes_data) - num_fragment
-    if deduplicated_num > 0:
-        dd_message = f"(dd:{deduplicated_num})"
-    else:
-        dd_message = ""
-    if num_fragment > 0:
-        # Get summary and LLM usage status
-        description, llm_was_used = await _handle_entity_relation_summary(
-            "Entity",
-            entity_name,
-            description_list,
-            GRAPH_FIELD_SEP,
-            global_config,
-            llm_response_cache,
+    # 8. Get summary description an LLM usage status
+    description, llm_was_used = await _handle_entity_relation_summary(
+        "Entity",
+        entity_name,
+        description_list,
+        GRAPH_FIELD_SEP,
+        global_config,
+        llm_response_cache,
+    )
+
+    # 9. Build file_path within MAX_FILE_PATHS
+    file_paths_list = []
+    seen_paths = set()
+    has_placeholder = False  # Indicating file_path has been truncated before
+
+    max_file_paths = global_config.get("max_file_paths", DEFAULT_MAX_FILE_PATHS)
+    file_path_placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+
+    # Collect from already_file_paths, excluding placeholder
+    for fp in already_file_paths:
+        if fp and fp.startswith(f"...{file_path_placeholder}"):  # Skip placeholders
+            has_placeholder = True
+            continue
+        if fp and fp not in seen_paths:
+            file_paths_list.append(fp)
+            seen_paths.add(fp)
+
+    # Collect from new data
+    for dp in nodes_data:
+        file_path_item = dp.get("file_path")
+        if file_path_item and file_path_item not in seen_paths:
+            file_paths_list.append(file_path_item)
+            seen_paths.add(file_path_item)
+
+    # Apply count limit
+    if len(file_paths_list) > max_file_paths:
+        limit_method = global_config.get(
+            "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
+        )
+        file_path_placeholder = global_config.get(
+            "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+        )
+        # Add + sign to indicate actual file count is higher
+        original_count_str = (
+            f"{len(file_paths_list)}+" if has_placeholder else str(len(file_paths_list))
         )
 
-        # Log based on actual LLM usage
-        if llm_was_used:
-            status_message = f"LLMmrg: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            # FIFO: keep tail (newest), discard head
+            file_paths_list = file_paths_list[-max_file_paths:]
+            file_paths_list.append(f"...{file_path_placeholder}...(FIFO)")
         else:
-            status_message = f"Merged: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
+            # KEEP: keep head (earliest), discard tail
+            file_paths_list = file_paths_list[:max_file_paths]
+            file_paths_list.append(f"...{file_path_placeholder}...(KEEP Old)")
 
-        if already_fragment > 0 or llm_was_used:
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
-        else:
-            logger.debug(status_message)
+        logger.info(
+            f"Limited `{entity_name}`: file_path {original_count_str} -> {max_file_paths} ({limit_method})"
+        )
+    # Finalize file_path
+    file_path = GRAPH_FIELD_SEP.join(file_paths_list)
 
+    # 10.Log based on actual LLM usage
+    num_fragment = len(description_list)
+    already_fragment = len(already_description)
+    if llm_was_used:
+        status_message = f"LLMmrg: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}"
     else:
-        logger.error(f"Entity {entity_name} has no description")
-        description = "(no description)"
+        status_message = f"Merged: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}"
 
-    source_id = GRAPH_FIELD_SEP.join(
-        set([dp["source_id"] for dp in nodes_data] + already_source_ids)
-    )
-    file_path = build_file_path(already_file_paths, nodes_data, entity_name)
+    truncation_info = truncation_info_log = ""
+    if len(source_ids) < len(full_source_ids):
+        # Add truncation info from apply_source_ids_limit if truncation occurred
+        truncation_info_log = f"{limit_method} {len(source_ids)}/{len(full_source_ids)}"
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            truncation_info = truncation_info_log
+        else:
+            truncation_info = "KEEP Old"
 
+    deduplicated_num = already_fragment + len(nodes_data) - num_fragment
+    dd_message = ""
+    if deduplicated_num > 0:
+        # Duplicated description detected across multiple trucks for the same entity
+        dd_message = f"dd {deduplicated_num}"
+
+    if dd_message or truncation_info_log:
+        status_message += (
+            f" ({', '.join(filter(None, [truncation_info_log, dd_message]))})"
+        )
+
+    # Add message to pipeline satus when merge happens
+    if already_fragment > 0 or llm_was_used:
+        logger.info(status_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = status_message
+                pipeline_status["history_messages"].append(status_message)
+    else:
+        logger.debug(status_message)
+
+    # 11. Update both graph and vector db
     node_data = dict(
         entity_id=entity_name,
         entity_type=entity_type,
@@ -1383,12 +1706,32 @@ async def _merge_nodes_then_upsert(
         source_id=source_id,
         file_path=file_path,
         created_at=int(time.time()),
+        truncate=truncation_info,
     )
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
     )
     node_data["entity_name"] = entity_name
+    if entity_vdb is not None:
+        entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
+        entity_content = f"{entity_name}\n{description}"
+        data_for_vdb = {
+            entity_vdb_id: {
+                "entity_name": entity_name,
+                "entity_type": entity_type,
+                "content": entity_content,
+                "source_id": source_id,
+                "file_path": file_path,
+            }
+        }
+        await safe_vdb_operation_with_exception(
+            operation=lambda payload=data_for_vdb: entity_vdb.upsert(payload),
+            operation_name="entity_upsert",
+            entity_name=entity_name,
+            max_retries=3,
+            retry_delay=0.1,
+        )
     return node_data
 
 
@@ -1397,21 +1740,26 @@ async def _merge_edges_then_upsert(
     tgt_id: str,
     edges_data: list[dict],
     knowledge_graph_inst: BaseGraphStorage,
+    relationships_vdb: BaseVectorStorage | None,
+    entity_vdb: BaseVectorStorage | None,
     global_config: dict,
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     added_entities: list = None,  # New parameter to track entities added during edge processing
+    relation_chunks_storage: BaseKVStorage | None = None,
 ):
     if src_id == tgt_id:
         return None
 
+    already_edge = None
     already_weights = []
     already_source_ids = []
     already_description = []
     already_keywords = []
     already_file_paths = []
 
+    # 1. Get existing edge data from graph storage
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
         already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
         # Handle the case where get_edge returns None or missing fields
@@ -1445,65 +1793,93 @@ async def _merge_edges_then_upsert(
                     )
                 )
 
-    # Process edges_data with None checks
-    weight = sum([dp["weight"] for dp in edges_data] + already_weights)
+    new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
 
-    # Deduplicate by description, keeping first occurrence
-    unique_edges = {}
-    for dp in edges_data:
-        if dp.get("description"):
-            desc = dp["description"]
-            if desc not in unique_edges:
-                unique_edges[desc] = dp
+    storage_key = make_relation_chunk_key(src_id, tgt_id)
+    existing_full_source_ids = []
+    if relation_chunks_storage is not None:
+        stored_chunks = await relation_chunks_storage.get_by_id(storage_key)
+        if stored_chunks and isinstance(stored_chunks, dict):
+            existing_full_source_ids = [
+                chunk_id for chunk_id in stored_chunks.get("chunk_ids", []) if chunk_id
+            ]
 
-    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
-    sorted_edges = sorted(
-        unique_edges.values(),
-        key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
-    )
-    sorted_descriptions = [dp["description"] for dp in sorted_edges]
+    if not existing_full_source_ids:
+        existing_full_source_ids = [
+            chunk_id for chunk_id in already_source_ids if chunk_id
+        ]
 
-    # Combine already_description with sorted new descriptions
-    description_list = already_description + sorted_descriptions
+    # 2. Merge new source ids with existing ones
+    full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
 
-    num_fragment = len(description_list)
-    already_fragment = len(already_description)
-    deduplicated_num = already_fragment + len(edges_data) - num_fragment
-    if deduplicated_num > 0:
-        dd_message = f"(dd:{deduplicated_num})"
-    else:
-        dd_message = ""
-    if num_fragment > 0:
-        # Get summary and LLM usage status
-        description, llm_was_used = await _handle_entity_relation_summary(
-            "Relation",
-            f"({src_id}, {tgt_id})",
-            description_list,
-            GRAPH_FIELD_SEP,
-            global_config,
-            llm_response_cache,
+    if relation_chunks_storage is not None and full_source_ids:
+        await relation_chunks_storage.upsert(
+            {
+                storage_key: {
+                    "chunk_ids": full_source_ids,
+                    "count": len(full_source_ids),
+                }
+            }
         )
 
-        # Log based on actual LLM usage
-        if llm_was_used:
-            status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
+    # 3. Finalize source_id by applying source ids limit
+    limit_method = global_config.get("source_ids_limit_method")
+    max_source_limit = global_config.get("max_source_ids_per_relation")
+    source_ids = apply_source_ids_limit(
+        full_source_ids,
+        max_source_limit,
+        limit_method,
+        identifier=f"`{src_id}`~`{tgt_id}`",
+    )
+    limit_method = (
+        global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
+    )
+
+    # 4. Only keep edges with source_id in the final source_ids list if in KEEP mode
+    if limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP:
+        allowed_source_ids = set(source_ids)
+        filtered_edges = []
+        for dp in edges_data:
+            source_id = dp.get("source_id")
+            # Skip relationship fragments sourced from chunks dropped by keep oldest cap
+            if (
+                source_id
+                and source_id not in allowed_source_ids
+                and source_id not in existing_full_source_ids
+            ):
+                continue
+            filtered_edges.append(dp)
+        edges_data = filtered_edges
+    else:  # In FIFO mode, keep all edges - truncation happens at source_ids level only
+        edges_data = list(edges_data)
+
+    # 5. Check if we need to skip summary due to source_ids limit
+    if (
+        limit_method == SOURCE_IDS_LIMIT_METHOD_KEEP
+        and len(existing_full_source_ids) >= max_source_limit
+        and not edges_data
+    ):
+        if already_edge:
+            logger.info(
+                f"Skipped `{src_id}`~`{tgt_id}`: KEEP old chunks  {already_source_ids}/{len(full_source_ids)}"
+            )
+            existing_edge_data = dict(already_edge)
+            return existing_edge_data
         else:
-            status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}{dd_message}"
+            logger.error(
+                f"Internal Error: already_node missing for `{src_id}`~`{tgt_id}`"
+            )
+            raise ValueError(
+                f"Internal Error: already_node missing for `{src_id}`~`{tgt_id}`"
+            )
 
-        if already_fragment > 0 or llm_was_used:
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
-        else:
-            logger.debug(status_message)
+    # 6.1 Finalize source_id
+    source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-    else:
-        logger.error(f"Edge {src_id} - {tgt_id} has no description")
-        description = "(no description)"
+    # 6.2 Finalize weight by summing new edges and existing weights
+    weight = sum([dp["weight"] for dp in edges_data] + already_weights)
 
-    # Split all existing and new keywords into individual terms, then combine and deduplicate
+    # 6.2 Finalize keywords by merging existing and new keywords
     all_keywords = set()
     # Process already_keywords (which are comma-separated)
     for keyword_str in already_keywords:
@@ -1518,25 +1894,168 @@ async def _merge_edges_then_upsert(
     # Join all unique keywords with commas
     keywords = ",".join(sorted(all_keywords))
 
-    source_id = GRAPH_FIELD_SEP.join(
-        set(
-            [dp["source_id"] for dp in edges_data if dp.get("source_id")]
-            + already_source_ids
-        )
-    )
-    file_path = build_file_path(already_file_paths, edges_data, f"{src_id}-{tgt_id}")
+    # 7. Deduplicate by description, keeping first occurrence in the same document
+    unique_edges = {}
+    for dp in edges_data:
+        description_value = dp.get("description")
+        if not description_value:
+            continue
+        if description_value not in unique_edges:
+            unique_edges[description_value] = dp
 
+    # Sort description by timestamp, then by description length (largest to smallest) when timestamps are the same
+    sorted_edges = sorted(
+        unique_edges.values(),
+        key=lambda x: (x.get("timestamp", 0), -len(x.get("description", ""))),
+    )
+    sorted_descriptions = [dp["description"] for dp in sorted_edges]
+
+    # Combine already_description with sorted new descriptions
+    description_list = already_description + sorted_descriptions
+    if not description_list:
+        logger.error(f"Relation {src_id}~{tgt_id} has no description")
+        raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
+
+    # 8. Get summary description an LLM usage status
+    description, llm_was_used = await _handle_entity_relation_summary(
+        "Relation",
+        f"({src_id}, {tgt_id})",
+        description_list,
+        GRAPH_FIELD_SEP,
+        global_config,
+        llm_response_cache,
+    )
+
+    # 9. Build file_path within MAX_FILE_PATHS limit
+    file_paths_list = []
+    seen_paths = set()
+    has_placeholder = False  # Track if already_file_paths contains placeholder
+
+    max_file_paths = global_config.get("max_file_paths", DEFAULT_MAX_FILE_PATHS)
+    file_path_placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+
+    # Collect from already_file_paths, excluding placeholder
+    for fp in already_file_paths:
+        # Check if this is a placeholder record
+        if fp and fp.startswith(f"...{file_path_placeholder}"):  # Skip placeholders
+            has_placeholder = True
+            continue
+        if fp and fp not in seen_paths:
+            file_paths_list.append(fp)
+            seen_paths.add(fp)
+
+    # Collect from new data
+    for dp in edges_data:
+        file_path_item = dp.get("file_path")
+        if file_path_item and file_path_item not in seen_paths:
+            file_paths_list.append(file_path_item)
+            seen_paths.add(file_path_item)
+
+    # Apply count limit
+    max_file_paths = global_config.get("max_file_paths")
+
+    if len(file_paths_list) > max_file_paths:
+        limit_method = global_config.get(
+            "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
+        )
+        file_path_placeholder = global_config.get(
+            "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+        )
+
+        # Add + sign to indicate actual file count is higher
+        original_count_str = (
+            f"{len(file_paths_list)}+" if has_placeholder else str(len(file_paths_list))
+        )
+
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            # FIFO: keep tail (newest), discard head
+            file_paths_list = file_paths_list[-max_file_paths:]
+            file_paths_list.append(f"...{file_path_placeholder}...(FIFO)")
+        else:
+            # KEEP: keep head (earliest), discard tail
+            file_paths_list = file_paths_list[:max_file_paths]
+            file_paths_list.append(f"...{file_path_placeholder}...(KEEP Old)")
+
+        logger.info(
+            f"Limited `{src_id}`~`{tgt_id}`: file_path {original_count_str} -> {max_file_paths} ({limit_method})"
+        )
+    # Finalize file_path
+    file_path = GRAPH_FIELD_SEP.join(file_paths_list)
+
+    # 10. Log based on actual LLM usage
+    num_fragment = len(description_list)
+    already_fragment = len(already_description)
+    if llm_was_used:
+        status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}"
+    else:
+        status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}"
+
+    truncation_info = truncation_info_log = ""
+    if len(source_ids) < len(full_source_ids):
+        # Add truncation info from apply_source_ids_limit if truncation occurred
+        truncation_info_log = f"{limit_method} {len(source_ids)}/{len(full_source_ids)}"
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            truncation_info = truncation_info_log
+        else:
+            truncation_info = "KEEP Old"
+
+    deduplicated_num = already_fragment + len(edges_data) - num_fragment
+    dd_message = ""
+    if deduplicated_num > 0:
+        # Duplicated description detected across multiple trucks for the same entity
+        dd_message = f"dd {deduplicated_num}"
+
+    if dd_message or truncation_info_log:
+        status_message += (
+            f" ({', '.join(filter(None, [truncation_info_log, dd_message]))})"
+        )
+
+    # Add message to pipeline satus when merge happens
+    if already_fragment > 0 or llm_was_used:
+        logger.info(status_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = status_message
+                pipeline_status["history_messages"].append(status_message)
+    else:
+        logger.debug(status_message)
+
+    # 11. Update both graph and vector db
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
+            node_created_at = int(time.time())
             node_data = {
                 "entity_id": need_insert_id,
                 "source_id": source_id,
                 "description": description,
                 "entity_type": "UNKNOWN",
                 "file_path": file_path,
-                "created_at": int(time.time()),
+                "created_at": node_created_at,
+                "truncate": "",
             }
             await knowledge_graph_inst.upsert_node(need_insert_id, node_data=node_data)
+
+            if entity_vdb is not None:
+                entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
+                entity_content = f"{need_insert_id}\n{description}"
+                vdb_data = {
+                    entity_vdb_id: {
+                        "content": entity_content,
+                        "entity_name": need_insert_id,
+                        "source_id": source_id,
+                        "entity_type": "UNKNOWN",
+                        "file_path": file_path,
+                    }
+                }
+                await safe_vdb_operation_with_exception(
+                    operation=lambda payload=vdb_data: entity_vdb.upsert(payload),
+                    operation_name="added_entity_upsert",
+                    entity_name=need_insert_id,
+                    max_retries=3,
+                    retry_delay=0.1,
+                )
 
             # Track entities added during edge processing
             if added_entities is not None:
@@ -1546,10 +2065,11 @@ async def _merge_edges_then_upsert(
                     "description": description,
                     "source_id": source_id,
                     "file_path": file_path,
-                    "created_at": int(time.time()),
+                    "created_at": node_created_at,
                 }
                 added_entities.append(entity_data)
 
+    edge_created_at = int(time.time())
     await knowledge_graph_inst.upsert_edge(
         src_id,
         tgt_id,
@@ -1559,7 +2079,8 @@ async def _merge_edges_then_upsert(
             keywords=keywords,
             source_id=source_id,
             file_path=file_path,
-            created_at=int(time.time()),
+            created_at=edge_created_at,
+            truncate=truncation_info,
         ),
     )
 
@@ -1570,8 +2091,40 @@ async def _merge_edges_then_upsert(
         keywords=keywords,
         source_id=source_id,
         file_path=file_path,
-        created_at=int(time.time()),
+        created_at=edge_created_at,
+        truncate=truncation_info,
+        weight=weight,
     )
+
+    if relationships_vdb is not None:
+        rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
+        rel_vdb_id_reverse = compute_mdhash_id(tgt_id + src_id, prefix="rel-")
+        try:
+            await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
+        except Exception as e:
+            logger.debug(
+                f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
+            )
+        rel_content = f"{keywords}\t{src_id}\n{tgt_id}\n{description}"
+        vdb_data = {
+            rel_vdb_id: {
+                "src_id": src_id,
+                "tgt_id": tgt_id,
+                "source_id": source_id,
+                "content": rel_content,
+                "keywords": keywords,
+                "description": description,
+                "weight": weight,
+                "file_path": file_path,
+            }
+        }
+        await safe_vdb_operation_with_exception(
+            operation=lambda payload=vdb_data: relationships_vdb.upsert(payload),
+            operation_name="relationship_upsert",
+            entity_name=f"{src_id}-{tgt_id}",
+            max_retries=3,
+            retry_delay=0.2,
+        )
 
     return edge_data
 
@@ -1588,6 +2141,8 @@ async def merge_nodes_and_edges(
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
+    entity_chunks_storage: BaseKVStorage | None = None,
+    relation_chunks_storage: BaseKVStorage | None = None,
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
@@ -1611,6 +2166,8 @@ async def merge_nodes_and_edges(
         pipeline_status: Pipeline status dictionary
         pipeline_status_lock: Lock for pipeline status
         llm_response_cache: LLM response cache
+        entity_chunks_storage: Storage tracking full chunk lists per entity
+        relation_chunks_storage: Storage tracking full chunk lists per relation
         current_file_number: Current file number for logging
         total_files: Total files for logging
         file_path: File path for logging
@@ -1658,46 +2215,22 @@ async def merge_nodes_and_edges(
                 [entity_name], namespace=namespace, enable_logging=False
             ):
                 try:
-                    # Graph database operation (critical path, must succeed)
+                    logger.debug(f"Processing entity {entity_name}")
                     entity_data = await _merge_nodes_then_upsert(
                         entity_name,
                         entities,
                         knowledge_graph_inst,
+                        entity_vdb,
                         global_config,
                         pipeline_status,
                         pipeline_status_lock,
                         llm_response_cache,
+                        entity_chunks_storage,
                     )
-
-                    # Vector database operation (equally critical, must succeed)
-                    if entity_vdb is not None and entity_data:
-                        data_for_vdb = {
-                            compute_mdhash_id(
-                                entity_data["entity_name"], prefix="ent-"
-                            ): {
-                                "entity_name": entity_data["entity_name"],
-                                "entity_type": entity_data["entity_type"],
-                                "content": f"{entity_data['entity_name']}\n{entity_data['description']}",
-                                "source_id": entity_data["source_id"],
-                                "file_path": entity_data.get(
-                                    "file_path", "unknown_source"
-                                ),
-                            }
-                        }
-
-                        # Use safe operation wrapper - VDB failure must throw exception
-                        await safe_vdb_operation_with_exception(
-                            operation=lambda: entity_vdb.upsert(data_for_vdb),
-                            operation_name="entity_upsert",
-                            entity_name=entity_name,
-                            max_retries=3,
-                            retry_delay=0.1,
-                        )
 
                     return entity_data
 
                 except Exception as e:
-                    # Any database operation failure is critical
                     error_msg = (
                         f"Critical error in entity processing for `{entity_name}`: {e}"
                     )
@@ -1787,82 +2320,28 @@ async def merge_nodes_and_edges(
                 try:
                     added_entities = []  # Track entities added during edge processing
 
-                    # Graph database operation (critical path, must succeed)
+                    logger.debug(f"Processing relation {sorted_edge_key}")
                     edge_data = await _merge_edges_then_upsert(
                         edge_key[0],
                         edge_key[1],
                         edges,
                         knowledge_graph_inst,
+                        relationships_vdb,
+                        entity_vdb,
                         global_config,
                         pipeline_status,
                         pipeline_status_lock,
                         llm_response_cache,
                         added_entities,  # Pass list to collect added entities
+                        relation_chunks_storage,
                     )
 
                     if edge_data is None:
                         return None, []
 
-                    # Vector database operation (equally critical, must succeed)
-                    if relationships_vdb is not None:
-                        data_for_vdb = {
-                            compute_mdhash_id(
-                                edge_data["src_id"] + edge_data["tgt_id"], prefix="rel-"
-                            ): {
-                                "src_id": edge_data["src_id"],
-                                "tgt_id": edge_data["tgt_id"],
-                                "keywords": edge_data["keywords"],
-                                "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
-                                "source_id": edge_data["source_id"],
-                                "file_path": edge_data.get(
-                                    "file_path", "unknown_source"
-                                ),
-                                "weight": edge_data.get("weight", 1.0),
-                            }
-                        }
-
-                        # Use safe operation wrapper - VDB failure must throw exception
-                        await safe_vdb_operation_with_exception(
-                            operation=lambda: relationships_vdb.upsert(data_for_vdb),
-                            operation_name="relationship_upsert",
-                            entity_name=f"{edge_data['src_id']}-{edge_data['tgt_id']}",
-                            max_retries=3,
-                            retry_delay=0.1,
-                        )
-
-                    # Update added_entities to entity vector database using safe operation wrapper
-                    if added_entities and entity_vdb is not None:
-                        for entity_data in added_entities:
-                            entity_vdb_id = compute_mdhash_id(
-                                entity_data["entity_name"], prefix="ent-"
-                            )
-                            entity_content = f"{entity_data['entity_name']}\n{entity_data['description']}"
-
-                            vdb_data = {
-                                entity_vdb_id: {
-                                    "content": entity_content,
-                                    "entity_name": entity_data["entity_name"],
-                                    "source_id": entity_data["source_id"],
-                                    "entity_type": entity_data["entity_type"],
-                                    "file_path": entity_data.get(
-                                        "file_path", "unknown_source"
-                                    ),
-                                }
-                            }
-
-                            # Use safe operation wrapper - VDB failure must throw exception
-                            await safe_vdb_operation_with_exception(
-                                operation=lambda data=vdb_data: entity_vdb.upsert(data),
-                                operation_name="added_entity_upsert",
-                                entity_name=entity_data["entity_name"],
-                                max_retries=3,
-                                retry_delay=0.1,
-                            )
-
                     return edge_data, added_entities
 
                 except Exception as e:
-                    # Any database operation failure is critical
                     error_msg = f"Critical error in relationship processing for `{sorted_edge_key}`: {e}"
                     logger.error(error_msg)
 
