@@ -81,11 +81,11 @@ def _truncate_entity_identifier(
     display_value = identifier[:limit]
     preview = identifier[:20]  # Show first 20 characters as preview
     logger.warning(
-        "%s: %s exceeded %d characters (len: %d, preview: '%s...'",
+        "%s: %s len %d > %d chars (Name: '%s...')",
         chunk_key,
         identifier_role,
-        limit,
         len(identifier),
+        limit,
         preview,
     )
     return display_value
@@ -993,13 +993,13 @@ async def _process_extraction_result(
                 relationship_data["src_id"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
-                "Relationship source entity",
+                "Relation entity",
             )
             truncated_target = _truncate_entity_identifier(
                 relationship_data["tgt_id"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
-                "Relationship target entity",
+                "Relation entity",
             )
             relationship_data["src_id"] = truncated_source
             relationship_data["tgt_id"] = truncated_target
