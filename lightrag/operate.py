@@ -58,6 +58,7 @@ from lightrag.constants import (
     SOURCE_IDS_LIMIT_METHOD_FIFO,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_ENTITY_NAME_MAX_LENGTH,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
@@ -67,6 +68,27 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+
+def _truncate_entity_identifier(
+    identifier: str, limit: int, chunk_key: str, identifier_role: str
+) -> str:
+    """Truncate entity identifiers that exceed the configured length limit."""
+
+    if len(identifier) <= limit:
+        return identifier
+
+    display_value = identifier[:limit]
+    preview = identifier[:20]  # Show first 20 characters as preview
+    logger.warning(
+        "%s: %s exceeded %d characters (len: %d, preview: '%s...'",
+        chunk_key,
+        identifier_role,
+        limit,
+        len(identifier),
+        preview,
+    )
+    return display_value
 
 
 def chunking_by_token_size(
@@ -952,7 +974,14 @@ async def _process_extraction_result(
             record_attributes, chunk_key, timestamp, file_path
         )
         if entity_data is not None:
-            maybe_nodes[entity_data["entity_name"]].append(entity_data)
+            truncated_name = _truncate_entity_identifier(
+                entity_data["entity_name"],
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Entity name",
+            )
+            entity_data["entity_name"] = truncated_name
+            maybe_nodes[truncated_name].append(entity_data)
             continue
 
         # Try to parse as relationship
@@ -960,9 +989,21 @@ async def _process_extraction_result(
             record_attributes, chunk_key, timestamp, file_path
         )
         if relationship_data is not None:
-            maybe_edges[
-                (relationship_data["src_id"], relationship_data["tgt_id"])
-            ].append(relationship_data)
+            truncated_source = _truncate_entity_identifier(
+                relationship_data["src_id"],
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Relationship source entity",
+            )
+            truncated_target = _truncate_entity_identifier(
+                relationship_data["tgt_id"],
+                DEFAULT_ENTITY_NAME_MAX_LENGTH,
+                chunk_key,
+                "Relationship target entity",
+            )
+            relationship_data["src_id"] = truncated_source
+            relationship_data["tgt_id"] = truncated_target
+            maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
 
     return dict(maybe_nodes), dict(maybe_edges)
 
