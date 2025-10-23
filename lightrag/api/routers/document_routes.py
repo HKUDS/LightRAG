@@ -1050,24 +1050,15 @@ async def pipeline_enqueue_file(
 
                 case ".pdf":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
-                        else:
-                            if not pm.is_installed("pypdf2"):  # type: ignore
+                        if not pm.is_installed("pypdf2"):  # type: ignore
                                 pm.install("pypdf2")
-                            from PyPDF2 import PdfReader  # type: ignore
-                            from io import BytesIO
+                        from PyPDF2 import PdfReader  # type: ignore
+                        from io import BytesIO
 
-                            pdf_file = BytesIO(file)
-                            reader = PdfReader(pdf_file)
-                            for page in reader.pages:
-                                content += page.extract_text() + "\n"
+                        pdf_file = BytesIO(file)
+                        reader = PdfReader(pdf_file)
+                        for page in reader.pages:
+                            content += page.extract_text() + "\n"
                     except Exception as e:
                         error_files = [
                             {
