@@ -121,7 +121,7 @@
       "refreshTooltip": "Reset document list",
       "pipelineStatusButton": "Pipeline",
       "pipelineStatusTooltip": "View document processing pipeline status",
-      "uploadedTitle": "Uploaded Documents 112222",
+      "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
       "emptyDescription": "There are no uploaded documents yet.",
