@@ -64,6 +64,7 @@ api = [
     "ascii_colors",
     "asyncpg",
     "distro",
+    "docling>=2.58.0,<3.0.0",
     "fastapi",
     "httpcore",
     "httpx",
