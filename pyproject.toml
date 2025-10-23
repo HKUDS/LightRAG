@@ -5,12 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lightrag-hku"
 dynamic = ["version"]
-authors = [
-    {name = "Zirui Guo"}
-]
+authors = [{ name = "Zirui Guo" }]
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }
 requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -23,6 +21,7 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
+    "docling>=2.58.0",
     "future",
     "json_repair",
     "nano-vectordb",
@@ -64,7 +63,6 @@ api = [
     "ascii_colors",
     "asyncpg",
     "distro",
-    "docling>=2.58.0,<3.0.0",
     "fastapi",
     "httpcore",
     "httpx",
@@ -126,13 +124,23 @@ Repository = "https://github.com/HKUDS/LightRAG"
 
 [tool.setuptools.packages.find]
 include = ["lightrag*"]
-exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*", "output_complete*", "rag_storage*", "inputs*"]
+exclude = [
+    "data*",
+    "tests*",
+    "scripts*",
+    "examples*",
+    "dickens*",
+    "reproduce*",
+    "output_complete*",
+    "rag_storage*",
+    "inputs*",
+]
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.dynamic]
-version = {attr = "lightrag.__version__"}
+version = { attr = "lightrag.__version__" }
 
 [tool.setuptools.package-data]
 lightrag = ["api/webui/**/*"]
