@@ -30,6 +30,7 @@ export default function PipelineStatusDialog({
   const [status, setStatus] = useState<PipelineStatusResponse | null>(null)
   const [position, setPosition] = useState<DialogPosition>('center')
   const [isUserScrolled, setIsUserScrolled] = useState(false)
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
 
   // Reset position when dialog opens
@@ -37,6 +38,9 @@ export default function PipelineStatusDialog({
     if (open) {
       setPosition('center')
       setIsUserScrolled(false)
+    } else {
+      // Reset confirmation dialog state when main dialog closes
+      setShowCancelConfirm(false)
     }
   }, [open])
 
@@ -81,8 +85,9 @@ export default function PipelineStatusDialog({
     return () => clearInterval(interval)
   }, [open, t])
 
-  // Handle cancel pipeline
-  const handleCancelPipeline = async () => {
+  // Handle cancel pipeline confirmation
+  const handleConfirmCancel = async () => {
+    setShowCancelConfirm(false)
     try {
       const result = await cancelPipeline()
       if (result.status === 'cancellation_requested') {
@@ -186,7 +191,7 @@ export default function PipelineStatusDialog({
                 variant="destructive"
                 size="sm"
                 disabled={!canCancel}
-                onClick={handleCancelPipeline}
+                onClick={() => setShowCancelConfirm(true)}
                 title={
                   status?.cancellation_requested
                     ? t('documentPanel.pipelineStatus.cancelInProgress')
@@ -233,6 +238,32 @@ export default function PipelineStatusDialog({
           </div>
         </div>
       </DialogContent>
+
+      {/* Cancel Confirmation Dialog */}
+      <Dialog open={showCancelConfirm} onOpenChange={setShowCancelConfirm}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>{t('documentPanel.pipelineStatus.cancelConfirmTitle')}</DialogTitle>
+            <DialogDescription>
+              {t('documentPanel.pipelineStatus.cancelConfirmDescription')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowCancelConfirm(false)}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmCancel}
+            >
+              {t('documentPanel.pipelineStatus.cancelConfirmButton')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   )
 }
