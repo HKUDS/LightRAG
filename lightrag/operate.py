@@ -1639,6 +1639,12 @@ async def _merge_nodes_then_upsert(
         logger.error(f"Entity {entity_name} has no description")
         raise ValueError(f"Entity {entity_name} has no description")
 
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during entity summary")
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Entity",
@@ -1958,6 +1964,14 @@ async def _merge_edges_then_upsert(
     if not description_list:
         logger.error(f"Relation {src_id}~{tgt_id} has no description")
         raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
+
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during relation summary"
+                )
 
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(

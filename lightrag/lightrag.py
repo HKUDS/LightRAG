@@ -1699,10 +1699,16 @@ class LightRAG:
                     semaphore: asyncio.Semaphore,
                 ) -> None:
                     """Process single document"""
+                    # Initialize variables at the start to prevent UnboundLocalError in error handling
+                    file_path = "unknown_source"
+                    current_file_number = 0
                     file_extraction_stage_ok = False
+                    processing_start_time = int(time.time())
+                    first_stage_tasks = []
+                    entity_relation_task = None
+
                     async with semaphore:
                         nonlocal processed_count
-                        current_file_number = 0
                         # Initialize to prevent UnboundLocalError in error handling
                         first_stage_tasks = []
                         entity_relation_task = None
@@ -1833,16 +1839,29 @@ class LightRAG:
                             file_extraction_stage_ok = True
 
                         except Exception as e:
-                            # Log error and update pipeline status
-                            logger.error(traceback.format_exc())
-                            error_msg = f"Failed to extract document {current_file_number}/{total_files}: {file_path}"
-                            logger.error(error_msg)
-                            async with pipeline_status_lock:
-                                pipeline_status["latest_message"] = error_msg
-                                pipeline_status["history_messages"].append(
-                                    traceback.format_exc()
-                                )
-                                pipeline_status["history_messages"].append(error_msg)
+                            # Check if this is a user cancellation
+                            if isinstance(e, PipelineCancelledException):
+                                # User cancellation - log brief message only, no traceback
+                                error_msg = f"User cancelled {current_file_number}/{total_files}: {file_path}"
+                                logger.warning(error_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = error_msg
+                                    pipeline_status["history_messages"].append(
+                                        error_msg
+                                    )
+                            else:
+                                # Other exceptions - log with traceback
+                                logger.error(traceback.format_exc())
+                                error_msg = f"Failed to extract document {current_file_number}/{total_files}: {file_path}"
+                                logger.error(error_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = error_msg
+                                    pipeline_status["history_messages"].append(
+                                        traceback.format_exc()
+                                    )
+                                    pipeline_status["history_messages"].append(
+                                        error_msg
+                                    )
 
                             # Cancel tasks that are not yet completed
                             all_tasks = first_stage_tasks + (
@@ -1951,18 +1970,29 @@ class LightRAG:
                                     )
 
                             except Exception as e:
-                                # Log error and update pipeline status
-                                logger.error(traceback.format_exc())
-                                error_msg = f"Merging stage failed in document {current_file_number}/{total_files}: {file_path}"
-                                logger.error(error_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = error_msg
-                                    pipeline_status["history_messages"].append(
-                                        traceback.format_exc()
-                                    )
-                                    pipeline_status["history_messages"].append(
-                                        error_msg
-                                    )
+                                # Check if this is a user cancellation
+                                if isinstance(e, PipelineCancelledException):
+                                    # User cancellation - log brief message only, no traceback
+                                    error_msg = f"User cancelled during merge {current_file_number}/{total_files}: {file_path}"
+                                    logger.warning(error_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = error_msg
+                                        pipeline_status["history_messages"].append(
+                                            error_msg
+                                        )
+                                else:
+                                    # Other exceptions - log with traceback
+                                    logger.error(traceback.format_exc())
+                                    error_msg = f"Merging stage failed in document {current_file_number}/{total_files}: {file_path}"
+                                    logger.error(error_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = error_msg
+                                        pipeline_status["history_messages"].append(
+                                            traceback.format_exc()
+                                        )
+                                        pipeline_status["history_messages"].append(
+                                            error_msg
+                                        )
 
                                 # Persistent llm cache
                                 if self.llm_response_cache:
