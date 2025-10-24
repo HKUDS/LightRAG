@@ -7,6 +7,7 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
+from lightrag.exceptions import PipelineCancelledException
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -2204,6 +2205,12 @@ async def merge_nodes_and_edges(
         file_path: File path for logging
     """
 
+    # Check for cancellation at the start of merge
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during merge phase")
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -2240,6 +2247,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
+            # Check for cancellation before processing entity
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during entity merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             async with get_storage_keyed_lock(
@@ -2339,6 +2354,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
+            # Check for cancellation before processing edges
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during relation merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             sorted_edge_key = sorted([edge_key[0], edge_key[1]])
@@ -2525,6 +2548,14 @@ async def extract_entities(
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
+    # Check for cancellation at the start of entity extraction
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during entity extraction"
+                )
+
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
@@ -2692,6 +2723,14 @@ async def extract_entities(
 
     async def _process_with_semaphore(chunk):
         async with semaphore:
+            # Check for cancellation before processing chunk
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during chunk processing"
+                        )
+
             try:
                 return await _process_single_content(chunk)
             except Exception as e:
