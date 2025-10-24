@@ -114,10 +114,8 @@
     },
     "documentManager": {
       "title": "إدارة المستندات",
-      "scanButton": "مسح ضوئي",
+      "scanButton": "مسح/إعادة محاولة",
       "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
-      "retryFailedButton": "إعادة المحاولة",
-      "retryFailedTooltip": "إعادة معالجة جميع المستندات الفاشلة",
       "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",

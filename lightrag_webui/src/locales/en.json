@@ -114,10 +114,8 @@
     },
     "documentManager": {
       "title": "Document Management",
-      "scanButton": "Scan",
+      "scanButton": "Scan/Retry",
       "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
-      "retryFailedButton": "Retry",
-      "retryFailedTooltip": "Retry processing all failed documents",
       "refreshTooltip": "Reset document list",
       "pipelineStatusButton": "Pipeline",
       "pipelineStatusTooltip": "View document processing pipeline status",
