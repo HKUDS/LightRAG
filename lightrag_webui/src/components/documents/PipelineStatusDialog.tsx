@@ -11,7 +11,7 @@ import {
   DialogDescription
 } from '@/components/ui/Dialog'
 import Button from '@/components/ui/Button'
-import { getPipelineStatus, PipelineStatusResponse } from '@/api/lightrag'
+import { getPipelineStatus, cancelPipeline, PipelineStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
@@ -81,6 +81,23 @@ export default function PipelineStatusDialog({
     return () => clearInterval(interval)
   }, [open, t])
 
+  // Handle cancel pipeline
+  const handleCancelPipeline = async () => {
+    try {
+      const result = await cancelPipeline()
+      if (result.status === 'cancellation_requested') {
+        toast.success(t('documentPanel.pipelineStatus.cancelSuccess'))
+      } else if (result.status === 'not_busy') {
+        toast.info(t('documentPanel.pipelineStatus.cancelNotBusy'))
+      }
+    } catch (err) {
+      toast.error(t('documentPanel.pipelineStatus.cancelFailed', { error: errorMessage(err) }))
+    }
+  }
+
+  // Determine if cancel button should be enabled
+  const canCancel = status?.busy === true && !status?.cancellation_requested
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -142,16 +159,43 @@ export default function PipelineStatusDialog({
 
         {/* Status Content */}
         <div className="space-y-4 pt-4">
-          {/* Pipeline Status */}
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
-              <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
+          {/* Pipeline Status - with cancel button */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            {/* Left side: Status indicators */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
+                <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
+                <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
+              </div>
+              {/* Only show cancellation status when it's requested */}
+              {status?.cancellation_requested && (
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.cancellationRequested')}:</div>
+                  <div className="h-2 w-2 rounded-full bg-red-500" />
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
-              <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
-            </div>
+
+            {/* Right side: Cancel button - only show when pipeline is busy */}
+            {status?.busy && (
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={!canCancel}
+                onClick={handleCancelPipeline}
+                title={
+                  status?.cancellation_requested
+                    ? t('documentPanel.pipelineStatus.cancelInProgress')
+                    : t('documentPanel.pipelineStatus.cancelTooltip')
+                }
+              >
+                {t('documentPanel.pipelineStatus.cancelButton')}
+              </Button>
+            )}
           </div>
 
           {/* Job Information */}
