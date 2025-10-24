@@ -22,6 +22,7 @@ from typing import (
     Dict,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
@@ -1603,6 +1604,7 @@ class LightRAG:
                         "batchs": 0,  # Total number of files to be processed
                         "cur_batch": 0,  # Number of files already processed
                         "request_pending": False,  # Clear any previous request
+                        "cancellation_requested": False,  # Initialize cancellation flag
                         "latest_message": "",
                     }
                 )
@@ -1619,6 +1621,22 @@ class LightRAG:
         try:
             # Process documents until no more documents or requests
             while True:
+                # Check for cancellation request at the start of main loop
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        # Clear pending request
+                        pipeline_status["request_pending"] = False
+                        # Celar cancellation flag
+                        pipeline_status["cancellation_requested"] = False
+
+                        log_message = "Pipeline cancelled by user"
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+
+                        # Exit directly, skipping request_pending check
+                        return
+
                 if not to_process_docs:
                     log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
@@ -1689,6 +1707,11 @@ class LightRAG:
                         first_stage_tasks = []
                         entity_relation_task = None
                         try:
+                            # Check for cancellation before starting document processing
+                            async with pipeline_status_lock:
+                                if pipeline_status.get("cancellation_requested", False):
+                                    raise PipelineCancelledException("User cancelled")
+
                             # Get file path from status document
                             file_path = getattr(
                                 status_doc, "file_path", "unknown_source"
@@ -1750,6 +1773,11 @@ class LightRAG:
 
                             # Record processing start time
                             processing_start_time = int(time.time())
+
+                            # Check for cancellation before entity extraction
+                            async with pipeline_status_lock:
+                                if pipeline_status.get("cancellation_requested", False):
+                                    raise PipelineCancelledException("User cancelled")
 
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)
@@ -1856,6 +1884,15 @@ class LightRAG:
                         # Concurrency is controlled by keyed lock for individual entities and relationships
                         if file_extraction_stage_ok:
                             try:
+                                # Check for cancellation before merge
+                                async with pipeline_status_lock:
+                                    if pipeline_status.get(
+                                        "cancellation_requested", False
+                                    ):
+                                        raise PipelineCancelledException(
+                                            "User cancelled"
+                                        )
+
                                 # Get chunk_results from entity_relation_task
                                 chunk_results = await entity_relation_task
                                 await merge_nodes_and_edges(
@@ -1970,7 +2007,19 @@ class LightRAG:
                     )
 
                 # Wait for all document processing to complete
-                await asyncio.gather(*doc_tasks)
+                try:
+                    await asyncio.gather(*doc_tasks)
+                except PipelineCancelledException:
+                    # Cancel all remaining tasks
+                    for task in doc_tasks:
+                        if not task.done():
+                            task.cancel()
+
+                    # Wait for all tasks to complete cancellation
+                    await asyncio.wait(doc_tasks, return_when=asyncio.ALL_COMPLETED)
+
+                    # Exit directly (document statuses already updated in process_document)
+                    return
 
                 # Check if there's a pending request to process more documents (with lock)
                 has_pending_request = False
@@ -2001,11 +2050,14 @@ class LightRAG:
                 to_process_docs.update(pending_docs)
 
         finally:
-            log_message = "Enqueued document processing pipeline stoped"
+            log_message = "Enqueued document processing pipeline stopped"
             logger.info(log_message)
-            # Always reset busy status when done or if an exception occurs (with lock)
+            # Always reset busy status and cancellation flag when done or if an exception occurs (with lock)
             async with pipeline_status_lock:
                 pipeline_status["busy"] = False
+                pipeline_status["cancellation_requested"] = (
+                    False  # Always reset cancellation flag
+                )
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
