@@ -70,6 +70,7 @@
       "confirmButton": "OUI",
       "deleteFileOption": "Supprimer également les fichiers téléchargés",
       "deleteFileTooltip": "Cochez cette option pour supprimer également les fichiers téléchargés correspondants sur le serveur",
+      "deleteLLMCacheOption": "Supprimer également le cache LLM d'extraction",
       "success": "Pipeline de suppression de documents démarré avec succès",
       "failed": "Échec de la suppression des documents :\n{{message}}",
       "error": "Échec de la suppression des documents :\n{{error}}",
@@ -97,7 +98,7 @@
         "error": "Certains fichiers n'ont pas pu être téléchargés"
       },
       "generalError": "Échec du téléchargement\n{{error}}",
-      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
@@ -114,19 +115,16 @@
     "documentManager": {
       "title": "Gestion des documents",
       "scanButton": "Scanner",
-      "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "scanTooltip": "Scanner et traiter les documents dans le dossier d'entrée, et retraiter également tous les documents échoués",
+      "retryFailedButton": "Réessayer",
+      "retryFailedTooltip": "Réessayer le traitement de tous les documents échoués",
       "refreshTooltip": "Réinitialiser la liste des documents",
-      "pipelineStatusButton": "État du Pipeline",
-      "pipelineStatusTooltip": "Voir l'état du pipeline",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "Voir l'état du pipeline de traitement des documents",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
-      "loading": "Chargement des documents...",
       "emptyTitle": "Aucun document",
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
-      "emptyWithPipelineTitle": "Documents en cours de traitement",
-      "emptyWithPipelineDescription": "Le pipeline est occupé. Des documents sont peut-être en cours de traitement.",
-      "scanForDocuments": "Scanner les documents",
-      "viewPipeline": "Voir le pipeline",
       "columns": {
         "id": "ID",
         "fileName": "Nom du fichier",
@@ -142,6 +140,7 @@
       "status": {
         "all": "Tous",
         "completed": "Terminé",
+        "preprocessed": "Prétraité",
         "processing": "En traitement",
         "pending": "En attente",
         "failed": "Échoué"
@@ -159,14 +158,21 @@
     },
     "pipelineStatus": {
       "title": "État du Pipeline",
-      "busy": "Pipeline occupé",
-      "requestPending": "Requête en attente",
-      "jobName": "Nom du travail",
-      "startTime": "Heure de début",
-      "progress": "Progression",
-      "unit": "lot",
-      "latestMessage": "Dernier message",
-      "historyMessages": "Historique des messages",
+      "busy": "Pipeline Occupé",
+      "requestPending": "Demande en Attente",
+      "cancellationRequested": "Annulation Demandée",
+      "jobName": "Nom du Travail",
+      "startTime": "Heure de Début",
+      "progress": "Progrès",
+      "unit": "Lot",
+      "pipelineMessages": "Messages de Pipeline",
+      "cancelButton": "Annuler",
+      "cancelTooltip": "Annuler le traitement du pipeline",
+      "cancelInProgress": "Annulation en cours...",
+      "pipelineNotRunning": "Le pipeline n'est pas en cours d'exécution",
+      "cancelSuccess": "Annulation du pipeline demandée",
+      "cancelFailed": "Échec de l'annulation du pipeline\n{{error}}",
+      "cancelNotBusy": "Le pipeline n'est pas en cours d'exécution, pas besoin d'annuler",
       "errors": {
         "fetchFailed": "Échec de la récupération de l'état du pipeline\n{{error}}"
       }
@@ -320,9 +326,9 @@
           "description": "Description",
           "entity_id": "Nom",
           "entity_type": "Type",
-          "source_id": "ID source",
+          "source_id": "C-ID",
           "Neighbour": "Voisin",
-          "file_path": "Source",
+          "file_path": "File",
           "keywords": "Keys",
           "weight": "Poids"
         }

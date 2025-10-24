@@ -172,25 +172,17 @@ export default function PipelineStatusDialog({
             </div>
           </div>
 
-          {/* Latest Message */}
-          <div className="space-y-2">
-            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.latestMessage')}:</div>
-            <div className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 whitespace-pre-wrap break-words">
-              {status?.latest_message || '-'}
-            </div>
-          </div>
-
           {/* History Messages */}
           <div className="space-y-2">
-            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.historyMessages')}:</div>
+            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.pipelineMessages')}:</div>
             <div
               ref={historyRef}
               onScroll={handleScroll}
-              className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto min-h-[7.5em] max-h-[40vh]"
+              className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto overflow-x-hidden min-h-[7.5em] max-h-[40vh]"
             >
               {status?.history_messages?.length ? (
                 status.history_messages.map((msg, idx) => (
-                  <div key={idx} className="whitespace-pre-wrap break-words">{msg}</div>
+                  <div key={idx} className="whitespace-pre-wrap break-all">{msg}</div>
                 ))
               ) : '-'}
             </div>

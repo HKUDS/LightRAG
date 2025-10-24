@@ -70,6 +70,7 @@
       "confirmButton": "確定",
       "deleteFileOption": "同時刪除上傳檔案",
       "deleteFileTooltip": "選取此選項將同時刪除伺服器上對應的上傳檔案",
+      "deleteLLMCacheOption": "同時刪除實體關係擷取 LLM 快取",
       "success": "文件刪除流水線啟動成功",
       "failed": "刪除文件失敗：\n{{message}}",
       "error": "刪除文件失敗：\n{{error}}",
@@ -114,19 +115,16 @@
     "documentManager": {
       "title": "文件管理",
       "scanButton": "掃描",
-      "scanTooltip": "掃描輸入目錄中的文件",
+      "scanTooltip": "掃描處理輸入目錄中的文件，同時重新處理所有失敗的文件",
+      "retryFailedButton": "重試",
+      "retryFailedTooltip": "重新處理所有失敗的文件",
       "refreshTooltip": "重設文件清單",
-      "pipelineStatusButton": "pipeline 狀態",
-      "pipelineStatusTooltip": "查看pipeline 狀態",
+      "pipelineStatusButton": "管線狀態",
+      "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
-      "loading": "正在載入文件...",
       "emptyTitle": "無文件",
       "emptyDescription": "尚未上傳任何文件",
-      "emptyWithPipelineTitle": "處理中的文件",
-      "emptyWithPipelineDescription": "Pipeline 正忙。可能有文件正在處理中。",
-      "scanForDocuments": "掃描文件",
-      "viewPipeline": "查看 Pipeline",
       "columns": {
         "id": "ID",
         "fileName": "檔案名稱",
@@ -142,6 +140,7 @@
       "status": {
         "all": "全部",
         "completed": "已完成",
+        "preprocessed": "預處理",
         "processing": "處理中",
         "pending": "等待中",
         "failed": "失敗"
@@ -158,17 +157,24 @@
       "hideFileNameTooltip": "隱藏檔案名稱"
     },
     "pipelineStatus": {
-      "title": "pipeline 狀態",
-      "busy": "pipeline 忙碌中",
+      "title": "流水線狀態",
+      "busy": "流水線忙碌",
       "requestPending": "待處理請求",
-      "jobName": "工作名稱",
+      "cancellationRequested": "取消請求",
+      "jobName": "作業名稱",
       "startTime": "開始時間",
       "progress": "進度",
-      "unit": "梯次",
-      "latestMessage": "最新訊息",
-      "historyMessages": "歷史訊息",
+      "unit": "批",
+      "pipelineMessages": "流水線消息",
+      "cancelButton": "中斷",
+      "cancelTooltip": "中斷流水線處理",
+      "cancelInProgress": "取消請求進行中...",
+      "pipelineNotRunning": "流水線未運行",
+      "cancelSuccess": "流水線中斷請求已發送",
+      "cancelFailed": "中斷流水線失敗\n{{error}}",
+      "cancelNotBusy": "流水線未運行，無需中斷",
       "errors": {
-        "fetchFailed": "取得pipeline 狀態失敗\n{{error}}"
+        "fetchFailed": "獲取流水線狀態失敗\n{{error}}"
       }
     }
   },
@@ -320,9 +326,9 @@
           "description": "描述",
           "entity_id": "名稱",
           "entity_type": "類型",
-          "source_id": "來源ID",
+          "source_id": "C-ID",
           "Neighbour": "鄰接",
-          "file_path": "來源",
+          "file_path": "檔案",
           "keywords": "Keys",
           "weight": "權重"
         }
@@ -338,14 +344,14 @@
     },
     "search": {
       "placeholder": "頁面內搜尋節點...",
-      "message": "還有 {count} 個"
+      "message": "還有 {{count}} 個"
     },
     "graphLabels": {
       "selectTooltip": "獲取節點(標籤)子圖",
       "noLabels": "未找到匹配的節點",
       "label": "搜尋節點名稱",
       "placeholder": "搜尋節點名稱...",
-      "andOthers": "還有 {count} 個",
+      "andOthers": "還有 {{count}} 個",
       "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
       "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
       "refreshingTooltip": "正在重新整理資料..."
