@@ -2282,6 +2282,34 @@ class TokenTracker:
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
+    
+async def call_llm_with_tracker(
+    func: Callable[..., Any],
+    *args: Any,
+    token_tracker: "TokenTracker | None" = None,
+    **kwargs: Any,
+    ) -> Any:
+    """
+    Invoke an async LLM callable while optionally passing a TokenTracker.
+
+    If the underlying callable doesn't accept the `token_tracker` kwarg,
+    the call is retried without it for backward compatibility.
+    """
+    call_kwargs = dict(kwargs)
+    if token_tracker is not None:
+        call_kwargs["token_tracker"] = token_tracker
+
+    try:
+        return await func(*args, **call_kwargs)
+    except TypeError as err:
+        if token_tracker is not None and "token_tracker" in str(err):
+            logger.debug(
+                "LLM callable %s does not accept token_tracker, retrying without it.",
+                getattr(func, "__name__", repr(func)),
+            )
+            call_kwargs.pop("token_tracker", None)
+            return await func(*args, **call_kwargs)
+        raise
 
 
 async def apply_rerank_if_enabled(

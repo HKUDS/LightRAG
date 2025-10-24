@@ -11,6 +11,7 @@ from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
+    TokenTracker,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
     pack_user_ass_to_openai_messages,
@@ -34,6 +35,7 @@ from lightrag.utils import (
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
+    call_llm_with_tracker,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -2767,6 +2769,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    token_tracker: TokenTracker | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -2781,6 +2784,7 @@ async def kg_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        token_tracker: Optional TokenTracker for aggregating token usage
         chunks_vdb: Document chunks vector database
 
     Returns:
@@ -2809,8 +2813,19 @@ async def kg_query(
         use_model_func = partial(use_model_func, _priority=5)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
+        query,
+        query_param,
+        global_config,
+        hashing_kv,
+        token_tracker=token_tracker,
     )
+
+    def _attach_token_usage(raw_data: dict[str, Any] | None) -> dict[str, Any] | None:
+        if raw_data is None or token_tracker is None:
+            return raw_data
+        metadata = raw_data.setdefault("metadata", {})
+        metadata["token_usage"] = token_tracker.get_usage()
+        return raw_data
 
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
@@ -2849,9 +2864,8 @@ async def kg_query(
 
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
-        return QueryResult(
-            content=context_result.context, raw_data=context_result.raw_data
-        )
+        raw_data = _attach_token_usage(context_result.raw_data)
+        return QueryResult(content=context_result.context, raw_data=raw_data)
 
     user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
     response_type = (
@@ -2872,7 +2886,8 @@ async def kg_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
+        raw_data = _attach_token_usage(context_result.raw_data)
+        return QueryResult(content=prompt_content, raw_data=raw_data)
 
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -2908,12 +2923,14 @@ async def kg_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
+        response = await call_llm_with_tracker(
+            use_model_func,
             user_query,
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=token_tracker,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
@@ -2956,12 +2973,14 @@ async def kg_query(
                 .strip()
             )
 
-        return QueryResult(content=response, raw_data=context_result.raw_data)
+        raw_data = _attach_token_usage(context_result.raw_data)
+        return QueryResult(content=response, raw_data=raw_data)
     else:
         # Streaming response (AsyncIterator)
+        raw_data = _attach_token_usage(context_result.raw_data)
         return QueryResult(
             response_iterator=response,
-            raw_data=context_result.raw_data,
+            raw_data=raw_data,
             is_streaming=True,
         )
 
@@ -2971,6 +2990,7 @@ async def get_keywords_from_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
@@ -2983,6 +3003,7 @@ async def get_keywords_from_query(
         query_param: Query parameters that may contain pre-defined keywords
         global_config: Global configuration dictionary
         hashing_kv: Optional key-value storage for caching results
+        token_tracker: Optional TokenTracker to aggregate keyword extraction usage
 
     Returns:
         A tuple containing (high_level_keywords, low_level_keywords)
@@ -2993,7 +3014,11 @@ async def get_keywords_from_query(
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
     hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
+        query,
+        query_param,
+        global_config,
+        hashing_kv,
+        token_tracker=token_tracker,
     )
     return hl_keywords, ll_keywords
 
@@ -3003,11 +3028,19 @@ async def extract_keywords_only(
     param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
     This method does NOT build the final RAG context or provide a final answer.
     It ONLY extracts keywords (hl_keywords, ll_keywords).
+
+    Args:
+        text: Input text to analyze for keywords.
+        param: Query parameters controlling keyword extraction.
+        global_config: Global configuration dictionary.
+        hashing_kv: Optional cache storage to reuse previous keyword calls.
+        token_tracker: Optional TokenTracker to aggregate keyword extraction usage.
     """
 
     # 1. Handle cache if needed - add cache type for keywords
@@ -3056,7 +3089,12 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    result = await call_llm_with_tracker(
+        use_model_func,
+        kw_prompt,
+        keyword_extraction=True,
+        token_tracker=token_tracker,
+    )
 
     # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
@@ -4489,6 +4527,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    token_tracker: TokenTracker | None = None,
     return_raw_data: Literal[True] = True,
 ) -> dict[str, Any]: ...
 
@@ -4501,6 +4540,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    token_tracker: TokenTracker | None = None,
     return_raw_data: Literal[False] = False,
 ) -> str | AsyncIterator[str]: ...
 
@@ -4512,6 +4552,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -4633,6 +4674,8 @@ async def naive_query(
         "total_chunks_found": len(chunks),
         "final_chunks_count": len(processed_chunks_with_ref_ids),
     }
+    if token_tracker is not None:
+        raw_data["metadata"]["token_usage"] = token_tracker.get_usage()
 
     # Build text_units_context from processed chunks with reference IDs
     text_units_context = []
@@ -4697,12 +4740,14 @@ async def naive_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
+        response = await call_llm_with_tracker(
+            use_model_func,
             user_query,
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=token_tracker,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):

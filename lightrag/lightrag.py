@@ -91,6 +91,7 @@ from lightrag.operate import (
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
     Tokenizer,
+    TokenTracker,
     TiktokenTokenizer,
     EmbeddingFunc,
     always_get_an_event_loop,
@@ -106,6 +107,7 @@ from lightrag.utils import (
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    call_llm_with_tracker,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -2430,6 +2432,7 @@ class LightRAG:
             fields at the top level.
         """
         global_config = asdict(self)
+        token_tracker = TokenTracker()
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2467,6 +2470,7 @@ class LightRAG:
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
+                token_tracker=token_tracker,
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
@@ -2477,6 +2481,7 @@ class LightRAG:
                 global_config,
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
+                token_tracker=token_tracker,
             )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
@@ -2522,6 +2527,14 @@ class LightRAG:
             else:
                 logger.warning("[aquery_data] No data section found in query result")
 
+        usage = token_tracker.get_usage()
+        if isinstance(final_data, dict):
+            final_data.setdefault("metadata", {})
+            final_data["metadata"]["token_usage"] = usage
+        logger.info(
+            "[aquery_data] Token usage (mode=%s): %s", data_param.mode, usage
+        )
+
         await self._query_done()
         return final_data
 
@@ -2548,6 +2561,7 @@ class LightRAG:
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = asdict(self)
+        token_tracker = TokenTracker()
 
         try:
             query_result = None
@@ -2564,6 +2578,7 @@ class LightRAG:
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
+                    token_tracker=token_tracker,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -2573,6 +2588,7 @@ class LightRAG:
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
+                    token_tracker=token_tracker,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
@@ -2581,19 +2597,28 @@ class LightRAG:
                 use_llm_func = partial(use_llm_func, _priority=8)
 
                 param.stream = True if param.stream is None else param.stream
-                response = await use_llm_func(
+                response = await call_llm_with_tracker(
+                    use_llm_func,
                     query.strip(),
                     system_prompt=system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
+                    token_tracker=token_tracker,
                 )
+                usage = token_tracker.get_usage()
+                usage_metadata = {"token_usage": usage}
                 if type(response) is str:
+                    logger.info(
+                        "[aquery_llm] Token usage (mode=%s, bypass=True, stream=False): %s",
+                        param.mode,
+                        usage,
+                    )
                     return {
                         "status": "success",
                         "message": "Bypass mode LLM non streaming response",
                         "data": {},
-                        "metadata": {},
+                        "metadata": usage_metadata,
                         "llm_response": {
                             "content": response,
                             "response_iterator": None,
@@ -2601,11 +2626,16 @@ class LightRAG:
                         },
                     }
                 else:
+                    logger.info(
+                        "[aquery_llm] Token usage (mode=%s, bypass=True, stream=True): %s",
+                        param.mode,
+                        usage,
+                    )
                     return {
                         "status": "success",
                         "message": "Bypass mode LLM streaming response",
                         "data": {},
-                        "metadata": {},
+                        "metadata": usage_metadata,
                         "llm_response": {
                             "content": None,
                             "response_iterator": response,
@@ -2616,17 +2646,26 @@ class LightRAG:
                 raise ValueError(f"Unknown mode {param.mode}")
 
             await self._query_done()
+            usage = token_tracker.get_usage()
 
             # Check if query_result is None
             if query_result is None:
+                failure_metadata = {
+                    "failure_reason": "no_results",
+                    "mode": param.mode,
+                    "token_usage": usage,
+                }
+                logger.info(
+                    "[aquery_llm] Token usage (mode=%s, status=failure, stream=%s): %s",
+                    param.mode,
+                    bool(param.stream),
+                    usage,
+                )
                 return {
                     "status": "failure",
                     "message": "Query returned no results",
                     "data": {},
-                    "metadata": {
-                        "failure_reason": "no_results",
-                        "mode": param.mode,
-                    },
+                    "metadata": failure_metadata,
                     "llm_response": {
                         "content": PROMPTS["fail_response"],
                         "response_iterator": None,
@@ -2636,6 +2675,8 @@ class LightRAG:
 
             # Extract structured data from query result
             raw_data = query_result.raw_data or {}
+            metadata = raw_data.setdefault("metadata", {})
+            metadata["token_usage"] = usage
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
@@ -2645,17 +2686,30 @@ class LightRAG:
                 else None,
                 "is_streaming": query_result.is_streaming,
             }
+            logger.info(
+                "[aquery_llm] Token usage (mode=%s, status=success, stream=%s): %s",
+                param.mode,
+                query_result.is_streaming,
+                usage,
+            )
 
             return raw_data
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
             # Return error response
+            usage = token_tracker.get_usage()
+            logger.info(
+                "[aquery_llm] Token usage (mode=%s, status=error, stream=%s): %s",
+                param.mode,
+                bool(param.stream),
+                usage,
+            )
             return {
                 "status": "failure",
                 "message": f"Query failed: {str(e)}",
                 "data": {},
-                "metadata": {},
+                "metadata": {"token_usage": usage},
                 "llm_response": {
                     "content": None,
                     "response_iterator": None,
