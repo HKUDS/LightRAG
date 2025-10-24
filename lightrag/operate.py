@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import partial
+from pathlib import Path
 
 import asyncio
 import json
@@ -7,6 +8,7 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
+from lightrag.exceptions import PipelineCancelledException
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -67,7 +69,7 @@ from dotenv import load_dotenv
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 
 def _truncate_entity_identifier(
@@ -1637,6 +1639,12 @@ async def _merge_nodes_then_upsert(
         logger.error(f"Entity {entity_name} has no description")
         raise ValueError(f"Entity {entity_name} has no description")
 
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during entity summary")
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Entity",
@@ -1957,6 +1965,14 @@ async def _merge_edges_then_upsert(
         logger.error(f"Relation {src_id}~{tgt_id} has no description")
         raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
 
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during relation summary"
+                )
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Relation",
@@ -2214,6 +2230,12 @@ async def merge_nodes_and_edges(
         file_path: File path for logging
     """
 
+    # Check for cancellation at the start of merge
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during merge phase")
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -2250,6 +2272,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
+            # Check for cancellation before processing entity
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during entity merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             async with get_storage_keyed_lock(
@@ -2272,9 +2302,7 @@ async def merge_nodes_and_edges(
                     return entity_data
 
                 except Exception as e:
-                    error_msg = (
-                        f"Critical error in entity processing for `{entity_name}`: {e}"
-                    )
+                    error_msg = f"Error processing entity `{entity_name}`: {e}"
                     logger.error(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
@@ -2310,35 +2338,31 @@ async def merge_nodes_and_edges(
             entity_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception and ensure all exceptions are retrieved
         first_exception = None
-        successful_results = []
+        processed_entities = []
 
         for task in done:
             try:
-                exception = task.exception()
-                if exception is not None:
-                    if first_exception is None:
-                        first_exception = exception
-                else:
-                    successful_results.append(task.result())
-            except Exception as e:
+                result = task.result()
+            except BaseException as e:
                 if first_exception is None:
                     first_exception = e
+            else:
+                processed_entities.append(result)
 
-        # If any task failed, cancel all pending tasks and raise the first exception
+        if pending:
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                else:
+                    processed_entities.append(result)
+
         if first_exception is not None:
-            # Cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
-            # Re-raise the first exception to notify the caller
             raise first_exception
-
-        # If all tasks completed successfully, collect results
-        processed_entities = [task.result() for task in entity_tasks]
 
     # ===== Phase 2: Process all relationships concurrently =====
     log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
@@ -2349,6 +2373,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
+            # Check for cancellation before processing edges
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during relation merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             sorted_edge_key = sorted([edge_key[0], edge_key[1]])
@@ -2383,7 +2415,7 @@ async def merge_nodes_and_edges(
                     return edge_data, added_entities
 
                 except Exception as e:
-                    error_msg = f"Critical error in relationship processing for `{sorted_edge_key}`: {e}"
+                    error_msg = f"Error processing relation `{sorted_edge_key}`: {e}"
                     logger.error(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
@@ -2421,39 +2453,35 @@ async def merge_nodes_and_edges(
             edge_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception and ensure all exceptions are retrieved
         first_exception = None
-        successful_results = []
 
         for task in done:
             try:
-                exception = task.exception()
-                if exception is not None:
-                    if first_exception is None:
-                        first_exception = exception
-                else:
-                    successful_results.append(task.result())
-            except Exception as e:
+                edge_data, added_entities = task.result()
+            except BaseException as e:
                 if first_exception is None:
                     first_exception = e
+            else:
+                if edge_data is not None:
+                    processed_edges.append(edge_data)
+                all_added_entities.extend(added_entities)
 
-        # If any task failed, cancel all pending tasks and raise the first exception
+        if pending:
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                else:
+                    edge_data, added_entities = result
+                    if edge_data is not None:
+                        processed_edges.append(edge_data)
+                    all_added_entities.extend(added_entities)
+
         if first_exception is not None:
-            # Cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
-            # Re-raise the first exception to notify the caller
             raise first_exception
-
-        # If all tasks completed successfully, collect results
-        for task in edge_tasks:
-            edge_data, added_entities = task.result()
-            if edge_data is not None:
-                processed_edges.append(edge_data)
-            all_added_entities.extend(added_entities)
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:
@@ -2535,6 +2563,14 @@ async def extract_entities(
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
+    # Check for cancellation at the start of entity extraction
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during entity extraction"
+                )
+
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
@@ -2702,6 +2738,14 @@ async def extract_entities(
 
     async def _process_with_semaphore(chunk):
         async with semaphore:
+            # Check for cancellation before processing chunk
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during chunk processing"
+                        )
+
             try:
                 return await _process_single_content(chunk)
             except Exception as e:
