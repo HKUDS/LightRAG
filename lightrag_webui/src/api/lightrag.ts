@@ -236,6 +236,7 @@ export type PipelineStatusResponse = {
   batchs: number
   cur_batch: number
   request_pending: boolean
+  cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]
   update_status?: Record<string, any>
@@ -670,6 +671,14 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 
 export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
   const response = await axiosInstance.get('/documents/pipeline_status')
+  return response.data
+}
+
+export const cancelPipeline = async (): Promise<{
+  status: 'cancellation_requested' | 'not_busy'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/cancel_pipeline')
   return response.data
 }
 
