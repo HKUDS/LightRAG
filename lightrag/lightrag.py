@@ -3144,6 +3144,10 @@ class LightRAG:
                             list(entities_to_delete)
                         )
 
+                        # Delete from entity_chunks storage
+                        if self.entity_chunks:
+                            await self.entity_chunks.delete(list(entities_to_delete))
+
                         async with pipeline_status_lock:
                             log_message = f"Successfully deleted {len(entities_to_delete)} entities"
                             logger.info(log_message)
@@ -3172,6 +3176,14 @@ class LightRAG:
                         await self.chunk_entity_relation_graph.remove_edges(
                             list(relationships_to_delete)
                         )
+
+                        # Delete from relation_chunks storage
+                        if self.relation_chunks:
+                            relation_storage_keys = [
+                                make_relation_chunk_key(src, tgt)
+                                for src, tgt in relationships_to_delete
+                            ]
+                            await self.relation_chunks.delete(relation_storage_keys)
 
                         async with pipeline_status_lock:
                             log_message = f"Successfully deleted {len(relationships_to_delete)} relations"
