@@ -12,15 +12,15 @@ from lightrag.exceptions import PipelineNotInitializedError
 
 
 # Define a direct print function for critical logs that must be visible in all processes
-def direct_log(message, enable_output: bool = False, level: str = "INFO"):
+def direct_log(message, enable_output: bool = True, level: str = "DEBUG"):
     """
     Log a message directly to stderr to ensure visibility in all processes,
     including the Gunicorn master process.
 
     Args:
         message: The message to log
-        level: Log level (default: "DEBUG")
-        enable_output: Whether to actually output the log (default: True)
+        level: Log level for message (control the visibility of the message by comparing with the current logger level)
+        enable_output: Enable or disable log message (Force to turn off the message,)
     """
     if not enable_output:
         return
@@ -140,7 +140,8 @@ class UnifiedLock(Generic[T]):
             if not self._is_async and self._async_lock is not None:
                 await self._async_lock.acquire()
                 direct_log(
-                    f"== Lock == Process {self._pid}: Async lock for '{self._name}' acquired",
+                    f"== Lock == Process {self._pid}: Acquired async lock '{self._name}",
+                    level="DEBUG",
                     enable_output=self._enable_logging,
                 )
 
@@ -151,7 +152,8 @@ class UnifiedLock(Generic[T]):
                 self._lock.acquire()
 
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' acquired (async={self._is_async})",
+                f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
             return self
@@ -182,7 +184,8 @@ class UnifiedLock(Generic[T]):
             main_lock_released = True
 
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' released (async={self._is_async})",
+                f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
 
@@ -190,7 +193,8 @@ class UnifiedLock(Generic[T]):
             if not self._is_async and self._async_lock is not None:
                 self._async_lock.release()
                 direct_log(
-                    f"== Lock == Process {self._pid}: Async lock '{self._name}' released",
+                    f"== Lock == Process {self._pid}: Released async lock {self._name}",
+                    level="DEBUG",
                     enable_output=self._enable_logging,
                 )
 
@@ -210,12 +214,13 @@ class UnifiedLock(Generic[T]):
                 try:
                     direct_log(
                         f"== Lock == Process {self._pid}: Attempting to release async lock after main lock failure",
-                        level="WARNING",
+                        level="DEBUG",
                         enable_output=self._enable_logging,
                     )
                     self._async_lock.release()
                     direct_log(
                         f"== Lock == Process {self._pid}: Successfully released async lock after main lock failure",
+                        level="INFO",
                         enable_output=self._enable_logging,
                     )
                 except Exception as inner_e:
@@ -233,12 +238,14 @@ class UnifiedLock(Generic[T]):
             if self._is_async:
                 raise RuntimeError("Use 'async with' for shared_storage lock")
             direct_log(
-                f"== Lock == Process {self._pid}: Acquiring lock '{self._name}' (sync)",
+                f"== Lock == Process {self._pid}: Acquiring lock {self._name} (sync)",
+                level="DEBUG",
                 enable_output=self._enable_logging,
             )
             self._lock.acquire()
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' acquired (sync)",
+                f"== Lock == Process {self._pid}: Acquired lock {self._name} (sync)",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
             return self
@@ -257,11 +264,13 @@ class UnifiedLock(Generic[T]):
                 raise RuntimeError("Use 'async with' for shared_storage lock")
             direct_log(
                 f"== Lock == Process {self._pid}: Releasing lock '{self._name}' (sync)",
+                level="DEBUG",
                 enable_output=self._enable_logging,
             )
             self._lock.release()
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' released (sync)",
+                f"== Lock == Process {self._pid}: Released lock {self._name} (sync)",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
         except Exception as e:
