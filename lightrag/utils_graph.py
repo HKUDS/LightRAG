@@ -1096,7 +1096,7 @@ async def amerge_entities(
                             old_key
                         )
                         if old_chunks_data:
-                            # Check if new key already has data (merge case)
+                            # Check if new key already has data in temporary dict (merge case)
                             if new_key in new_relation_chunks_data:
                                 existing_chunks = set(
                                     new_relation_chunks_data[new_key].get(
@@ -1111,7 +1111,27 @@ async def amerge_entities(
                                     "updated_at": int(time.time()),
                                 }
                             else:
-                                new_relation_chunks_data[new_key] = old_chunks_data
+                                # Check if new key exists in storage (target entity already has this relation)
+                                existing_storage_data = (
+                                    await relation_chunks_storage.get_by_id(new_key)
+                                )
+                                if existing_storage_data:
+                                    # Merge with existing storage data
+                                    existing_chunks = set(
+                                        existing_storage_data.get("chunk_ids", [])
+                                    )
+                                    new_chunks = set(
+                                        old_chunks_data.get("chunk_ids", [])
+                                    )
+                                    merged_chunks = existing_chunks.union(new_chunks)
+                                    new_relation_chunks_data[new_key] = {
+                                        "chunk_ids": list(merged_chunks),
+                                        "count": len(merged_chunks),
+                                        "updated_at": int(time.time()),
+                                    }
+                                else:
+                                    # No existing data, use source data directly
+                                    new_relation_chunks_data[new_key] = old_chunks_data
                             old_relation_keys_to_delete.append(old_key)
 
                 if new_relation_chunks_data:
