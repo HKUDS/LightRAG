@@ -402,8 +402,11 @@ async def aedit_entity(
 
             # 3.5. Update entity_chunks if source_id was updated
             if entity_chunks_storage and "source_id" in updated_data:
-                source_ids = source_id.split(GRAPH_FIELD_SEP) if source_id else []
-                chunk_ids = [cid for cid in source_ids if cid]
+                chunk_ids = (
+                    [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
+                    if source_id
+                    else []
+                )
                 if chunk_ids:
                     await entity_chunks_storage.upsert(
                         {
@@ -543,8 +546,11 @@ async def aedit_relation(
 
             # 3.5. Update relation_chunks if source_id was updated
             if relation_chunks_storage and "source_id" in updated_data:
-                source_ids = source_id.split(GRAPH_FIELD_SEP) if source_id else []
-                chunk_ids = [cid for cid in source_ids if cid]
+                chunk_ids = (
+                    [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
+                    if source_id
+                    else []
+                )
                 storage_key = make_relation_chunk_key(source_entity, target_entity)
                 if chunk_ids:
                     await relation_chunks_storage.upsert(
@@ -669,8 +675,11 @@ async def acreate_entity(
 
             # Create entity_chunks entry if source_id is provided
             if entity_chunks_storage and source_id and source_id != "manual_creation":
-                source_ids = source_id.split(GRAPH_FIELD_SEP) if source_id else []
-                chunk_ids = [cid for cid in source_ids if cid]
+                chunk_ids = (
+                    [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
+                    if source_id
+                    else []
+                )
                 if chunk_ids:
                     await entity_chunks_storage.upsert(
                         {
@@ -797,8 +806,11 @@ async def acreate_relation(
 
             # Create relation_chunks entry if source_id is provided
             if relation_chunks_storage and source_id and source_id != "manual_creation":
-                source_ids = source_id.split(GRAPH_FIELD_SEP) if source_id else []
-                chunk_ids = [cid for cid in source_ids if cid]
+                chunk_ids = (
+                    [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
+                    if source_id
+                    else []
+                )
                 if chunk_ids:
                     storage_key = make_relation_chunk_key(source_entity, target_entity)
                     await relation_chunks_storage.upsert(
