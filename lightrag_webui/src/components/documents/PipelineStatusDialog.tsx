@@ -11,7 +11,7 @@ import {
   DialogDescription
 } from '@/components/ui/Dialog'
 import Button from '@/components/ui/Button'
-import { getPipelineStatus, PipelineStatusResponse } from '@/api/lightrag'
+import { getPipelineStatus, cancelPipeline, PipelineStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
@@ -30,6 +30,7 @@ export default function PipelineStatusDialog({
   const [status, setStatus] = useState<PipelineStatusResponse | null>(null)
   const [position, setPosition] = useState<DialogPosition>('center')
   const [isUserScrolled, setIsUserScrolled] = useState(false)
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
 
   // Reset position when dialog opens
@@ -37,6 +38,9 @@ export default function PipelineStatusDialog({
     if (open) {
       setPosition('center')
       setIsUserScrolled(false)
+    } else {
+      // Reset confirmation dialog state when main dialog closes
+      setShowCancelConfirm(false)
     }
   }, [open])
 
@@ -80,6 +84,24 @@ export default function PipelineStatusDialog({
     const interval = setInterval(fetchStatus, 2000)
     return () => clearInterval(interval)
   }, [open, t])
+
+  // Handle cancel pipeline confirmation
+  const handleConfirmCancel = async () => {
+    setShowCancelConfirm(false)
+    try {
+      const result = await cancelPipeline()
+      if (result.status === 'cancellation_requested') {
+        toast.success(t('documentPanel.pipelineStatus.cancelSuccess'))
+      } else if (result.status === 'not_busy') {
+        toast.info(t('documentPanel.pipelineStatus.cancelNotBusy'))
+      }
+    } catch (err) {
+      toast.error(t('documentPanel.pipelineStatus.cancelFailed', { error: errorMessage(err) }))
+    }
+  }
+
+  // Determine if cancel button should be enabled
+  const canCancel = status?.busy === true && !status?.cancellation_requested
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -142,16 +164,43 @@ export default function PipelineStatusDialog({
 
         {/* Status Content */}
         <div className="space-y-4 pt-4">
-          {/* Pipeline Status */}
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
-              <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
+          {/* Pipeline Status - with cancel button */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            {/* Left side: Status indicators */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
+                <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
+                <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
+              </div>
+              {/* Only show cancellation status when it's requested */}
+              {status?.cancellation_requested && (
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.cancellationRequested')}:</div>
+                  <div className="h-2 w-2 rounded-full bg-red-500" />
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
-              <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
-            </div>
+
+            {/* Right side: Cancel button - only show when pipeline is busy */}
+            {status?.busy && (
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={!canCancel}
+                onClick={() => setShowCancelConfirm(true)}
+                title={
+                  status?.cancellation_requested
+                    ? t('documentPanel.pipelineStatus.cancelInProgress')
+                    : t('documentPanel.pipelineStatus.cancelTooltip')
+                }
+              >
+                {t('documentPanel.pipelineStatus.cancelButton')}
+              </Button>
+            )}
           </div>
 
           {/* Job Information */}
@@ -172,31 +221,49 @@ export default function PipelineStatusDialog({
             </div>
           </div>
 
-          {/* Latest Message */}
-          <div className="space-y-2">
-            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.latestMessage')}:</div>
-            <div className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 whitespace-pre-wrap break-words">
-              {status?.latest_message || '-'}
-            </div>
-          </div>
-
           {/* History Messages */}
           <div className="space-y-2">
-            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.historyMessages')}:</div>
+            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.pipelineMessages')}:</div>
             <div
               ref={historyRef}
               onScroll={handleScroll}
-              className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto min-h-[7.5em] max-h-[40vh]"
+              className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto overflow-x-hidden min-h-[7.5em] max-h-[40vh]"
             >
               {status?.history_messages?.length ? (
                 status.history_messages.map((msg, idx) => (
-                  <div key={idx} className="whitespace-pre-wrap break-words">{msg}</div>
+                  <div key={idx} className="whitespace-pre-wrap break-all">{msg}</div>
                 ))
               ) : '-'}
             </div>
           </div>
         </div>
       </DialogContent>
+
+      {/* Cancel Confirmation Dialog */}
+      <Dialog open={showCancelConfirm} onOpenChange={setShowCancelConfirm}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>{t('documentPanel.pipelineStatus.cancelConfirmTitle')}</DialogTitle>
+            <DialogDescription>
+              {t('documentPanel.pipelineStatus.cancelConfirmDescription')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowCancelConfirm(false)}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmCancel}
+            >
+              {t('documentPanel.pipelineStatus.cancelConfirmButton')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   )
 }

@@ -114,10 +114,8 @@
     },
     "documentManager": {
       "title": "إدارة المستندات",
-      "scanButton": "مسح ضوئي",
+      "scanButton": "مسح/إعادة محاولة",
       "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
-      "retryFailedButton": "إعادة المحاولة",
-      "retryFailedTooltip": "إعادة معالجة جميع المستندات الفاشلة",
       "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
@@ -157,17 +155,27 @@
       "hideFileNameTooltip": "إخفاء اسم الملف"
     },
     "pipelineStatus": {
-      "title": "حالة خط المعالجة",
-      "busy": "خط المعالجة مشغول",
-      "requestPending": "الطلب معلق",
+      "title": "حالة خط الأنابيب",
+      "busy": "خط الأنابيب مشغول",
+      "requestPending": "طلب معلق",
+      "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
       "progress": "التقدم",
       "unit": "دفعة",
-      "latestMessage": "آخر رسالة",
-      "historyMessages": "سجل الرسائل",
+      "pipelineMessages": "رسائل خط الأنابيب",
+      "cancelButton": "إلغاء",
+      "cancelTooltip": "إلغاء معالجة خط الأنابيب",
+      "cancelConfirmTitle": "تأكيد إلغاء خط الأنابيب",
+      "cancelConfirmDescription": "سيؤدي هذا الإجراء إلى إيقاف معالجة خط الأنابيب الجارية. هل أنت متأكد من أنك تريد المتابعة؟",
+      "cancelConfirmButton": "تأكيد الإلغاء",
+      "cancelInProgress": "الإلغاء قيد التقدم...",
+      "pipelineNotRunning": "خط الأنابيب غير قيد التشغيل",
+      "cancelSuccess": "تم طلب إلغاء خط الأنابيب",
+      "cancelFailed": "فشل إلغاء خط الأنابيب\n{{error}}",
+      "cancelNotBusy": "خط الأنابيب غير قيد التشغيل، لا حاجة للإلغاء",
       "errors": {
-        "fetchFailed": "فشل في جلب حالة خط المعالجة\n{{error}}"
+        "fetchFailed": "فشل في جلب حالة خط الأنابيب\n{{error}}"
       }
     }
   },

@@ -114,10 +114,8 @@
     },
     "documentManager": {
       "title": "Document Management",
-      "scanButton": "Scan",
+      "scanButton": "Scan/Retry",
       "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
-      "retryFailedButton": "Retry",
-      "retryFailedTooltip": "Retry processing all failed documents",
       "refreshTooltip": "Reset document list",
       "pipelineStatusButton": "Pipeline",
       "pipelineStatusTooltip": "View document processing pipeline status",
@@ -160,14 +158,24 @@
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
       "requestPending": "Request Pending",
+      "cancellationRequested": "Cancellation Requested",
       "jobName": "Job Name",
       "startTime": "Start Time",
       "progress": "Progress",
-      "unit": "batch",
-      "latestMessage": "Latest Message",
-      "historyMessages": "History Messages",
+      "unit": "Batch",
+      "pipelineMessages": "Pipeline Messages",
+      "cancelButton": "Cancel",
+      "cancelTooltip": "Cancel pipeline processing",
+      "cancelConfirmTitle": "Confirm Pipeline Cancellation",
+      "cancelConfirmDescription": "This will interrupt the ongoing pipeline processing. Are you sure you want to continue?",
+      "cancelConfirmButton": "Confirm Cancellation",
+      "cancelInProgress": "Cancellation in progress...",
+      "pipelineNotRunning": "Pipeline not running",
+      "cancelSuccess": "Pipeline cancellation requested",
+      "cancelFailed": "Failed to cancel pipeline\n{{error}}",
+      "cancelNotBusy": "Pipeline is not running, no need to cancel",
       "errors": {
-        "fetchFailed": "Failed to get pipeline status\n{{error}}"
+        "fetchFailed": "Failed to fetch pipeline status\n{{error}}"
       }
     }
   },

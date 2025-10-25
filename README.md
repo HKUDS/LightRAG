@@ -525,6 +525,83 @@ In order to run this experiment on low RAM GPU you should select small model and
 
 </details>
 <details>
+<summary> <b>Using Vietnamese Embedding Model</b> </summary>
+
+LightRAG supports the **AITeamVN/Vietnamese_Embedding** model, which is fine-tuned from BGE-M3 for enhanced Vietnamese retrieval.
+
+**Model Details:**
+- Base: BAAI/bge-m3
+- Output Dimensions: 1024
+- Max Sequence Length: 2048 tokens
+- Language: Vietnamese (also supports other languages)
+- Training: ~300,000 Vietnamese query-document triplets
+
+**Setup:**
+
+1. Set your HuggingFace token:
+```bash
+export HUGGINGFACE_API_KEY="your_hf_token"
+# or
+export HF_TOKEN="your_hf_token"
+```
+
+2. Use the Vietnamese embedding in your code:
+
+```python
+import asyncio
+from lightrag import LightRAG, QueryParam
+from lightrag.llm.openai import gpt_4o_mini_complete
+from lightrag.llm.vietnamese_embed import vietnamese_embed
+from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import EmbeddingFunc
+
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="./vietnamese_rag_storage",
+        llm_model_func=gpt_4o_mini_complete,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=1024,  # Vietnamese_Embedding outputs 1024 dimensions
+            max_token_size=2048,  # Model supports up to 2048 tokens
+            func=lambda texts: vietnamese_embed(
+                texts,
+                model_name="AITeamVN/Vietnamese_Embedding",
+                token=your_hf_token  # or None to read from environment
+            )
+        ),
+    )
+    
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+    return rag
+
+async def main():
+    rag = await initialize_rag()
+    
+    # Insert Vietnamese text
+    await rag.ainsert("Việt Nam là một quốc gia nằm ở Đông Nam Á.")
+    
+    # Query in Vietnamese
+    result = await rag.aquery(
+        "Việt Nam ở đâu?",
+        param=QueryParam(mode="hybrid")
+    )
+    print(result)
+    
+    await rag.finalize_storages()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+**Example Scripts:**
+- `examples/lightrag_vietnamese_embedding_simple.py` - Simple usage example
+- `examples/vietnamese_embedding_demo.py` - Comprehensive demo with multiple languages
+
+**Documentation:**
+See [Vietnamese Embedding Documentation](docs/VietnameseEmbedding.md) for detailed usage, API reference, and troubleshooting.
+
+</details>
+<details>
 <summary> <b>LlamaIndex</b> </summary>
 
 LightRAG supports integration with LlamaIndex (`llm/llama_index_impl.py`):
