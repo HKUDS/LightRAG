@@ -417,6 +417,11 @@ async def aedit_entity(
                     logger.info(
                         f"Updated entity_chunks for '{entity_name}' with {len(chunk_ids)} chunk IDs"
                     )
+                else:
+                    await entity_chunks_storage.delete([entity_name])
+                    logger.info(
+                        f"Removed entity_chunks entry for '{entity_name}' due to empty source_id"
+                    )
 
             # 4. Save changes
             await _edit_entity_done(
@@ -540,8 +545,8 @@ async def aedit_relation(
             if relation_chunks_storage and "source_id" in updated_data:
                 source_ids = source_id.split(GRAPH_FIELD_SEP) if source_id else []
                 chunk_ids = [cid for cid in source_ids if cid]
+                storage_key = make_relation_chunk_key(source_entity, target_entity)
                 if chunk_ids:
-                    storage_key = make_relation_chunk_key(source_entity, target_entity)
                     await relation_chunks_storage.upsert(
                         {
                             storage_key: {
@@ -553,6 +558,11 @@ async def aedit_relation(
                     )
                     logger.info(
                         f"Updated relation_chunks for '{source_entity}' -> '{target_entity}' with {len(chunk_ids)} chunk IDs"
+                    )
+                else:
+                    await relation_chunks_storage.delete([storage_key])
+                    logger.info(
+                        f"Removed relation_chunks entry for '{source_entity}' -> '{target_entity}' due to empty source_id"
                     )
 
             # 4. Save changes
@@ -1084,12 +1094,13 @@ async def amerge_entities(
                     new_src = target_entity if src in source_entities else src
                     new_tgt = target_entity if tgt in source_entities else tgt
 
-                    # Skip self-loops
-                    if new_src == new_tgt:
-                        continue
-
                     old_key = make_relation_chunk_key(src, tgt)
                     new_key = make_relation_chunk_key(new_src, new_tgt)
+
+                    # Skip self-loops but ensure stale chunk entries are removed
+                    if new_src == new_tgt:
+                        old_relation_keys_to_delete.append(old_key)
+                        continue
 
                     if old_key != new_key:
                         old_chunks_data = await relation_chunks_storage.get_by_id(
