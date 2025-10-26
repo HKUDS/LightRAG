@@ -73,6 +73,16 @@ class QueryRequest(BaseModel):
         ge=1,
     )
 
+    hl_keywords: list[str] = Field(
+        default_factory=list,
+        description="List of high-level keywords to prioritize in retrieval. Leave empty to use the LLM to generate the keywords.",
+    )
+
+    ll_keywords: list[str] = Field(
+        default_factory=list,
+        description="List of low-level keywords to refine retrieval focus. Leave empty to use the LLM to generate the keywords.",
+    )
+
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
@@ -294,6 +304,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         }
         ```
 
+        Bypass initial LLM call by providing high-level and low-level keywords:
+        ```json
+        {
+            "query": "What is Retrieval-Augmented-Generation?",
+            "hl_keywords": ["machine learning", "information retrieval", "natural language processing"],
+            "ll_keywords": ["retrieval augmented generation", "RAG", "knowledge base"],
+            "mode": "mix"
+        }
+        ```
+
         Advanced query with references:
         ```json
         {
@@ -479,6 +499,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "mode": "mix",
             "stream": true,
             "include_references": true
+        }
+        ```
+
+        Bypass initial LLM call by providing high-level and low-level keywords:
+        ```json
+        {
+            "query": "What is Retrieval-Augmented-Generation?",
+            "hl_keywords": ["machine learning", "information retrieval", "natural language processing"],
+            "ll_keywords": ["retrieval augmented generation", "RAG", "knowledge base"],
+            "mode": "mix"
         }
         ```
 
@@ -965,6 +995,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "query": "neural network architectures",
             "mode": "naive",
             "chunk_top_k": 5
+        }
+        ```
+
+        Bypass initial LLM call by providing high-level and low-level keywords:
+        ```json
+        {
+            "query": "What is Retrieval-Augmented-Generation?",
+            "hl_keywords": ["machine learning", "information retrieval", "natural language processing"],
+            "ll_keywords": ["retrieval augmented generation", "RAG", "knowledge base"],
+            "mode": "mix"
         }
         ```
 

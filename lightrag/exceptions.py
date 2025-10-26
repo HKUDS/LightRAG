@@ -96,3 +96,11 @@ class PipelineNotInitializedError(KeyError):
             f"  await initialize_pipeline_status()"
         )
         super().__init__(msg)
+
+
+class PipelineCancelledException(Exception):
+    """Raised when pipeline processing is cancelled by user request."""
+
+    def __init__(self, message: str = "User cancelled"):
+        super().__init__(message)
+        self.message = message
