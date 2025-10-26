@@ -3600,6 +3600,8 @@ class LightRAG:
             entity_name,
             updated_data,
             allow_rename,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def edit_entity(
@@ -3634,6 +3636,7 @@ class LightRAG:
             source_entity,
             target_entity,
             updated_data,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def edit_relation(
@@ -3666,6 +3669,7 @@ class LightRAG:
             self.relationships_vdb,
             entity_name,
             entity_data,
+            entity_chunks_storage=self.entity_chunks,
         )
 
     def create_entity(
@@ -3698,6 +3702,7 @@ class LightRAG:
             source_entity,
             target_entity,
             relation_data,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def create_relation(
@@ -3745,6 +3750,8 @@ class LightRAG:
             target_entity,
             merge_strategy,
             target_entity_data,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def merge_entities(
