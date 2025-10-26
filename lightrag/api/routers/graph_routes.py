@@ -299,6 +299,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             entity_data (dict): Entity properties including:
                 - description (str): Textual description of the entity
                 - entity_type (str): Category/type of the entity (e.g., PERSON, ORGANIZATION, LOCATION)
+                - source_id (str): Related chunk_id from which the description originates
                 - Additional custom properties as needed
 
         Response Schema:
@@ -309,6 +310,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     "entity_name": "Tesla",
                     "description": "Electric vehicle manufacturer",
                     "entity_type": "ORGANIZATION",
+                    "source_id": "chunk-123<SEP>chunk-456"
                     ... (other entity properties)
                 }
             }
@@ -361,10 +363,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         Create a new relationship between two entities in the knowledge graph
 
-        This endpoint establishes a directed relationship between two existing entities.
-        Both the source and target entities must already exist in the knowledge graph.
-        The system automatically generates vector embeddings for the relationship to
-        enable semantic search and graph traversal.
+        This endpoint establishes an undirected relationship between two existing entities.
+        The provided source/target order is accepted for convenience, but the backend
+        stored edge is undirected and may be returned with the entities swapped.
+        Both entities must already exist in the knowledge graph. The system automatically
+        generates vector embeddings for the relationship to enable semantic search and graph traversal.
 
         Prerequisites:
             - Both source_entity and target_entity must exist in the knowledge graph
@@ -376,6 +379,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             relation_data (dict): Relationship properties including:
                 - description (str): Textual description of the relationship
                 - keywords (str): Comma-separated keywords describing the relationship type
+                - source_id (str): Related chunk_id from which the description originates
                 - weight (float): Relationship strength/importance (default: 1.0)
                 - Additional custom properties as needed
 
@@ -388,6 +392,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     "tgt_id": "Tesla",
                     "description": "Elon Musk is the CEO of Tesla",
                     "keywords": "CEO, founder",
+                    "source_id": "chunk-123<SEP>chunk-456"
                     "weight": 1.0,
                     ... (other relationship properties)
                 }
