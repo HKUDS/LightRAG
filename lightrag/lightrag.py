@@ -3407,6 +3407,7 @@ class LightRAG:
         """Asynchronously edit entity information.
 
         Updates entity information in the knowledge graph and re-embeds the entity in the vector database.
+        Also synchronizes entity_chunks_storage and relation_chunks_storage to track chunk references.
 
         Args:
             entity_name: Name of the entity to edit
@@ -3425,6 +3426,8 @@ class LightRAG:
             entity_name,
             updated_data,
             allow_rename,
+            self.entity_chunks,
+            self.relation_chunks,
         )
 
     def edit_entity(
@@ -3441,6 +3444,7 @@ class LightRAG:
         """Asynchronously edit relation information.
 
         Updates relation (edge) information in the knowledge graph and re-embeds the relation in the vector database.
+        Also synchronizes the relation_chunks_storage to track which chunks reference this relation.
 
         Args:
             source_entity: Name of the source entity
@@ -3459,6 +3463,7 @@ class LightRAG:
             source_entity,
             target_entity,
             updated_data,
+            self.relation_chunks,
         )
 
     def edit_relation(

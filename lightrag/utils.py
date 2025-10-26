@@ -2552,6 +2552,52 @@ def apply_source_ids_limit(
     return truncated
 
 
+def compute_incremental_chunk_ids(
+    existing_full_chunk_ids: list[str],
+    old_chunk_ids: list[str],
+    new_chunk_ids: list[str],
+) -> list[str]:
+    """
+    Compute incrementally updated chunk IDs based on changes.
+
+    This function applies delta changes (additions and removals) to an existing
+    list of chunk IDs while maintaining order and ensuring deduplication.
+    Delta additions from new_chunk_ids are placed at the end.
+
+    Args:
+        existing_full_chunk_ids: Complete list of existing chunk IDs from storage
+        old_chunk_ids: Previous chunk IDs from source_id (chunks being replaced)
+        new_chunk_ids: New chunk IDs from updated source_id (chunks being added)
+
+    Returns:
+        Updated list of chunk IDs with deduplication
+
+    Example:
+        >>> existing = ['chunk-1', 'chunk-2', 'chunk-3']
+        >>> old = ['chunk-1', 'chunk-2']
+        >>> new = ['chunk-2', 'chunk-4']
+        >>> compute_incremental_chunk_ids(existing, old, new)
+        ['chunk-3', 'chunk-2', 'chunk-4']
+    """
+    # Calculate changes
+    chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
+    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
+
+    # Apply changes to full chunk_ids
+    # Step 1: Remove chunks that are no longer needed
+    updated_chunk_ids = [
+        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+    ]
+
+    # Step 2: Add new chunks (preserving order from new_chunk_ids)
+    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    for cid in new_chunk_ids:
+        if cid in chunks_to_add and cid not in updated_chunk_ids:
+            updated_chunk_ids.append(cid)
+
+    return updated_chunk_ids
+
+
 def subtract_source_ids(
     source_ids: Iterable[str],
     ids_to_remove: Collection[str],
