@@ -3575,6 +3575,8 @@ class LightRAG:
             target_entity,
             merge_strategy,
             target_entity_data,
+            self.entity_chunks,
+            self.relation_chunks,
         )
 
     def merge_entities(
