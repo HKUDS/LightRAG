@@ -1113,10 +1113,16 @@ async def amerge_entities(
             for key, value in target_entity_data.items():
                 merged_entity_data[key] = value
 
-            # 4. Get all relationships of the source entities
+            # 4. Get all relationships of the source entities and target entity (if exists)
             all_relations = []
-            for entity_name in source_entities:
-                # Get all relationships of the source entities
+            entities_to_collect = source_entities.copy()
+            
+            # If target entity exists, also collect its relationships for merging
+            if target_exists:
+                entities_to_collect.append(target_entity)
+            
+            for entity_name in entities_to_collect:
+                # Get all relationships of the entities
                 edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
                 if edges:
                     for src, tgt in edges:
