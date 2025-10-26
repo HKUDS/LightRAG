@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'darwin'",
@@ -1609,11 +1609,11 @@ requires-dist = [
     { name = "numpy" },
     { name = "numpy", marker = "extra == 'api'" },
     { name = "ollama", marker = "extra == 'offline-llm'", specifier = ">=0.1.0,<1.0.0" },
-    { name = "openai", marker = "extra == 'api'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "openai", marker = "extra == 'offline-llm'", specifier = ">=1.0.0,<2.0.0" },
+    { name = "openai", marker = "extra == 'api'", specifier = ">=1.0.0,<3.0.0" },
+    { name = "openai", marker = "extra == 'offline-llm'", specifier = ">=1.0.0,<3.0.0" },
     { name = "openpyxl", marker = "extra == 'offline-docs'", specifier = ">=3.0.0,<4.0.0" },
-    { name = "pandas", specifier = ">=2.0.0,<2.3.0" },
-    { name = "pandas", marker = "extra == 'api'", specifier = ">=2.0.0,<2.3.0" },
+    { name = "pandas", specifier = ">=2.0.0,<2.4.0" },
+    { name = "pandas", marker = "extra == 'api'", specifier = ">=2.0.0,<2.4.0" },
     { name = "passlib", extras = ["bcrypt"], marker = "extra == 'api'" },
     { name = "pipmaster" },
     { name = "pipmaster", marker = "extra == 'api'" },
