@@ -100,6 +100,10 @@ async def adelete_by_relation(
     # Use graph database lock to ensure atomic graph and vector db operations
     async with graph_db_lock:
         try:
+            # Normalize entity order for undirected graph (ensures consistent key generation)
+            if source_entity > target_entity:
+                source_entity, target_entity = target_entity, source_entity
+
             # Check if the relation exists
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -878,6 +882,10 @@ async def acreate_relation(
                 source_entity, target_entity, edge_data
             )
 
+            # Normalize entity order for undirected relation vector (ensures consistent key generation)
+            if source_entity > target_entity:
+                source_entity, target_entity = target_entity, source_entity
+
             # Prepare content for embedding
             description = edge_data.get("description", "")
             keywords = edge_data.get("keywords", "")
@@ -1121,19 +1129,27 @@ async def amerge_entities(
                 tgt = rel_data["tgt"]
                 edge_data = rel_data["data"]
 
+                # Normalize entity order for consistent vector storage
+                normalized_src, normalized_tgt = sorted([src, tgt])
+
                 description = edge_data.get("description", "")
                 keywords = edge_data.get("keywords", "")
                 source_id = edge_data.get("source_id", "")
                 weight = float(edge_data.get("weight", 1.0))
 
-                content = f"{keywords}\t{src}\n{tgt}\n{description}"
-                relation_id = compute_mdhash_id(src + tgt, prefix="rel-")
+                # Use normalized order for content and relation ID
+                content = (
+                    f"{keywords}\t{normalized_src}\n{normalized_tgt}\n{description}"
+                )
+                relation_id = compute_mdhash_id(
+                    normalized_src + normalized_tgt, prefix="rel-"
+                )
 
                 relation_data_for_vdb = {
                     relation_id: {
                         "content": content,
-                        "src_id": src,
-                        "tgt_id": tgt,
+                        "src_id": normalized_src,
+                        "tgt_id": normalized_tgt,
                         "source_id": source_id,
                         "description": description,
                         "keywords": keywords,
@@ -1340,7 +1356,18 @@ async def get_relation_info(
     tgt_entity: str,
     include_vector_data: bool = False,
 ) -> dict[str, str | None | dict[str, str]]:
-    """Get detailed information of a relationship"""
+    """
+    Get detailed information of a relationship between two entities.
+    Relationship is unidirectional, swap src_entity and tgt_entity does not change the relationship.
+
+    Args:
+        src_entity: Source entity name
+        tgt_entity: Target entity name
+        include_vector_data: Whether to include vector database information
+
+    Returns:
+        Dictionary containing relationship information
+    """
 
     # Get information from the graph
     edge_data = await chunk_entity_relation_graph.get_edge(src_entity, tgt_entity)
