@@ -409,7 +409,7 @@ async def _edit_entity_impl(
 
             source_id_changed = set(new_chunk_ids) != set(old_chunk_ids)
 
-            if source_id_changed or not has_stored_data:
+            if source_id_changed or not has_stored_data or is_renaming:
                 existing_full_chunk_ids = []
                 if has_stored_data:
                     existing_full_chunk_ids = [
