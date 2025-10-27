@@ -305,11 +305,24 @@
       "errors": {
         "duplicateName": "节点名称已存在",
         "updateFailed": "更新节点失败",
-        "tryAgainLater": "请稍后重试"
+        "tryAgainLater": "请稍后重试",
+        "updateSuccessButMergeFailed": "属性已更新，但合并失败：{{error}}",
+        "mergeFailed": "合并失败：{{error}}"
       },
       "success": {
         "entityUpdated": "节点更新成功",
-        "relationUpdated": "关系更新成功"
+        "relationUpdated": "关系更新成功",
+        "entityMerged": "节点合并成功"
+      },
+      "mergeOptionLabel": "重名时自动合并",
+      "mergeOptionDescription": "勾选后，重命名为已存在的名称会将当前节点自动合并过去，而不会报错。",
+      "mergeDialog": {
+        "title": "节点已合并",
+        "description": "\"{{source}}\" 已合并到 \"{{target}}\"。",
+        "refreshHint": "请刷新图谱以获取最新结构。",
+        "keepCurrentStart": "刷新并保持当前起始节点",
+        "useMergedStart": "刷新并以合并后的节点为起始节点",
+        "refreshing": "正在刷新图谱..."
       },
       "node": {
         "title": "节点",

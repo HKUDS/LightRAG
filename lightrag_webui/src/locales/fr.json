@@ -305,11 +305,24 @@
       "errors": {
         "duplicateName": "Le nom du nœud existe déjà",
         "updateFailed": "Échec de la mise à jour du nœud",
-        "tryAgainLater": "Veuillez réessayer plus tard"
+        "tryAgainLater": "Veuillez réessayer plus tard",
+        "updateSuccessButMergeFailed": "Propriétés mises à jour, mais la fusion a échoué : {{error}}",
+        "mergeFailed": "Échec de la fusion : {{error}}"
       },
       "success": {
         "entityUpdated": "Nœud mis à jour avec succès",
-        "relationUpdated": "Relation mise à jour avec succès"
+        "relationUpdated": "Relation mise à jour avec succès",
+        "entityMerged": "Fusion des nœuds réussie"
+      },
+      "mergeOptionLabel": "Fusionner automatiquement en cas de nom dupliqué",
+      "mergeOptionDescription": "Si activé, renommer vers un nom existant fusionnera automatiquement ce nœud avec celui-ci au lieu d'échouer.",
+      "mergeDialog": {
+        "title": "Nœud fusionné",
+        "description": "\"{{source}}\" a été fusionné dans \"{{target}}\".",
+        "refreshHint": "Actualisez le graphe pour charger la structure la plus récente.",
+        "keepCurrentStart": "Actualiser en conservant le nœud de départ actuel",
+        "useMergedStart": "Actualiser en utilisant le nœud fusionné",
+        "refreshing": "Actualisation du graphe..."
       },
       "node": {
         "title": "Nœud",

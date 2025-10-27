@@ -3577,7 +3577,11 @@ class LightRAG:
         )
 
     async def aedit_entity(
-        self, entity_name: str, updated_data: dict[str, str], allow_rename: bool = True
+        self,
+        entity_name: str,
+        updated_data: dict[str, str],
+        allow_rename: bool = True,
+        allow_merge: bool = False,
     ) -> dict[str, Any]:
         """Asynchronously edit entity information.
 
@@ -3588,6 +3592,7 @@ class LightRAG:
             entity_name: Name of the entity to edit
             updated_data: Dictionary containing updated attributes, e.g. {"description": "new description", "entity_type": "new type"}
             allow_rename: Whether to allow entity renaming, defaults to True
+            allow_merge: Whether to merge into an existing entity when renaming to an existing name
 
         Returns:
             Dictionary containing updated entity information
@@ -3601,16 +3606,21 @@ class LightRAG:
             entity_name,
             updated_data,
             allow_rename,
+            allow_merge,
             self.entity_chunks,
             self.relation_chunks,
         )
 
     def edit_entity(
-        self, entity_name: str, updated_data: dict[str, str], allow_rename: bool = True
+        self,
+        entity_name: str,
+        updated_data: dict[str, str],
+        allow_rename: bool = True,
+        allow_merge: bool = False,
     ) -> dict[str, Any]:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.aedit_entity(entity_name, updated_data, allow_rename)
+            self.aedit_entity(entity_name, updated_data, allow_rename, allow_merge)
         )
 
     async def aedit_relation(
@@ -3750,6 +3760,8 @@ class LightRAG:
             target_entity,
             merge_strategy,
             target_entity_data,
+            self.entity_chunks,
+            self.relation_chunks,
         )
 
     def merge_entities(
