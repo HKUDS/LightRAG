@@ -9,10 +9,10 @@ __pycache__/
 
 # Virtual Environment
 .venv/
-env/
 venv/
-*.env*
-.env_example
+
+# Enviroment Variable Files
+.env
 
 # Build / Distribution
 dist/
@@ -66,10 +66,11 @@ download_models_hf.py
 lightrag-dev/
 gui/
 
+# Frontend build output (built during PyPI release)
+lightrag/api/webui/
+
 # unit-test files
 test_*
 
 # Cline files
-memory-bank
 memory-bank/
-.clinerules

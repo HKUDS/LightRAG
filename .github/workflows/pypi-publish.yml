@@ -17,6 +17,29 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for tags
 
+      # Build frontend WebUI
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Build Frontend WebUI
+        run: |
+          cd lightrag_webui
+          bun install --frozen-lockfile
+          bun run build
+          cd ..
+
+      - name: Verify Frontend Build
+        run: |
+          if [ ! -f "lightrag/api/webui/index.html" ]; then
+            echo "❌ Error: Frontend build failed - index.html not found"
+            exit 1
+          fi
+          echo "✅ Frontend build verified"
+          echo "Frontend files:"
+          ls -lh lightrag/api/webui/ | head -10
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"

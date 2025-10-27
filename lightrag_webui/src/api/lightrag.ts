@@ -155,13 +155,19 @@ export type ScanResponse = {
   track_id: string
 }
 
+export type ReprocessFailedResponse = {
+  status: 'reprocessing_started'
+  message: string
+  track_id: string
+}
+
 export type DeleteDocResponse = {
   status: 'deletion_started' | 'busy' | 'not_allowed'
   message: string
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
+export type DocStatus = 'pending' | 'processing' | 'preprocessed' | 'processed' | 'failed'
 
 export type DocStatusResponse = {
   id: string
@@ -236,6 +242,7 @@ export type PipelineStatusResponse = {
   batchs: number
   cur_batch: number
   request_pending: boolean
+  cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]
   update_status?: Record<string, any>
@@ -350,6 +357,11 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
 
 export const scanNewDocuments = async (): Promise<ScanResponse> => {
   const response = await axiosInstance.post('/documents/scan')
+  return response.data
+}
+
+export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
+  const response = await axiosInstance.post('/documents/reprocess_failed')
   return response.data
 }
 
@@ -607,9 +619,13 @@ export const clearCache = async (): Promise<{
   return response.data
 }
 
-export const deleteDocuments = async (docIds: string[], deleteFile: boolean = false): Promise<DeleteDocResponse> => {
+export const deleteDocuments = async (
+  docIds: string[],
+  deleteFile: boolean = false,
+  deleteLLMCache: boolean = false
+): Promise<DeleteDocResponse> => {
   const response = await axiosInstance.delete('/documents/delete_document', {
-    data: { doc_ids: docIds, delete_file: deleteFile }
+    data: { doc_ids: docIds, delete_file: deleteFile, delete_llm_cache: deleteLLMCache }
   })
   return response.data
 }
@@ -673,6 +689,14 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 
 export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
   const response = await axiosInstance.get('/documents/pipeline_status')
+  return response.data
+}
+
+export const cancelPipeline = async (): Promise<{
+  status: 'cancellation_requested' | 'not_busy'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/cancel_pipeline')
   return response.data
 }
 

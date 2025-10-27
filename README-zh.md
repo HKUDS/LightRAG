@@ -352,7 +352,8 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    If proivded, this will be use instead of the default vaulue from prompt template.
+    Addition instructions for LLM. If provided, this will be inject into the prompt template.
+    It's purpose is the let user customize the way LLM generate the response.
     """
 
     enable_rerank: bool = True
@@ -894,6 +895,10 @@ maxclients 500
 * **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
 
 为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL非图存储的工作空间为`default`，PostgreSQL AGE图存储的工作空间为空，Neo4j图存储的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`。
+
+### AGENTS.md – 自动编程引导文件
+
+AGENTS.md 是一种简洁、开放的格式，用于指导自动编程代理完成工作（https://agents.md/）。它为 LightRAG 项目提供了一个专属且可预测的上下文与指令位置，帮助 AI 代码代理更好地开展工作。不同的 AI 代码代理不应各自维护独立的引导文件。如果某个 AI 代理无法自动识别 AGENTS.md，可使用符号链接来解决。建立符号链接后，可通过配置本地的 `.gitignore_global` 文件防止其被提交至 Git 仓库。
 
 ## 编辑实体和关系
 

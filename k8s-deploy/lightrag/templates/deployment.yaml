@@ -43,6 +43,22 @@ spec:
             - name: env-file
               mountPath: /app/.env
               subPath: .env
+          {{- $envFrom := default (dict) .Values.envFrom }}
+          {{- $envFromEntries := list }}
+          {{- range (default (list) (index $envFrom "secrets")) }}
+          {{- $envFromEntries = append $envFromEntries (dict "secretRef" (dict "name" .name)) }}
+          {{- end }}
+          {{- range (default (list) (index $envFrom "configmaps")) }}
+          {{- $envFromEntries = append $envFromEntries (dict "configMapRef" (dict "name" .name)) }}
+          {{- end }}
+          {{- if gt (len $envFromEntries) 0 }}
+          envFrom:
+{{- toYaml $envFromEntries | nindent 12 }}
+          {{- end }}
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: env-file
           secret:
@@ -60,3 +76,6 @@ spec:
         - name: inputs
           emptyDir: {}
         {{- end }}
+
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}

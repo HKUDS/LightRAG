@@ -134,6 +134,55 @@ class ScanResponse(BaseModel):
         }
 
 
+class ReprocessResponse(BaseModel):
+    """Response model for reprocessing failed documents operation
+
+    Attributes:
+        status: Status of the reprocessing operation
+        message: Message describing the operation result
+        track_id: Tracking ID for monitoring reprocessing progress
+    """
+
+    status: Literal["reprocessing_started"] = Field(
+        description="Status of the reprocessing operation"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+    track_id: str = Field(
+        description="Tracking ID for monitoring reprocessing progress"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "reprocessing_started",
+                "message": "Reprocessing of failed documents has been initiated in background",
+                "track_id": "retry_20250729_170612_def456",
+            }
+        }
+
+
+class CancelPipelineResponse(BaseModel):
+    """Response model for pipeline cancellation operation
+
+    Attributes:
+        status: Status of the cancellation request
+        message: Message describing the operation result
+    """
+
+    status: Literal["cancellation_requested", "not_busy"] = Field(
+        description="Status of the cancellation request"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "cancellation_requested",
+                "message": "Pipeline cancellation has been requested. Documents will be marked as FAILED.",
+            }
+        }
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
@@ -309,6 +358,10 @@ class DeleteDocRequest(BaseModel):
         default=False,
         description="Whether to delete the corresponding file in the upload directory.",
     )
+    delete_llm_cache: bool = Field(
+        default=False,
+        description="Whether to delete cached LLM extraction results for the documents.",
+    )
 
     @field_validator("doc_ids", mode="after")
     @classmethod
@@ -379,7 +432,7 @@ class DocStatusResponse(BaseModel):
                 "id": "doc_123456",
                 "content_summary": "Research paper on machine learning",
                 "content_length": 15240,
-                "status": "PROCESSED",
+                "status": "processed",
                 "created_at": "2025-03-31T12:34:56",
                 "updated_at": "2025-03-31T12:35:30",
                 "track_id": "upload_20250729_170612_abc123",
@@ -412,7 +465,7 @@ class DocsStatusesResponse(BaseModel):
                             "id": "doc_123",
                             "content_summary": "Pending document",
                             "content_length": 5000,
-                            "status": "PENDING",
+                            "status": "pending",
                             "created_at": "2025-03-31T10:00:00",
                             "updated_at": "2025-03-31T10:00:00",
                             "track_id": "upload_20250331_100000_abc123",
@@ -422,12 +475,27 @@ class DocsStatusesResponse(BaseModel):
                             "file_path": "pending_doc.pdf",
                         }
                     ],
+                    "PREPROCESSED": [
+                        {
+                            "id": "doc_789",
+                            "content_summary": "Document pending final indexing",
+                            "content_length": 7200,
+                            "status": "preprocessed",
+                            "created_at": "2025-03-31T09:30:00",
+                            "updated_at": "2025-03-31T09:35:00",
+                            "track_id": "upload_20250331_093000_xyz789",
+                            "chunks_count": 10,
+                            "error": None,
+                            "metadata": None,
+                            "file_path": "preprocessed_doc.pdf",
+                        }
+                    ],
                     "PROCESSED": [
                         {
                             "id": "doc_456",
                             "content_summary": "Processed document",
                             "content_length": 8000,
-                            "status": "PROCESSED",
+                            "status": "processed",
                             "created_at": "2025-03-31T09:00:00",
                             "updated_at": "2025-03-31T09:05:00",
                             "track_id": "insert_20250331_090000_def456",
@@ -599,6 +667,7 @@ class PaginatedDocsResponse(BaseModel):
                 "status_counts": {
                     "PENDING": 10,
                     "PROCESSING": 5,
+                    "PREPROCESSED": 5,
                     "PROCESSED": 130,
                     "FAILED": 5,
                 },
@@ -621,6 +690,7 @@ class StatusCountsResponse(BaseModel):
                 "status_counts": {
                     "PENDING": 10,
                     "PROCESSING": 5,
+                    "PREPROCESSED": 5,
                     "PROCESSED": 130,
                     "FAILED": 5,
                 }
@@ -1443,6 +1513,7 @@ async def background_delete_documents(
     doc_manager: DocumentManager,
     doc_ids: List[str],
     delete_file: bool = False,
+    delete_llm_cache: bool = False,
 ):
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
@@ -1477,11 +1548,27 @@ async def background_delete_documents(
         )
         # Use slice assignment to clear the list in place
         pipeline_status["history_messages"][:] = ["Starting document deletion process"]
+        if delete_llm_cache:
+            pipeline_status["history_messages"].append(
+                "LLM cache cleanup requested for this deletion job"
+            )
 
     try:
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
+            # Check for cancellation at the start of each document deletion
             async with pipeline_status_lock:
+                if pipeline_status.get("cancellation_requested", False):
+                    cancel_msg = f"Deletion cancelled by user at document {i}/{total_docs}. {len(successful_deletions)} deleted, {total_docs - i + 1} remaining."
+                    logger.info(cancel_msg)
+                    pipeline_status["latest_message"] = cancel_msg
+                    pipeline_status["history_messages"].append(cancel_msg)
+                    # Add remaining documents to failed list with cancellation reason
+                    failed_deletions.extend(
+                        doc_ids[i - 1 :]
+                    )  # i-1 because enumerate starts at 1
+                    break  # Exit the loop, remaining documents unchanged
+
                 start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
                 logger.info(start_msg)
                 pipeline_status["cur_batch"] = i
@@ -1490,7 +1577,9 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
-                result = await rag.adelete_by_doc_id(doc_id)
+                result = await rag.adelete_by_doc_id(
+                    doc_id, delete_llm_cache=delete_llm_cache
+                )
                 file_path = (
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
@@ -1642,6 +1731,10 @@ async def background_delete_documents(
         # Final summary and check for pending requests
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
+            pipeline_status["pending_requests"] = False  # Reset pending requests flag
+            pipeline_status["cancellation_requested"] = (
+                False  # Always reset cancellation flag
+            )
             completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
             pipeline_status["latest_message"] = completion_msg
             pipeline_status["history_messages"].append(completion_msg)
@@ -1959,6 +2052,8 @@ def create_document_routes(
                 rag.full_docs,
                 rag.full_entities,
                 rag.full_relations,
+                rag.entity_chunks,
+                rag.relation_chunks,
                 rag.entities_vdb,
                 rag.relationships_vdb,
                 rag.chunks_vdb,
@@ -2173,20 +2268,24 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    # TODO: Deprecated, use /documents/paginated instead
     @router.get(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )
     async def documents() -> DocsStatusesResponse:
         """
-        Get the status of all documents in the system.
+        Get the status of all documents in the system. This endpoint is deprecated; use /documents/paginated instead.
+        To prevent excessive resource consumption, a maximum of 1,000 records is returned.
 
         This endpoint retrieves the current status of all documents, grouped by their
-        processing status (PENDING, PROCESSING, PROCESSED, FAILED).
+        processing status (PENDING, PROCESSING, PREPROCESSED, PROCESSED, FAILED). The results are
+        limited to 1000 total documents with fair distribution across all statuses.
 
         Returns:
             DocsStatusesResponse: A response object containing a dictionary where keys are
                                 DocStatus values and values are lists of DocStatusResponse
                                 objects representing documents in each status category.
+                                Maximum 1000 documents total will be returned.
 
         Raises:
             HTTPException: If an error occurs while retrieving document statuses (500).
@@ -2195,6 +2294,7 @@ def create_document_routes(
             statuses = (
                 DocStatus.PENDING,
                 DocStatus.PROCESSING,
+                DocStatus.PREPROCESSED,
                 DocStatus.PROCESSED,
                 DocStatus.FAILED,
             )
@@ -2203,12 +2303,45 @@ def create_document_routes(
             results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
 
             response = DocsStatusesResponse()
+            total_documents = 0
+            max_documents = 1000
 
+            # Convert results to lists for easier processing
+            status_documents = []
             for idx, result in enumerate(results):
                 status = statuses[idx]
+                docs_list = []
                 for doc_id, doc_status in result.items():
+                    docs_list.append((doc_id, doc_status))
+                status_documents.append((status, docs_list))
+
+            # Fair distribution: round-robin across statuses
+            status_indices = [0] * len(
+                status_documents
+            )  # Track current index for each status
+            current_status_idx = 0
+
+            while total_documents < max_documents:
+                # Check if we have any documents left to process
+                has_remaining = False
+                for status_idx, (status, docs_list) in enumerate(status_documents):
+                    if status_indices[status_idx] < len(docs_list):
+                        has_remaining = True
+                        break
+
+                if not has_remaining:
+                    break
+
+                # Try to get a document from the current status
+                status, docs_list = status_documents[current_status_idx]
+                current_index = status_indices[current_status_idx]
+
+                if current_index < len(docs_list):
+                    doc_id, doc_status = docs_list[current_index]
+
                     if status not in response.statuses:
                         response.statuses[status] = []
+
                     response.statuses[status].append(
                         DocStatusResponse(
                             id=doc_id,
@@ -2224,6 +2357,13 @@ def create_document_routes(
                             file_path=doc_status.file_path,
                         )
                     )
+
+                    status_indices[current_status_idx] += 1
+                    total_documents += 1
+
+                # Move to next status (round-robin)
+                current_status_idx = (current_status_idx + 1) % len(status_documents)
+
             return response
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
@@ -2253,36 +2393,26 @@ def create_document_routes(
         Delete documents and all their associated data by their IDs using background processing.
 
         Deletes specific documents and all their associated data, including their status,
-        text chunks, vector embeddings, and any related graph data.
+        text chunks, vector embeddings, and any related graph data. When requested,
+        cached LLM extraction responses are removed after graph deletion/rebuild completes.
         The deletion process runs in the background to avoid blocking the client connection.
-        It is disabled when llm cache for entity extraction is disabled.
 
         This operation is irreversible and will interact with the pipeline status.
 
         Args:
-            delete_request (DeleteDocRequest): The request containing the document IDs and delete_file options.
+            delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
             background_tasks: FastAPI BackgroundTasks for async processing
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
                 - status="deletion_started": The document deletion has been initiated in the background.
                 - status="busy": The pipeline is busy with another operation.
-                - status="not_allowed": Operation not allowed when LLM cache for entity extraction is disabled.
 
         Raises:
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
         doc_ids = delete_request.doc_ids
-
-        # The rag object is initialized from the server startup args,
-        # so we can access its properties here.
-        if not rag.enable_llm_cache_for_entity_extract:
-            return DeleteDocByIdResponse(
-                status="not_allowed",
-                message="Operation not allowed when LLM cache for entity extraction is disabled.",
-                doc_id=", ".join(delete_request.doc_ids),
-            )
 
         try:
             from lightrag.kg.shared_storage import get_namespace_data
@@ -2304,6 +2434,7 @@ def create_document_routes(
                 doc_manager,
                 doc_ids,
                 delete_request.delete_file,
+                delete_request.delete_llm_cache,
             )
 
             return DeleteDocByIdResponse(
@@ -2610,6 +2741,113 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/reprocess_failed",
+        response_model=ReprocessResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+        """
+        Reprocess failed and pending documents.
+
+        This endpoint triggers the document processing pipeline which automatically
+        picks up and reprocesses documents in the following statuses:
+        - FAILED: Documents that failed during previous processing attempts
+        - PENDING: Documents waiting to be processed
+        - PROCESSING: Documents with abnormally terminated processing (e.g., server crashes)
+
+        This is useful for recovering from server crashes, network errors, LLM service
+        outages, or other temporary failures that caused document processing to fail.
+
+        The processing happens in the background and can be monitored using the
+        returned track_id or by checking the pipeline status.
+
+        Returns:
+            ReprocessResponse: Response with status, message, and track_id
+
+        Raises:
+            HTTPException: If an error occurs while initiating reprocessing (500).
+        """
+        try:
+            # Generate track_id with "retry" prefix for retry operation
+            track_id = generate_track_id("retry")
+
+            # Start the reprocessing in the background
+            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+            logger.info(
+                f"Reprocessing of failed documents initiated with track_id: {track_id}"
+            )
+
+            return ReprocessResponse(
+                status="reprocessing_started",
+                message="Reprocessing of failed documents has been initiated in background",
+                track_id=track_id,
+            )
+
+        except Exception as e:
+            logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/cancel_pipeline",
+        response_model=CancelPipelineResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def cancel_pipeline():
+        """
+        Request cancellation of the currently running pipeline.
+
+        This endpoint sets a cancellation flag in the pipeline status. The pipeline will:
+        1. Check this flag at key processing points
+        2. Stop processing new documents
+        3. Cancel all running document processing tasks
+        4. Mark all PROCESSING documents as FAILED with reason "User cancelled"
+
+        The cancellation is graceful and ensures data consistency. Documents that have
+        completed processing will remain in PROCESSED status.
+
+        Returns:
+            CancelPipelineResponse: Response with status and message
+                - status="cancellation_requested": Cancellation flag has been set
+                - status="not_busy": Pipeline is not currently running
+
+        Raises:
+            HTTPException: If an error occurs while setting cancellation flag (500).
+        """
+        try:
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_pipeline_status_lock,
+            )
+
+            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status_lock = get_pipeline_status_lock()
+
+            async with pipeline_status_lock:
+                if not pipeline_status.get("busy", False):
+                    return CancelPipelineResponse(
+                        status="not_busy",
+                        message="Pipeline is not currently running. No cancellation needed.",
+                    )
+
+                # Set cancellation flag
+                pipeline_status["cancellation_requested"] = True
+                cancel_msg = "Pipeline cancellation requested by user"
+                logger.info(cancel_msg)
+                pipeline_status["latest_message"] = cancel_msg
+                pipeline_status["history_messages"].append(cancel_msg)
+
+            return CancelPipelineResponse(
+                status="cancellation_requested",
+                message="Pipeline cancellation has been requested. Documents will be marked as FAILED.",
+            )
+
+        except Exception as e:
+            logger.error(f"Error requesting pipeline cancellation: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

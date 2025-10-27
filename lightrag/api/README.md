@@ -27,9 +27,18 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
-# create a Python virtual environment if necessary
+# Create a Python virtual environment
+uv venv --seed --python 3.12
+source .venv/bin/activate
+
 # Install in editable mode with API support
 pip install -e ".[api]"
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
 ```
 
 ### Before Starting LightRAG Server
@@ -110,29 +119,13 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 ### Launching LightRAG Server with Docker
 
-* Prepare the .env file:
-    Create a personalized .env file by copying the sample file [`env.example`](env.example). Configure the LLM and embedding parameters according to your requirements.
+Using Docker Compose is the most convenient way to deploy and run the LightRAG Server.
 
-* Create a file named `docker-compose.yml`:
+* Create a project directory.
 
-```yaml
-services:
-  lightrag:
-    container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
-    ports:
-      - "${PORT:-9621}:9621"
-    volumes:
-      - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
-      - ./config.ini:/app/config.ini
-      - ./.env:/app/.env
-    env_file:
-      - .env
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
+* Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
+
+* Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
 
 * Start the LightRAG Server with the following command:
 
@@ -141,7 +134,11 @@ docker compose up
 # If you want the program to run in the background after startup, add the -d parameter at the end of the command.
 ```
 
-> You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./../../docs/DockerDeployment.md).
+
+### Offline Deployment
+
+Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./../../docs/OfflineDeployment.md).
 
 ### Starting Multiple LightRAG Instances
 
@@ -280,7 +277,17 @@ LIGHTRAG_API_KEY=your-secure-api-key-here
 WHITELIST_PATHS=/health,/api/*
 ```
 
-> Health check and Ollama emulation endpoints are excluded from API Key check by default.
+> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required.
+
+The API key is passed using the request header `X-API-Key`. Below is an example of accessing the LightRAG Server via API:
+
+```
+curl -X 'POST' \
+  'http://localhost:9621/documents/scan' \
+  -H 'accept: application/json' \
+  -H 'X-API-Key: your-secure-api-key-here-123' \
+  -d ''
+```
 
 * Account credentials (the Web UI requires login before access can be granted):
 

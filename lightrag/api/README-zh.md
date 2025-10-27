@@ -21,15 +21,24 @@ pip install "lightrag-hku[api]"
 * 从源代码安装
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/HKUDS/lightrag.git
 
-# 切换到仓库目录
+# Change to the repository directory
 cd lightrag
 
-# 如有必要，创建 Python 虚拟环境
-# 以可编辑模式安装并支持 API
+# Create a Python virtual environment
+uv venv --seed --python 3.12
+source .venv/bin/activate
+
+# Install in editable mode with API support
 pip install -e ".[api]"
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
 ```
 
 ### 启动 LightRAG 服务器前的准备
@@ -109,28 +118,10 @@ lightrag-gunicorn --workers 4
 
 ### 使用 Docker 启动 LightRAG 服务器
 
-* 配置 .env 文件：
-    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
-* 创建一个名为 docker-compose.yml 的文件：
-
-```yaml
-services:
-  lightrag:
-    container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
-    ports:
-      - "${PORT:-9621}:9621"
-    volumes:
-      - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
-      - ./config.ini:/app/config.ini
-      - ./.env:/app/.env
-    env_file:
-      - .env
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
+使用 Docker Compose 是部署和运行 LightRAG Server 最便捷的方式。
+- 创建一个项目目录。
+- 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
+- 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
 
 * 通过以下命令启动 LightRAG 服务器：
 
@@ -138,7 +129,11 @@ services:
 docker compose up
 # 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
-> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./../../docs/DockerDeployment.md).
+
+### 离线部署
+
+官方的 LightRAG Docker 镜像完全兼容离线或隔离网络环境。如需搭建自己的离线部署环境，请参考 [离线部署指南](./../../docs/OfflineDeployment.md)。
 
 ### 启动多个LightRAG实例
 
@@ -278,7 +273,17 @@ LIGHTRAG_API_KEY=your-secure-api-key-here
 WHITELIST_PATHS=/health,/api/*
 ```
 
-> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。
+> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。
+
+API Key使用的请求头是 `X-API-Key` 。以下是使用API访问LightRAG Server的一个例子：
+
+```
+curl -X 'POST' \
+  'http://localhost:9621/documents/scan' \
+  -H 'accept: application/json' \
+  -H 'X-API-Key: your-secure-api-key-here-123' \
+  -d ''
+```
 
 * 账户凭证（Web 界面需要登录后才能访问）
 

@@ -11,6 +11,10 @@ from typing import (
     TypedDict,
     TypeVar,
     Callable,
+    Optional,
+    Dict,
+    List,
+    AsyncIterator,
 )
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
@@ -150,12 +154,19 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    If proivded, this will be use instead of the default vaulue from prompt template.
+    Addition instructions for LLM. If provided, this will be inject into the prompt template.
+    It's purpose is the let user customize the way LLM generate the response.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
+    """
+
+    include_references: bool = False
+    """If True, includes reference list in the response for supported endpoints.
+    This parameter controls whether the API response includes a references field
+    containing citation information for the retrieved content.
     """
 
 
@@ -342,6 +353,14 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
         Returns:
             None
+        """
+
+    @abstractmethod
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
         """
 
 
@@ -701,6 +720,7 @@ class DocStatus(str, Enum):
 
     PENDING = "pending"
     PROCESSING = "processing"
+    PREPROCESSED = "preprocessed"
     PROCESSED = "processed"
     FAILED = "failed"
 
@@ -731,6 +751,25 @@ class DocProcessingStatus:
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
+    multimodal_processed: bool | None = field(default=None, repr=False)
+    """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
+
+    def __post_init__(self):
+        """
+        Handle status conversion based on multimodal_processed field.
+
+        Business rules:
+        - If multimodal_processed is False and status is PROCESSED,
+          then change status to PREPROCESSED
+        - The multimodal_processed field is kept (with repr=False) for internal use and debugging
+        """
+        # Apply status conversion logic
+        if self.multimodal_processed is not None:
+            if (
+                self.multimodal_processed is False
+                and self.status == DocStatus.PROCESSED
+            ):
+                self.status = DocStatus.PREPROCESSED
 
 
 @dataclass
@@ -814,3 +853,68 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+
+
+# Unified Query Result Data Structures for Reference List Support
+
+
+@dataclass
+class QueryResult:
+    """
+    Unified query result data structure for all query modes.
+
+    Attributes:
+        content: Text content for non-streaming responses
+        response_iterator: Streaming response iterator for streaming responses
+        raw_data: Complete structured data including references and metadata
+        is_streaming: Whether this is a streaming result
+    """
+
+    content: Optional[str] = None
+    response_iterator: Optional[AsyncIterator[str]] = None
+    raw_data: Optional[Dict[str, Any]] = None
+    is_streaming: bool = False
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """
+        Convenient property to extract reference list from raw_data.
+
+        Returns:
+            List[Dict[str, str]]: Reference list in format:
+            [{"reference_id": "1", "file_path": "/path/to/file.pdf"}, ...]
+        """
+        if self.raw_data:
+            return self.raw_data.get("data", {}).get("references", [])
+        return []
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """
+        Convenient property to extract metadata from raw_data.
+
+        Returns:
+            Dict[str, Any]: Query metadata including query_mode, keywords, etc.
+        """
+        if self.raw_data:
+            return self.raw_data.get("metadata", {})
+        return {}
+
+
+@dataclass
+class QueryContextResult:
+    """
+    Unified query context result data structure.
+
+    Attributes:
+        context: LLM context string
+        raw_data: Complete structured data including reference_list
+    """
+
+    context: str
+    raw_data: Dict[str, Any]
+
+    @property
+    def reference_list(self) -> List[Dict[str, str]]:
+        """Convenient property to extract reference list from raw_data."""
+        return self.raw_data.get("data", {}).get("references", [])
