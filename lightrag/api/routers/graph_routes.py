@@ -17,6 +17,7 @@ class EntityUpdateRequest(BaseModel):
     entity_name: str
     updated_data: Dict[str, Any]
     allow_rename: bool = False
+    allow_merge: bool = False
 
 
 class RelationUpdateRequest(BaseModel):
@@ -221,17 +222,52 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         Update an entity's properties in the knowledge graph
 
+        This endpoint allows updating entity properties, including renaming entities.
+        When renaming to an existing entity name, the behavior depends on allow_merge:
+
         Args:
-            request (EntityUpdateRequest): Request containing entity name, updated data, and rename flag
+            request (EntityUpdateRequest): Request containing:
+                - entity_name (str): Name of the entity to update
+                - updated_data (Dict[str, Any]): Dictionary of properties to update
+                - allow_rename (bool): Whether to allow entity renaming (default: False)
+                - allow_merge (bool): Whether to merge into existing entity when renaming
+                                     causes name conflict (default: False)
 
         Returns:
-            Dict: Updated entity information
+            Dict: Updated entity information with status
+
+        Behavior when renaming to an existing entity:
+            - If allow_merge=False: Raises ValueError with 400 status (default behavior)
+            - If allow_merge=True: Automatically merges the source entity into the existing target entity,
+                                  preserving all relationships and applying non-name updates first
+
+        Example Request (simple update):
+            POST /graph/entity/edit
+            {
+                "entity_name": "Tesla",
+                "updated_data": {"description": "Updated description"},
+                "allow_rename": false,
+                "allow_merge": false
+            }
+
+        Example Request (rename with auto-merge):
+            POST /graph/entity/edit
+            {
+                "entity_name": "Elon Msk",
+                "updated_data": {
+                    "entity_name": "Elon Musk",
+                    "description": "Corrected description"
+                },
+                "allow_rename": true,
+                "allow_merge": true
+            }
         """
         try:
             result = await rag.aedit_entity(
                 entity_name=request.entity_name,
                 updated_data=request.updated_data,
                 allow_rename=request.allow_rename,
+                allow_merge=request.allow_merge,
             )
             return {
                 "status": "success",
