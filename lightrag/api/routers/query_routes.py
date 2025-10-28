@@ -103,6 +103,11 @@ class QueryRequest(BaseModel):
         description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",
     )
 
+    file_path_filters: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of filename/path substrings; when provided, retrieval is restricted to matching sources.",
+    )
+
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",

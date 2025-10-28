@@ -134,7 +134,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
+        file_path_filters: []
       },
 
       setTheme: (theme: Theme) => set({ theme }),

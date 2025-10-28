@@ -45,7 +45,8 @@ export default function QuerySettings() {
     chunk_top_k: 20,
     max_entity_tokens: 6000,
     max_relation_tokens: 8000,
-    max_total_tokens: 30000
+    max_total_tokens: 30000,
+    file_path_filters: [] as string[]
   }), [])
 
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
@@ -72,6 +73,14 @@ export default function QuerySettings() {
       </Tooltip>
     </TooltipProvider>
   )
+
+  const handleFilePathFiltersChange = useCallback((value: string) => {
+    const filters = value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    handleChange('file_path_filters', filters)
+  }, [handleChange])
 
   return (
     <Card className="flex shrink-0 flex-col w-[280px]">
@@ -269,6 +278,36 @@ export default function QuerySettings() {
                 <ResetButton
                   onClick={() => handleReset('chunk_top_k')}
                   title="Reset to default"
+                />
+              </div>
+            </>
+
+            {/* File Path Filters */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="file_path_filters" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.filePathFilters')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.filePathFiltersTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div className="flex items-center gap-1">
+                <Input
+                  id="file_path_filters"
+                  type="text"
+                  value={(querySettings.file_path_filters ?? []).join(', ')}
+                  onChange={(e) => handleFilePathFiltersChange(e.target.value)}
+                  placeholder={t('retrievePanel.querySettings.filePathFiltersPlaceholder')}
+                  className="h-9 flex-1 pr-2"
+                />
+                <ResetButton
+                  onClick={() => handleReset('file_path_filters')}
+                  title="Clear filters"
                 />
               </div>
             </>

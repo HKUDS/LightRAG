@@ -137,6 +137,8 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Optional list of filename/path substrings used to limit retrieval to matching sources. */
+  file_path_filters?: string[]
 }
 
 export type QueryResponse = {

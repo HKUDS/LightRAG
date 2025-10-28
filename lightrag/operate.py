@@ -149,6 +149,118 @@ def chunking_by_token_size(
             )
     return results
 
+def _get_normalized_file_filters(query_param: QueryParam | None) -> list[str]:
+    """Prepare normalized (lower-cased) file path filters from the query parameters."""
+    if query_param is None:
+        return []
+
+    filters = getattr(query_param, "file_path_filters", None)
+    if not filters:
+        return []
+
+    normalized_filters: list[str] = []
+    for value in filters:
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                normalized_filters.append(trimmed.lower())
+
+    # Remove duplicates while preserving order
+    seen = set()
+    deduped_filters: list[str] = []
+    for value in normalized_filters:
+        if value not in seen:
+            seen.add(value)
+            deduped_filters.append(value)
+    return deduped_filters
+
+
+def _split_file_path_values(file_path_value: Any) -> list[str]:
+    """Split stored file_path metadata into comparable parts."""
+    if not file_path_value or file_path_value == "unknown_source":
+        return []
+
+    paths: list[str] = []
+    # Support strings, lists, or other iterables
+    if isinstance(file_path_value, list):
+        iterable = file_path_value
+    else:
+        iterable = [file_path_value]
+
+    for item in iterable:
+        if item is None:
+            continue
+        item_str = str(item)
+        if not item_str:
+            continue
+        fragments = split_string_by_multi_markers(item_str, [GRAPH_FIELD_SEP])
+        for fragment in fragments:
+            fragment = fragment.strip()
+            if fragment:
+                paths.append(fragment)
+    return paths
+
+
+def _file_path_matches(file_path_value: Any, normalized_filters: list[str]) -> bool:
+    """Return True when the stored file path metadata matches any filter substring."""
+    if not normalized_filters:
+        return True
+
+    candidate_paths = _split_file_path_values(file_path_value)
+    if not candidate_paths:
+        return False
+
+    for candidate in candidate_paths:
+        lower_candidate = candidate.lower()
+        candidate_basename = Path(candidate).name.lower()
+        for filter_value in normalized_filters:
+            if filter_value in lower_candidate or filter_value in candidate_basename:
+                return True
+    return False
+
+
+def _filter_items_by_file_path(
+    items: list[dict],
+    normalized_filters: list[str],
+) -> list[dict]:
+    """Filter entity/relation dictionaries by file path metadata."""
+    if not normalized_filters:
+        return items
+
+    filtered: list[dict] = []
+    for item in items:
+        if _file_path_matches(item.get("file_path"), normalized_filters):
+            filtered.append(item)
+    return filtered
+
+
+def _filter_vector_chunks_by_file_path(
+    vector_chunks: list[dict],
+    normalized_filters: list[str],
+    chunk_tracking: dict | None = None,
+) -> list[dict]:
+    """Filter vector chunk results and prune chunk tracking accordingly."""
+    if not normalized_filters:
+        return vector_chunks
+
+    filtered_chunks: list[dict] = []
+    allowed_chunk_ids: set[str] = set()
+
+    for chunk in vector_chunks:
+        if _file_path_matches(chunk.get("file_path"), normalized_filters):
+            filtered_chunks.append(chunk)
+            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            if chunk_id:
+                allowed_chunk_ids.add(chunk_id)
+
+    if chunk_tracking is not None:
+        for chunk_id in list(chunk_tracking.keys()):
+            tracking_source = chunk_tracking[chunk_id].get("source")
+            if tracking_source == "C" and chunk_id not in allowed_chunk_ids:
+                del chunk_tracking[chunk_id]
+
+    return filtered_chunks
+
 
 async def _handle_entity_relation_summary(
     description_type: str,
@@ -3418,6 +3530,20 @@ async def _get_vector_context(
                 }
                 valid_chunks.append(chunk_with_metadata)
 
+        normalized_filters = _get_normalized_file_filters(query_param)
+        if normalized_filters:
+            original_len = len(valid_chunks)
+            valid_chunks = [
+                chunk
+                for chunk in valid_chunks
+                if _file_path_matches(chunk.get("file_path"), normalized_filters)
+            ]
+            logger.info(
+                "Vector chunk filter applied %s -> %d/%d",
+                query_param.file_path_filters,
+                len(valid_chunks),
+                original_len,
+            )
         logger.info(
             f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
         )
@@ -3583,6 +3709,34 @@ async def _perform_kg_search(
             if rel_key not in seen_relations:
                 final_relations.append(relation)
                 seen_relations.add(rel_key)
+    
+    normalized_file_filters = _get_normalized_file_filters(query_param)
+    if normalized_file_filters:
+        original_counts = (
+            len(final_entities),
+            len(final_relations),
+            len(vector_chunks),
+        )
+        final_entities = _filter_items_by_file_path(
+            final_entities, normalized_file_filters
+        )
+        final_relations = _filter_items_by_file_path(
+            final_relations, normalized_file_filters
+        )
+        vector_chunks = _filter_vector_chunks_by_file_path(
+            vector_chunks, normalized_file_filters, chunk_tracking
+        )
+
+        logger.info(
+            "Applied file path filters %s -> entities %d/%d, relations %d/%d, vector chunks %d/%d",
+            query_param.file_path_filters,
+            len(final_entities),
+            original_counts[0],
+            len(final_relations),
+            original_counts[1],
+            len(vector_chunks),
+            original_counts[2],
+        )
 
     logger.info(
         f"Raw search results: {len(final_entities)} entities, {len(final_relations)} relations, {len(vector_chunks)} vector chunks"
@@ -3866,6 +4020,35 @@ async def _merge_all_chunks(
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
+
+    normalized_filters = _get_normalized_file_filters(query_param)
+    if normalized_filters:
+        original_len = len(merged_chunks)
+        merged_chunks = [
+            chunk
+            for chunk in merged_chunks
+            if _file_path_matches(chunk.get("file_path"), normalized_filters)
+        ]
+        if chunk_tracking is not None:
+            remaining_ids = {
+                chunk.get("chunk_id")
+                for chunk in merged_chunks
+                if chunk.get("chunk_id")
+            }
+            for chunk_id in list(chunk_tracking.keys()):
+                is_known_source = chunk_tracking[chunk_id].get("source") in {
+                    "C",
+                    "E",
+                    "R",
+                }
+                if is_known_source and chunk_id not in remaining_ids:
+                    del chunk_tracking[chunk_id]
+        logger.info(
+            "Merged chunks filtered by file paths %s -> %d/%d",
+            query_param.file_path_filters,
+            len(merged_chunks),
+            original_len,
+        )
 
     return merged_chunks
 
@@ -4308,10 +4491,16 @@ async def _find_related_text_unit_from_entities(
 
     if not node_datas:
         return []
+    
+    normalized_filters = _get_normalized_file_filters(query_param)
 
     # Step 1: Collect all text chunks for each entity
     entities_with_chunks = []
     for entity in node_datas:
+        if normalized_filters and not _file_path_matches(
+            entity.get("file_path"), normalized_filters
+        ):
+            continue
         if entity.get("source_id"):
             chunks = split_string_by_multi_markers(
                 entity["source_id"], [GRAPH_FIELD_SEP]
@@ -4434,6 +4623,10 @@ async def _find_related_text_unit_from_entities(
     result_chunks = []
     for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
         if chunk_data is not None and "content" in chunk_data:
+            if normalized_filters and not _file_path_matches(
+                chunk_data.get("file_path"), normalized_filters
+            ):
+                continue
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "entity"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
@@ -4560,10 +4753,16 @@ async def _find_related_text_unit_from_relations(
 
     if not edge_datas:
         return []
+    
+    normalized_filters = _get_normalized_file_filters(query_param)
 
     # Step 1: Collect all text chunks for each relationship
     relations_with_chunks = []
     for relation in edge_datas:
+        if normalized_filters and not _file_path_matches(
+            relation.get("file_path"), normalized_filters
+        ):
+            continue
         if relation.get("source_id"):
             chunks = split_string_by_multi_markers(
                 relation["source_id"], [GRAPH_FIELD_SEP]
@@ -4729,6 +4928,10 @@ async def _find_related_text_unit_from_relations(
     result_chunks = []
     for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
         if chunk_data is not None and "content" in chunk_data:
+            if normalized_filters and not _file_path_matches(
+                chunk_data.get("file_path"), normalized_filters
+            ):
+                continue
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "relationship"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication

@@ -130,6 +130,9 @@ class QueryParam:
     )
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
+    file_path_filters: list[str] | None = None
+    """Optional filename/path substrings; when provided, retrieval limits results to matching sources."""
+
     hl_keywords: list[str] = field(default_factory=list)
     """List of high-level keywords to prioritize in retrieval."""
 
