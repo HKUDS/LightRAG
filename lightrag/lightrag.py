@@ -2989,6 +2989,9 @@ class LightRAG:
                         ]
 
                     if not existing_sources:
+                        # No chunk references means this entity should be deleted
+                        entities_to_delete.add(node_label)
+                        entity_chunk_updates[node_label] = []
                         continue
 
                     remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
@@ -3010,6 +3013,7 @@ class LightRAG:
 
                 # Process relationships
                 for edge_data in affected_edges:
+                    # source target is not in normalize order in graph db property
                     src = edge_data.get("source")
                     tgt = edge_data.get("target")
 
@@ -3046,6 +3050,9 @@ class LightRAG:
                         ]
 
                     if not existing_sources:
+                        # No chunk references means this relationship should be deleted
+                        relationships_to_delete.add(edge_tuple)
+                        relation_chunk_updates[edge_tuple] = []
                         continue
 
                     remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
