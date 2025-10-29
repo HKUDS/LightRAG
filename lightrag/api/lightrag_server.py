@@ -12,7 +12,6 @@ from fastapi.openapi.docs import (
 import os
 import logging
 import logging.config
-import signal
 import sys
 import uvicorn
 import pipmaster as pm
@@ -80,24 +79,6 @@ config.read("config.ini")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
-
-
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown"""
-
-    def signal_handler(sig, frame):
-        print(f"\n\nReceived signal {sig}, shutting down gracefully...")
-        print(f"Process ID: {os.getpid()}")
-
-        # Release shared resources
-        finalize_share_data()
-
-        # Exit with success status
-        sys.exit(0)
-
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
 
 
 class LLMConfigCache:
@@ -345,8 +326,15 @@ def create_app(args):
             # Clean up database connections
             await rag.finalize_storages()
 
-            # Clean up shared data
-            finalize_share_data()
+            if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
+                # Only perform cleanup in Uvicorn single-process mode
+                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                finalize_share_data()
+            else:
+                # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
+                logger.debug(
+                    "Gunicorn Mode: postpone shared storage finalization to master process"
+                )
 
     # Initialize FastAPI
     base_description = (
@@ -1108,8 +1096,10 @@ def main():
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
 
-    # Setup signal handlers for graceful shutdown
-    setup_signal_handlers()
+    # Note: Signal handlers are NOT registered here because:
+    # - Uvicorn has built-in signal handling that properly calls lifespan shutdown
+    # - Custom signal handlers can interfere with uvicorn's graceful shutdown
+    # - Cleanup is handled by the lifespan context manager's finally block
 
     # Create application instance directly instead of using factory function
     app = create_app(global_args)

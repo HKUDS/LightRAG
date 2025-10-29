@@ -1,5 +1,5 @@
 [Unit]
-Description=LightRAG XYJ Ollama Service
+Description=LightRAG XYJ Service
 After=network.target
 
 [Service]
@@ -8,10 +8,20 @@ User=netman
 # Memory settings
 MemoryHigh=8G
 MemoryMax=12G
+
+# Using virtual enviroment created by miniconda
+Environment="PATH=/home/netman/miniconda3/bin:/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
-ExecStart=/home/netman/lightrag-xyj/lightrag-api
+# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
+ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
+
+# Kill mode require ExecStart must be gunicorn or unvicorn main process
+KillMode=process
+ExecStop=/bin/kill -s TERM $MAINPID
+TimeoutStopSec=60
+
 Restart=always
-RestartSec=10
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
