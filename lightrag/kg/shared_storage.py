@@ -1444,7 +1444,7 @@ async def get_namespace_data(
     return _shared_dicts[namespace]
 
 
-def finalize_share_data(shutdown_manager: bool = True):
+def finalize_share_data():
     """
     Release shared resources and clean up.
 
@@ -1453,10 +1453,6 @@ def finalize_share_data(shutdown_manager: bool = True):
 
     In multi-process mode, it shuts down the Manager and releases all shared objects.
     In single-process mode, it simply resets the global variables.
-
-    Args:
-        shutdown_manager: If True, shut down the multiprocessing Manager.
-                         Should be True only for the main process, False for worker processes.
     """
     global \
         _manager, \
@@ -1483,8 +1479,8 @@ def finalize_share_data(shutdown_manager: bool = True):
         f"Process {os.getpid()} finalizing storage data (multiprocess={_is_multiprocess})"
     )
 
-    # In multi-process mode, shut down the Manager only if requested
-    if _is_multiprocess and _manager is not None and shutdown_manager:
+    # In multi-process mode, shut down the Manager
+    if _is_multiprocess and _manager is not None:
         try:
             # Clear shared resources before shutting down Manager
             if _shared_dicts is not None:

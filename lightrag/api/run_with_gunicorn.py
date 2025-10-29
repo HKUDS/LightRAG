@@ -45,9 +45,7 @@ def main():
     check_and_install_dependencies()
 
     # Note: Signal handlers are NOT registered here because:
-    # - Worker cleanup is handled by gunicorn_config.worker_exit()
-    # - Master cleanup is handled by gunicorn_config.on_exit()
-    # This prevents race conditions when multiple processes try to finalize shared data
+    # - Master cleanup already handled by gunicorn_config.on_exit()
 
     # Display startup information
     display_splash_screen(global_args)

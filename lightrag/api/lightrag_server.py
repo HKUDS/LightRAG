@@ -326,15 +326,14 @@ def create_app(args):
             # Clean up database connections
             await rag.finalize_storages()
 
-            # In Gunicorn mode with preload_app=True, cleanup is handled by worker_exit/on_exit hooks
-            # Only perform cleanup in Uvicorn single-process mode
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
-                # Clean up shared data
-                logger.debug("Unvicorn Mode: finalize shared storage...")
+                # Only perform cleanup in Uvicorn single-process mode
+                logger.debug("Unvicorn Mode: finalizing shared storage...")
                 finalize_share_data()
             else:
+                # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
                 logger.debug(
-                    "Gunicorn Mode: don not finalize shared storage in worker process"
+                    "Gunicorn Mode: postpone shared storage finalization to master process"
                 )
 
     # Initialize FastAPI
