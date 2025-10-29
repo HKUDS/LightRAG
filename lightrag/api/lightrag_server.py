@@ -326,8 +326,12 @@ def create_app(args):
             # Clean up database connections
             await rag.finalize_storages()
 
-            # Clean up shared data
-            finalize_share_data()
+            # In Gunicorn mode with preload_app=True, cleanup is handled by worker_exit/on_exit hooks
+            # Only perform cleanup in Uvicorn single-process mode
+            if "GUNICORN_CMD_ARGS" not in os.environ:
+
+                # Clean up shared data
+                finalize_share_data()
 
     # Initialize FastAPI
     base_description = (
