@@ -60,7 +60,10 @@ postgresql:
   auth:
     database: lightrag
     username: lightrag_user
-    password: lightrag_pass
+    password: ""
+    existingSecret: ""
+    secretKeys:
+      userPasswordKey: postgres-password
   primary:
     persistence:
       enabled: true
@@ -132,7 +135,13 @@ secrets:
   openaiApiKey: "" # Legacy field, kept for backward compatibility
   llmApiKey: "" # API key for LLM service (e.g., OpenRouter)
   embeddingApiKey: "" # API key for embedding service (e.g., Google Gemini)
-  
+  lightragApiKey: ""
+
+auth:
+  enabled: false
+  accounts: []
+  tokenSecret: ""
+
 
 # Node selector and affinity
 nodeSelector: {}

@@ -77,7 +77,26 @@ spec:
                 secretKeyRef:
                   name: {{ include "lightrag-minimal.secretName" . }}
                   key: embedding-api-key
-            
+            - name: LIGHTRAG_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightrag-minimal.secretName" . }}
+                  key: lightrag-api-key
+            {{- if and .Values.auth.enabled (gt (len .Values.auth.accounts) 0) }}
+            - name: AUTH_ACCOUNTS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightrag-minimal.secretName" . }}
+                  key: auth-accounts
+            {{- end }}
+            {{- if and .Values.auth.enabled .Values.auth.tokenSecret }}
+            - name: TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightrag-minimal.secretName" . }}
+                  key: token-secret
+            {{- end }}
+
             # Storage configuration
             - name: LIGHTRAG_KV_STORAGE
               value: {{ .Values.env.LIGHTRAG_KV_STORAGE | quote }}

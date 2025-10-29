@@ -22,31 +22,23 @@ This chart provides a comprehensive LightRAG deployment with:
 
 ## Validated Installation Steps
 
-### Development/Local Setup (Minikube)
+### Deploying the Chart
 
-1. **Prepare Helm repositories**:
 ```bash
 cd lightrag-minimal
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm repo update
 helm dependency update
-```
 
-2. **Set your OpenAI API key**:
-```bash
-export OPENAI_API_KEY="your-openai-api-key-here"
-```
+# (Optional) create a copy of values.yaml and customize it for your environment
+cp values.yaml my-values.yaml
+# edit my-values.yaml as needed (OpenAI keys, storage class, Postgres password, etc.)
 
-3. **Deploy for development**:
-```bash
-# Substitute environment variables and deploy
-envsubst < values-dev.yaml > values-dev-final.yaml
 helm install lightrag-minimal . \
-  -f values-dev-final.yaml \
+  -f my-values.yaml \
   --namespace lightrag \
   --create-namespace
 
-# Wait for deployment
 kubectl wait --namespace lightrag \
   --for=condition=ready pod \
   -l app.kubernetes.io/name=postgresql \
@@ -57,30 +49,13 @@ kubectl wait --namespace lightrag \
   -l app.kubernetes.io/name=lightrag-minimal \
   --timeout=120s
 
-# Clean up temporary file
-rm values-dev-final.yaml
-
-# Start port forwarding
+# Optional: expose the service locally
 kubectl port-forward --namespace lightrag svc/lightrag-minimal 9621:9621 &
-```
-
-### Production Setup
-
-```bash
-# Customize values-prod.yaml first (domain, storage classes, etc.)
-envsubst < values-prod.yaml > values-prod-final.yaml
-helm install lightrag-minimal . \
-  -f values-prod-final.yaml \
-  --namespace lightrag \
-  --create-namespace
-rm values-prod-final.yaml
 ```
 
 ## Configuration Options
 
 ### Validated Environment Configuration
-
-Both `values-dev.yaml` and `values-prod.yaml` include these critical settings:
 
 ```yaml
 env:

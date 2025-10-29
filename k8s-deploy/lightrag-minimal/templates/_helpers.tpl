@@ -78,3 +78,14 @@ PostgreSQL connection string
 {{- .Values.env.POSTGRES_HOST }}
 {{- end }}
 {{- end }}
+
+{{/*
+Generate AUTH_ACCOUNTS string from configured accounts
+*/}}
+{{- define "lightrag-minimal.authAccounts" -}}
+{{- if .Values.auth.accounts }}
+{{- range $index, $account := .Values.auth.accounts -}}
+{{- if gt $index 0 }},{{ end -}}{{ $account.username }}:{{ $account.password }}
+{{- end -}}
+{{- end -}}
+{{- end }}

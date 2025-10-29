@@ -8,22 +8,27 @@ import asyncio
 import httpx
 import argparse
 import sys
+import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 async def load_document_to_lightrag(
     content: str, 
     title: str, 
     doc_url: str,
-    endpoint: str = "http://localhost:9621"
+    endpoint: str = "http://localhost:9621",
+    headers: Optional[Dict[str, str]] = None
 ) -> bool:
     """Load a single document to LightRAG with URL reference"""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            request_headers = {"Content-Type": "application/json"}
+            if headers:
+                request_headers.update(headers)
             response = await client.post(
                 f"{endpoint}/documents/text",
-                headers={"Content-Type": "application/json"},
+                headers=request_headers,
                 json={
                     "text": content,
                     "file_source": doc_url
@@ -148,11 +153,14 @@ Source: {source_info}
     return documents
 
 
-async def test_lightrag_health(endpoint: str = "http://localhost:9621") -> bool:
+async def test_lightrag_health(
+    endpoint: str = "http://localhost:9621",
+    headers: Optional[Dict[str, str]] = None
+) -> bool:
     """Test if LightRAG is accessible"""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{endpoint}/health")
+            response = await client.get(f"{endpoint}/health", headers=headers)
             if response.status_code == 200:
                 health_data = response.json()
                 print(f"✅ LightRAG is healthy: {health_data.get('status')}")
@@ -165,14 +173,20 @@ async def test_lightrag_health(endpoint: str = "http://localhost:9621") -> bool:
         return False
 
 
-async def test_query(endpoint: str = "http://localhost:9621") -> None:
+async def test_query(
+    endpoint: str = "http://localhost:9621",
+    headers: Optional[Dict[str, str]] = None
+) -> None:
     """Test a sample query"""
     print(f"\n🧪 Testing query...")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            request_headers = {"Content-Type": "application/json"}
+            if headers:
+                request_headers.update(headers)
             response = await client.post(
                 f"{endpoint}/query",
-                headers={"Content-Type": "application/json"},
+                headers=request_headers,
                 json={"query": "What is this documentation about?", "mode": "local"}
             )
             
@@ -247,6 +261,12 @@ Examples:
     )
     
     args = parser.parse_args()
+    api_key = os.getenv("LIGHTRAG_API_KEY")
+    if api_key:
+        auth_headers = {"X-API-Key": api_key}
+    else:
+        auth_headers = None
+        print("ℹ️ LIGHTRAG_API_KEY not set, continuing without authentication.")
     
     print("🚀 Loading Documentation into LightRAG")
     print("=" * 60)
@@ -262,7 +282,7 @@ Examples:
     print()
     
     # Test LightRAG connectivity
-    if not await test_lightrag_health(args.endpoint):
+    if not await test_lightrag_health(args.endpoint, headers=auth_headers):
         print("❌ Cannot connect to LightRAG. Please ensure it's running and accessible.")
         sys.exit(1)
     
@@ -292,7 +312,13 @@ Examples:
     print(f"\n🔄 Starting to load documents...")
     
     for i, (content, title, doc_url) in enumerate(documents):
-        success = await load_document_to_lightrag(content, title, doc_url, args.endpoint)
+        success = await load_document_to_lightrag(
+            content,
+            title,
+            doc_url,
+            args.endpoint,
+            headers=auth_headers
+        )
         
         if success:
             successful += 1
@@ -312,7 +338,7 @@ Examples:
     
     # Test query unless disabled
     if not args.no_test and successful > 0:
-        await test_query(args.endpoint)
+        await test_query(args.endpoint, headers=auth_headers)
 
 
 if __name__ == "__main__":
