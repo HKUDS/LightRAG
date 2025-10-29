@@ -103,19 +103,27 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-# create a Python virtual enviroment if neccesary
+# Create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
-cp env.example .env
+
+cp env.example .env  # Update the .env with your LLM and embedding configurations
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
+
 lightrag-server
 ```
 
 * Launching the LightRAG Server with Docker Compose
 
-```
+```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env
+cp env.example .env  # Update the .env with your LLM and embedding configurations
 # modify LLM and Embedding settings in .env
 docker compose up
 ```
