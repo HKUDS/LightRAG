@@ -966,7 +966,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize Milvus collection"""
-        async with get_data_init_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self._initialized:
                 return
 
