@@ -1538,7 +1538,7 @@ The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](htt
 
 ### Generate Query
 
-LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `example/generate_query.py`.
+LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `examples/generate_query.py`.
 
 <details>
 <summary> Prompt </summary>
