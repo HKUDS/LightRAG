@@ -1835,7 +1835,7 @@ class LightRAG:
                                     chunks, pipeline_status, pipeline_status_lock
                                 )
                             )
-                            await entity_relation_task
+                            chunk_results = await entity_relation_task
                             file_extraction_stage_ok = True
 
                         except Exception as e:
@@ -1912,8 +1912,7 @@ class LightRAG:
                                             "User cancelled"
                                         )
 
-                                # Get chunk_results from entity_relation_task
-                                chunk_results = await entity_relation_task
+                                # Use chunk_results from entity_relation_task
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
