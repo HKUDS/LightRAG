@@ -5,10 +5,13 @@ LightRAG FastAPI Server
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
 import os
 import logging
 import logging.config
-import signal
 import sys
 import uvicorn
 import pipmaster as pm
@@ -76,24 +79,6 @@ config.read("config.ini")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
-
-
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown"""
-
-    def signal_handler(sig, frame):
-        print(f"\n\nReceived signal {sig}, shutting down gracefully...")
-        print(f"Process ID: {os.getpid()}")
-
-        # Release shared resources
-        finalize_share_data()
-
-        # Exit with success status
-        sys.exit(0)
-
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
 
 
 class LLMConfigCache:
@@ -341,8 +326,15 @@ def create_app(args):
             # Clean up database connections
             await rag.finalize_storages()
 
-            # Clean up shared data
-            finalize_share_data()
+            if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
+                # Only perform cleanup in Uvicorn single-process mode
+                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                finalize_share_data()
+            else:
+                # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
+                logger.debug(
+                    "Gunicorn Mode: postpone shared storage finalization to master process"
+                )
 
     # Initialize FastAPI
     base_description = (
@@ -358,7 +350,7 @@ def create_app(args):
         "description": swagger_description,
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
-        "docs_url": "/docs",  # Explicitly set docs URL
+        "docs_url": None,  # Disable default docs, we'll create custom endpoint
         "redoc_url": "/redoc",  # Explicitly set redoc URL
         "lifespan": lifespan,
     }
@@ -769,6 +761,25 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
+    # Custom Swagger UI endpoint for offline support
+    @app.get("/docs", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        """Custom Swagger UI HTML with local static files"""
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=app.title + " - Swagger UI",
+            oauth2_redirect_url="/docs/oauth2-redirect",
+            swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
+            swagger_css_url="/static/swagger-ui/swagger-ui.css",
+            swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+            swagger_ui_parameters=app.swagger_ui_parameters,
+        )
+
+    @app.get("/docs/oauth2-redirect", include_in_schema=False)
+    async def swagger_ui_redirect():
+        """OAuth2 redirect for Swagger UI"""
+        return get_swagger_ui_oauth2_redirect_html()
+
     @app.get("/")
     async def redirect_to_webui():
         """Redirect root path to /webui"""
@@ -935,6 +946,15 @@ def create_app(args):
 
             return response
 
+    # Mount Swagger UI static files for offline support
+    swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
+    if swagger_static_dir.exists():
+        app.mount(
+            "/static/swagger-ui",
+            StaticFiles(directory=swagger_static_dir),
+            name="swagger-ui-static",
+        )
+
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
@@ -1076,8 +1096,10 @@ def main():
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
 
-    # Setup signal handlers for graceful shutdown
-    setup_signal_handlers()
+    # Note: Signal handlers are NOT registered here because:
+    # - Uvicorn has built-in signal handling that properly calls lifespan shutdown
+    # - Custom signal handlers can interfere with uvicorn's graceful shutdown
+    # - Cleanup is handled by the lifespan context manager's finally block
 
     # Create application instance directly instead of using factory function
     app = create_app(global_args)

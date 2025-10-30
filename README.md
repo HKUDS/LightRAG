@@ -103,19 +103,27 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-# create a Python virtual enviroment if neccesary
+# Create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
-cp env.example .env
+
+cp env.example .env  # Update the .env with your LLM and embedding configurations
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
+
 lightrag-server
 ```
 
 * Launching the LightRAG Server with Docker Compose
 
-```
+```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env
+cp env.example .env  # Update the .env with your LLM and embedding configurations
 # modify LLM and Embedding settings in .env
 docker compose up
 ```
@@ -1539,7 +1547,7 @@ The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](htt
 
 ### Generate Query
 
-LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `example/generate_query.py`.
+LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `examples/generate_query.py`.
 
 <details>
 <summary> Prompt </summary>

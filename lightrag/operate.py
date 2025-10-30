@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import partial
+from pathlib import Path
 
 import asyncio
 import json
@@ -7,6 +8,7 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
+from lightrag.exceptions import PipelineCancelledException
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -67,7 +69,7 @@ from dotenv import load_dotenv
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 
 def _truncate_entity_identifier(
@@ -500,7 +502,7 @@ async def _handle_single_relationship_extraction(
         return None
 
 
-async def _rebuild_knowledge_from_chunks(
+async def rebuild_knowledge_from_chunks(
     entities_to_rebuild: dict[str, list[str]],
     relationships_to_rebuild: dict[tuple[str, str], list[str]],
     knowledge_graph_inst: BaseGraphStorage,
@@ -675,14 +677,6 @@ async def _rebuild_knowledge_from_chunks(
                         entity_chunks_storage=entity_chunks_storage,
                     )
                     rebuilt_entities_count += 1
-                    status_message = (
-                        f"Rebuild `{entity_name}` from {len(chunk_ids)} chunks"
-                    )
-                    logger.info(status_message)
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
                 except Exception as e:
                     failed_entities_count += 1
                     status_message = f"Failed to rebuild `{entity_name}`: {e}"
@@ -708,6 +702,7 @@ async def _rebuild_knowledge_from_chunks(
                     await _rebuild_single_relationship(
                         knowledge_graph_inst=knowledge_graph_inst,
                         relationships_vdb=relationships_vdb,
+                        entities_vdb=entities_vdb,
                         src=src,
                         tgt=tgt,
                         chunk_ids=chunk_ids,
@@ -715,13 +710,14 @@ async def _rebuild_knowledge_from_chunks(
                         llm_response_cache=llm_response_cache,
                         global_config=global_config,
                         relation_chunks_storage=relation_chunks_storage,
+                        entity_chunks_storage=entity_chunks_storage,
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
                     )
                     rebuilt_relationships_count += 1
                 except Exception as e:
                     failed_relationships_count += 1
-                    status_message = f"Failed to rebuild `{src} - {tgt}`: {e}"
+                    status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
                     logger.info(status_message)  # Per requirement, change to info
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -1290,6 +1286,7 @@ async def _rebuild_single_entity(
 async def _rebuild_single_relationship(
     knowledge_graph_inst: BaseGraphStorage,
     relationships_vdb: BaseVectorStorage,
+    entities_vdb: BaseVectorStorage,
     src: str,
     tgt: str,
     chunk_ids: list[str],
@@ -1297,6 +1294,7 @@ async def _rebuild_single_relationship(
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
     relation_chunks_storage: BaseKVStorage | None = None,
+    entity_chunks_storage: BaseKVStorage | None = None,
     pipeline_status: dict | None = None,
     pipeline_status_lock=None,
 ) -> None:
@@ -1440,9 +1438,69 @@ async def _rebuild_single_relationship(
         else current_relationship.get("file_path", "unknown_source"),
         "truncate": truncation_info,
     }
+
+    # Ensure both endpoint nodes exist before writing the edge back
+    # (certain storage backends require pre-existing nodes).
+    node_description = (
+        updated_relationship_data["description"]
+        if updated_relationship_data.get("description")
+        else current_relationship.get("description", "")
+    )
+    node_source_id = updated_relationship_data.get("source_id", "")
+    node_file_path = updated_relationship_data.get("file_path", "unknown_source")
+
+    for node_id in {src, tgt}:
+        if not (await knowledge_graph_inst.has_node(node_id)):
+            node_created_at = int(time.time())
+            node_data = {
+                "entity_id": node_id,
+                "source_id": node_source_id,
+                "description": node_description,
+                "entity_type": "UNKNOWN",
+                "file_path": node_file_path,
+                "created_at": node_created_at,
+                "truncate": "",
+            }
+            await knowledge_graph_inst.upsert_node(node_id, node_data=node_data)
+
+            # Update entity_chunks_storage for the newly created entity
+            if entity_chunks_storage is not None and limited_chunk_ids:
+                await entity_chunks_storage.upsert(
+                    {
+                        node_id: {
+                            "chunk_ids": limited_chunk_ids,
+                            "count": len(limited_chunk_ids),
+                        }
+                    }
+                )
+
+            # Update entity_vdb for the newly created entity
+            if entities_vdb is not None:
+                entity_vdb_id = compute_mdhash_id(node_id, prefix="ent-")
+                entity_content = f"{node_id}\n{node_description}"
+                vdb_data = {
+                    entity_vdb_id: {
+                        "content": entity_content,
+                        "entity_name": node_id,
+                        "source_id": node_source_id,
+                        "entity_type": "UNKNOWN",
+                        "file_path": node_file_path,
+                    }
+                }
+                await safe_vdb_operation_with_exception(
+                    operation=lambda payload=vdb_data: entities_vdb.upsert(payload),
+                    operation_name="rebuild_added_entity_upsert",
+                    entity_name=node_id,
+                    max_retries=3,
+                    retry_delay=0.1,
+                )
+
     await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Update relationship in vector database
+    # Sort src and tgt to ensure consistent ordering (smaller string first)
+    if src > tgt:
+        src, tgt = tgt, src
     try:
         rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")
         rel_vdb_id_reverse = compute_mdhash_id(tgt + src, prefix="rel-")
@@ -1485,7 +1543,7 @@ async def _rebuild_single_relationship(
         raise  # Re-raise exception
 
     # Log rebuild completion with truncation info
-    status_message = f"Rebuild `{src} - {tgt}` from {len(chunk_ids)} chunks"
+    status_message = f"Rebuild `{src}`~`{tgt}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
     # Add truncation info from apply_source_ids_limit if truncation occurred
@@ -1636,6 +1694,12 @@ async def _merge_nodes_then_upsert(
     if not description_list:
         logger.error(f"Entity {entity_name} has no description")
         raise ValueError(f"Entity {entity_name} has no description")
+
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during entity summary")
 
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
@@ -1789,6 +1853,7 @@ async def _merge_edges_then_upsert(
     llm_response_cache: BaseKVStorage | None = None,
     added_entities: list = None,  # New parameter to track entities added during edge processing
     relation_chunks_storage: BaseKVStorage | None = None,
+    entity_chunks_storage: BaseKVStorage | None = None,
 ):
     if src_id == tgt_id:
         return None
@@ -1957,6 +2022,14 @@ async def _merge_edges_then_upsert(
         logger.error(f"Relation {src_id}~{tgt_id} has no description")
         raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
 
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during relation summary"
+                )
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Relation",
@@ -2065,7 +2138,11 @@ async def _merge_edges_then_upsert(
 
     # 11. Update both graph and vector db
     for need_insert_id in [src_id, tgt_id]:
-        if not (await knowledge_graph_inst.has_node(need_insert_id)):
+        # Optimization: Use get_node instead of has_node + get_node
+        existing_node = await knowledge_graph_inst.get_node(need_insert_id)
+
+        if existing_node is None:
+            # Node doesn't exist - create new node
             node_created_at = int(time.time())
             node_data = {
                 "entity_id": need_insert_id,
@@ -2077,6 +2154,19 @@ async def _merge_edges_then_upsert(
                 "truncate": "",
             }
             await knowledge_graph_inst.upsert_node(need_insert_id, node_data=node_data)
+
+            # Update entity_chunks_storage for the newly created entity
+            if entity_chunks_storage is not None:
+                chunk_ids = [chunk_id for chunk_id in full_source_ids if chunk_id]
+                if chunk_ids:
+                    await entity_chunks_storage.upsert(
+                        {
+                            need_insert_id: {
+                                "chunk_ids": chunk_ids,
+                                "count": len(chunk_ids),
+                            }
+                        }
+                    )
 
             if entity_vdb is not None:
                 entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
@@ -2109,6 +2199,109 @@ async def _merge_edges_then_upsert(
                     "created_at": node_created_at,
                 }
                 added_entities.append(entity_data)
+        else:
+            # Node exists - update its source_ids by merging with new source_ids
+            updated = False  # Track if any update occurred
+
+            # 1. Get existing full source_ids from entity_chunks_storage
+            existing_full_source_ids = []
+            if entity_chunks_storage is not None:
+                stored_chunks = await entity_chunks_storage.get_by_id(need_insert_id)
+                if stored_chunks and isinstance(stored_chunks, dict):
+                    existing_full_source_ids = [
+                        chunk_id
+                        for chunk_id in stored_chunks.get("chunk_ids", [])
+                        if chunk_id
+                    ]
+
+            # If not in entity_chunks_storage, get from graph database
+            if not existing_full_source_ids:
+                if existing_node.get("source_id"):
+                    existing_full_source_ids = existing_node["source_id"].split(
+                        GRAPH_FIELD_SEP
+                    )
+
+            # 2. Merge with new source_ids from this relationship
+            new_source_ids_from_relation = [
+                chunk_id for chunk_id in source_ids if chunk_id
+            ]
+            merged_full_source_ids = merge_source_ids(
+                existing_full_source_ids, new_source_ids_from_relation
+            )
+
+            # 3. Save merged full list to entity_chunks_storage (conditional)
+            if (
+                entity_chunks_storage is not None
+                and merged_full_source_ids != existing_full_source_ids
+            ):
+                updated = True
+                await entity_chunks_storage.upsert(
+                    {
+                        need_insert_id: {
+                            "chunk_ids": merged_full_source_ids,
+                            "count": len(merged_full_source_ids),
+                        }
+                    }
+                )
+
+            # 4. Apply source_ids limit for graph and vector db
+            limit_method = global_config.get(
+                "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
+            )
+            max_source_limit = global_config.get("max_source_ids_per_entity")
+            limited_source_ids = apply_source_ids_limit(
+                merged_full_source_ids,
+                max_source_limit,
+                limit_method,
+                identifier=f"`{need_insert_id}`",
+            )
+
+            # 5. Update graph database and vector database with limited source_ids (conditional)
+            limited_source_id_str = GRAPH_FIELD_SEP.join(limited_source_ids)
+
+            if limited_source_id_str != existing_node.get("source_id", ""):
+                updated = True
+                updated_node_data = {
+                    **existing_node,
+                    "source_id": limited_source_id_str,
+                }
+                await knowledge_graph_inst.upsert_node(
+                    need_insert_id, node_data=updated_node_data
+                )
+
+                # Update vector database
+                if entity_vdb is not None:
+                    entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
+                    entity_content = (
+                        f"{need_insert_id}\n{existing_node.get('description', '')}"
+                    )
+                    vdb_data = {
+                        entity_vdb_id: {
+                            "content": entity_content,
+                            "entity_name": need_insert_id,
+                            "source_id": limited_source_id_str,
+                            "entity_type": existing_node.get("entity_type", "UNKNOWN"),
+                            "file_path": existing_node.get(
+                                "file_path", "unknown_source"
+                            ),
+                        }
+                    }
+                    await safe_vdb_operation_with_exception(
+                        operation=lambda payload=vdb_data: entity_vdb.upsert(payload),
+                        operation_name="existing_entity_update",
+                        entity_name=need_insert_id,
+                        max_retries=3,
+                        retry_delay=0.1,
+                    )
+
+            # 6. Log once at the end if any update occurred
+            if updated:
+                status_message = f"Chunks appended from relation: `{need_insert_id}`"
+                logger.info(status_message)
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = status_message
+                        pipeline_status["history_messages"].append(status_message)
 
     edge_created_at = int(time.time())
     await knowledge_graph_inst.upsert_edge(
@@ -2136,6 +2329,10 @@ async def _merge_edges_then_upsert(
         truncate=truncation_info,
         weight=weight,
     )
+
+    # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
+    if src_id > tgt_id:
+        src_id, tgt_id = tgt_id, src_id
 
     if relationships_vdb is not None:
         rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
@@ -2214,6 +2411,12 @@ async def merge_nodes_and_edges(
         file_path: File path for logging
     """
 
+    # Check for cancellation at the start of merge
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during merge phase")
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -2250,6 +2453,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
+            # Check for cancellation before processing entity
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during entity merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             async with get_storage_keyed_lock(
@@ -2272,9 +2483,7 @@ async def merge_nodes_and_edges(
                     return entity_data
 
                 except Exception as e:
-                    error_msg = (
-                        f"Critical error in entity processing for `{entity_name}`: {e}"
-                    )
+                    error_msg = f"Error processing entity `{entity_name}`: {e}"
                     logger.error(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
@@ -2310,35 +2519,31 @@ async def merge_nodes_and_edges(
             entity_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception and ensure all exceptions are retrieved
         first_exception = None
-        successful_results = []
+        processed_entities = []
 
         for task in done:
             try:
-                exception = task.exception()
-                if exception is not None:
-                    if first_exception is None:
-                        first_exception = exception
-                else:
-                    successful_results.append(task.result())
-            except Exception as e:
+                result = task.result()
+            except BaseException as e:
                 if first_exception is None:
                     first_exception = e
+            else:
+                processed_entities.append(result)
 
-        # If any task failed, cancel all pending tasks and raise the first exception
+        if pending:
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                else:
+                    processed_entities.append(result)
+
         if first_exception is not None:
-            # Cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
-            # Re-raise the first exception to notify the caller
             raise first_exception
-
-        # If all tasks completed successfully, collect results
-        processed_entities = [task.result() for task in entity_tasks]
 
     # ===== Phase 2: Process all relationships concurrently =====
     log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
@@ -2349,6 +2554,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
+            # Check for cancellation before processing edges
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during relation merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             sorted_edge_key = sorted([edge_key[0], edge_key[1]])
@@ -2375,6 +2588,7 @@ async def merge_nodes_and_edges(
                         llm_response_cache,
                         added_entities,  # Pass list to collect added entities
                         relation_chunks_storage,
+                        entity_chunks_storage,  # Add entity_chunks_storage parameter
                     )
 
                     if edge_data is None:
@@ -2383,7 +2597,7 @@ async def merge_nodes_and_edges(
                     return edge_data, added_entities
 
                 except Exception as e:
-                    error_msg = f"Critical error in relationship processing for `{sorted_edge_key}`: {e}"
+                    error_msg = f"Error processing relation `{sorted_edge_key}`: {e}"
                     logger.error(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
@@ -2421,39 +2635,35 @@ async def merge_nodes_and_edges(
             edge_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception and ensure all exceptions are retrieved
         first_exception = None
-        successful_results = []
 
         for task in done:
             try:
-                exception = task.exception()
-                if exception is not None:
-                    if first_exception is None:
-                        first_exception = exception
-                else:
-                    successful_results.append(task.result())
-            except Exception as e:
+                edge_data, added_entities = task.result()
+            except BaseException as e:
                 if first_exception is None:
                     first_exception = e
+            else:
+                if edge_data is not None:
+                    processed_edges.append(edge_data)
+                all_added_entities.extend(added_entities)
 
-        # If any task failed, cancel all pending tasks and raise the first exception
+        if pending:
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                else:
+                    edge_data, added_entities = result
+                    if edge_data is not None:
+                        processed_edges.append(edge_data)
+                    all_added_entities.extend(added_entities)
+
         if first_exception is not None:
-            # Cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
-            # Re-raise the first exception to notify the caller
             raise first_exception
-
-        # If all tasks completed successfully, collect results
-        for task in edge_tasks:
-            edge_data, added_entities = task.result()
-            if edge_data is not None:
-                processed_edges.append(edge_data)
-            all_added_entities.extend(added_entities)
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:
@@ -2535,6 +2745,14 @@ async def extract_entities(
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
+    # Check for cancellation at the start of entity extraction
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during entity extraction"
+                )
+
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
@@ -2702,6 +2920,14 @@ async def extract_entities(
 
     async def _process_with_semaphore(chunk):
         async with semaphore:
+            # Check for cancellation before processing chunk
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during chunk processing"
+                        )
+
             try:
                 return await _process_single_content(chunk)
             except Exception as e:
