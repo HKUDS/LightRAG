@@ -136,7 +136,7 @@ include-package-data = true
 version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
-lightrag = ["api/webui/**/*"]
+lightrag = ["api/webui/**/*", "api/static/**/*"]
 
 [tool.ruff]
 target-version = "py310"
