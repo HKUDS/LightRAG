@@ -1340,7 +1340,7 @@ class LightRAG:
                         "track_id": getattr(status_doc, "track_id", ""),
                         # Clear any error messages and processing metadata
                         "error_msg": "",
-                        "metadata": getattr(status_doc.metadata),
+                        "metadata": getattr(status_doc, "metadata", {}),
                     }
 
                     # Update the status in to_process_docs as well
