@@ -126,9 +126,10 @@ const EditablePropertyRow = ({
           } else {
             // Node was updated/renamed normally
             try {
+              const graphValue = name === 'entity_id' ? finalValue : value
               await useGraphStore
                 .getState()
-                .updateNodeAndSelect(nodeId, entityId, name, finalValue)
+                .updateNodeAndSelect(nodeId, entityId, name, graphValue)
             } catch (error) {
               console.error('Error updating node in graph:', error)
               throw new Error('Failed to update node in graph')
