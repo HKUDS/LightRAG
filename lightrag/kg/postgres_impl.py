@@ -2000,6 +2000,11 @@ class PGKVStorage(BaseKVStorage):
                     "content": v["content"],
                     "file_path": v["file_path"],
                     "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
+                    "start_page": v.get("start_page"),  # Optional page fields
+                    "end_page": v.get("end_page"),
+                    "pages": json.dumps(v.get("pages"))
+                    if v.get("pages") is not None
+                    else None,
                     "create_time": current_time,
                     "update_time": current_time,
                 }
@@ -2012,6 +2017,9 @@ class PGKVStorage(BaseKVStorage):
                     "content": v["content"],
                     "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
                     "workspace": self.workspace,
+                    "page_data": json.dumps(v.get("page_data"))
+                    if v.get("page_data") is not None
+                    else None,
                 }
                 await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -2217,6 +2225,11 @@ class PGVectorStorage(BaseVectorStorage):
                 "content": item["content"],
                 "content_vector": json.dumps(item["__vector__"].tolist()),
                 "file_path": item["file_path"],
+                "start_page": item.get("start_page"),  # Optional page fields
+                "end_page": item.get("end_page"),
+                "pages": json.dumps(item.get("pages"))
+                if item.get("pages") is not None
+                else None,
                 "create_time": current_time,
                 "update_time": current_time,
             }
@@ -4840,6 +4853,7 @@ TABLES = {
                     doc_name VARCHAR(1024),
                     content TEXT,
                     meta JSONB,
+                    page_data JSONB,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
@@ -4855,6 +4869,9 @@ TABLES = {
                     content TEXT,
                     file_path TEXT NULL,
                     llm_cache_list JSONB NULL DEFAULT '[]'::jsonb,
+                    start_page INTEGER NULL,
+                    end_page INTEGER NULL,
+                    pages JSONB NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
@@ -4870,6 +4887,9 @@ TABLES = {
                     content TEXT,
                     content_vector VECTOR({os.environ.get("EMBEDDING_DIM", 1024)}),
                     file_path TEXT NULL,
+                    start_page INTEGER NULL,
+                    end_page INTEGER NULL,
+                    pages JSONB NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_VDB_CHUNKS_PK PRIMARY KEY (workspace, id)
@@ -4986,12 +5006,14 @@ TABLES = {
 SQL_TEMPLATES = {
     # SQL for KVStorage
     "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content,
-                                COALESCE(doc_name, '') as file_path
+                                COALESCE(doc_name, '') as file_path,
+                                page_data
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                 chunk_order_index, full_doc_id, file_path,
                                 COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
+                                start_page, end_page, pages,
                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
@@ -5058,11 +5080,12 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
-    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace)
-                        VALUES ($1, $2, $3, $4)
+    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace, page_data)
+                        VALUES ($1, $2, $3, $4, $5)
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = $2,
                                doc_name = $3,
+                               page_data = $5,
                                update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
@@ -5077,8 +5100,8 @@ SQL_TEMPLATES = {
                                      """,
     "upsert_text_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, file_path, llm_cache_list,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      start_page, end_page, pages, create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
@@ -5086,6 +5109,9 @@ SQL_TEMPLATES = {
                       content = EXCLUDED.content,
                       file_path=EXCLUDED.file_path,
                       llm_cache_list=EXCLUDED.llm_cache_list,
+                      start_page=EXCLUDED.start_page,
+                      end_page=EXCLUDED.end_page,
+                      pages=EXCLUDED.pages,
                       update_time = EXCLUDED.update_time
                      """,
     "upsert_full_entities": """INSERT INTO LIGHTRAG_FULL_ENTITIES (workspace, id, entity_names, count,
@@ -5123,8 +5149,8 @@ SQL_TEMPLATES = {
     # SQL for VectorStorage
     "upsert_chunk": """INSERT INTO LIGHTRAG_VDB_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      start_page, end_page, pages, create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
@@ -5132,6 +5158,9 @@ SQL_TEMPLATES = {
                       content = EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
                       file_path=EXCLUDED.file_path,
+                      start_page=EXCLUDED.start_page,
+                      end_page=EXCLUDED.end_page,
+                      pages=EXCLUDED.pages,
                       update_time = EXCLUDED.update_time
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
@@ -5180,6 +5209,9 @@ SQL_TEMPLATES = {
               SELECT c.id,
                      c.content,
                      c.file_path,
+                     c.start_page,
+                     c.end_page,
+                     c.pages,
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
               FROM LIGHTRAG_VDB_CHUNKS c
               WHERE c.workspace = $1

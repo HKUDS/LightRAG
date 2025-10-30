@@ -902,6 +902,72 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     return f"{base_name}_{timestamp}{extension}"
 
 
+async def _extract_pdf_with_docling(file_path: Path) -> str:
+    """Extract text from PDF using Docling engine."""
+    if not pm.is_installed("docling"):  # type: ignore
+        pm.install("docling")
+    from docling.document_converter import DocumentConverter  # type: ignore
+
+    converter = DocumentConverter()
+    result = converter.convert(file_path)
+    return result.document.export_to_markdown()
+
+
+async def _extract_pdf_with_pypdf2(file_bytes: bytes) -> tuple[str, list[dict]]:
+    """Extract text and page data from PDF using PyPDF2."""
+    if not pm.is_installed("pypdf2"):  # type: ignore
+        pm.install("pypdf2")
+    from PyPDF2 import PdfReader  # type: ignore
+    from io import BytesIO
+
+    pdf_file = BytesIO(file_bytes)
+    reader = PdfReader(pdf_file)
+    content = ""
+    page_data = []
+    char_position = 0
+
+    for page_num, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() + "\n"
+        page_start = char_position
+        page_end = char_position + len(page_text)
+
+        page_data.append(
+            {
+                "page_number": page_num,
+                "content": page_text,
+                "char_start": page_start,
+                "char_end": page_end,
+            }
+        )
+
+        content += page_text
+        char_position = page_end
+
+    return content, page_data
+
+
+async def _handle_file_processing_error(
+    rag: LightRAG,
+    filename: str,
+    error_type: str,
+    error_msg: str,
+    file_size: int,
+    track_id: str,
+) -> None:
+    """Handle file processing errors consistently."""
+    error_files = [
+        {
+            "file_path": filename,
+            "error_description": f"[File Extraction]{error_type}",
+            "original_error": error_msg,
+            "file_size": file_size,
+        }
+    ]
+
+    await rag.apipeline_enqueue_error_documents(error_files, track_id)
+    logger.error(f"[File Extraction]{error_type} for {filename}: {error_msg}")
+
+
 async def pipeline_enqueue_file(
     rag: LightRAG, file_path: Path, track_id: str = None
 ) -> tuple[bool, str]:
@@ -921,6 +987,7 @@ async def pipeline_enqueue_file(
 
     try:
         content = ""
+        page_data = None  # Initialize page data (will be populated for PDFs)
         ext = file_path.suffix.lower()
         file_size = 0
 
@@ -1072,38 +1139,20 @@ async def pipeline_enqueue_file(
 
                 case ".pdf":
                     try:
+                        page_data = []
                         if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                            content = await _extract_pdf_with_docling(file_path)
+                            # TODO: Extract page-level data from Docling
                         else:
-                            if not pm.is_installed("pypdf2"):  # type: ignore
-                                pm.install("pypdf2")
-                            from PyPDF2 import PdfReader  # type: ignore
-                            from io import BytesIO
-
-                            pdf_file = BytesIO(file)
-                            reader = PdfReader(pdf_file)
-                            for page in reader.pages:
-                                content += page.extract_text() + "\n"
+                            content, page_data = await _extract_pdf_with_pypdf2(file)
                     except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]PDF processing error",
-                                "original_error": f"Failed to extract text from PDF: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing PDF {file_path.name}: {str(e)}"
+                        await _handle_file_processing_error(
+                            rag,
+                            file_path.name,
+                            "PDF processing error",
+                            str(e),
+                            file_size,
+                            track_id,
                         )
                         return False, track_id
 
@@ -1282,8 +1331,28 @@ async def pipeline_enqueue_file(
                 return False, track_id
 
             try:
+                # Pass page_data if it was collected (only for PDFs with PyPDF2)
+                page_data_to_pass = (
+                    [page_data]
+                    if page_data is not None and len(page_data) > 0
+                    else None
+                )
+
+                # Debug logging
+                if page_data_to_pass:
+                    logger.info(
+                        f"Passing page metadata for {file_path.name}: {len(page_data_to_pass[0])} pages"
+                    )
+                else:
+                    logger.debug(
+                        f"No page metadata for {file_path.name} (non-PDF or extraction failed)"
+                    )
+
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    page_data_list=page_data_to_pass,
                 )
 
                 logger.info(

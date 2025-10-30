@@ -93,6 +93,40 @@ def _truncate_entity_identifier(
     return display_value
 
 
+def validate_llm_references(response: str, valid_ref_ids: set[str]) -> tuple[str, bool]:
+    """
+    Validate that LLM response only uses valid reference IDs.
+
+    Args:
+        response: The LLM response text
+        valid_ref_ids: Set of valid reference IDs from the reference list
+
+    Returns:
+        Tuple of (cleaned_response, is_valid)
+    """
+    import re
+
+    # Find all reference patterns like [1], [2], etc.
+    ref_pattern = r"\[(\d+)\]"
+    matches = re.findall(ref_pattern, response)
+
+    invalid_refs = []
+    for ref_id in matches:
+        if ref_id not in valid_ref_ids:
+            invalid_refs.append(ref_id)
+
+    if invalid_refs:
+        logger.warning(
+            f"LLM generated invalid references: {invalid_refs}. Valid refs: {sorted(valid_ref_ids)}"
+        )
+        # Remove invalid references from the response
+        for invalid_ref in invalid_refs:
+            response = re.sub(rf"\[{invalid_ref}\](?:\s*\([^)]*\))?", "", response)
+        return response, False
+
+    return response, True
+
+
 def chunking_by_token_size(
     tokenizer: Tokenizer,
     content: str,
@@ -100,51 +134,121 @@ def chunking_by_token_size(
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
+    page_data: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Chunk content by token size with optional page tracking."""
+
+    def _calculate_page_range(
+        start_char: int, end_char: int
+    ) -> tuple[int | None, int | None, list[int] | None]:
+        if not page_data:
+            return None, None, None
+
+        pages = set()
+        start_page = end_page = None
+
+        for page in page_data:
+            page_num = page["page_number"]
+            page_start = page["char_start"]
+            page_end = page["char_end"]
+
+            if start_char < page_end and end_char > page_start:
+                pages.add(page_num)
+                start_page = min(start_page, page_num) if start_page else page_num
+                end_page = max(end_page, page_num) if end_page else page_num
+
+        return start_page, end_page, sorted(pages) if pages else None
+
+    def _estimate_char_positions(
+        token_start: int, token_end: int, total_tokens: int, total_chars: int
+    ) -> tuple[int, int]:
+        if total_tokens == 0:
+            return 0, total_chars
+        start_char = int((token_start / total_tokens) * total_chars)
+        end_char = int((token_end / total_tokens) * total_chars)
+        return start_char, end_char
+
+    def _create_chunk_dict(
+        token_count: int, content: str, index: int, start_char: int, end_char: int
+    ) -> dict[str, Any]:
+        chunk = {
+            "tokens": token_count,
+            "content": content.strip(),
+            "chunk_order_index": index,
+        }
+
+        if page_data:
+            start_page, end_page, pages = _calculate_page_range(start_char, end_char)
+            chunk.update(
+                {"start_page": start_page, "end_page": end_page, "pages": pages}
+            )
+
+        return chunk
+
     tokens = tokenizer.encode(content)
-    results: list[dict[str, Any]] = []
+    total_tokens = len(tokens)
+    total_chars = len(content)
+    results = []
+
     if split_by_character:
         raw_chunks = content.split(split_by_character)
-        new_chunks = []
-        if split_by_character_only:
-            for chunk in raw_chunks:
-                _tokens = tokenizer.encode(chunk)
-                new_chunks.append((len(_tokens), chunk))
-        else:
-            for chunk in raw_chunks:
-                _tokens = tokenizer.encode(chunk)
-                if len(_tokens) > max_token_size:
-                    for start in range(
-                        0, len(_tokens), max_token_size - overlap_token_size
-                    ):
-                        chunk_content = tokenizer.decode(
-                            _tokens[start : start + max_token_size]
-                        )
-                        new_chunks.append(
-                            (min(max_token_size, len(_tokens) - start), chunk_content)
-                        )
-                else:
-                    new_chunks.append((len(_tokens), chunk))
-        for index, (_len, chunk) in enumerate(new_chunks):
+        chunks_with_positions = []
+        char_pos = 0
+
+        for chunk_text in raw_chunks:
+            chunk_tokens = tokenizer.encode(chunk_text)
+            chunk_start = char_pos
+            chunk_end = char_pos + len(chunk_text)
+
+            if split_by_character_only or len(chunk_tokens) <= max_token_size:
+                chunks_with_positions.append(
+                    (len(chunk_tokens), chunk_text, chunk_start, chunk_end)
+                )
+            else:
+                # Split large chunks by tokens
+                for token_start in range(
+                    0, len(chunk_tokens), max_token_size - overlap_token_size
+                ):
+                    token_end = min(token_start + max_token_size, len(chunk_tokens))
+                    chunk_content = tokenizer.decode(
+                        chunk_tokens[token_start:token_end]
+                    )
+
+                    # Estimate character positions within the chunk
+                    ratio_start = token_start / len(chunk_tokens)
+                    ratio_end = token_end / len(chunk_tokens)
+                    sub_start = chunk_start + int(len(chunk_text) * ratio_start)
+                    sub_end = chunk_start + int(len(chunk_text) * ratio_end)
+
+                    chunks_with_positions.append(
+                        (token_end - token_start, chunk_content, sub_start, sub_end)
+                    )
+
+            char_pos = chunk_end + len(split_by_character)
+
+        for index, (token_count, chunk_text, start_char, end_char) in enumerate(
+            chunks_with_positions
+        ):
             results.append(
-                {
-                    "tokens": _len,
-                    "content": chunk.strip(),
-                    "chunk_order_index": index,
-                }
+                _create_chunk_dict(token_count, chunk_text, index, start_char, end_char)
             )
     else:
-        for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size)
+        # Token-based chunking
+        for index, token_start in enumerate(
+            range(0, total_tokens, max_token_size - overlap_token_size)
         ):
-            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
-            results.append(
-                {
-                    "tokens": min(max_token_size, len(tokens) - start),
-                    "content": chunk_content.strip(),
-                    "chunk_order_index": index,
-                }
+            token_end = min(token_start + max_token_size, total_tokens)
+            chunk_content = tokenizer.decode(tokens[token_start:token_end])
+            start_char, end_char = _estimate_char_positions(
+                token_start, token_end, total_tokens, total_chars
             )
+
+            results.append(
+                _create_chunk_dict(
+                    token_end - token_start, chunk_content, index, start_char, end_char
+                )
+            )
+
     return results
 
 
@@ -3133,6 +3237,15 @@ async def kg_query(
             " == LLM cache == Query cache hit, using cached response as query result"
         )
         response = cached_response
+
+        # Validate references in cached response too
+        valid_ref_ids = global_config.get("_valid_reference_ids", set())
+        if valid_ref_ids:
+            response, is_valid = validate_llm_references(response, valid_ref_ids)
+            if not is_valid:
+                logger.warning(
+                    "Cached LLM response contained invalid references and has been cleaned"
+                )
     else:
         response = await use_model_func(
             user_query,
@@ -3141,6 +3254,15 @@ async def kg_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+
+        # Validate references in the response
+        valid_ref_ids = global_config.get("_valid_reference_ids", set())
+        if valid_ref_ids:
+            response, is_valid = validate_llm_references(response, valid_ref_ids)
+            if not is_valid:
+                logger.warning(
+                    "LLM response contained invalid references and has been cleaned"
+                )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
@@ -3377,6 +3499,10 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    # Include page metadata if available
+                    "start_page": result.get("start_page"),
+                    "end_page": result.get("end_page"),
+                    "pages": result.get("pages"),
                 }
                 valid_chunks.append(chunk_with_metadata)
 
@@ -3776,60 +3902,45 @@ async def _merge_all_chunks(
             query_embedding=query_embedding,
         )
 
-    # Round-robin merge chunks from different sources with deduplication
-    merged_chunks = []
-    seen_chunk_ids = set()
-    max_len = max(len(vector_chunks), len(entity_chunks), len(relation_chunks))
-    origin_len = len(vector_chunks) + len(entity_chunks) + len(relation_chunks)
+    def _extract_chunk_metadata(chunk: dict) -> dict:
+        """Extract and preserve essential chunk metadata including page tracking."""
+        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        metadata = {
+            "content": chunk["content"],
+            "file_path": chunk.get("file_path", "unknown_source"),
+            "chunk_id": chunk_id,
+        }
 
-    for i in range(max_len):
-        # Add from vector chunks first (Naive mode)
-        if i < len(vector_chunks):
-            chunk = vector_chunks[i]
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
-            if chunk_id and chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk_id)
-                merged_chunks.append(
-                    {
-                        "content": chunk["content"],
-                        "file_path": chunk.get("file_path", "unknown_source"),
-                        "chunk_id": chunk_id,
-                    }
-                )
+        # Preserve page metadata if available
+        for field in ["start_page", "end_page", "pages"]:
+            if chunk.get(field) is not None:
+                metadata[field] = chunk.get(field)
 
-        # Add from entity chunks (Local mode)
-        if i < len(entity_chunks):
-            chunk = entity_chunks[i]
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
-            if chunk_id and chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk_id)
-                merged_chunks.append(
-                    {
-                        "content": chunk["content"],
-                        "file_path": chunk.get("file_path", "unknown_source"),
-                        "chunk_id": chunk_id,
-                    }
-                )
+        return metadata
 
-        # Add from relation chunks (Global mode)
-        if i < len(relation_chunks):
-            chunk = relation_chunks[i]
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
-            if chunk_id and chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk_id)
-                merged_chunks.append(
-                    {
-                        "content": chunk["content"],
-                        "file_path": chunk.get("file_path", "unknown_source"),
-                        "chunk_id": chunk_id,
-                    }
-                )
+    def _merge_chunks_round_robin(chunk_sources: list[list[dict]]) -> list[dict]:
+        """Merge chunks from multiple sources using round-robin with deduplication."""
+        merged = []
+        seen_ids = set()
+        max_len = max(len(source) for source in chunk_sources)
+        total_original = sum(len(source) for source in chunk_sources)
 
-    logger.info(
-        f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
-    )
+        for i in range(max_len):
+            for source in chunk_sources:
+                if i < len(source):
+                    chunk = source[i]
+                    chunk_id = chunk.get("chunk_id") or chunk.get("id")
 
-    return merged_chunks
+                    if chunk_id and chunk_id not in seen_ids:
+                        seen_ids.add(chunk_id)
+                        merged.append(_extract_chunk_metadata(chunk))
+
+        logger.info(
+            f"Round-robin merged chunks: {total_original} -> {len(merged)} (deduplicated {total_original - len(merged)})"
+        )
+        return merged
+
+    return _merge_chunks_round_robin([vector_chunks, entity_chunks, relation_chunks])
 
 
 async def _build_llm_context(
@@ -3928,6 +4039,14 @@ async def _build_llm_context(
     )
 
     # Generate reference list from truncated chunks using the new common function
+    # Debug: Check if chunks have pages before reference generation
+    if truncated_chunks:
+        sample_chunk = truncated_chunks[0]
+        has_pages = "pages" in sample_chunk
+        logger.info(
+            f"Before reference gen: chunks have pages={has_pages}, keys={list(sample_chunk.keys())[:12]}"
+        )
+
     reference_list, truncated_chunks = generate_reference_list_from_chunks(
         truncated_chunks
     )
@@ -3982,11 +4101,43 @@ async def _build_llm_context(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+
+    # Format reference list with page numbers if available
+    formatted_references = []
+    for ref in reference_list:
+        if not ref.get("reference_id"):
+            continue
+
+        file_path = ref["file_path"]
+        ref_id = ref["reference_id"]
+
+        # Add page numbers if available
+        pages = ref.get("pages")
+        if pages and len(pages) > 0:
+            if len(pages) == 1:
+                # Single page: "document.pdf (p. 5)"
+                citation = f"[{ref_id}] {file_path} (p. {pages[0]})"
+            else:
+                # Multiple pages: "document.pdf (pp. {first}-{last})"
+                citation = f"[{ref_id}] {file_path} (pp. {pages[0]}-{pages[-1]})"
+        else:
+            # No page info: "document.txt"
+            citation = f"[{ref_id}] {file_path}"
+
+        formatted_references.append(citation)
+
+    reference_list_str = "\n".join(formatted_references)
+
+    # Debug: Log what references are being sent to the LLM
+    logger.info(f"Reference list for LLM ({len(formatted_references)} refs):")
+    for ref_line in formatted_references[:3]:  # Show first 3
+        logger.info(f"   {ref_line}")
+
+    # Store valid reference IDs for validation
+    valid_ref_ids = {
+        ref["reference_id"] for ref in reference_list if ref.get("reference_id")
+    }
+    global_config["_valid_reference_ids"] = valid_ref_ids
 
     result = kg_context_template.format(
         entities_str=entities_str,
@@ -4399,6 +4550,14 @@ async def _find_related_text_unit_from_entities(
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "entity"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+
+            # Debug: Check if page metadata is present
+            if i == 0:  # Log first chunk only
+                has_pages = "pages" in chunk_data_copy
+                logger.info(
+                    f"Entity chunk has pages field: {has_pages}, keys: {list(chunk_data_copy.keys())[:10]}"
+                )
+
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided
@@ -4873,11 +5032,43 @@ async def naive_query(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+
+    # Format reference list with page numbers if available
+    formatted_references = []
+    for ref in reference_list:
+        if not ref.get("reference_id"):
+            continue
+
+        file_path = ref["file_path"]
+        ref_id = ref["reference_id"]
+
+        # Add page numbers if available
+        pages = ref.get("pages")
+        if pages and len(pages) > 0:
+            if len(pages) == 1:
+                # Single page: "document.pdf (p. 5)"
+                citation = f"[{ref_id}] {file_path} (p. {pages[0]})"
+            else:
+                # Multiple pages: "document.pdf (pp. {first}-{last})"
+                citation = f"[{ref_id}] {file_path} (pp. {pages[0]}-{pages[-1]})"
+        else:
+            # No page info: "document.txt"
+            citation = f"[{ref_id}] {file_path}"
+
+        formatted_references.append(citation)
+
+    reference_list_str = "\n".join(formatted_references)
+
+    # Debug: Log what references are being sent to the LLM
+    logger.info(f"Reference list for LLM ({len(formatted_references)} refs):")
+    for ref_line in formatted_references[:3]:  # Show first 3
+        logger.info(f"   {ref_line}")
+
+    # Store valid reference IDs for validation
+    valid_ref_ids = {
+        ref["reference_id"] for ref in reference_list if ref.get("reference_id")
+    }
+    global_config["_valid_reference_ids"] = valid_ref_ids
 
     naive_context_template = PROMPTS["naive_query_context"]
     context_content = naive_context_template.format(
@@ -4922,6 +5113,15 @@ async def naive_query(
             " == LLM cache == Query cache hit, using cached response as query result"
         )
         response = cached_response
+
+        # Validate references in cached response too
+        valid_ref_ids = global_config.get("_valid_reference_ids", set())
+        if valid_ref_ids:
+            response, is_valid = validate_llm_references(response, valid_ref_ids)
+            if not is_valid:
+                logger.warning(
+                    "Cached LLM response contained invalid references and has been cleaned"
+                )
     else:
         response = await use_model_func(
             user_query,
@@ -4930,6 +5130,15 @@ async def naive_query(
             enable_cot=True,
             stream=query_param.stream,
         )
+
+        # Validate references in the response
+        valid_ref_ids = global_config.get("_valid_reference_ids", set())
+        if valid_ref_ids:
+            response, is_valid = validate_llm_references(response, valid_ref_ids)
+            if not is_valid:
+                logger.warning(
+                    "LLM response contained invalid references and has been cleaned"
+                )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
