@@ -104,3 +104,11 @@ class PipelineCancelledException(Exception):
     def __init__(self, message: str = "User cancelled"):
         super().__init__(message)
         self.message = message
+
+
+class QdrantMigrationError(Exception):
+    """Raised when Qdrant data migration from legacy collections fails."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
