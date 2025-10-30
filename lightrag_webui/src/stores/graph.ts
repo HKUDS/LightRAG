@@ -246,7 +246,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
       console.log('updateNodeAndSelect', nodeId, entityId, propertyName, newValue)
 
-      // For entity_id changes (node renaming) with NetworkX graph storage
+      // For entity_id changes (node renaming) with raw graph storage
       if ((nodeId === entityId) && (propertyName === 'entity_id')) {
         // Create new node with updated ID but same attributes
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
