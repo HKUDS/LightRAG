@@ -322,6 +322,10 @@ def create_app(args):
         # Store background tasks
         app.state.background_tasks = set()
 
+        # Store query LLM function in app state
+        app.state.query_llm_func = query_llm_func
+        app.state.query_llm_kwargs = query_llm_kwargs
+
         try:
             # Initialize database connections
             await rag.initialize_storages()
@@ -504,6 +508,11 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
+    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
+    embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
+
     def create_llm_model_func(binding: str):
         """
         Create LLM model function based on binding type.
@@ -530,6 +539,76 @@ def create_app(args):
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
+
+    def create_query_llm_func(args, config_cache, llm_timeout):
+        """
+        Create query-specific LLM function if QUERY_BINDING or QUERY_MODEL is different.
+        Returns tuple of (query_llm_func, query_llm_kwargs).
+        """
+        # Check if query-specific LLM is configured
+        # Only skip if BOTH binding AND model are the same
+        if not hasattr(args, "query_binding") or (
+            args.query_binding == args.llm_binding
+            and args.query_model == args.llm_model
+        ):
+            logger.info("Using same LLM for both extraction and query")
+            return None, {}
+
+        logger.info(
+            f"Creating separate query LLM: {args.query_binding}/{args.query_model}"
+        )
+
+        # Create a temporary args object for query LLM
+        class QueryArgs:
+            pass
+
+        query_args = QueryArgs()
+        query_args.llm_binding = args.query_binding
+        query_args.llm_model = args.query_model
+        query_args.llm_binding_host = args.query_binding_host
+        query_args.llm_binding_api_key = args.query_binding_api_key
+
+        # Create query-specific LLM function based on binding type
+        query_llm_func = None
+        query_llm_kwargs = {}
+
+        try:
+            if args.query_binding == "openai":
+                query_llm_func = create_optimized_openai_llm_func(
+                    config_cache, query_args, llm_timeout
+                )
+            elif args.query_binding == "azure_openai":
+                query_llm_func = create_optimized_azure_openai_llm_func(
+                    config_cache, query_args, llm_timeout
+                )
+            elif args.query_binding == "ollama":
+                from lightrag.llm.ollama import ollama_model_complete
+
+                query_llm_func = ollama_model_complete
+                query_llm_kwargs = create_llm_model_kwargs(
+                    args.query_binding, query_args, llm_timeout
+                )
+            elif args.query_binding == "lollms":
+                from lightrag.llm.lollms import lollms_model_complete
+
+                query_llm_func = lollms_model_complete
+                query_llm_kwargs = create_llm_model_kwargs(
+                    args.query_binding, query_args, llm_timeout
+                )
+            elif args.query_binding == "aws_bedrock":
+                query_llm_func = bedrock_model_complete
+            else:
+                raise ValueError(f"Unsupported query binding: {args.query_binding}")
+
+            logger.info(f"Query LLM configured: {args.query_model}")
+            return query_llm_func, query_llm_kwargs
+
+        except ImportError as e:
+            raise Exception(f"Failed to import {args.query_binding} LLM binding: {e}")
+
+    query_llm_func, query_llm_kwargs = create_query_llm_func(
+        args, config_cache, llm_timeout
+    )
 
     def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
         """
