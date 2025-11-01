@@ -87,6 +87,14 @@ RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
 
+# Copy pre-built knowledge graph if available (optional)
+# This allows shipping Docker images with pre-indexed data, saving:
+# - Embedding API costs (no need to re-index)
+# - Startup time in production (instant query capability)
+# - Consistent embeddings across deployments
+# Copy will fail silently if files don't exist (handled by .dockerignore)
+COPY --chown=root:root rag_storage/graph_chunk_entity_relation.graphml /app/data/rag_storage/
+
 # Copy offline cache into the newly created directory
 COPY --from=builder /app/data/tiktoken /app/data/tiktoken
 
