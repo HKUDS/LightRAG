@@ -133,9 +133,6 @@ def on_exit(server):
     print("Finalizing shared storage...")
     finalize_share_data()
 
-    print("=" * 80)
-
-    print("=" * 80)
     print("Gunicorn shutdown complete")
     print("=" * 80)
 
