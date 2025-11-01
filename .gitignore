@@ -50,6 +50,9 @@ output/
 rag_storage/
 data/
 
+# Evaluation results
+lightrag/evaluation/results/
+
 # Miscellaneous
 .DS_Store
 TODO.md
