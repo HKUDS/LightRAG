@@ -129,10 +129,11 @@ def on_exit(server):
     print("=" * 80)
     print("GUNICORN MASTER PROCESS: Shutting down")
     print(f"Process ID: {os.getpid()}")
-    print("=" * 80)
 
-    # Release shared resources
+    print("Finalizing shared storage...")
     finalize_share_data()
+
+    print("=" * 80)
 
     print("=" * 80)
     print("Gunicorn shutdown complete")
