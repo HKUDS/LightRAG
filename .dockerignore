@@ -32,7 +32,12 @@ Makefile
 /dickens
 /reproduce
 /output_complete
-/rag_storage
+
+# Exclude rag_storage but allow pre-built knowledge graph (optional)
+/rag_storage/*
+!/rag_storage/graph_chunk_entity_relation.graphml
+!/rag_storage/README.md
+
 /inputs
 
 # Python version manager file
