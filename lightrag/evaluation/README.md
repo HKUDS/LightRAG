@@ -25,7 +25,7 @@ Instead of requiring human-annotated ground truth, RAGAS uses state-of-the-art e
 ```
 lightrag/evaluation/
 ├── eval_rag_quality.py      # Main evaluation script
-├── test_dataset.json        # Test cases with ground truth
+├── sample_dataset.json        # Test cases with ground truth
 ├── __init__.py              # Package init
 ├── results/                 # Output directory
 │   ├── results_YYYYMMDD_HHMMSS.json    # Raw metrics
@@ -82,7 +82,7 @@ results/
 
 ## 📝 Test Dataset
 
-Edit `test_dataset.json` to add your own test cases:
+Edit `sample_dataset.json` to add your own test cases:
 
 ```json
 {
@@ -268,7 +268,7 @@ for i in range(3):
 pip install ragas datasets
 ```
 
-### "No test_dataset.json found"
+### "No sample_dataset.json found"
 
 Make sure you're running from the project root:
 
@@ -297,7 +297,7 @@ Current implementation uses ground truth as mock responses. Results will show pe
 
 ## 📝 Next Steps
 
-1. ✅ Review test dataset in `test_dataset.json`
+1. ✅ Review test dataset in `sample_dataset.json`
 2. ✅ Run `python lightrag/evaluation/eval_rag_quality.py`
 3. ✅ Open the HTML report in browser
 4. 🔄 Integrate with actual LightRAG system

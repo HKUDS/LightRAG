@@ -18,16 +18,17 @@ Results are saved to: lightrag/evaluation/results/
     - results_YYYYMMDD_HHMMSS.json  (Full results with details)
 """
 
-import json
 import asyncio
-import time
 import csv
-from pathlib import Path
-from datetime import datetime
-from typing import Any, Dict, List
-import sys
-import httpx
+import json
 import os
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
+
+import httpx
 from dotenv import load_dotenv
 
 # Add parent directory to path
@@ -46,14 +47,14 @@ if "OPENAI_API_KEY" not in os.environ:
         os.environ["OPENAI_API_KEY"] = input("Enter your OpenAI API key: ")
 
 try:
+    from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
-        faithfulness,
         answer_relevancy,
-        context_recall,
         context_precision,
+        context_recall,
+        faithfulness,
     )
-    from datasets import Dataset
 except ImportError as e:
     print(f"❌ RAGAS import error: {e}")
     print("   Install with: pip install ragas datasets")
@@ -73,7 +74,7 @@ class RAGEvaluator:
                         If None, will try to read from environment or use default
         """
         if test_dataset_path is None:
-            test_dataset_path = Path(__file__).parent / "test_dataset.json"
+            test_dataset_path = Path(__file__).parent / "sample_dataset.json"
 
         if rag_api_url is None:
             rag_api_url = os.getenv("LIGHTRAG_API_URL", "http://localhost:8000")
@@ -247,6 +248,7 @@ class RAGEvaluator:
 
             except Exception as e:
                 import traceback
+
                 print(f"   ❌ Error evaluating: {str(e)}")
                 print(f"   🔍 Full traceback:\n{traceback.format_exc()}\n")
                 result = {
@@ -254,7 +256,7 @@ class RAGEvaluator:
                     "error": str(e),
                     "metrics": {},
                     "ragas_score": 0,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
                 }
                 results.append(result)
 
@@ -301,18 +303,20 @@ class RAGEvaluator:
 
             for idx, result in enumerate(results, 1):
                 metrics = result.get("metrics", {})
-                writer.writerow({
-                    "test_number": idx,
-                    "question": result.get("question", ""),
-                    "project": result.get("project", "unknown"),
-                    "faithfulness": f"{metrics.get('faithfulness', 0):.4f}",
-                    "answer_relevance": f"{metrics.get('answer_relevance', 0):.4f}",
-                    "context_recall": f"{metrics.get('context_recall', 0):.4f}",
-                    "context_precision": f"{metrics.get('context_precision', 0):.4f}",
-                    "ragas_score": f"{result.get('ragas_score', 0):.4f}",
-                    "status": "success" if metrics else "error",
-                    "timestamp": result.get("timestamp", ""),
-                })
+                writer.writerow(
+                    {
+                        "test_number": idx,
+                        "question": result.get("question", ""),
+                        "project": result.get("project", "unknown"),
+                        "faithfulness": f"{metrics.get('faithfulness', 0):.4f}",
+                        "answer_relevance": f"{metrics.get('answer_relevance', 0):.4f}",
+                        "context_recall": f"{metrics.get('context_recall', 0):.4f}",
+                        "context_precision": f"{metrics.get('context_precision', 0):.4f}",
+                        "ragas_score": f"{result.get('ragas_score', 0):.4f}",
+                        "status": "success" if metrics else "error",
+                        "timestamp": result.get("timestamp", ""),
+                    }
+                )
 
         return csv_path
 
@@ -331,7 +335,7 @@ class RAGEvaluator:
             "timestamp": datetime.now().isoformat(),
             "total_tests": len(results),
             "elapsed_time_seconds": round(elapsed_time, 2),
-            "results": results
+            "results": results,
         }
 
         # Save JSON results
@@ -380,7 +384,7 @@ async def main():
         if rag_api_url:
             print(f"📡 RAG API URL: {rag_api_url}")
         else:
-            print(f"📡 RAG API URL: http://localhost:8000 (default)")
+            print("📡 RAG API URL: http://localhost:8000 (default)")
         print("="*70 + "\n")
 
         evaluator = RAGEvaluator(rag_api_url=rag_api_url)
