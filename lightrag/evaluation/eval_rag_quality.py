@@ -547,14 +547,14 @@ class RAGEvaluator:
         # Print benchmark metrics
         logger.info("")
         logger.info("%s", "=" * 70)
-        logger.info("📈 BENCHMARK RESULTS (Moyennes)")
+        logger.info("📈 BENCHMARK RESULTS (Average)")
         logger.info("%s", "=" * 70)
         avg = benchmark_stats["average_metrics"]
-        logger.info("Moyenne Faithfulness:      %.4f", avg["faithfulness"])
-        logger.info("Moyenne Answer Relevance:  %.4f", avg["answer_relevance"])
-        logger.info("Moyenne Context Recall:    %.4f", avg["context_recall"])
-        logger.info("Moyenne Context Precision: %.4f", avg["context_precision"])
-        logger.info("Moyenne RAGAS Score:       %.4f", avg["ragas_score"])
+        logger.info("Average Faithfulness:      %.4f", avg["faithfulness"])
+        logger.info("Average Answer Relevance:  %.4f", avg["answer_relevance"])
+        logger.info("Average Context Recall:    %.4f", avg["context_recall"])
+        logger.info("Average Context Precision: %.4f", avg["context_precision"])
+        logger.info("Average RAGAS Score:       %.4f", avg["ragas_score"])
         logger.info("")
         logger.info(
             "Min RAGAS Score:           %.4f",
