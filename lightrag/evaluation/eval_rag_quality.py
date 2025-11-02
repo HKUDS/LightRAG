@@ -282,7 +282,9 @@ class RAGEvaluator:
             - ragas_score: Overall RAGAS score (0-1)
             - timestamp: When evaluation was run
         """
-        csv_path = self.results_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_path = (
+            self.results_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
 
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             fieldnames = [
@@ -339,7 +341,10 @@ class RAGEvaluator:
         }
 
         # Save JSON results
-        json_path = self.results_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        json_path = (
+            self.results_dir
+            / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
         with open(json_path, "w") as f:
             json.dump(summary, f, indent=2)
         print(f"✅ JSON results saved to: {json_path}")
@@ -349,16 +354,16 @@ class RAGEvaluator:
         print(f"✅ CSV results saved to: {csv_path}")
 
         # Print summary
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("📊 EVALUATION COMPLETE")
-        print("="*70)
+        print("=" * 70)
         print(f"Total Tests:    {len(results)}")
         print(f"Elapsed Time:   {elapsed_time:.2f} seconds")
         print(f"Results Dir:    {self.results_dir.absolute()}")
         print("\n📁 Generated Files:")
         print(f"   • CSV:  {csv_path.name}")
         print(f"   • JSON: {json_path.name}")
-        print("="*70 + "\n")
+        print("=" * 70 + "\n")
 
         return summary
 
@@ -378,14 +383,14 @@ async def main():
         if len(sys.argv) > 1:
             rag_api_url = sys.argv[1]
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("🔍 RAGAS Evaluation - Using Real LightRAG API")
-        print("="*70)
+        print("=" * 70)
         if rag_api_url:
             print(f"📡 RAG API URL: {rag_api_url}")
         else:
             print("📡 RAG API URL: http://localhost:8000 (default)")
-        print("="*70 + "\n")
+        print("=" * 70 + "\n")
 
         evaluator = RAGEvaluator(rag_api_url=rag_api_url)
         await evaluator.run()
