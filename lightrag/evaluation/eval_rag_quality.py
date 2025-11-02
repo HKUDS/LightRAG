@@ -41,12 +41,27 @@ project_root = Path(__file__).parent.parent.parent
 load_dotenv(project_root / ".env")
 
 # Setup OpenAI API key (required for RAGAS evaluation)
-# Use LLM_BINDING_API_KEY if OPENAI_API_KEY is not set
-if "OPENAI_API_KEY" not in os.environ:
-    if "LLM_BINDING_API_KEY" in os.environ:
-        os.environ["OPENAI_API_KEY"] = os.environ["LLM_BINDING_API_KEY"]
-    else:
-        os.environ["OPENAI_API_KEY"] = input("Enter your OpenAI API key: ")
+# Use LLM_BINDING_API_KEY when running with the OpenAI binding
+
+llm_binding = os.getenv("LLM_BINDING", "").lower()
+llm_binding_key = os.getenv("LLM_BINDING_API_KEY")
+
+# Validate LLM_BINDING is set to openai
+if llm_binding != "openai":
+    logger.error(
+        "❌ LLM_BINDING must be set to 'openai'. Current value: '%s'",
+        llm_binding or "(not set)",
+    )
+    sys.exit(1)
+
+# Validate LLM_BINDING_API_KEY exists
+if not llm_binding_key:
+    logger.error("❌ LLM_BINDING_API_KEY is not set. Cannot run RAGAS evaluation.")
+    sys.exit(1)
+
+# Set OPENAI_API_KEY from LLM_BINDING_API_KEY
+os.environ["OPENAI_API_KEY"] = llm_binding_key
+logger.info("✅ LLM_BINDING: openai")
 
 try:
     from datasets import Dataset
