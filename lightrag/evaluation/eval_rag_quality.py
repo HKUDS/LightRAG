@@ -544,14 +544,14 @@ class RAGEvaluator:
 
         # Print benchmark metrics
         print("\n" + "=" * 70)
-        print("📈 BENCHMARK RESULTS (Moyennes)")
+        print("📈 BENCHMARK RESULTS (Averages)")
         print("=" * 70)
         avg = benchmark_stats["average_metrics"]
-        print(f"Moyenne Faithfulness:      {avg['faithfulness']:.4f}")
-        print(f"Moyenne Answer Relevance:  {avg['answer_relevance']:.4f}")
-        print(f"Moyenne Context Recall:    {avg['context_recall']:.4f}")
-        print(f"Moyenne Context Precision: {avg['context_precision']:.4f}")
-        print(f"Moyenne RAGAS Score:       {avg['ragas_score']:.4f}")
+        print(f"Average Faithfulness:      {avg['faithfulness']:.4f}")
+        print(f"Average Answer Relevance:  {avg['answer_relevance']:.4f}")
+        print(f"Average Context Recall:    {avg['context_recall']:.4f}")
+        print(f"Average Context Precision: {avg['context_precision']:.4f}")
+        print(f"Average RAGAS Score:       {avg['ragas_score']:.4f}")
         print(f"\nMin RAGAS Score:           {benchmark_stats['min_ragas_score']:.4f}")
         print(f"Max RAGAS Score:           {benchmark_stats['max_ragas_score']:.4f}")
 
