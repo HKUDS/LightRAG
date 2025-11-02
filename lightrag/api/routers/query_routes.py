@@ -95,6 +95,11 @@ class QueryRequest(BaseModel):
         description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",
     )
 
+    include_chunk_content: Optional[bool] = Field(
+        default=False,
+        description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
+    )
+
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
@@ -122,7 +127,10 @@ class QueryRequest(BaseModel):
     def to_query_params(self, is_stream: bool) -> "QueryParam":
         """Converts a QueryRequest instance into a QueryParam instance."""
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
-        request_data = self.model_dump(exclude_none=True, exclude={"query"})
+        # Exclude API-level parameters that don't belong in QueryParam
+        request_data = self.model_dump(
+            exclude_none=True, exclude={"query", "include_chunk_content"}
+        )
 
         # Ensure `mode` and `stream` are set explicitly
         param = QueryParam(**request_data)
@@ -384,12 +392,38 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, rag
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
-            references = result.get("data", {}).get("references", [])
+            data = result.get("data", {})
+            references = data.get("references", [])
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
             if not response_content:
                 response_content = "No relevant context found for the query."
+
+            # Enrich references with chunk content if requested
+            if request.include_references and request.include_chunk_content:
+                chunks = data.get("chunks", [])
+                # Create a mapping from reference_id to chunk content
+                ref_id_to_content = {}
+                for chunk in chunks:
+                    ref_id = chunk.get("reference_id", "")
+                    content = chunk.get("content", "")
+                    if ref_id and content:
+                        # If multiple chunks have same reference_id, concatenate
+                        if ref_id in ref_id_to_content:
+                            ref_id_to_content[ref_id] += "\n\n" + content
+                        else:
+                            ref_id_to_content[ref_id] = content
+
+                # Add content to references
+                enriched_references = []
+                for ref in references:
+                    ref_copy = ref.copy()
+                    ref_id = ref.get("reference_id", "")
+                    if ref_id in ref_id_to_content:
+                        ref_copy["content"] = ref_id_to_content[ref_id]
+                    enriched_references.append(ref_copy)
+                references = enriched_references
 
             # Return response with or without references based on request
             if request.include_references:
