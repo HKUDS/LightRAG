@@ -1,6 +1,6 @@
 # Pre-built Knowledge Graph for Docker Deployments
 
-This directory can contain a pre-built knowledge graph that will be included in Docker images, enabling instant query capability without re-indexing.
+This directory can contain a pre-built knowledge graph that will be included in Docker images built with `Dockerfile.prebuilt-graph`, enabling instant query capability without re-indexing.
 
 ## Benefits
 
@@ -32,7 +32,7 @@ This will create `graph_chunk_entity_relation.graphml` in your local `rag_storag
 ls rag_storage/graph_chunk_entity_relation.graphml
 
 # Build Docker image (graph will be included automatically)
-docker build -t lightrag:prebuilt .
+docker build -f Dockerfile.prebuilt-graph -t lightrag:prebuilt .
 ```
 
 ### 3. Deploy Without Re-indexing
@@ -53,11 +53,20 @@ curl -X POST http://localhost:9621/query \
 
 ### Dockerfile Integration
 
-The Dockerfile includes this optional step:
+`Dockerfile.prebuilt-graph` includes this optional step:
 
 ```dockerfile
 # Copy pre-built knowledge graph if available (optional)
-COPY --chown=root:root rag_storage/graph_chunk_entity_relation.graphml /app/data/rag_storage/
+ARG GRAPH_SOURCE=rag_storage/
+COPY --chown=root:root ${GRAPH_SOURCE} /app/data/rag_storage/
+```
+
+Specify an alternate directory or archive when building:
+
+```bash
+docker build -f Dockerfile.prebuilt-graph \
+  --build-arg GRAPH_SOURCE=artifacts/graphs/ \
+  -t lightrag:prebuilt .
 ```
 
 ### .dockerignore Configuration

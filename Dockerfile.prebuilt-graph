@@ -68,6 +68,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 ENV UV_SYSTEM_PYTHON=1
 
+# Allow callers to override the location of the pre-built NetworkX graph
+ARG GRAPH_SOURCE=rag_storage/
+
 # Copy installed packages and application code
 COPY --from=builder /root/.local /root/.local
 COPY --from=builder /app/.venv /app/.venv
@@ -86,6 +89,10 @@ RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
+
+# Copy pre-built knowledge graph assets for bundled deployments
+# Using a build arg allows substituting a different directory or archive at build time.
+COPY --chown=root:root ${GRAPH_SOURCE} /app/data/rag_storage/
 
 # Copy offline cache into the newly created directory
 COPY --from=builder /app/data/tiktoken /app/data/tiktoken
