@@ -412,11 +412,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     ref_id = chunk.get("reference_id", "")
                     content = chunk.get("content", "")
                     if ref_id and content:
-                        # If multiple chunks have same reference_id, concatenate
-                        if ref_id in ref_id_to_content:
-                            ref_id_to_content[ref_id] += "\n\n" + content
-                        else:
-                            ref_id_to_content[ref_id] = content
+                        # Collect chunk content; join later to avoid quadratic string concatenation
+                        ref_id_to_content.setdefault(ref_id, []).append(content)
 
                 # Add content to references
                 enriched_references = []
@@ -424,7 +421,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     ref_copy = ref.copy()
                     ref_id = ref.get("reference_id", "")
                     if ref_id in ref_id_to_content:
-                        ref_copy["content"] = ref_id_to_content[ref_id]
+                        ref_copy["content"] = "\n\n".join(ref_id_to_content[ref_id])
                     enriched_references.append(ref_copy)
                 references = enriched_references
 

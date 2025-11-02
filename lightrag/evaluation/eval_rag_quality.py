@@ -21,6 +21,7 @@ Results are saved to: lightrag/evaluation/results/
 import asyncio
 import csv
 import json
+import math
 import os
 import sys
 import time
@@ -30,6 +31,7 @@ from typing import Any, Dict, List
 
 import httpx
 from dotenv import load_dotenv
+from lightrag.utils import logger
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -56,9 +58,19 @@ try:
         faithfulness,
     )
 except ImportError as e:
-    print(f"❌ RAGAS import error: {e}")
-    print("   Install with: pip install ragas datasets")
+    logger.error("❌ RAGAS import error: %s", e)
+    logger.error("   Install with: pip install ragas datasets")
     sys.exit(1)
+
+
+CONNECT_TIMEOUT_SECONDS = 180.0
+READ_TIMEOUT_SECONDS = 300.0
+TOTAL_TIMEOUT_SECONDS = 180.0
+
+
+def _is_nan(value: Any) -> bool:
+    """Return True when value is a float NaN."""
+    return isinstance(value, float) and math.isnan(value)
 
 
 class RAGEvaluator:
@@ -138,12 +150,14 @@ class RAGEvaluator:
             references = result.get("references", [])
 
             # DEBUG: Inspect the API response
-            print(f"   🔍 References Count: {len(references)}")
+            logger.debug("🔍 References Count: %s", len(references))
             if references:
                 first_ref = references[0]
-                print(f"   🔍 First Reference Keys: {list(first_ref.keys())}")
+                logger.debug("🔍 First Reference Keys: %s", list(first_ref.keys()))
                 if "content" in first_ref:
-                    print(f"   🔍 Content Preview: {first_ref['content'][:100]}...")
+                    logger.debug(
+                        "🔍 Content Preview: %s...", first_ref["content"][:100]
+                    )
 
             # Extract chunk content from enriched references
             contexts = [
@@ -194,11 +208,13 @@ class RAGEvaluator:
         Returns:
             Evaluation result dictionary
         """
+        total_cases = len(self.test_cases)
+
         async with semaphore:
             question = test_case["question"]
             ground_truth = test_case["ground_truth"]
 
-            print(f"[{idx}/{len(self.test_cases)}] Evaluating: {question[:60]}...")
+            logger.info("[%s/%s] Evaluating: %s...", idx, total_cases, question[:60])
 
             # Generate RAG response by calling actual LightRAG API
             rag_response = await self.generate_rag_response(
@@ -209,11 +225,13 @@ class RAGEvaluator:
             retrieved_contexts = rag_response["contexts"]
 
             # DEBUG: Print what was actually retrieved
-            print(f"   📝 Retrieved {len(retrieved_contexts)} contexts")
+            logger.debug("📝 Retrieved %s contexts", len(retrieved_contexts))
             if retrieved_contexts:
-                print(f"   📄 First context preview: {retrieved_contexts[0][:100]}...")
+                logger.debug(
+                    "📄 First context preview: %s...", retrieved_contexts[0][:100]
+                )
             else:
-                print("   ⚠️  WARNING: No contexts retrieved!")
+                logger.warning("⚠️  No contexts retrieved!")
 
             # Prepare dataset for RAGAS evaluation with CORRECT contexts
             eval_dataset = Dataset.from_dict(
@@ -271,20 +289,16 @@ class RAGEvaluator:
                 ragas_score = sum(metrics.values()) / len(metrics) if metrics else 0
                 result["ragas_score"] = round(ragas_score, 4)
 
-                # Print metrics
-                print(f"   ✅ Faithfulness:      {metrics['faithfulness']:.4f}")
-                print(f"   ✅ Answer Relevance:  {metrics['answer_relevance']:.4f}")
-                print(f"   ✅ Context Recall:    {metrics['context_recall']:.4f}")
-                print(f"   ✅ Context Precision: {metrics['context_precision']:.4f}")
-                print(f"   📊 RAGAS Score:       {result['ragas_score']:.4f}\n")
+                logger.info("✅ Faithfulness: %.4f", metrics["faithfulness"])
+                logger.info("✅ Answer Relevance: %.4f", metrics["answer_relevance"])
+                logger.info("✅ Context Recall: %.4f", metrics["context_recall"])
+                logger.info("✅ Context Precision: %.4f", metrics["context_precision"])
+                logger.info("📊 RAGAS Score: %.4f", result["ragas_score"])
 
                 return result
 
             except Exception as e:
-                import traceback
-
-                print(f"   ❌ Error evaluating: {str(e)}")
-                print(f"   🔍 Full traceback:\n{traceback.format_exc()}\n")
+                logger.exception("❌ Error evaluating: %s", e)
                 return {
                     "question": question,
                     "error": str(e),
@@ -303,17 +317,22 @@ class RAGEvaluator:
         # Get MAX_ASYNC from environment (default to 4 if not set)
         max_async = int(os.getenv("MAX_ASYNC", "4"))
 
-        print("\n" + "=" * 70)
-        print("🚀 Starting RAGAS Evaluation of Portfolio RAG System")
-        print(f"🔧 Parallel evaluations: {max_async}")
-        print("=" * 70 + "\n")
+        logger.info("")
+        logger.info("%s", "=" * 70)
+        logger.info("🚀 Starting RAGAS Evaluation of Portfolio RAG System")
+        logger.info("🔧 Parallel evaluations: %s", max_async)
+        logger.info("%s", "=" * 70)
 
         # Create semaphore to limit concurrent evaluations
         semaphore = asyncio.Semaphore(max_async)
 
         # Create shared HTTP client with connection pooling and proper timeouts
         # Timeout: 3 minutes for connect, 5 minutes for read (LLM can be slow)
-        timeout = httpx.Timeout(180.0, connect=180.0, read=300.0)
+        timeout = httpx.Timeout(
+            TOTAL_TIMEOUT_SECONDS,
+            connect=CONNECT_TIMEOUT_SECONDS,
+            read=READ_TIMEOUT_SECONDS,
+        )
         limits = httpx.Limits(
             max_connections=max_async * 2,  # Allow some buffer
             max_keepalive_connections=max_async,
@@ -418,8 +437,6 @@ class RAGEvaluator:
             }
 
         # Calculate averages for each metric (handling NaN values)
-        import math
-
         metrics_sum = {
             "faithfulness": 0.0,
             "answer_relevance": 0.0,
@@ -432,39 +449,23 @@ class RAGEvaluator:
             metrics = result.get("metrics", {})
             # Skip NaN values when summing
             faithfulness = metrics.get("faithfulness", 0)
-            if (
-                not math.isnan(faithfulness)
-                if isinstance(faithfulness, float)
-                else True
-            ):
+            if not _is_nan(faithfulness):
                 metrics_sum["faithfulness"] += faithfulness
 
             answer_relevance = metrics.get("answer_relevance", 0)
-            if (
-                not math.isnan(answer_relevance)
-                if isinstance(answer_relevance, float)
-                else True
-            ):
+            if not _is_nan(answer_relevance):
                 metrics_sum["answer_relevance"] += answer_relevance
 
             context_recall = metrics.get("context_recall", 0)
-            if (
-                not math.isnan(context_recall)
-                if isinstance(context_recall, float)
-                else True
-            ):
+            if not _is_nan(context_recall):
                 metrics_sum["context_recall"] += context_recall
 
             context_precision = metrics.get("context_precision", 0)
-            if (
-                not math.isnan(context_precision)
-                if isinstance(context_precision, float)
-                else True
-            ):
+            if not _is_nan(context_precision):
                 metrics_sum["context_precision"] += context_precision
 
             ragas_score = result.get("ragas_score", 0)
-            if not math.isnan(ragas_score) if isinstance(ragas_score, float) else True:
+            if not _is_nan(ragas_score):
                 metrics_sum["ragas_score"] += ragas_score
 
         # Calculate averages
@@ -473,13 +474,13 @@ class RAGEvaluator:
         for k, v in metrics_sum.items():
             avg_val = v / n if n > 0 else 0
             # Handle NaN in average
-            avg_metrics[k] = round(avg_val, 4) if not math.isnan(avg_val) else 0.0
+            avg_metrics[k] = round(avg_val, 4) if not _is_nan(avg_val) else 0.0
 
         # Find min and max RAGAS scores (filter out NaN)
         ragas_scores = []
         for r in valid_results:
             score = r.get("ragas_score", 0)
-            if isinstance(score, float) and math.isnan(score):
+            if _is_nan(score):
                 continue  # Skip NaN values
             ragas_scores.append(score)
 
@@ -525,43 +526,53 @@ class RAGEvaluator:
         )
         with open(json_path, "w") as f:
             json.dump(summary, f, indent=2)
-        print(f"✅ JSON results saved to: {json_path}")
+        logger.info("✅ JSON results saved to: %s", json_path)
 
         # Export to CSV
         csv_path = self._export_to_csv(results)
-        print(f"✅ CSV results saved to: {csv_path}")
+        logger.info("✅ CSV results saved to: %s", csv_path)
 
         # Print summary
-        print("\n" + "=" * 70)
-        print("📊 EVALUATION COMPLETE")
-        print("=" * 70)
-        print(f"Total Tests:    {len(results)}")
-        print(f"Successful:     {benchmark_stats['successful_tests']}")
-        print(f"Failed:         {benchmark_stats['failed_tests']}")
-        print(f"Success Rate:   {benchmark_stats['success_rate']:.2f}%")
-        print(f"Elapsed Time:   {elapsed_time:.2f} seconds")
-        print(f"Avg Time/Test:  {elapsed_time / len(results):.2f} seconds")
+        logger.info("")
+        logger.info("%s", "=" * 70)
+        logger.info("📊 EVALUATION COMPLETE")
+        logger.info("%s", "=" * 70)
+        logger.info("Total Tests:    %s", len(results))
+        logger.info("Successful:     %s", benchmark_stats["successful_tests"])
+        logger.info("Failed:         %s", benchmark_stats["failed_tests"])
+        logger.info("Success Rate:   %.2f%%", benchmark_stats["success_rate"])
+        logger.info("Elapsed Time:   %.2f seconds", elapsed_time)
+        logger.info("Avg Time/Test:  %.2f seconds", elapsed_time / len(results))
 
         # Print benchmark metrics
-        print("\n" + "=" * 70)
-        print("📈 BENCHMARK RESULTS (Moyennes)")
-        print("=" * 70)
+        logger.info("")
+        logger.info("%s", "=" * 70)
+        logger.info("📈 BENCHMARK RESULTS (Moyennes)")
+        logger.info("%s", "=" * 70)
         avg = benchmark_stats["average_metrics"]
-        print(f"Moyenne Faithfulness:      {avg['faithfulness']:.4f}")
-        print(f"Moyenne Answer Relevance:  {avg['answer_relevance']:.4f}")
-        print(f"Moyenne Context Recall:    {avg['context_recall']:.4f}")
-        print(f"Moyenne Context Precision: {avg['context_precision']:.4f}")
-        print(f"Moyenne RAGAS Score:       {avg['ragas_score']:.4f}")
-        print(f"\nMin RAGAS Score:           {benchmark_stats['min_ragas_score']:.4f}")
-        print(f"Max RAGAS Score:           {benchmark_stats['max_ragas_score']:.4f}")
+        logger.info("Moyenne Faithfulness:      %.4f", avg["faithfulness"])
+        logger.info("Moyenne Answer Relevance:  %.4f", avg["answer_relevance"])
+        logger.info("Moyenne Context Recall:    %.4f", avg["context_recall"])
+        logger.info("Moyenne Context Precision: %.4f", avg["context_precision"])
+        logger.info("Moyenne RAGAS Score:       %.4f", avg["ragas_score"])
+        logger.info("")
+        logger.info(
+            "Min RAGAS Score:           %.4f",
+            benchmark_stats["min_ragas_score"],
+        )
+        logger.info(
+            "Max RAGAS Score:           %.4f",
+            benchmark_stats["max_ragas_score"],
+        )
 
-        print("\n" + "=" * 70)
-        print("📁 GENERATED FILES")
-        print("=" * 70)
-        print(f"Results Dir:    {self.results_dir.absolute()}")
-        print(f"   • CSV:  {csv_path.name}")
-        print(f"   • JSON: {json_path.name}")
-        print("=" * 70 + "\n")
+        logger.info("")
+        logger.info("%s", "=" * 70)
+        logger.info("📁 GENERATED FILES")
+        logger.info("%s", "=" * 70)
+        logger.info("Results Dir:    %s", self.results_dir.absolute())
+        logger.info("   • CSV:  %s", csv_path.name)
+        logger.info("   • JSON: %s", json_path.name)
+        logger.info("%s", "=" * 70)
 
         return summary
 
@@ -581,19 +592,20 @@ async def main():
         if len(sys.argv) > 1:
             rag_api_url = sys.argv[1]
 
-        print("\n" + "=" * 70)
-        print("🔍 RAGAS Evaluation - Using Real LightRAG API")
-        print("=" * 70)
+        logger.info("")
+        logger.info("%s", "=" * 70)
+        logger.info("🔍 RAGAS Evaluation - Using Real LightRAG API")
+        logger.info("%s", "=" * 70)
         if rag_api_url:
-            print(f"📡 RAG API URL: {rag_api_url}")
+            logger.info("📡 RAG API URL: %s", rag_api_url)
         else:
-            print("📡 RAG API URL: http://localhost:9621 (default)")
-        print("=" * 70 + "\n")
+            logger.info("📡 RAG API URL: http://localhost:9621 (default)")
+        logger.info("%s", "=" * 70)
 
         evaluator = RAGEvaluator(rag_api_url=rag_api_url)
         await evaluator.run()
     except Exception as e:
-        print(f"\n❌ Error: {str(e)}\n")
+        logger.exception("❌ Error: %s", e)
         sys.exit(1)
 
 
