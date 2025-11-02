@@ -255,6 +255,25 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, rag
                                     ],
                                 },
                             },
+                            "with_chunk_content": {
+                                "summary": "Response with chunk content",
+                                "description": "Example response when include_references=True and include_chunk_content=True",
+                                "value": {
+                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
+                                    "references": [
+                                        {
+                                            "reference_id": "1",
+                                            "file_path": "/documents/ai_overview.pdf",
+                                            "content": "Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.",
+                                        },
+                                        {
+                                            "reference_id": "2",
+                                            "file_path": "/documents/machine_learning.txt",
+                                            "content": "Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves.",
+                                        },
+                                    ],
+                                },
+                            },
                             "without_references": {
                                 "summary": "Response without references",
                                 "description": "Example response when include_references=False",
