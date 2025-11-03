@@ -11,7 +11,6 @@ if not pm.is_installed("openai"):
     pm.install("openai")
 
 from openai import (
-    AsyncOpenAI,
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
@@ -27,6 +26,19 @@ from lightrag.utils import (
     safe_unicode_decode,
     logger,
 )
+
+# Try to import Langfuse for LLM observability (optional)
+# Falls back to standard OpenAI client if not available
+try:
+    from langfuse.openai import AsyncOpenAI
+
+    LANGFUSE_ENABLED = True
+    logger.info("Langfuse observability enabled for OpenAI client")
+except ImportError:
+    from openai import AsyncOpenAI
+
+    LANGFUSE_ENABLED = False
+    logger.debug("Langfuse not available, using standard OpenAI client")
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 
