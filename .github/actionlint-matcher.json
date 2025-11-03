@@ -1,7 +1,7 @@
 {
   "problemMatcher": [
     {
-      "owner": "actionlint",
+      "owner": "actionlint-detailed",
       "pattern": [
         {
           "regexp": "^::(?:(?:warning)|(?:error)) file=(.+),line=(\\d+),col=(\\d+)::(.*)$",
@@ -13,7 +13,7 @@
       ]
     },
     {
-      "owner": "actionlint",
+      "owner": "actionlint-brief",
       "pattern": [
         {
           "regexp": "^::(?:(?:warning)|(?:error)) file=(.+),line=(\\d+)::(.*)$",
