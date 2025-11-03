@@ -13,16 +13,30 @@ CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 
 GITHUB_USERNAME := $(shell echo "$$APOLO_GITHUB_TOKEN" | base64 -d 2>/dev/null | cut -d: -f1 2>/dev/null || echo "oauth2")
 
-.PHONY: all help helm-package helm-push clean test
+HOOKS_IMAGE_REPO ?= ghcr.io/neuro-inc/app-lightrag
+BUILD_IMAGE_TAG ?= $(CHART_VERSION)
+IMAGE_TAG ?= $(BUILD_IMAGE_TAG)
+HOOKS_BUILD_IMAGE := $(HOOKS_IMAGE_REPO):$(BUILD_IMAGE_TAG)
+HOOKS_PUBLISH_IMAGE := $(HOOKS_IMAGE_REPO):$(IMAGE_TAG)
+
+define HELP_MESSAGE
+Available targets:
+  helm-package         - Package the LightRAG Helm chart (version: $(CHART_VERSION))
+  helm-push            - Package and push the chart to $(HELM_REGISTRY)
+  clean                - Remove packaged charts from $(CHART_PACKAGE_DIR)
+  hooks-build          - Build the pre-commit hooks image $(HOOKS_BUILD_IMAGE)
+  hooks-publish        - Build and push the hooks image to its registry
+
+Set VERSION=1.2.3 to override the git-derived chart version.
+endef
+export HELP_MESSAGE
+
+.PHONY: all help helm-package helm-push clean test hooks-build hooks-publish build-hook-image push-hook-image
 
 all: help
 
 help:
-	@echo "Available targets:"
-	@echo "  helm-package         - Package the LightRAG Helm chart (version: $(CHART_VERSION))"
-	@echo "  helm-push            - Package and push the chart to $(HELM_REGISTRY)"
-	@echo "  clean                - Remove packaged charts from $(CHART_PACKAGE_DIR)"
-	@echo "\nSet VERSION=1.2.3 to override the git-derived chart version."
+	@printf "%s\n" "$$HELP_MESSAGE"
 
 helm-package:
 	@if [ -z "$(CHART_VERSION)" ]; then \
@@ -56,3 +70,24 @@ clean:
 
 test:
 	@echo "No automated tests for Helm packaging. Use 'helm test' as needed."
+
+hooks-build:
+	@echo "Building hooks image $(HOOKS_BUILD_IMAGE)..."
+	docker build \
+		--file hooks.Dockerfile \
+		--tag $(HOOKS_BUILD_IMAGE) \
+		.
+	@echo "✅ Hooks image built: $(HOOKS_BUILD_IMAGE)"
+
+hooks-publish: hooks-build
+	@echo "Tagging hooks image as $(HOOKS_PUBLISH_IMAGE)..."
+	@if [ "$(HOOKS_PUBLISH_IMAGE)" != "$(HOOKS_BUILD_IMAGE)" ]; then \
+		docker tag $(HOOKS_BUILD_IMAGE) $(HOOKS_PUBLISH_IMAGE); \
+	fi
+	@echo "Pushing hooks image $(HOOKS_PUBLISH_IMAGE)..."
+	docker push $(HOOKS_PUBLISH_IMAGE)
+	@echo "✅ Hooks image pushed to $(HOOKS_PUBLISH_IMAGE)"
+
+build-hook-image: hooks-build
+
+push-hook-image: hooks-publish
