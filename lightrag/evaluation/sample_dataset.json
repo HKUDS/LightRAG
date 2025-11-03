@@ -1,44 +1,19 @@
 {
   "test_cases": [
     {
-      "question": "What is LightRAG and what problem does it solve?",
-      "ground_truth": "LightRAG is a Simple and Fast Retrieval-Augmented Generation framework developed by HKUDS. It solves the problem of efficiently combining large language models with external knowledge retrieval to provide accurate, contextual responses while reducing hallucinations.",
-      "context": "general_rag_knowledge"
+      "question": "How does LightRAG solve the hallucination problem in large language models?",
+      "ground_truth": "LightRAG solves the hallucination problem by combining large language models with external knowledge retrieval. The framework ensures accurate responses by grounding LLM outputs in actual documents. LightRAG provides contextual responses that reduce hallucinations significantly.",
+      "context": "lightrag_overview"
     },
     {
-      "question": "What are the main components of a RAG system?",
-      "ground_truth": "A RAG system consists of three main components: 1) A retrieval system (vector database or search engine) to find relevant documents, 2) An embedding model to convert text into vector representations, and 3) A large language model (LLM) to generate responses based on retrieved context.",
+      "question": "What are the three main components required in a RAG system?",
+      "ground_truth": "A RAG system requires three main components: a retrieval system (vector database or search engine) to find relevant documents, an embedding model to convert text into vector representations for similarity search, and a large language model (LLM) to generate responses based on retrieved context.",
       "context": "rag_architecture"
     },
     {
-      "question": "How does LightRAG improve upon traditional RAG approaches?",
-      "ground_truth": "LightRAG improves upon traditional RAG by offering a simpler API, faster retrieval performance, better integration with various vector databases, and optimized prompting strategies. It focuses on ease of use while maintaining high quality results.",
-      "context": "lightrag_features"
-    },
-    {
-      "question": "What vector databases does LightRAG support?",
-      "ground_truth": "LightRAG supports multiple vector databases including ChromaDB, Neo4j, Milvus, Qdrant, MongoDB Atlas Vector Search, and Redis. It also includes a built-in nano-vectordb for simple deployments.",
-      "context": "supported_storage"
-    },
-    {
-      "question": "What are the key metrics for evaluating RAG system quality?",
-      "ground_truth": "Key RAG evaluation metrics include: 1) Faithfulness - whether answers are factually grounded in retrieved context, 2) Answer Relevance - how well answers address the question, 3) Context Recall - completeness of retrieval, and 4) Context Precision - quality and relevance of retrieved documents.",
-      "context": "rag_evaluation"
-    },
-    {
-      "question": "How can you deploy LightRAG in production?",
-      "ground_truth": "LightRAG can be deployed in production using Docker containers, as a REST API server with FastAPI, or integrated directly into Python applications. It supports environment-based configuration, multiple LLM providers, and can scale horizontally.",
-      "context": "deployment_options"
-    },
-    {
-      "question": "What LLM providers does LightRAG support?",
-      "ground_truth": "LightRAG supports multiple LLM providers including OpenAI (GPT-3.5, GPT-4), Anthropic Claude, Ollama for local models, Azure OpenAI, AWS Bedrock, and any OpenAI-compatible API endpoint.",
-      "context": "llm_integration"
-    },
-    {
-      "question": "What is the purpose of graph-based retrieval in RAG systems?",
-      "ground_truth": "Graph-based retrieval in RAG systems enables relationship-aware context retrieval. It stores entities and their relationships as a knowledge graph, allowing the system to understand connections between concepts and retrieve more contextually relevant information beyond simple semantic similarity.",
-      "context": "knowledge_graph_rag"
+      "question": "How does LightRAG's retrieval performance compare to traditional RAG approaches?",
+      "ground_truth": "LightRAG delivers faster retrieval performance than traditional RAG approaches. The framework optimizes document retrieval operations for speed, while traditional RAG systems often suffer from slow query response times. LightRAG achieves high quality results with improved performance.",
+      "context": "lightrag_improvements"
     }
   ]
 }
