@@ -1,0 +1,49 @@
+# This pipeline will run that builds and deploys the docker container any time a PR is Raised and Merged against "main" Branch to Innovation LAB Environment
+name: innovation-lab-build-push
+on:
+  push:
+    branches:
+      - main
+      - ci-pipeline
+      # - ' '
+  workflow_dispatch: 
+
+# Used for getting permissions to AWS resources through an OIDC federation
+permissions:
+  id-token: write
+  contents: read  
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: 211125670787
+  ECR_REPO: light-rag
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:                       
+      - name: 'Configure AWS credentials'
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/innovation-lab-github-oidc-4
+          role-session-name: githubAWSSession
+          role-duration-seconds: 3600
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/checkout@v2                  
+      - name: Login to ECR
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }} ##image
+
+      - name: Docker Build and Publish
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{github.run_number}}
+
+
+
+
