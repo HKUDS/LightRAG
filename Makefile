@@ -21,7 +21,7 @@ GITHUB_USERNAME := $(shell echo "$$APOLO_GITHUB_TOKEN" | base64 -d 2>/dev/null |
 POETRY ?= poetry
 IMAGE_NAME ?= app-lightrag
 HOOKS_IMAGE_TARGET ?= ghcr.io/neuro-inc/lightrag
-DEFAULT_BRANCH_TAG := $(shell bash -lc 'branch=$${BRANCH_NAME:-$${GITHUB_REF_NAME:-}}; if [ -z "$$branch" ]; then branch=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""); fi; if [ "$$branch" = "HEAD" ] || [ -z "$$branch" ]; then branch=$$(git rev-parse --short HEAD 2>/dev/null || echo "latest"); fi; branch=$$(printf "%s" "$$branch" | tr "[:upper:]" "[:lower:]"); branch=$$(printf "%s" "$$branch" | sed -E "s/[^a-z0-9_.-]/-/g"); branch=$${branch:-latest}; echo $$branch')
+DEFAULT_BRANCH_TAG := $(shell bash -lc 'branch=$${BRANCH_NAME:-$${GITHUB_HEAD_REF:-$${GITHUB_REF_NAME:-}}}; if [ -z "$$branch" ]; then branch=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""); fi; if [ "$$branch" = "HEAD" ] || [ -z "$$branch" ]; then branch=$$(git rev-parse --short HEAD 2>/dev/null || echo "latest"); fi; branch=$$(printf "%s" "$$branch" | sed -E "s|^refs/heads/||"); branch=$$(printf "%s" "$$branch" | sed -E "s|[^A-Za-z0-9_.-]|-|g"); branch=$$(printf "%s" "$$branch" | tr "[:upper:]" "[:lower:]"); branch=$${branch:-latest}; echo $$branch')
 IMAGE_TAG ?= $(DEFAULT_BRANCH_TAG)
 
 APP_CHART_NAME := lightrag
