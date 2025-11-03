@@ -1,6 +1,6 @@
-# 📊 Portfolio RAG Evaluation Framework
+# 📊 LightRAG Evaluation Framework
 
-RAGAS-based offline evaluation of your LightRAG portfolio system.
+RAGAS-based offline evaluation of your LightRAG system.
 
 ## What is RAGAS?
 
@@ -25,13 +25,22 @@ Instead of requiring human-annotated ground truth, RAGAS uses state-of-the-art e
 ```
 lightrag/evaluation/
 ├── eval_rag_quality.py      # Main evaluation script
-├── sample_dataset.json        # Test cases with ground truth
+├── sample_dataset.json        # 3 test questions about LightRAG
+├── sample_documents/          # Matching markdown files for testing
+│   ├── 01_lightrag_overview.md
+│   ├── 02_rag_architecture.md
+│   ├── 03_lightrag_improvements.md
+│   ├── 04_supported_databases.md
+│   ├── 05_evaluation_and_deployment.md
+│   └── README.md
 ├── __init__.py              # Package init
 ├── results/                 # Output directory
-│   ├── results_YYYYMMDD_HHMMSS.json    # Raw metrics
-│   └── report_YYYYMMDD_HHMMSS.html     # Beautiful HTML report
+│   ├── results_YYYYMMDD_HHMMSS.json    # Raw metrics in JSON
+│   └── results_YYYYMMDD_HHMMSS.csv     # Metrics in CSV format
 └── README.md                # This file
 ```
+
+**Quick Test:** Index files from `sample_documents/` into LightRAG, then run the evaluator to reproduce results (~89-100% RAGAS score per question).
 
 ---
 
@@ -68,76 +77,34 @@ Results are saved automatically in `lightrag/evaluation/results/`:
 
 ```
 results/
-├── results_20241023_143022.json     ← Raw metrics (for analysis)
-└── report_20241023_143022.html      ← Beautiful HTML report 🌟
+├── results_20241023_143022.json     ← Raw metrics in JSON format
+└── results_20241023_143022.csv      ← Metrics in CSV format (for spreadsheets)
 ```
 
-**Open the HTML report in your browser to see:**
+**Results include:**
 - ✅ Overall RAGAS score
-- 📊 Per-metric averages
+- 📊 Per-metric averages (Faithfulness, Answer Relevance, Context Recall, Context Precision)
 - 📋 Individual test case results
-- 📈 Performance breakdown
+- 📈 Performance breakdown by question
 
 ---
 
 ## 📝 Test Dataset
 
-Edit `sample_dataset.json` to add your own test cases:
+`sample_dataset.json` contains 3 generic questions about LightRAG. Replace with questions matching YOUR indexed documents.
+
+**Custom Test Cases:**
 
 ```json
 {
   "test_cases": [
     {
-      "question": "Your test question here",
-      "ground_truth": "Expected answer with key information",
-      "project_context": "project_name"
+      "question": "Your question here",
+      "ground_truth": "Expected answer from your data",
+      "context": "topic"
     }
   ]
 }
-```
-
-**Example:**
-
-```json
-{
-  "question": "Which projects use PyTorch?",
-  "ground_truth": "The Neural ODE Project uses PyTorch with TorchODE library for continuous-time neural networks.",
-  "project_context": "neural_ode_project"
-}
-```
-
----
-
-## 🔧 Integration with Your RAG System
-
-Currently, the evaluation script uses **ground truth as mock responses**. To evaluate your actual LightRAG:
-
-### Step 1: Update `generate_rag_response()`
-
-In `eval_rag_quality.py`, replace the mock implementation:
-
-```python
-async def generate_rag_response(self, question: str, context: str = None) -> Dict[str, str]:
-    """Generate RAG response using your LightRAG system"""
-    from lightrag import LightRAG
-
-    rag = LightRAG(
-        working_dir="./rag_storage",
-        llm_model_func=your_llm_function
-    )
-
-    response = await rag.aquery(question)
-
-    return {
-        "answer": response,
-        "context": "context_from_kg"  # If available
-    }
-```
-
-### Step 2: Run Evaluation
-
-```bash
-python lightrag/evaluation/eval_rag_quality.py
 ```
 
 ---
@@ -184,79 +151,10 @@ python lightrag/evaluation/eval_rag_quality.py
 
 ---
 
-## 📈 Usage Examples
-
-### Python API
-
-```python
-import asyncio
-from lightrag.evaluation import RAGEvaluator
-
-async def main():
-    evaluator = RAGEvaluator()
-    results = await evaluator.run()
-
-    # Access results
-    for result in results:
-        print(f"Question: {result['question']}")
-        print(f"RAGAS Score: {result['ragas_score']:.2%}")
-        print(f"Metrics: {result['metrics']}")
-
-asyncio.run(main())
-```
-
-### Custom Dataset
-
-```python
-evaluator = RAGEvaluator(test_dataset_path="custom_tests.json")
-results = await evaluator.run()
-```
-
-### Batch Evaluation
-
-```python
-from pathlib import Path
-import json
-
-results_dir = Path("lightrag/evaluation/results")
-results_dir.mkdir(exist_ok=True)
-
-# Run multiple evaluations
-for i in range(3):
-    evaluator = RAGEvaluator()
-    results = await evaluator.run()
-```
-
----
-
-## 🎯 For Portfolio/Interview
-
-**What to Highlight:**
-
-1. ✅ **Quality Metrics**: "RAG system achieves 85% RAGAS score"
-2. ✅ **Evaluation Framework**: "Automated quality assessment with RAGAS"
-3. ✅ **Best Practices**: "Offline evaluation pipeline for continuous improvement"
-4. ✅ **Production-Ready**: "Metrics-driven system optimization"
-
-**Example Statement:**
-
-> "I built an evaluation framework using RAGAS that measures RAG quality across faithfulness, relevance, and context coverage. The system achieves 85% average RAGAS score, with automated HTML reports for quality tracking."
-
----
-
-## 🔗 Related Features
-
-- **LangFuse Integration**: Real-time observability of production RAG calls
-- **LightRAG**: Core RAG system with entity extraction and knowledge graphs
-- **Metrics**: See `results/` for detailed evaluation metrics
-
----
-
 ## 📚 Resources
 
 - [RAGAS Documentation](https://docs.ragas.io/)
 - [RAGAS GitHub](https://github.com/explodinggradients/ragas)
-- [LangFuse + RAGAS Guide](https://langfuse.com/guides/cookbook/evaluation_of_rag_with_ragas)
 
 ---
 
@@ -284,25 +182,22 @@ The evaluation uses your configured LLM (OpenAI by default). Ensure:
 - Have sufficient API quota
 - Network connection is stable
 
-### Results showing 0 scores
+### Evaluation requires running LightRAG API
 
-Current implementation uses ground truth as mock responses. Results will show perfect scores because the "generated answer" equals the ground truth.
-
-**To use actual RAG results:**
-1. Implement the `generate_rag_response()` method
-2. Connect to your LightRAG instance
-3. Run evaluation again
+The evaluator queries a running LightRAG API server at `http://localhost:9621`. Make sure:
+1. LightRAG API server is running (`python lightrag/api/lightrag_server.py`)
+2. Documents are indexed in your LightRAG instance
+3. API is accessible at the configured URL
 
 ---
 
 ## 📝 Next Steps
 
-1. ✅ Review test dataset in `sample_dataset.json`
-2. ✅ Run `python lightrag/evaluation/eval_rag_quality.py`
-3. ✅ Open the HTML report in browser
-4. 🔄 Integrate with actual LightRAG system
-5. 📊 Monitor metrics over time
-6. 🎯 Use insights for optimization
+1. Index documents into LightRAG (WebUI or API)
+2. Start LightRAG API server
+3. Run `python lightrag/evaluation/eval_rag_quality.py`
+4. Review results (JSON/CSV) in `results/` folder
+5. Adjust entity extraction prompts or retrieval settings based on scores
 
 ---
 
