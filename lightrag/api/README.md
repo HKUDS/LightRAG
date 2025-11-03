@@ -474,6 +474,8 @@ The `include_chunk_content` parameter (default: `false`) controls whether the ac
 - **Citation Display**: Showing users the exact text passages that support the response
 - **Transparency**: Providing full visibility into the RAG retrieval process
 
+**Important**: The `content` field is an **array of strings**, where each string represents a chunk from the same file. A single file may correspond to multiple chunks, so the content is returned as a list to preserve chunk boundaries.
+
 **Example API Request:**
 
 ```json
@@ -494,18 +496,25 @@ The `include_chunk_content` parameter (default: `false`) controls whether the ac
     {
       "reference_id": "1",
       "file_path": "/documents/intro.md",
-      "content": "LightRAG is a retrieval-augmented generation system that combines knowledge graphs with vector similarity search..."
+      "content": [
+        "LightRAG is a retrieval-augmented generation system that combines knowledge graphs with vector similarity search...",
+        "The system uses a dual-indexing approach with both vector embeddings and graph structures for enhanced retrieval..."
+      ]
     },
     {
       "reference_id": "2",
       "file_path": "/documents/features.md",
-      "content": "The system provides multiple query modes including local, global, hybrid, and mix modes..."
+      "content": [
+        "The system provides multiple query modes including local, global, hybrid, and mix modes..."
+      ]
     }
   ]
 }
 ```
 
-**Note**: This parameter only works when `include_references=true`. Setting `include_chunk_content=true` without including references has no effect.
+**Notes**:
+- This parameter only works when `include_references=true`. Setting `include_chunk_content=true` without including references has no effect.
+- **Breaking Change**: Prior versions returned `content` as a single concatenated string. Now it returns an array of strings to preserve individual chunk boundaries. If you need a single string, join the array elements with your preferred separator (e.g., `"\n\n".join(content)`).
 
 ### .env Examples
 

@@ -170,14 +170,26 @@ class RAGEvaluator:
                 first_ref = references[0]
                 logger.debug("🔍 First Reference Keys: %s", list(first_ref.keys()))
                 if "content" in first_ref:
-                    logger.debug(
-                        "🔍 Content Preview: %s...", first_ref["content"][:100]
-                    )
+                    content_preview = first_ref["content"]
+                    if isinstance(content_preview, list) and content_preview:
+                        logger.debug(
+                            "🔍 Content Preview (first chunk): %s...",
+                            content_preview[0][:100],
+                        )
+                    elif isinstance(content_preview, str):
+                        logger.debug("🔍 Content Preview: %s...", content_preview[:100])
 
             # Extract chunk content from enriched references
-            contexts = [
-                ref.get("content", "") for ref in references if ref.get("content")
-            ]
+            # Note: content is now a list of chunks per reference (one file may have multiple chunks)
+            contexts = []
+            for ref in references:
+                content = ref.get("content", [])
+                if isinstance(content, list):
+                    # Flatten the list: each chunk becomes a separate context
+                    contexts.extend(content)
+                elif isinstance(content, str):
+                    # Backward compatibility: if content is still a string (shouldn't happen)
+                    contexts.append(content)
 
             return {
                 "answer": answer,

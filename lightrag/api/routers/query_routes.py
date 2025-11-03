@@ -4,7 +4,7 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
@@ -150,9 +150,9 @@ class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
     )
-    references: Optional[List[Dict[str, str]]] = Field(
+    references: Optional[List[Dict[str, Union[str, List[str]]]]] = Field(
         default=None,
-        description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
+        description="Reference list (Disabled when include_references=False, /query/data always includes references.). The 'content' field in each reference is a list of strings when include_chunk_content=True.",
     )
 
 
@@ -208,6 +208,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         "properties": {
                                             "reference_id": {"type": "string"},
                                             "file_path": {"type": "string"},
+                                            "content": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                                "description": "List of chunk contents from this file (only included when include_chunk_content=True)",
+                                            },
                                         },
                                     },
                                     "description": "Reference list (only included when include_references=True)",
@@ -235,19 +240,24 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             },
                             "with_chunk_content": {
                                 "summary": "Response with chunk content",
-                                "description": "Example response when include_references=True and include_chunk_content=True",
+                                "description": "Example response when include_references=True and include_chunk_content=True. Note: content is an array of chunks from the same file.",
                                 "value": {
                                     "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
                                     "references": [
                                         {
                                             "reference_id": "1",
                                             "file_path": "/documents/ai_overview.pdf",
-                                            "content": "Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.",
+                                            "content": [
+                                                "Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.",
+                                                "AI systems can be categorized into narrow AI, which is designed for specific tasks, and general AI, which aims to match human cognitive abilities across a wide range of domains.",
+                                            ],
                                         },
                                         {
                                             "reference_id": "2",
                                             "file_path": "/documents/machine_learning.txt",
-                                            "content": "Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves.",
+                                            "content": [
+                                                "Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves."
+                                            ],
                                         },
                                     ],
                                 },
@@ -421,7 +431,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     ref_copy = ref.copy()
                     ref_id = ref.get("reference_id", "")
                     if ref_id in ref_id_to_content:
-                        ref_copy["content"] = "\n\n".join(ref_id_to_content[ref_id])
+                        # Keep content as a list of chunks (one file may have multiple chunks)
+                        ref_copy["content"] = ref_id_to_content[ref_id]
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
@@ -453,6 +464,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "summary": "Streaming mode with references (stream=true)",
                                 "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.",
                                 "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
+                            },
+                            "streaming_with_chunk_content": {
+                                "summary": "Streaming mode with chunk content (stream=true, include_chunk_content=true)",
+                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.",
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
                             },
                             "streaming_without_references": {
                                 "summary": "Streaming mode without references (stream=true)",
@@ -649,6 +665,30 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 # Extract references and LLM response from unified result
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
+
+                # Enrich references with chunk content if requested
+                if request.include_references and request.include_chunk_content:
+                    data = result.get("data", {})
+                    chunks = data.get("chunks", [])
+                    # Create a mapping from reference_id to chunk content
+                    ref_id_to_content = {}
+                    for chunk in chunks:
+                        ref_id = chunk.get("reference_id", "")
+                        content = chunk.get("content", "")
+                        if ref_id and content:
+                            # Collect chunk content
+                            ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                    # Add content to references
+                    enriched_references = []
+                    for ref in references:
+                        ref_copy = ref.copy()
+                        ref_id = ref.get("reference_id", "")
+                        if ref_id in ref_id_to_content:
+                            # Keep content as a list of chunks (one file may have multiple chunks)
+                            ref_copy["content"] = ref_id_to_content[ref_id]
+                        enriched_references.append(ref_copy)
+                    references = enriched_references
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
