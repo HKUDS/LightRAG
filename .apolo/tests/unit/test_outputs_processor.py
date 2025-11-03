@@ -66,3 +66,40 @@ async def test_generate_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert outputs["server_url"]["internal_url"]["port"] == 9621
     assert outputs["server_url"]["external_url"]["host"] == "service.example.com"
     assert outputs["server_url"]["external_url"]["port"] == 443
+
+
+@pytest.mark.asyncio
+async def test_generate_outputs_without_service_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processor = LightRAGOutputsProcessor()
+
+    async def fake_get_internal_external_web_urls(labels: dict[str, str]):
+        assert labels["app.kubernetes.io/name"] == "lightrag"
+        return None, None
+
+    async def fake_get_service_host_port(match_labels: dict[str, str]):
+        return None, None
+
+    async def fake_get_ingress_host_port(match_labels: dict[str, str]):
+        return None
+
+    monkeypatch.setattr(
+        "apolo_apps_lightrag.outputs_processor.get_internal_external_web_urls",
+        fake_get_internal_external_web_urls,
+    )
+    monkeypatch.setattr(
+        "apolo_apps_lightrag.outputs_processor.get_service_host_port",
+        fake_get_service_host_port,
+    )
+    monkeypatch.setattr(
+        "apolo_apps_lightrag.outputs_processor.get_ingress_host_port",
+        fake_get_ingress_host_port,
+    )
+
+    outputs = await processor.generate_outputs({}, "instance-123")
+
+    assert outputs["app_url"]["internal_url"] is None
+    assert outputs["app_url"]["external_url"] is None
+    assert outputs["server_url"]["internal_url"] is None
+    assert outputs["server_url"]["external_url"] is None
