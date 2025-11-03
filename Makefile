@@ -18,9 +18,16 @@ BUILD_IMAGE_TAG ?= $(CHART_VERSION)
 IMAGE_TAG ?= $(BUILD_IMAGE_TAG)
 HOOKS_BUILD_IMAGE := $(HOOKS_IMAGE_REPO):$(BUILD_IMAGE_TAG)
 HOOKS_PUBLISH_IMAGE := $(HOOKS_IMAGE_REPO):$(IMAGE_TAG)
+POETRY ?= poetry
+POETRY_RUN := $(POETRY) run
+PYTEST_TARGET ?= .apolo/tests
 
 define HELP_MESSAGE
 Available targets:
+  install             - Install project dependencies (including dev extras)
+  setup               - Alias for install (compatibility)
+  lint                - Run pre-commit checks across the repository
+  test-unit           - Execute unit test suite with pytest
   helm-package         - Package the LightRAG Helm chart (version: $(CHART_VERSION))
   helm-push            - Package and push the chart to $(HELM_REGISTRY)
   clean                - Remove packaged charts from $(CHART_PACKAGE_DIR)
@@ -31,12 +38,23 @@ Set VERSION=1.2.3 to override the git-derived chart version.
 endef
 export HELP_MESSAGE
 
-.PHONY: all help helm-package helm-push clean test hooks-build hooks-publish build-hook-image push-hook-image
+.PHONY: all help install setup lint test-unit helm-package helm-push clean test hooks-build hooks-publish build-hook-image push-hook-image
 
 all: help
 
 help:
 	@printf "%s\n" "$$HELP_MESSAGE"
+
+install:
+	$(POETRY) install --with dev
+
+setup: install
+
+lint:
+	$(POETRY_RUN) pre-commit run --all-files --show-diff-on-failure
+
+test-unit:
+	$(POETRY_RUN) pytest $(PYTEST_TARGET)
 
 helm-package:
 	@if [ -z "$(CHART_VERSION)" ]; then \
