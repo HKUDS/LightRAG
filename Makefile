@@ -21,7 +21,7 @@ GITHUB_USERNAME := $(shell echo "$$APOLO_GITHUB_TOKEN" | base64 -d 2>/dev/null |
 POETRY ?= poetry
 IMAGE_NAME ?= app-lightrag
 IMAGE_TAG ?= latest
-HOOKS_IMAGE_TARGET ?= ghcr.io/neuro-inc/LightRAG
+HOOKS_IMAGE_TARGET ?= ghcr.io/neuro-inc/lightrag
 
 APP_CHART_NAME := lightrag
 APP_CHART_DIR := k8s-deploy/$(APP_CHART_NAME)
