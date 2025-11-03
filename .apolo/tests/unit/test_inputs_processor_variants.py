@@ -18,6 +18,8 @@ from apolo_apps_lightrag.types import (
     LightRAGPersistence,
     OllamaEmbeddingProvider,
     OllamaLLMProvider,
+    OpenAICompatChatProvider,
+    OpenAICompatEmbeddingsProvider,
     OpenAIEmbeddingProvider,
     OpenAILLMProvider,
 )
@@ -63,7 +65,10 @@ async def _generate_env(
 
     processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
     values = await processor.gen_extra_values(
-        _make_base_inputs(llm_config, embedding_config),
+        _make_base_inputs(
+            llm_config,
+            embedding_config,
+        ),
         app_name="lightrag-app",
         namespace="apps",
         app_id="instance-123",
@@ -107,7 +112,7 @@ async def _generate_env(
             GeminiLLMProvider(model="gemini-pro", api_key="gemini-key"),
             "gemini",
             "gemini-pro",
-            "https://generativelanguage.googleapis.com:443/v1",
+            "https://generativelanguage.googleapis.com:443/v1beta",
             "gemini-key",
         ),
     ],
@@ -159,12 +164,38 @@ async def test_inputs_processor_openai_compat_provider(
 
 
 @pytest.mark.asyncio
+async def test_inputs_processor_openai_compat_with_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_config = OpenAICompatChatProvider(
+        host="https://openrouter.ai/api/v1",
+        port=443,
+        protocol="https",
+        model="openrouter/meta-llama-3-70b",
+    )
+    object.__setattr__(llm_config, "api_key", "router-key")
+
+    env = await _generate_env(
+        monkeypatch,
+        llm_config=llm_config,
+        embedding_config=OpenAIEmbeddingProvider(api_key="embed-key"),
+    )
+
+    assert env["LLM_BINDING"] == "openai"
+    assert env["LLM_MODEL"] == "openrouter/meta-llama-3-70b"
+    assert env["LLM_BINDING_HOST"] == "https://openrouter.ai:443/api/v1"
+    assert env["LLM_BINDING_API_KEY"] == "router-key"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("embedding_config", "expected_binding", "expected_host", "expected_dim"),
     [
         (
             OpenAIEmbeddingProvider(
-                model="text-embedding-3-small", api_key="embed-key"
+                model="text-embedding-3-small",
+                api_key="embed-key",
+                dimensions=1536,
             ),
             "openai",
             "https://api.openai.com:443/v1",
@@ -207,6 +238,7 @@ async def test_inputs_processor_openai_compat_embedding(
         hf_model=HuggingFaceModel(model_hf_name="text-embedding-awesome"),
     )
     object.__setattr__(embedding_config, "api_key", "embed-key")
+    object.__setattr__(embedding_config, "dimensions", 1536)
 
     env = await _generate_env(
         monkeypatch,
@@ -221,31 +253,78 @@ async def test_inputs_processor_openai_compat_embedding(
     assert env["EMBEDDING_DIM"] == 1536
 
 
-def test_inputs_processor_raises_for_missing_hf_model() -> None:
-    processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
-    inputs = _make_base_inputs(
-        llm_config=OpenAICompatChatAPI(
-            host="compat.example.com",
-            port=9443,
-            protocol="https",
-        ),
-        embedding_config=OpenAIEmbeddingProvider(),
+@pytest.mark.asyncio
+async def test_inputs_processor_openai_compat_without_hf_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_config = OpenAICompatChatProvider(
+        host="https://openrouter.ai/api/v1",
+        port=443,
+        protocol="https",
+    )
+    object.__setattr__(llm_config, "api_key", "router-key")
+
+    env = await _generate_env(
+        monkeypatch,
+        llm_config=llm_config,
+        embedding_config=OpenAIEmbeddingProvider(api_key="embed-key"),
     )
 
-    with pytest.raises(ValueError, match="hf_model"):
-        processor._extract_llm_config(inputs.llm_config)
+    assert env["LLM_BINDING"] == "openai"
+    assert env["LLM_MODEL"] == "gpt-4.1"
+    assert env["LLM_BINDING_HOST"] == "https://openrouter.ai:443/api/v1"
+    assert env["LLM_BINDING_API_KEY"] == "router-key"
+    assert env["OPENAI_API_KEY"] == "router-key"
 
 
-def test_inputs_processor_raises_for_missing_embedding_hf_model() -> None:
-    processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
-    inputs = _make_base_inputs(
+@pytest.mark.asyncio
+async def test_inputs_processor_openai_compat_embedding_without_hf_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedding_config = OpenAICompatEmbeddingsProvider(
+        host="https://generativelanguage.googleapis.com/v1beta/openai",
+        port=443,
+        protocol="https",
+    )
+    object.__setattr__(embedding_config, "api_key", "embed-key")
+
+    env = await _generate_env(
+        monkeypatch,
         llm_config=OpenAILLMProvider(api_key="llm-key"),
-        embedding_config=OpenAICompatEmbeddingsAPI(
-            host="embeddings.example.com",
-            port=8080,
-            protocol="https",
-        ),
+        embedding_config=embedding_config,
     )
 
-    with pytest.raises(ValueError, match="hf_model"):
-        processor._extract_embedding_config(inputs.embedding_config)
+    assert env["EMBEDDING_BINDING"] == "openai"
+    assert env["EMBEDDING_MODEL"] == "text-embedding-3-small"
+    assert (
+        env["EMBEDDING_BINDING_HOST"]
+        == "https://generativelanguage.googleapis.com:443/v1beta/openai"
+    )
+    assert env["EMBEDDING_BINDING_API_KEY"] == "embed-key"
+    assert env["EMBEDDING_DIM"] == 1536
+
+
+@pytest.mark.asyncio
+async def test_inputs_processor_openai_compat_embedding_with_model_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedding_config = OpenAICompatEmbeddingsProvider(
+        host="https://router.example.com/v1",
+        port=8443,
+        protocol="https",
+        model="openrouter/embedding-model",
+        dimensions=1024,
+    )
+    object.__setattr__(embedding_config, "api_key", "embed-key")
+
+    env = await _generate_env(
+        monkeypatch,
+        llm_config=OpenAILLMProvider(api_key="llm-key"),
+        embedding_config=embedding_config,
+    )
+
+    assert env["EMBEDDING_BINDING"] == "openai"
+    assert env["EMBEDDING_MODEL"] == "openrouter/embedding-model"
+    assert env["EMBEDDING_BINDING_HOST"] == "https://router.example.com:8443/v1"
+    assert env["EMBEDDING_BINDING_API_KEY"] == "embed-key"
+    assert env["EMBEDDING_DIM"] == 1024

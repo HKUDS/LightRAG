@@ -17,6 +17,22 @@ from apolo_app_types.protocols.common.openai_compat import (
 from apolo_app_types.protocols.postgres import CrunchyPostgresUserCredentials
 
 
+class OpenAICompatChatProvider(OpenAICompatChatAPI):
+    """LightRAG-specific OpenAI compatible chat configuration."""
+
+    model: str | None = Field(
+        default="gpt-4.1",
+        json_schema_extra=SchemaExtraMetadata(
+            title="Model",
+            description=(
+                "Model identifier understood by OpenAI-compatible providers "
+                "(for example, OpenRouter). Leave empty when using a Hugging "
+                "Face model via the fields below."
+            ),
+        ).as_json_schema_extra(),
+    )
+
+
 class LightRAGPersistence(BaseModel):
     model_config = ConfigDict(
         protected_namespaces=(),
@@ -89,7 +105,7 @@ class OpenAILLMProvider(RestAPI):
     base_path: str = "/v1"
     provider: Literal["openai"] = "openai"
     model: str = Field(
-        default="gpt-4o-mini",
+        default="gpt-4.1",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="Chat completion model name.",
@@ -141,7 +157,7 @@ class AnthropicLLMProvider(RestAPI):
     base_path: str = "/v1"
     provider: Literal["anthropic"] = "anthropic"
     model: str = Field(
-        default="claude-3-5-sonnet-20241022",
+        default="claude-3-5-sonnet-latest",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="Anthropic Claude model name.",
@@ -240,10 +256,10 @@ class GeminiLLMProvider(RestAPI):
             description="Configure connection timeout in seconds.",
         ).as_json_schema_extra(),
     )
-    base_path: str = "/v1"
+    base_path: str = "/v1beta"
     provider: Literal["gemini"] = "gemini"
     model: str = Field(
-        default="gemini-1.5-flash",
+        default="gemini-1.5-pro",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="Google Gemini model name.",
@@ -260,11 +276,35 @@ class GeminiLLMProvider(RestAPI):
 
 LLMProvider = (
     OpenAICompatChatAPI
+    | OpenAICompatChatProvider
     | OpenAILLMProvider
     | AnthropicLLMProvider
     | OllamaLLMProvider
     | GeminiLLMProvider
 )
+
+
+class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
+    """LightRAG-specific OpenAI compatible embeddings configuration."""
+
+    model: str | None = Field(
+        default=None,
+        json_schema_extra=SchemaExtraMetadata(
+            title="Model",
+            description=(
+                "Embedding model identifier understood by OpenAI-compatible providers "
+                "(for example, OpenRouter or self-hosted vLLM). "
+                "Leave empty when using a Hugging Face model via the fields below."
+            ),
+        ).as_json_schema_extra(),
+    )
+    dimensions: int = Field(
+        default=1536,
+        json_schema_extra=SchemaExtraMetadata(
+            title="Embedding Dimensions",
+            description="Embedding vector dimensionality.",
+        ).as_json_schema_extra(),
+    )
 
 
 class OpenAIEmbeddingProvider(RestAPI):
@@ -304,7 +344,7 @@ class OpenAIEmbeddingProvider(RestAPI):
     base_path: str = "/v1"
     provider: Literal["openai"] = "openai"
     model: str = Field(
-        default="text-embedding-ada-002",
+        default="text-embedding-3-large",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="Embedding model name.",
@@ -315,6 +355,13 @@ class OpenAIEmbeddingProvider(RestAPI):
         json_schema_extra=SchemaExtraMetadata(
             title="API Key",
             description="OpenAI API key.",
+        ).as_json_schema_extra(),
+    )
+    dimensions: int = Field(
+        default=3072,
+        json_schema_extra=SchemaExtraMetadata(
+            title="Embedding Dimensions",
+            description="Embedding vector dimensionality.",
         ).as_json_schema_extra(),
     )
 
@@ -370,7 +417,10 @@ class OllamaEmbeddingProvider(RestAPI):
 
 
 EmbeddingProvider = (
-    OpenAICompatEmbeddingsAPI | OpenAIEmbeddingProvider | OllamaEmbeddingProvider
+    OpenAICompatEmbeddingsAPI
+    | OpenAICompatEmbeddingsProvider
+    | OpenAIEmbeddingProvider
+    | OllamaEmbeddingProvider
 )
 
 
@@ -383,14 +433,14 @@ class LightRAGAppInputs(AppInputs):
     ingress_http: IngressHttp
     pgvector_user: CrunchyPostgresUserCredentials
     llm_config: LightRAGLLMConfig = Field(
-        default=OpenAICompatChatAPI(host="", port=443, protocol="https"),
+        default=OpenAICompatChatProvider(host="", port=443, protocol="https"),
         json_schema_extra=SchemaExtraMetadata(
             title="LLM Configuration",
             description="LLM provider configuration.",
         ).as_json_schema_extra(),
     )
     embedding_config: LightRAGEmbeddingConfig = Field(
-        default=OpenAICompatEmbeddingsAPI(host="", port=443, protocol="https"),
+        default=OpenAICompatEmbeddingsProvider(host="", port=443, protocol="https"),
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Configuration",
             description="Embedding provider configuration.",
@@ -417,6 +467,8 @@ __all__ = [
     "LightRAGEmbeddingConfig",
     "LightRAGLLMConfig",
     "LightRAGPersistence",
+    "OpenAICompatChatProvider",
+    "OpenAICompatEmbeddingsProvider",
     "OpenAILLMProvider",
     "AnthropicLLMProvider",
     "OllamaLLMProvider",

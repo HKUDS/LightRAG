@@ -1,10 +1,12 @@
 import logging
 import typing as t
+from urllib.parse import urlparse
 
 from apolo_app_types.app_types import AppType
 from apolo_app_types.helm.apps.base import BaseChartValueProcessor
 from apolo_app_types.helm.apps.common import gen_extra_values
 from apolo_app_types.helm.utils.deep_merging import merge_list_of_dicts
+from apolo_app_types.protocols.common.networking import RestAPI
 from apolo_app_types.protocols.common.openai_compat import (
     OpenAICompatChatAPI,
     OpenAICompatEmbeddingsAPI,
@@ -25,15 +27,46 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _normalise_complete_url(api: RestAPI) -> str:
+    """Return a best-effort fully qualified URL for a RestAPI definition."""
+    raw_host = getattr(api, "host", "")
+    protocol = getattr(api, "protocol", "https")
+    port = getattr(api, "port", 443)
+    base_path = getattr(api, "base_path", "/")
+
+    if raw_host.startswith(("http://", "https://")):
+        parsed = urlparse(raw_host)
+        host = parsed.hostname or ""
+        if parsed.scheme:
+            protocol = parsed.scheme
+        if parsed.port:
+            port = parsed.port
+        if parsed.path:
+            base_path = parsed.path
+    else:
+        host = raw_host
+
+    if not base_path.startswith("/"):
+        base_path = f"/{base_path}"
+
+    if not host:
+        # Nothing better to do; fall back to raw host string.
+        host = raw_host
+
+    return f"{protocol}://{host}:{port}{base_path}"
+
+
 class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
     def _extract_llm_config(self, llm_config: t.Any) -> dict[str, t.Any]:
         """Extract LLM configuration from provider-specific config."""
         if isinstance(llm_config, OpenAICompatChatAPI):
-            if not llm_config.hf_model:
-                msg = "OpenAI compatible chat API must have hf_model configured"
-                raise ValueError(msg)
-            model = llm_config.hf_model.model_hf_name
-            host = llm_config.complete_url
+            if llm_config.hf_model:
+                model = llm_config.hf_model.model_hf_name
+            else:
+                model = getattr(llm_config, "model", None)
+            if not model:
+                model = "gpt-4.1"
+            host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
                 "model": model,
@@ -41,7 +74,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "api_key": getattr(llm_config, "api_key", None),
             }
         if isinstance(llm_config, OpenAILLMProvider):
-            host = llm_config.complete_url
+            host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
                 "model": llm_config.model,
@@ -49,7 +82,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "api_key": llm_config.api_key,
             }
         if isinstance(llm_config, AnthropicLLMProvider):
-            host = llm_config.complete_url
+            host = _normalise_complete_url(llm_config)
             return {
                 "binding": "anthropic",
                 "model": llm_config.model,
@@ -57,7 +90,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "api_key": llm_config.api_key,
             }
         if isinstance(llm_config, OllamaLLMProvider):
-            host = llm_config.complete_url
+            host = _normalise_complete_url(llm_config)
             return {
                 "binding": "ollama",
                 "model": llm_config.model,
@@ -65,7 +98,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "api_key": None,
             }
         if isinstance(llm_config, GeminiLLMProvider):
-            host = llm_config.complete_url
+            host = _normalise_complete_url(llm_config)
             return {
                 "binding": "gemini",
                 "model": llm_config.model,
@@ -73,11 +106,11 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "api_key": llm_config.api_key,
             }
         binding = getattr(llm_config, "provider", "openai")
-        model = getattr(llm_config, "model", "gpt-4o-mini")
+        model = getattr(llm_config, "model", "gpt-4.1")
         api_key = getattr(llm_config, "api_key", None)
         host = ""
         if hasattr(llm_config, "complete_url"):
-            host = llm_config.complete_url
+            host = _normalise_complete_url(llm_config)
         elif hasattr(llm_config, "host") and llm_config.host:
             protocol = getattr(llm_config, "protocol", "https")
             port = getattr(llm_config, "port", 443)
@@ -87,25 +120,32 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
     def _extract_embedding_config(self, embedding_config: t.Any) -> dict[str, t.Any]:
         """Extract embedding configuration from provider-specific config."""
         if isinstance(embedding_config, OpenAICompatEmbeddingsAPI):
-            if embedding_config.hf_model is None:
-                msg = "OpenAI compatible embeddings API must have hf_model configured"
+            if embedding_config.hf_model is not None:
+                model = embedding_config.hf_model.model_hf_name
+            else:
+                model = getattr(embedding_config, "model", None)
+            if not model:
+                model = "text-embedding-3-small"
+            host = _normalise_complete_url(embedding_config)
+            dimensions = getattr(embedding_config, "dimensions", None)
+            if dimensions is None:
+                msg = "Embedding configuration must specify dimensions"
                 raise ValueError(msg)
-            model = embedding_config.hf_model.model_hf_name
-            host = embedding_config.complete_url
             return {
                 "binding": "openai",
                 "model": model,
                 "api_key": getattr(embedding_config, "api_key", None),
-                "dimensions": 1536,
+                "dimensions": dimensions,
                 "host": host,
             }
         if isinstance(embedding_config, OpenAIEmbeddingProvider):
-            host = embedding_config.complete_url
+            host = _normalise_complete_url(embedding_config)
+            dimensions = embedding_config.dimensions
             return {
                 "binding": "openai",
                 "model": embedding_config.model,
                 "api_key": embedding_config.api_key,
-                "dimensions": 1536,
+                "dimensions": dimensions,
                 "host": host,
             }
         if isinstance(embedding_config, OllamaEmbeddingProvider):
@@ -118,14 +158,15 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "host": host,
             }
         binding = getattr(embedding_config, "provider", "openai")
-        model = getattr(embedding_config, "model", "text-embedding-ada-002")
+        model = getattr(embedding_config, "model", "text-embedding-3-large")
         api_key = getattr(embedding_config, "api_key", None)
-        dimensions = 1536
-        if hasattr(embedding_config, "dimensions"):
-            dimensions = embedding_config.dimensions
+        dimensions = getattr(embedding_config, "dimensions", None)
+        if dimensions is None:
+            msg = "Embedding configuration must specify dimensions"
+            raise ValueError(msg)
         host = ""
         if hasattr(embedding_config, "complete_url"):
-            host = embedding_config.complete_url
+            host = _normalise_complete_url(embedding_config)
         elif hasattr(embedding_config, "host") and embedding_config.host:
             protocol = getattr(embedding_config, "protocol", "https")
             port = getattr(embedding_config, "port", 443)
@@ -179,6 +220,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
             "POSTGRES_DATABASE": input_.pgvector_user.dbname,
             "POSTGRES_WORKSPACE": "default",
         }
+
         return {"env": env_config}
 
     async def _get_persistence_values(
