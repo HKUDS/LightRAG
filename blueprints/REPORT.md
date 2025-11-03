@@ -4,7 +4,7 @@
 
 LightRAG supports a modular storage architecture with 4 distinct storage types that can be mixed and matched:
 - **Graph Storage**: Knowledge graph relationships
-- **Vector Storage**: Document embeddings 
+- **Vector Storage**: Document embeddings
 - **KV Storage**: Key-value pairs and metadata
 - **Document Status Storage**: Document processing status
 
@@ -44,7 +44,7 @@ This report analyzes 25+ storage implementations across 8 database technologies 
 **Configuration:**
 ```yaml
 LIGHTRAG_KV_STORAGE: PGKVStorage
-LIGHTRAG_VECTOR_STORAGE: PGVectorStorage  
+LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
 LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
 LIGHTRAG_GRAPH_STORAGE: PGGraphStorage  # Requires AGE extension
 ```
@@ -175,7 +175,7 @@ LIGHTRAG_DOC_STATUS_STORAGE: MongoDocStatusStorage
 
 ```yaml
 LIGHTRAG_GRAPH_STORAGE: Neo4JStorage
-LIGHTRAG_VECTOR_STORAGE: MilvusVectorDBStorage  
+LIGHTRAG_VECTOR_STORAGE: MilvusVectorDBStorage
 LIGHTRAG_KV_STORAGE: RedisKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
 ```
@@ -209,7 +209,7 @@ graph LR
 ```yaml
 LIGHTRAG_GRAPH_STORAGE: NetworkXStorage
 LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
-LIGHTRAG_KV_STORAGE: RedisKVStorage  
+LIGHTRAG_KV_STORAGE: RedisKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
 ```
 
@@ -339,7 +339,7 @@ graph LR
 
 ### Vector Search Performance (Approximate)
 | Implementation | Small (1K docs) | Medium (100K docs) | Large (1M+ docs) | Memory Usage |
-|---------------|-----------------|--------------------|-----------------|--------------| 
+|---------------|-----------------|--------------------|-----------------|--------------|
 | MilvusVectorDB | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | High |
 | QdrantVectorDB | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Medium |
 | PGVectorStorage | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | Medium |
@@ -354,7 +354,7 @@ graph LR
 | PGGraphStorage | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
 | NetworkXStorage | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐ |
 
-### KV Operations Performance  
+### KV Operations Performance
 | Implementation | Read Speed | Write Speed | Concurrency | Persistence |
 |---------------|------------|-------------|-------------|-------------|
 | RedisKVStorage | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
@@ -399,7 +399,7 @@ graph LR
 
 ### 📚 **Documentation/Knowledge Base**
 - **Small (<10K docs)**: Development Stack
-- **Medium (<100K docs)**: Minimal Stack  
+- **Medium (<100K docs)**: Minimal Stack
 - **Large (>100K docs)**: Balanced Stack
 
 ### 🔬 **Research/Analytics**
@@ -422,7 +422,7 @@ graph LR
 The **Minimal Stack** (PostgreSQL + NetworkX) provides the best balance of performance, complexity, and cost for most use cases. It offers:
 
 - ✅ Production-ready reliability
-- ✅ Reasonable performance for medium-scale deployments  
+- ✅ Reasonable performance for medium-scale deployments
 - ✅ Low operational overhead
 - ✅ Clear upgrade path to specialized components
 

@@ -15,7 +15,7 @@
 {{- else }}
   # Start port forwarding (run in background):
   kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "lightrag-minimal.fullname" . }} 9621:9621 &
-  
+
   🌐 Web UI: http://localhost:9621/webui
   📚 API Docs: http://localhost:9621/docs
   🔍 Health Check: http://localhost:9621/health
@@ -27,10 +27,10 @@
 
 4. Load your documents:
   # Install httpx if needed: pip install httpx
-  
+
   # Files mode (file path references) - Default
   python ../../../load_docs.py /path/to/your/docs --endpoint http://localhost:9621
-  
+
   # URLs mode (website URL references) - Recommended for public docs
   # Note: Local file structure must match your docs site URL structure
   python ../../../load_docs.py /path/to/docs --mode urls \
@@ -39,7 +39,7 @@
 5. Monitor your deployment:
   # Check pods status
   kubectl get pods --namespace {{ .Release.Namespace }}
-  
+
   # View logs
   kubectl logs --namespace {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "lightrag-minimal.name" . }} -f
 

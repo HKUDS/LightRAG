@@ -66,11 +66,11 @@ env:
   EMBEDDING_BINDING_HOST: "https://api.openai.com/v1"
   EMBEDDING_MODEL: "text-embedding-ada-002"
   EMBEDDING_DIM: "1536"
-  
+
   # Conservative concurrency (prevents API errors)
   MAX_ASYNC: "4"
   MAX_PARALLEL_INSERT: "2"
-  
+
   # LLM Configuration
   ENABLE_LLM_CACHE: "true"
   ENABLE_LLM_CACHE_FOR_EXTRACT: "true"
@@ -207,7 +207,7 @@ python ../../../load_docs.py ../docs --endpoint http://localhost:9621
 python ../../../load_docs.py ../apolo-copilot/docs/official-apolo-documentation/docs \
   --mode urls --base-url https://docs.apolo.us/index/ --endpoint http://localhost:9621
 
-# Load custom documentation with URL references  
+# Load custom documentation with URL references
 python ../../../load_docs.py /path/to/docs \
   --mode urls --base-url https://your-docs.example.com/docs/ --endpoint http://localhost:9621
 ```
@@ -241,7 +241,7 @@ docs/
 
 **URL Mapping Rules:**
 - `.md` extension is removed from URLs
-- `README.md` files map to their directory URL  
+- `README.md` files map to their directory URL
 - Subdirectories become URL path segments
 - File and folder names should match URL slugs exactly
 
@@ -284,7 +284,7 @@ Both modes produce similar output with different reference formats:
 ```
 
 **URLs Mode References:**
-```  
+```
 ### References
 - [DC] https://docs.apolo.us/index/getting-started/installation
 - [KG] https://docs.apolo.us/index/administration/cluster-setup
@@ -332,13 +332,13 @@ kubectl delete namespace lightrag
 
 ## Validated Features
 
-✅ **Pure Helm Deployment** - No manual kubectl apply commands needed  
-✅ **PostgreSQL with pgvector** - Automatic extension creation via proper image  
-✅ **Environment Flexibility** - Separate dev/prod configurations  
-✅ **Document Loading** - Working API with `file_source` parameter  
-✅ **Conservative Concurrency** - Prevents OpenAI API rate limiting  
-✅ **Health Monitoring** - Comprehensive health checks and status endpoints  
-✅ **Persistent Storage** - Data survives pod restarts and cluster updates  
+✅ **Pure Helm Deployment** - No manual kubectl apply commands needed
+✅ **PostgreSQL with pgvector** - Automatic extension creation via proper image
+✅ **Environment Flexibility** - Separate dev/prod configurations
+✅ **Document Loading** - Working API with `file_source` parameter
+✅ **Conservative Concurrency** - Prevents OpenAI API rate limiting
+✅ **Health Monitoring** - Comprehensive health checks and status endpoints
+✅ **Persistent Storage** - Data survives pod restarts and cluster updates
 
 ## Comparison with Docker Compose
 

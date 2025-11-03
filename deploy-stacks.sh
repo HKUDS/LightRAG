@@ -54,31 +54,31 @@ create_directories() {
 deploy_stack() {
     local stack=$1
     local compose_file="docker-compose.${stack}.yml"
-    
+
     if [ ! -f "$compose_file" ]; then
         print_error "Compose file $compose_file not found!"
         return 1
     fi
-    
+
     print_status "Deploying $stack stack..."
-    
+
     # Stop any existing containers
     docker-compose -f "$compose_file" down 2>/dev/null || true
-    
+
     # Start the stack
     docker-compose -f "$compose_file" up -d
-    
+
     if [ $? -eq 0 ]; then
         print_success "$stack stack deployed successfully!"
-        
+
         # Show running services
         echo ""
         print_status "Running services:"
         docker-compose -f "$compose_file" ps
-        
+
         # Wait a bit for services to start
         sleep 5
-        
+
         # Check LightRAG health
         print_status "Checking LightRAG health..."
         for i in {1..30}; do
@@ -93,7 +93,7 @@ deploy_stack() {
             echo -n "."
             sleep 2
         done
-        
+
         print_warning "LightRAG health check timed out. Check logs with:"
         echo "docker-compose -f $compose_file logs lightrag"
     else
@@ -106,12 +106,12 @@ deploy_stack() {
 stop_stack() {
     local stack=$1
     local compose_file="docker-compose.${stack}.yml"
-    
+
     if [ ! -f "$compose_file" ]; then
         print_error "Compose file $compose_file not found!"
         return 1
     fi
-    
+
     print_status "Stopping $stack stack..."
     docker-compose -f "$compose_file" down
     print_success "$stack stack stopped"
@@ -121,12 +121,12 @@ stop_stack() {
 cleanup_stack() {
     local stack=$1
     local compose_file="docker-compose.${stack}.yml"
-    
+
     if [ ! -f "$compose_file" ]; then
         print_error "Compose file $compose_file not found!"
         return 1
     fi
-    
+
     print_warning "This will remove all data for $stack stack. Are you sure? (y/N)"
     read -r response
     if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then

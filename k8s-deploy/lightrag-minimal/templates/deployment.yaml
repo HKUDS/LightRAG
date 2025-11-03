@@ -43,13 +43,13 @@ spec:
               value: {{ .Values.env.HOST | quote }}
             - name: PORT
               value: {{ .Values.env.PORT | quote }}
-            
+
             # Web UI configuration
             - name: WEBUI_TITLE
               value: {{ .Values.env.WEBUI_TITLE | quote }}
             - name: WEBUI_DESCRIPTION
               value: {{ .Values.env.WEBUI_DESCRIPTION | quote }}
-            
+
             # LLM configuration
             - name: LLM_BINDING
               value: {{ .Values.env.LLM_BINDING | quote }}
@@ -62,7 +62,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "lightrag-minimal.secretName" . }}
                   key: llm-api-key
-            
+
             # Embedding configuration
             - name: EMBEDDING_BINDING
               value: {{ .Values.env.EMBEDDING_BINDING | quote }}
@@ -106,7 +106,7 @@ spec:
               value: {{ .Values.env.LIGHTRAG_DOC_STATUS_STORAGE | quote }}
             - name: LIGHTRAG_GRAPH_STORAGE
               value: {{ .Values.env.LIGHTRAG_GRAPH_STORAGE | quote }}
-            
+
             # PostgreSQL configuration
             - name: POSTGRES_HOST
               value: {{ include "lightrag-minimal.postgresqlHost" . | quote }}
@@ -123,7 +123,7 @@ spec:
               value: {{ .Values.env.POSTGRES_DATABASE | quote }}
             - name: POSTGRES_WORKSPACE
               value: {{ .Values.env.POSTGRES_WORKSPACE | quote }}
-          
+
           {{- if .Values.healthCheck.enabled }}
           livenessProbe:
             httpGet:
@@ -142,10 +142,10 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           {{- end }}
-          
+
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          
+
           {{- if .Values.persistence.enabled }}
           volumeMounts:
             - name: rag-storage
@@ -153,7 +153,7 @@ spec:
             - name: inputs
               mountPath: /app/inputs
           {{- end }}
-      
+
       {{- if .Values.persistence.enabled }}
       volumes:
         - name: rag-storage
@@ -163,7 +163,7 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "lightrag-minimal.fullname" . }}-inputs
       {{- end }}
-      
+
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

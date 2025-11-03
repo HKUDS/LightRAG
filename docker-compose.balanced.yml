@@ -1,7 +1,7 @@
 version: '3.8'
 
 # Production Balanced Stack
-# NetworkX + Qdrant + Redis + PostgreSQL  
+# NetworkX + Qdrant + Redis + PostgreSQL
 # Best for: Production deployments prioritizing simplicity
 
 services:
@@ -17,18 +17,18 @@ services:
       LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
       LIGHTRAG_KV_STORAGE: RedisKVStorage
       LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
-      
+
       # Service Connection Details
       QDRANT_URL: http://qdrant:6333
-      
+
       REDIS_URI: redis://redis:6379
-      
+
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: lightrag_user
       POSTGRES_PASSWORD: lightrag_pass
       POSTGRES_DATABASE: lightrag
-      
+
       # Performance settings
       MAX_ASYNC: 6
       MAX_TOKENS: 32768

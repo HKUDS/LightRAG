@@ -17,14 +17,14 @@ services:
       LIGHTRAG_VECTOR_STORAGE: NanoVectorDBStorage
       LIGHTRAG_KV_STORAGE: JsonKVStorage
       LIGHTRAG_DOC_STATUS_STORAGE: JsonDocStatusStorage
-      
+
       # Development settings
       MAX_ASYNC: 2
       MAX_TOKENS: 16384
       ENABLE_LLM_CACHE: true
       ENABLE_LLM_CACHE_FOR_EXTRACT: false
       LOG_LEVEL: DEBUG
-      
+
       # No external database connections needed
     ports:
       - "9621:9621"

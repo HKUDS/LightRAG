@@ -17,23 +17,23 @@ services:
       LIGHTRAG_VECTOR_STORAGE: MilvusVectorDBStorage
       LIGHTRAG_KV_STORAGE: RedisKVStorage
       LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
-      
+
       # Service Connection Details
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USERNAME: neo4j
       NEO4J_PASSWORD: lightrag_neo4j_pass
-      
+
       MILVUS_URI: http://milvus-standalone:19530
       MILVUS_DB_NAME: lightrag
-      
+
       REDIS_URI: redis://redis:6379
-      
+
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: lightrag_user
       POSTGRES_PASSWORD: lightrag_pass
       POSTGRES_DATABASE: lightrag
-      
+
       # Performance optimizations
       MAX_ASYNC: 8
       MAX_TOKENS: 32768

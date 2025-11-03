@@ -26,17 +26,17 @@ graph TD
             E[Secrets & API Keys]
         end
     end
-    
+
     F[Helm Chart Management]
     G[External Access]
     H[OpenAI API]
-    
+
     F --> A
     F --> B
     A --> B
     A --> H
     C --> G
-    
+
     style A fill:#e1f5fe
     style B fill:#f3e5f5
     style F fill:#e8f5e8
@@ -102,7 +102,7 @@ kubectl wait --namespace lightrag \
   -l app.kubernetes.io/name=postgresql \
   --timeout=120s
 
-# Wait for LightRAG to be ready  
+# Wait for LightRAG to be ready
 kubectl wait --namespace lightrag \
   --for=condition=ready pod \
   -l app.kubernetes.io/name=lightrag-minimal \
@@ -130,7 +130,7 @@ kubectl port-forward --namespace lightrag svc/lightrag-minimal 9621:9621 &
 # - Secure passwords
 # - Resource limits based on your needs
 
-# Substitute environment variables  
+# Substitute environment variables
 envsubst < values-prod.yaml > values-prod-final.yaml
 
 # Deploy with production configuration
@@ -187,7 +187,7 @@ ingress:
   enabled: false
 ```
 
-#### Production (values-prod.yaml)  
+#### Production (values-prod.yaml)
 ```yaml
 # Production resources
 resources:
@@ -262,7 +262,7 @@ curl http://localhost:9621/documents
 # LightRAG logs
 kubectl logs --namespace lightrag -l app.kubernetes.io/name=lightrag-minimal -f
 
-# PostgreSQL logs  
+# PostgreSQL logs
 kubectl logs --namespace lightrag -l app.kubernetes.io/name=postgresql -f
 ```
 
@@ -302,7 +302,7 @@ python load_docs.py /path/to/docs --no-test
 - Example: `[DC] getting-started/installation.md`
 
 **URLs Mode:**
-- Uses live website URLs in query response references  
+- Uses live website URLs in query response references
 - Provides clickable links in responses
 - Better user experience with direct access to source material
 - Example: `[DC] https://docs.apolo.us/index/getting-started/installation`
@@ -321,7 +321,7 @@ docs/guides/deployment.md           → https://docs.example.com/guides/deployme
 
 **Setup Instructions:**
 1. **Analyze your docs site URLs** - Note the exact path structure
-2. **Create matching directories** - Mirror the URL structure locally  
+2. **Create matching directories** - Mirror the URL structure locally
 3. **Place files correctly** - Remove `.md` from URL paths to match filenames
 4. **Test URLs** - Verify a few links work before loading documents
 
@@ -329,7 +329,7 @@ This ensures generated URLs in query responses are valid and clickable.
 
 ### Loader Features
 
-- **Simple dependencies**: Only requires `httpx` 
+- **Simple dependencies**: Only requires `httpx`
 - **Automatic discovery**: Finds all `.md` files recursively
 - **Basic metadata**: Adds title, path, and source information
 - **Progress tracking**: Shows loading progress with success/failure counts
@@ -455,7 +455,7 @@ kubectl port-forward --namespace lightrag svc/lightrag-minimal 9621:9621
 ## 🎯 Advantages of This Approach
 
 ✅ **Pure Helm** - No manual kubectl apply commands
-✅ **Integrated PostgreSQL** - Bitnami chart handles all PostgreSQL complexity  
+✅ **Integrated PostgreSQL** - Bitnami chart handles all PostgreSQL complexity
 ✅ **pgvector Support** - Automatic extension creation via initdb scripts
 ✅ **Environment Flexibility** - Separate values files for dev/prod
 ✅ **Production Ready** - Built-in scaling, security, monitoring hooks
