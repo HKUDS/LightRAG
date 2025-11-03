@@ -44,5 +44,5 @@ repos:
     hooks:
       - id: generate-types-schemas
         name: Generate types schemas
-        entry: make -f .apolo/scripts/gen_types_schemas.mk gen-types-schemas
+        entry: make gen-types-schemas
         language: system

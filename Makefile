@@ -1,61 +1,97 @@
 # Makefile for LightRAG Helm packaging
 
-# Configuration
+# ------------------------------------------------------------------------------
+# Core chart configuration (mirrors upstream LightRAG project)
+# ------------------------------------------------------------------------------
 CHART_NAME := lightrag-minimal
 CHART_DIR := k8s-deploy/$(CHART_NAME)
 CHART_PACKAGE_DIR := dist/charts
 HELM_REGISTRY := ghcr.io/neuro-inc/helm-charts
 
 RAW_VERSION := $(if $(VERSION),$(VERSION),$(shell git describe --tags --always --dirty 2>/dev/null))
-SANITIZED_VERSION := $(shell python -c 'import re; raw = "$(RAW_VERSION)".strip(); raw = raw[1:] if raw.startswith("v") else raw; raw = raw or "0.0.0"; sanitized = re.sub(r"[^0-9A-Za-z.\-]", "-", raw); print(sanitized or "0.0.0")')
+SANITIZED_VERSION := $(shell python -c 'import re; raw = "$(RAW_VERSION)".strip(); raw = raw[1:] if raw.startswith("v") else raw; raw = raw or "0.0.0"; print(re.sub(r"[^0-9A-Za-z.\-]", "-", raw) or "0.0.0")')
 CHART_VERSION := $(SANITIZED_VERSION)
 CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 
 GITHUB_USERNAME := $(shell echo "$$APOLO_GITHUB_TOKEN" | base64 -d 2>/dev/null | cut -d: -f1 2>/dev/null || echo "oauth2")
 
-HOOKS_IMAGE_REPO ?= ghcr.io/neuro-inc/app-lightrag
-BUILD_IMAGE_TAG ?= $(CHART_VERSION)
-IMAGE_TAG ?= $(BUILD_IMAGE_TAG)
-HOOKS_BUILD_IMAGE := $(HOOKS_IMAGE_REPO):$(BUILD_IMAGE_TAG)
-HOOKS_PUBLISH_IMAGE := $(HOOKS_IMAGE_REPO):$(IMAGE_TAG)
+# ------------------------------------------------------------------------------
+# Apolo tooling configuration
+# ------------------------------------------------------------------------------
 POETRY ?= poetry
-POETRY_RUN := $(POETRY) run
-PYTEST_TARGET ?= .apolo/tests
+IMAGE_NAME ?= app-lightrag
+IMAGE_TAG ?= latest
 
-define HELP_MESSAGE
+APP_CHART_NAME := lightrag
+APP_CHART_DIR := k8s-deploy/$(APP_CHART_NAME)
+APP_CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(APP_CHART_NAME)-$(CHART_VERSION).tgz
+
+define HELP_TEXT
 Available targets:
-  install             - Install project dependencies (including dev extras)
-  setup               - Alias for install (compatibility)
-  lint                - Run pre-commit checks across the repository
-  test-unit           - Execute unit test suite with pytest
+  install              - Install Poetry environment and pre-commit hooks
+  lint                 - Run pre-commit across the repository
+  test-unit            - Execute unit tests for Apolo integrations
+  gen-types-schemas    - Regenerate LightRAG JSON schemas
   helm-package         - Package the LightRAG Helm chart (version: $(CHART_VERSION))
-  helm-push            - Package and push the chart to $(HELM_REGISTRY)
+  helm-push            - Package and push the minimal chart to $(HELM_REGISTRY)
+  helm-package-app     - Package the full LightRAG app chart
+  helm-push-app        - Package and push the full app chart
+  build-hook-image     - Build the hooks helper image
+  push-hook-image      - Push the hooks helper image
   clean                - Remove packaged charts from $(CHART_PACKAGE_DIR)
-  hooks-build          - Build the pre-commit hooks image $(HOOKS_BUILD_IMAGE)
-  hooks-publish        - Build and push the hooks image to its registry
 
 Set VERSION=1.2.3 to override the git-derived chart version.
 endef
-export HELP_MESSAGE
+export HELP_TEXT
 
-.PHONY: all help install setup lint test-unit helm-package helm-push clean test hooks-build hooks-publish build-hook-image push-hook-image
+# ------------------------------------------------------------------------------
+# Phony targets
+# ------------------------------------------------------------------------------
+.PHONY: all help test clean
+.PHONY: install setup lint format test-unit gen-types-schemas
+.PHONY: build-hook-image push-hook-image helm-package helm-push helm-package-app helm-push-app
 
+# ------------------------------------------------------------------------------
+# User-facing helpers
+# ------------------------------------------------------------------------------
 all: help
 
 help:
-	@printf "%s\n" "$$HELP_MESSAGE"
+	@printf '%s\n' "$$HELP_TEXT"
 
-install:
+install setup:
+	$(POETRY) config virtualenvs.in-project true
 	$(POETRY) install --with dev
+	$(POETRY) run pre-commit install
 
-setup: install
-
-lint:
-	$(POETRY_RUN) pre-commit run --all-files --show-diff-on-failure
+lint format:
+ifdef CI
+	$(POETRY) run pre-commit run --all-files --show-diff-on-failure
+else
+	$(POETRY) run pre-commit run --all-files || $(POETRY) run pre-commit run --all-files
+endif
 
 test-unit:
-	$(POETRY_RUN) pytest $(PYTEST_TARGET)
+	$(POETRY) run pytest -vvs --cov=.apolo --cov-report xml:.coverage.unit.xml .apolo/tests/unit
 
+test: test-unit
+
+gen-types-schemas:
+	@.apolo/scripts/gen_types_schemas.sh
+
+build-hook-image:
+	docker build \
+		-t $(IMAGE_NAME):latest \
+		-f hooks.Dockerfile \
+		.
+
+push-hook-image: build-hook-image
+	docker tag $(IMAGE_NAME):latest ghcr.io/neuro-inc/$(IMAGE_NAME):$(IMAGE_TAG)
+	docker push ghcr.io/neuro-inc/$(IMAGE_NAME):$(IMAGE_TAG)
+
+# ------------------------------------------------------------------------------
+# Upstream Helm packaging targets (kept minimal to ease syncing with source)
+# ------------------------------------------------------------------------------
 helm-package:
 	@if [ -z "$(CHART_VERSION)" ]; then \
 		echo "Error: unable to determine chart version."; \
@@ -86,26 +122,27 @@ clean:
 	rm -rf $(CHART_PACKAGE_DIR)
 	@echo "✅ Cleaned"
 
-test:
-	@echo "No automated tests for Helm packaging. Use 'helm test' as needed."
-
-hooks-build:
-	@echo "Building hooks image $(HOOKS_BUILD_IMAGE)..."
-	docker build \
-		--file hooks.Dockerfile \
-		--tag $(HOOKS_BUILD_IMAGE) \
-		.
-	@echo "✅ Hooks image built: $(HOOKS_BUILD_IMAGE)"
-
-hooks-publish: hooks-build
-	@echo "Tagging hooks image as $(HOOKS_PUBLISH_IMAGE)..."
-	@if [ "$(HOOKS_PUBLISH_IMAGE)" != "$(HOOKS_BUILD_IMAGE)" ]; then \
-		docker tag $(HOOKS_BUILD_IMAGE) $(HOOKS_PUBLISH_IMAGE); \
+helm-package-app:
+	@if [ -z "$(CHART_VERSION)" ]; then \
+		echo "Error: unable to determine chart version."; \
+		exit 1; \
 	fi
-	@echo "Pushing hooks image $(HOOKS_PUBLISH_IMAGE)..."
-	docker push $(HOOKS_PUBLISH_IMAGE)
-	@echo "✅ Hooks image pushed to $(HOOKS_PUBLISH_IMAGE)"
+	@echo "Packaging $(APP_CHART_NAME) chart version $(CHART_VERSION)..."
+	@mkdir -p $(CHART_PACKAGE_DIR)
+	helm dependency update $(APP_CHART_DIR) >/dev/null
+	helm package $(APP_CHART_DIR) \
+		--version $(CHART_VERSION) \
+		--app-version $(CHART_VERSION) \
+		-d $(CHART_PACKAGE_DIR)
+	@echo "✅ Chart packaged at $(APP_CHART_PACKAGE)"
 
-build-hook-image: hooks-build
-
-push-hook-image: hooks-publish
+helm-push-app: helm-package-app
+	@if [ -z "$(APOLO_GITHUB_TOKEN)" ]; then \
+		echo "Error: APOLO_GITHUB_TOKEN not set. Please export a token with write:packages."; \
+		exit 1; \
+	fi
+	@echo "Logging into Helm registry ghcr.io as $(GITHUB_USERNAME)..."
+	echo "$(APOLO_GITHUB_TOKEN)" | helm registry login ghcr.io -u $(GITHUB_USERNAME) --password-stdin >/dev/null
+	@echo "Pushing chart $(APP_CHART_NAME):$(CHART_VERSION) to $(HELM_REGISTRY)..."
+	helm push $(APP_CHART_PACKAGE) oci://$(HELM_REGISTRY)
+	@echo "✅ Chart pushed to $(HELM_REGISTRY)"
