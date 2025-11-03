@@ -40,29 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 project_root = Path(__file__).parent.parent.parent
 load_dotenv(project_root / ".env")
 
-# Setup OpenAI API key (required for RAGAS evaluation)
-# Use LLM_BINDING_API_KEY when running with the OpenAI binding
-
-llm_binding = os.getenv("LLM_BINDING", "").lower()
-llm_binding_key = os.getenv("LLM_BINDING_API_KEY")
-
-# Validate LLM_BINDING is set to openai
-if llm_binding != "openai":
-    logger.error(
-        "❌ LLM_BINDING must be set to 'openai'. Current value: '%s'",
-        llm_binding or "(not set)",
-    )
-    sys.exit(1)
-
-# Validate LLM_BINDING_API_KEY exists
-if not llm_binding_key:
-    logger.error("❌ LLM_BINDING_API_KEY is not set. Cannot run RAGAS evaluation.")
-    sys.exit(1)
-
-# Set OPENAI_API_KEY from LLM_BINDING_API_KEY
-os.environ["OPENAI_API_KEY"] = llm_binding_key
-logger.info("✅ LLM_BINDING: openai")
-
+# Conditional imports - will raise ImportError if dependencies not installed
 try:
     from datasets import Dataset
     from ragas import evaluate
@@ -72,10 +50,12 @@ try:
         context_recall,
         faithfulness,
     )
-except ImportError as e:
-    logger.error("❌ RAGAS import error: %s", e)
-    logger.error("   Install with: pip install ragas datasets")
-    sys.exit(1)
+
+    RAGAS_AVAILABLE = True
+except ImportError:
+    RAGAS_AVAILABLE = False
+    Dataset = None
+    evaluate = None
 
 
 CONNECT_TIMEOUT_SECONDS = 180.0
@@ -99,7 +79,39 @@ class RAGEvaluator:
             test_dataset_path: Path to test dataset JSON file
             rag_api_url: Base URL of LightRAG API (e.g., http://localhost:9621)
                         If None, will try to read from environment or use default
+
+        Raises:
+            ImportError: If ragas or datasets packages are not installed
+            ValueError: If LLM_BINDING is not set to 'openai'
+            EnvironmentError: If LLM_BINDING_API_KEY is not set
         """
+        # Validate RAGAS dependencies are installed
+        if not RAGAS_AVAILABLE:
+            raise ImportError(
+                "RAGAS dependencies not installed. "
+                "Install with: pip install ragas datasets"
+            )
+
+        # Validate LLM_BINDING is set to openai (required for RAGAS)
+        llm_binding = os.getenv("LLM_BINDING", "").lower()
+        if llm_binding != "openai":
+            raise ValueError(
+                f"LLM_BINDING must be set to 'openai' for RAGAS evaluation. "
+                f"Current value: '{llm_binding or '(not set)'}'"
+            )
+
+        # Validate LLM_BINDING_API_KEY exists
+        llm_binding_key = os.getenv("LLM_BINDING_API_KEY")
+        if not llm_binding_key:
+            raise EnvironmentError(
+                "LLM_BINDING_API_KEY environment variable is not set. "
+                "This is required for RAGAS evaluation."
+            )
+
+        # Set OPENAI_API_KEY from LLM_BINDING_API_KEY for RAGAS
+        os.environ["OPENAI_API_KEY"] = llm_binding_key
+        logger.info("✅ LLM_BINDING: openai")
+
         if test_dataset_path is None:
             test_dataset_path = Path(__file__).parent / "sample_dataset.json"
 
