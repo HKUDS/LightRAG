@@ -1,0 +1,111 @@
+[project]
+name = "apolo-apps-lightrag"
+version = "0.0.1"
+description = "Apolo LightRAG application"
+authors = [
+    {name = "Apolo", email = "dev@apolo.us"}
+]
+readme = "README.md"
+dynamic = ["version"]
+requires-python = ">=3.11.0,<4.0"
+
+[tool.poetry]
+name = "apolo-apps-lightrag"
+authors = ["Apolo.us"]
+packages = [
+  { include = "apolo_apps_lightrag", from = ".apolo/src" },
+]
+
+[tool.poetry.dependencies]
+apolo-sdk = "^25.7.2"
+pydantic = "^2.9.2"
+pyyaml = "^6.0.2"
+yarl = "^1.18.3"
+apolo-app-types = "^25.9.0"
+
+[tool.poetry.group.dev]
+optional = true
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^4.2.0"
+types-PyYAML = "^6.0.12.20241230"
+pytest = "^8.3.4"
+pytest-asyncio = "^0.25.3"
+pytest-cov = "^6.2.1"
+mypy = "^1.17.1"
+
+[tool.ruff]
+target-version = "py311"
+lint.select = [
+    "E", "F", "I", "C90", "UP", "B", "ASYNC", "N", "FBT", "A", "C4", "EM", "FA", "ICN",
+    "G", "PIE", "T20", "PYI", "PT", "RET", "PTH"
+]
+lint.ignore = [
+  "A003",
+  "N818"
+]
+
+[tool.ruff.lint.isort.sections]
+ApoloSDK = ["apolo-sdk"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+section-order = ["future", "standard-library", "third-party", "ApoloSDK", "first-party", "local-folder"]
+known-first-party = ["apolo_app_types"]
+known-local-folder = ["tests"]
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_untyped_defs = true
+follow_imports = "silent"
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unused_configs = true
+plugins = ['pydantic.mypy']
+exclude = [
+  "tests/"
+]
+
+[[tool.mypy.overrides]]
+module = "pytest"
+ignore_missing_imports = true
+
+[tool.flake8]
+extend-exclude = [
+  ".git",
+  ".env",
+  "__pycache__",
+  ".eggs",
+]
+max-line-length = 88
+extend-ignore = [
+  "N801",
+  "N802",
+  "N803",
+  "E252",
+  "W503",
+  "E133",
+  "E203",
+  "F541",
+]
+
+[tool.coverage.report]
+fail_under = 0
+skip_empty = true
+sort = "-cover"
+omit = [
+    "./apolo/tests/*",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+log_cli = false
+log_level = "INFO"
+junit_family = "xunit2"
+testpaths = [
+  "./apolo/tests/",
+]

@@ -1,0 +1,17 @@
+{
+    "problemMatcher": [
+        {
+            "owner": "actionlint",
+            "pattern": [
+                {
+                    "code": 5,
+                    "column": 3,
+                    "file": 1,
+                    "line": 2,
+                    "message": 4,
+                    "regexp": "^(?:\\x1b\\[\\d+m)?(.+?)(?:\\x1b\\[\\d+m)*:(?:\\x1b\\[\\d+m)*(\\d+)(?:\\x1b\\[\\d+m)*:(?:\\x1b\\[\\d+m)*(\\d+)(?:\\x1b\\[\\d+m)*: (?:\\x1b\\[\\d+m)*(.+?)(?:\\x1b\\[\\d+m)* \\[(.+?)\\]$"
+                }
+            ]
+        }
+    ]
+}

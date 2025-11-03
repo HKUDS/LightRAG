@@ -1,0 +1,245 @@
+{
+  "$defs": {
+    "HttpApi": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "The hostname of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hostname"
+        },
+        "port": {
+          "default": 80,
+          "exclusiveMinimum": 0,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "The port of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "The protocol to use, e.g., http or https.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Connection Timeout"
+        },
+        "base_path": {
+          "default": "/",
+          "title": "Base Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "HttpApi",
+      "type": "object",
+      "x-description": "HTTP API Configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "HTTP API",
+      "x-type": "OpenAICompatibleEmbeddingsRestAPI"
+    },
+    "ServiceAPI_HttpApi_": {
+      "properties": {
+        "internal_url": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpApi"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Internal URL to access the service. This route is not protected by platform authorization and only workloads from the same project can access it.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Internal URL"
+        },
+        "external_url": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpApi"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "External URL for accessing the service from outside the cluster. This route might be secured by platform authorization and is accessible from any network with a valid platform authorization token that has appropriate permissions.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "External URL"
+        }
+      },
+      "title": "ServiceAPI[HttpApi]",
+      "type": "object",
+      "x-description": "Service APIs URLs.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Service APIs",
+      "x-type": "ServiceAPI[GrpcAPI]"
+    },
+    "ServiceAPI_WebApp_": {
+      "properties": {
+        "internal_url": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebApp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Internal URL to access the service. This route is not protected by platform authorization and only workloads from the same project can access it.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Internal URL"
+        },
+        "external_url": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebApp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "External URL for accessing the service from outside the cluster. This route might be secured by platform authorization and is accessible from any network with a valid platform authorization token that has appropriate permissions.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "External URL"
+        }
+      },
+      "title": "ServiceAPI[WebApp]",
+      "type": "object",
+      "x-description": "Service APIs URLs.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Service APIs",
+      "x-type": "ServiceAPI[GrpcAPI]"
+    },
+    "WebApp": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "The hostname of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hostname"
+        },
+        "port": {
+          "default": 80,
+          "exclusiveMinimum": 0,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "The port of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "The protocol to use, e.g., http or https.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Connection Timeout"
+        },
+        "base_path": {
+          "default": "/",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "webapp",
+          "default": "webapp",
+          "title": "Api Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "WebApp",
+      "type": "object",
+      "x-description": "HTTP API Configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "HTTP API",
+      "x-type": "OpenAICompatibleEmbeddingsRestAPI"
+    }
+  },
+  "description": "LightRAG outputs.",
+  "properties": {
+    "app_url": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ServiceAPI_WebApp_"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The main application URL for accessing the service. This is the primary endpoint users should use to access the application.",
+      "title": "Application URL"
+    },
+    "server_url": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ServiceAPI_HttpApi_"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "title": "LightRAGAppOutputs",
+  "type": "object"
+}

@@ -1,0 +1,1292 @@
+{
+  "$defs": {
+    "AnthropicLLMProvider": {
+      "description": "Anthropic LLM provider configuration.",
+      "properties": {
+        "host": {
+          "default": "api.anthropic.com",
+          "title": "Host",
+          "type": "string",
+          "x-description": "Anthropic API host",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Set the port.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Set the connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "anthropic",
+          "default": "anthropic",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "default": "claude-3-5-sonnet-20241022",
+          "title": "Model",
+          "type": "string",
+          "x-description": "Anthropic Claude model name.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "api_key": {
+          "default": "",
+          "title": "Api Key",
+          "type": "string",
+          "x-description": "Anthropic API key.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "API Key"
+        }
+      },
+      "title": "AnthropicLLMProvider",
+      "type": "object",
+      "x-description": "Anthropic Claude API configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Anthropic LLM Provider",
+      "x-type": "AnthropicLLMProvider"
+    },
+    "ApoloAuth": {
+      "properties": {
+        "type": {
+          "const": "apolo_auth",
+          "default": "apolo_auth",
+          "description": "Authentication type identifier",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "ApoloAuth",
+      "type": "object",
+      "x-description": "Use Apolo platform's built-in authentication and authorization. Requires authenticated user credentials with appropriate permissions.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Apolo Platform Authentication",
+      "x-type": "ApoloAuth"
+    },
+    "ApoloFilesPath": {
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string",
+          "x-description": "Provide the Apolo Storage path starting with `storage:` to locate your files.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Storage Path"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ApoloFilesPath",
+      "type": "object",
+      "x-description": "Specify the path within the Apolo Files application to read from or write to.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Apolo Files Path",
+      "x-type": "ApoloFilesFile"
+    },
+    "ApoloSecret": {
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "ApoloSecret",
+      "type": "object",
+      "x-description": "Apolo Secret Configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Secret",
+      "x-type": "ApoloSecret"
+    },
+    "AuthIngressMiddleware": {
+      "properties": {
+        "name": {
+          "pattern": "^platform",
+          "title": "Name",
+          "type": "string",
+          "x-description": "Name of the authentication middleware (with namespace) to apply to ingress traffic.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Middleware Name"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AuthIngressMiddleware",
+      "type": "object",
+      "x-description": "Configure authentication middleware for ingress traffic.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "Authentication Ingress Middleware",
+      "x-type": "AuthIngressMiddleware"
+    },
+    "CrunchyPostgresUserCredentials": {
+      "properties": {
+        "user": {
+          "title": "User",
+          "type": "string",
+          "x-description": "Username for the Postgres user.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Postgres User"
+        },
+        "password": {
+          "title": "Password",
+          "type": "string",
+          "x-description": "Password for the Postgres user.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Postgres Password"
+        },
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "Host of the Postgres instance.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Postgres Host"
+        },
+        "port": {
+          "exclusiveMinimum": 0,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Port of the Postgres instance.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Postgres Port"
+        },
+        "pgbouncer_host": {
+          "title": "Pgbouncer Host",
+          "type": "string",
+          "x-description": "Host of the PGBouncer instance.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "PGBouncer Host"
+        },
+        "pgbouncer_port": {
+          "exclusiveMinimum": 0,
+          "title": "Pgbouncer Port",
+          "type": "integer",
+          "x-description": "Port of the PGBouncer instance.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "PGBouncer Port"
+        },
+        "dbname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dbname"
+        },
+        "jdbc_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Jdbc Uri"
+        },
+        "pgbouncer_jdbc_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pgbouncer Jdbc Uri"
+        },
+        "pgbouncer_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pgbouncer Uri"
+        },
+        "uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uri"
+        },
+        "postgres_uri": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PostgresURI"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "user_type": {
+          "const": "user",
+          "default": "user",
+          "title": "User Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user",
+        "password",
+        "host",
+        "port",
+        "pgbouncer_host",
+        "pgbouncer_port"
+      ],
+      "title": "CrunchyPostgresUserCredentials",
+      "type": "object",
+      "x-description": "Configuration for Crunchy Postgres user credentials.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "Postgres User Credentials",
+      "x-type": "CrunchyPostgresUserCredentials"
+    },
+    "CustomAuth": {
+      "properties": {
+        "type": {
+          "const": "custom_auth",
+          "default": "custom_auth",
+          "description": "Authentication type identifier",
+          "title": "Type",
+          "type": "string"
+        },
+        "middleware": {
+          "$ref": "#/$defs/AuthIngressMiddleware",
+          "x-description": "Custom authentication middleware configuration.",
+          "x-title": "Authentication Middleware"
+        }
+      },
+      "required": [
+        "middleware"
+      ],
+      "title": "CustomAuth",
+      "type": "object",
+      "x-description": "Use a custom authentication middleware for this ingress. Allows integration with custom authentication providers.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Custom Authentication",
+      "x-type": "CustomAuth"
+    },
+    "GeminiLLMProvider": {
+      "description": "Google Gemini LLM provider configuration.",
+      "properties": {
+        "host": {
+          "default": "generativelanguage.googleapis.com",
+          "title": "Host",
+          "type": "string",
+          "x-description": "Google AI API host",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Set the port.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Configure connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "gemini",
+          "default": "gemini",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "default": "gemini-1.5-flash",
+          "title": "Model",
+          "type": "string",
+          "x-description": "Google Gemini model name.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "api_key": {
+          "default": "",
+          "title": "Api Key",
+          "type": "string",
+          "x-description": "Google AI API key.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "API Key"
+        }
+      },
+      "title": "GeminiLLMProvider",
+      "type": "object",
+      "x-description": "Google Gemini API configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Gemini LLM Provider",
+      "x-type": "GeminiLLMProvider"
+    },
+    "HuggingFaceCache": {
+      "properties": {
+        "files_path": {
+          "$ref": "#/$defs/ApoloFilesPath",
+          "default": {
+            "path": "storage:.apps/hugging-face-cache",
+            "__type__": "ApoloFilesPath"
+          },
+          "x-description": "The path to the Apolo Files directory where Hugging Face artifacts are cached.",
+          "x-title": "Files Path"
+        }
+      },
+      "title": "HuggingFaceCache",
+      "type": "object",
+      "x-description": "Configuration for the Hugging Face cache.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "Hugging Face Cache",
+      "x-type": "HuggingFaceCache"
+    },
+    "HuggingFaceModel": {
+      "properties": {
+        "model_hf_name": {
+          "title": "Model Hf Name",
+          "type": "string",
+          "x-description": "The name of the Hugging Face model.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hugging Face Model Name"
+        },
+        "hf_token": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceToken"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Provide a Hugging Face API token linked to an account with access to the model specified above. This token will be used to download model files from the Hugging Face Hub, including gated or private repositories where applicable.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "integration",
+          "x-title": "Hugging Face Token"
+        },
+        "hf_cache": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceCache"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Enables caching of model files to reduce redundant downloads and speed up load times.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model Cache"
+        }
+      },
+      "required": [
+        "model_hf_name"
+      ],
+      "title": "HuggingFaceModel",
+      "type": "object",
+      "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "Hugging Face Model",
+      "x-type": "HuggingFaceModel"
+    },
+    "HuggingFaceToken": {
+      "properties": {
+        "token_name": {
+          "minLength": 0,
+          "title": "Token Name",
+          "type": "string",
+          "x-description": "The name of the Hugging Face token.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Token Name"
+        },
+        "token": {
+          "$ref": "#/$defs/ApoloSecret",
+          "x-description": "The Hugging Face API token used to access models.",
+          "x-title": "Hugging Face Token"
+        }
+      },
+      "required": [
+        "token_name",
+        "token"
+      ],
+      "title": "HuggingFaceToken",
+      "type": "object",
+      "x-description": "Provide a Hugging Face API token linked to an account with access to the model specified above. This token will be used to download model files from the Hugging Face Hub, including gated or private repositories where applicable.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "Hugging Face Token",
+      "x-type": "HuggingFaceToken"
+    },
+    "IngressHttp": {
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApoloAuth"
+            },
+            {
+              "$ref": "#/$defs/NoAuth"
+            },
+            {
+              "$ref": "#/$defs/CustomAuth"
+            }
+          ],
+          "title": "Auth",
+          "x-description": "Configure authentication for this ingress. Choose Apolo platform authentication, custom middleware, or no authentication.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Authentication"
+        }
+      },
+      "title": "IngressHttp",
+      "type": "object",
+      "x-description": "Enable access to your application over the internet using HTTPS.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Enable HTTP Ingress",
+      "x-type": "IngressHttp"
+    },
+    "LightRAGPersistence": {
+      "properties": {
+        "rag_storage_size": {
+          "default": 10,
+          "exclusiveMinimum": 0,
+          "title": "Rag Storage Size",
+          "type": "integer",
+          "x-description": "Size of the persistent volume for RAG data storage.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "RAG Storage Size (GB)"
+        },
+        "inputs_storage_size": {
+          "default": 5,
+          "exclusiveMinimum": 0,
+          "title": "Inputs Storage Size",
+          "type": "integer",
+          "x-description": "Size of the persistent volume for input files.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Inputs Storage Size (GB)"
+        }
+      },
+      "title": "LightRAGPersistence",
+      "type": "object",
+      "x-description": "Configure persistent storage for LightRAG data and inputs.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "LightRAG Persistence"
+    },
+    "NoAuth": {
+      "properties": {
+        "type": {
+          "const": "no_auth",
+          "default": "no_auth",
+          "description": "Authentication type identifier",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "NoAuth",
+      "type": "object",
+      "x-description": "Disable authentication for this ingress. The application will be publicly accessible without any authentication.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "No Authentication",
+      "x-type": "NoAuth"
+    },
+    "OllamaEmbeddingProvider": {
+      "description": "Ollama embedding provider configuration.",
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "Ollama server host.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 11434,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Ollama server port.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "enum": [
+            "http",
+            "https"
+          ],
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "Ollama server protocol.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 300,
+          "title": "Timeout",
+          "x-description": "Configure connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/api",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "ollama",
+          "default": "ollama",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "default": "nomic-embed-text",
+          "title": "Model",
+          "type": "string",
+          "x-description": "Ollama embedding model name.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "OllamaEmbeddingProvider",
+      "type": "object",
+      "x-description": "Ollama local embedding model configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Ollama Embedding Provider",
+      "x-type": "OllamaEmbeddingProvider"
+    },
+    "OllamaLLMProvider": {
+      "description": "Ollama LLM provider configuration.",
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "Ollama server host.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 11434,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Ollama server port.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "enum": [
+            "http",
+            "https"
+          ],
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "Ollama server protocol.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 300,
+          "title": "Timeout",
+          "x-description": "Configure connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/api",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "ollama",
+          "default": "ollama",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "default": "llama3.1:8b-instruct-q4_0",
+          "title": "Model",
+          "type": "string",
+          "x-description": "Ollama model name.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "OllamaLLMProvider",
+      "type": "object",
+      "x-description": "Configuration for a self-hosted Ollama server.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Ollama LLM Provider",
+      "x-type": "OllamaLLMProvider"
+    },
+    "OpenAICompatChatAPI": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "The hostname of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hostname"
+        },
+        "port": {
+          "default": 80,
+          "exclusiveMinimum": 0,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "The port of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "The protocol to use, e.g., http or https.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Connection Timeout"
+        },
+        "base_path": {
+          "default": "/",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "api_base_path": {
+          "default": "/v1",
+          "title": "Api Base Path",
+          "type": "string"
+        },
+        "openai_api_type": {
+          "const": "chat",
+          "default": "chat",
+          "title": "Openai Api Type",
+          "type": "string"
+        },
+        "endpoint_url": {
+          "const": "/v1/chat",
+          "default": "/v1/chat",
+          "title": "Endpoint Url",
+          "type": "string"
+        },
+        "hf_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "integration",
+          "x-title": "Hugging Face Model"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "OpenAICompatChatAPI",
+      "type": "object",
+      "x-description": "Configuration for OpenAI compatible chat API.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "OpenAI Compatible Chat API",
+      "x-type": "OpenAICompatChatAPI"
+    },
+    "OpenAICompatEmbeddingsAPI": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "The hostname of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hostname"
+        },
+        "port": {
+          "default": 80,
+          "exclusiveMinimum": 0,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "The port of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "The protocol to use, e.g., http or https.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Connection Timeout"
+        },
+        "base_path": {
+          "default": "/",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "api_base_path": {
+          "default": "/v1",
+          "title": "Api Base Path",
+          "type": "string"
+        },
+        "openai_api_type": {
+          "const": "embeddings",
+          "default": "embeddings",
+          "title": "Openai Api Type",
+          "type": "string"
+        },
+        "endpoint_url": {
+          "const": "/v1/embeddings",
+          "default": "/v1/embeddings",
+          "title": "Endpoint Url",
+          "type": "string"
+        },
+        "hf_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "integration",
+          "x-title": "Hugging Face Model"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "OpenAICompatEmbeddingsAPI",
+      "type": "object",
+      "x-description": "Configuration for OpenAI compatible embeddings API.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "integration",
+      "x-title": "OpenAI Compatible Embeddings API",
+      "x-type": "OpenAICompatEmbeddingsAPI"
+    },
+    "OpenAIEmbeddingProvider": {
+      "description": "OpenAI embedding provider configuration.",
+      "properties": {
+        "host": {
+          "default": "api.openai.com",
+          "title": "Host",
+          "type": "string",
+          "x-description": "OpenAI API host",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Set the port.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Set the connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "default": "text-embedding-ada-002",
+          "title": "Model",
+          "type": "string",
+          "x-description": "Embedding model name.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "api_key": {
+          "default": "",
+          "title": "Api Key",
+          "type": "string",
+          "x-description": "OpenAI API key.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "API Key"
+        }
+      },
+      "title": "OpenAIEmbeddingProvider",
+      "type": "object",
+      "x-description": "OpenAI embeddings API configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "OpenAI Embedding Provider",
+      "x-type": "OpenAIEmbeddingProvider"
+    },
+    "OpenAILLMProvider": {
+      "description": "OpenAI LLM provider configuration.",
+      "properties": {
+        "host": {
+          "default": "api.openai.com",
+          "title": "Host",
+          "type": "string",
+          "x-description": "OpenAI API host",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "Set the port.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Set the connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "default": "gpt-4o-mini",
+          "title": "Model",
+          "type": "string",
+          "x-description": "Chat completion model name.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "api_key": {
+          "default": "",
+          "title": "Api Key",
+          "type": "string",
+          "x-description": "OpenAI API key.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "API Key"
+        }
+      },
+      "title": "OpenAILLMProvider",
+      "type": "object",
+      "x-description": "OpenAI chat completion API configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "OpenAI LLM Provider",
+      "x-type": "OpenAILLMProvider"
+    },
+    "PostgresURI": {
+      "description": "Configuration for the Postgres connection URI.",
+      "properties": {
+        "uri": {
+          "title": "Uri",
+          "type": "string",
+          "x-description": "Specify full Postgres connection URI. E.g. 'postgresql://user:pass@host:5432/db'",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "URI"
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "title": "PostgresURI",
+      "type": "object",
+      "x-description": "Full Postgres connection URI configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Postgres URI",
+      "x-type": "PostgresURI"
+    },
+    "Preset": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string",
+          "x-description": "The name of the preset.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Resource Preset"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Preset",
+      "type": "object",
+      "x-description": "Select the resource preset used per service replica.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Resource Preset",
+      "x-type": "Preset"
+    }
+  },
+  "properties": {
+    "preset": {
+      "$ref": "#/$defs/Preset"
+    },
+    "ingress_http": {
+      "$ref": "#/$defs/IngressHttp"
+    },
+    "pgvector_user": {
+      "$ref": "#/$defs/CrunchyPostgresUserCredentials"
+    },
+    "llm_config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OpenAICompatChatAPI"
+        },
+        {
+          "$ref": "#/$defs/OpenAILLMProvider"
+        },
+        {
+          "$ref": "#/$defs/AnthropicLLMProvider"
+        },
+        {
+          "$ref": "#/$defs/OllamaLLMProvider"
+        },
+        {
+          "$ref": "#/$defs/GeminiLLMProvider"
+        }
+      ],
+      "default": {
+        "host": "",
+        "port": 443,
+        "protocol": "https",
+        "timeout": 30.0,
+        "base_path": "/",
+        "api_type": "rest",
+        "api_base_path": "/v1",
+        "openai_api_type": "chat",
+        "endpoint_url": "/v1/chat",
+        "hf_model": null,
+        "__type__": "OpenAICompatChatAPI"
+      },
+      "title": "Llm Config",
+      "x-description": "LLM provider configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "LLM Configuration"
+    },
+    "embedding_config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OpenAICompatEmbeddingsAPI"
+        },
+        {
+          "$ref": "#/$defs/OpenAIEmbeddingProvider"
+        },
+        {
+          "$ref": "#/$defs/OllamaEmbeddingProvider"
+        }
+      ],
+      "default": {
+        "host": "",
+        "port": 443,
+        "protocol": "https",
+        "timeout": 30.0,
+        "base_path": "/",
+        "api_type": "rest",
+        "api_base_path": "/v1",
+        "openai_api_type": "embeddings",
+        "endpoint_url": "/v1/embeddings",
+        "hf_model": null,
+        "__type__": "OpenAICompatEmbeddingsAPI"
+      },
+      "title": "Embedding Config",
+      "x-description": "Embedding provider configuration.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "Embedding Configuration"
+    },
+    "persistence": {
+      "$ref": "#/$defs/LightRAGPersistence",
+      "x-title": "Persistence Configuration"
+    }
+  },
+  "required": [
+    "preset",
+    "ingress_http",
+    "pgvector_user"
+  ],
+  "title": "LightRAGAppInputs",
+  "type": "object"
+}

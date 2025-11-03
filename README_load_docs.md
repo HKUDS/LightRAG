@@ -8,7 +8,7 @@ Advanced script to load markdown documentation into LightRAG with flexible refer
 # Default mode (file path references)
 python load_docs.py /path/to/your/docs
 
-# URL mode (website link references) 
+# URL mode (website link references)
 python load_docs.py /path/to/docs --mode urls --base-url https://docs.example.com/
 ```
 
@@ -28,7 +28,7 @@ python load_docs.py docs/ --mode files
 - [KG] administration/setup.md
 ```
 
-### URLs Mode  
+### URLs Mode
 Uses website URLs in query response citations:
 ```bash
 python load_docs.py docs/ --mode urls --base-url https://docs.apolo.us/index/
@@ -37,7 +37,7 @@ python load_docs.py docs/ --mode urls --base-url https://my-docs.com/v1/
 
 **Query Response Example:**
 ```
-### References  
+### References
 - [DC] https://docs.apolo.us/index/getting-started/installation
 - [KG] https://docs.apolo.us/index/administration/setup
 ```
@@ -68,7 +68,7 @@ docs/
 ```bash
 # Visit your docs site and note the URL patterns:
 # https://docs.example.com/getting-started/installation
-# https://docs.example.com/api/authentication  
+# https://docs.example.com/api/authentication
 # https://docs.example.com/guides/deployment
 ```
 
@@ -80,7 +80,7 @@ mkdir -p docs/{getting-started,api,guides}
 **Step 3: Organize Your Markdown Files**
 ```bash
 # Match each URL to a file path:
-docs/getting-started/installation.md     # → /getting-started/installation  
+docs/getting-started/installation.md     # → /getting-started/installation
 docs/api/authentication.md              # → /api/authentication
 docs/guides/deployment.md               # → /guides/deployment
 docs/guides/README.md                   # → /guides (overview page)
@@ -109,7 +109,7 @@ curl -I https://docs.example.com/api/authentication
 apolo-docs/
 ├── getting-started/
 │   ├── first-steps/
-│   │   ├── getting-started.md   → /index/getting-started/first-steps/getting-started  
+│   │   ├── getting-started.md   → /index/getting-started/first-steps/getting-started
 │   │   └── README.md           → /index/getting-started/first-steps
 │   ├── apolo-base-docker-image.md → /index/getting-started/apolo-base-docker-image
 │   └── faq.md                  → /index/getting-started/faq
@@ -135,14 +135,14 @@ python load_docs.py docs/ --endpoint https://lightrag.example.com
 # Load to local instance, skip test query
 python load_docs.py docs/ --no-test
 
-# Files mode with custom endpoint  
+# Files mode with custom endpoint
 python load_docs.py docs/ --mode files --endpoint http://localhost:9621
 ```
 
 ## Features
 
 - **Dual Reference Modes**: File paths or live website URLs in citations
-- **Flexible Base URL**: Works with any documentation site structure  
+- **Flexible Base URL**: Works with any documentation site structure
 - **Simple dependency**: Only requires `httpx` and Python standard library
 - **Automatic discovery**: Finds all `.md` files recursively
 - **Smart metadata**: Adds appropriate title, path/URL, and source information

@@ -7,16 +7,7 @@ CHART_PACKAGE_DIR := dist/charts
 HELM_REGISTRY := ghcr.io/neuro-inc/helm-charts
 
 RAW_VERSION := $(if $(VERSION),$(VERSION),$(shell git describe --tags --always --dirty 2>/dev/null))
-SANITIZED_VERSION := $(shell RAW="$(RAW_VERSION)" python - <<'PY'
-import os, re
-raw = os.environ.get("RAW", "").strip()
-if not raw:
-    raw = "0.0.0"
-raw = raw.lstrip("v")
-sanitized = re.sub(r"[^0-9A-Za-z\\.\\-]", "-", raw)
-print(sanitized or "0.0.0")
-PY
-)
+SANITIZED_VERSION := $(shell python -c 'import re; raw = "$(RAW_VERSION)".strip(); raw = raw[1:] if raw.startswith("v") else raw; raw = raw or "0.0.0"; sanitized = re.sub(r"[^0-9A-Za-z.\-]", "-", raw); print(sanitized or "0.0.0")')
 CHART_VERSION := $(SANITIZED_VERSION)
 CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 

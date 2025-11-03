@@ -1,0 +1,55 @@
+- app_type: lightrag
+  name: lightrag
+  title: LightRAG
+  install_type: workflow
+  helm_path: k8s-deploy/lightrag
+  app_package_name: apolo_apps_lightrag
+  inputs:
+    schema_path: .apolo/src/apolo_apps_lightrag/schemas/LightRAGAppInputs.json
+    types_name: LightRAGAppInputs
+    processor: LightRAGInputsProcessor
+    image: ghcr.io/neuro-inc/app-lightrag
+  outputs:
+    schema_path: .apolo/src/apolo_apps_lightrag/schemas/LightRAGAppOutputs.json
+    types_name: LightRAGAppOutputs
+    processor: LightRAGOutputsProcessor
+    image: ghcr.io/neuro-inc/app-lightrag
+  short_description: Advanced RAG framework with graph-enhanced retrieval capabilities
+  description: |
+    LightRAG is a simple and fast Retrieval-Augmented Generation (RAG) system that incorporates
+    graph structure into text indexing and retrieval processes. Unlike traditional RAG approaches,
+    LightRAG utilizes both low-level and high-level knowledge discovery to enhance text retrieval.
+    It supports both naive and local search methods, making it suitable for comprehensive
+    question-answering tasks. The system includes a user-friendly web interface for document
+    management and querying, with built-in support for various LLM providers and embedding models.
+  pub_date: "2025-06-25T00:00:00+00:00"
+  logo: https://storage.googleapis.com/development-421920-assets/app-logos/lightrag-logo.png
+  tags:
+    - "RAG"
+    - "LightRAG"
+    - "Knowledge Graph"
+    - "Vector Search"
+    - "Document Processing"
+    - "LLM"
+    - "Embeddings"
+    - "PostgreSQL"
+    - "Graph"
+    - "AI"
+    - "NLP"
+  assets:
+    - type: image
+      url: https://storage.googleapis.com/development-421920-assets/app-logos/lightrag-banner.png
+    - type: video
+      url: https://www.youtube.com/watch?v=oageL-1I0GE
+    - type: pdf
+      url: https://arxiv.org/abs/2410.05779
+  urls:
+    - name: LightRAG GitHub Repository
+      type: documentation
+      url: https://github.com/HKUDS/LightRAG
+    - name: LightRAG DeepWiki Documentation
+      type: documentation
+      url: https://deepwiki.com/HKUDS/LightRAG
+    - name: LightRAG Official Repository
+      type: external
+      url: https://github.com/HKUDS/LightRAG
