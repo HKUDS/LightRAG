@@ -57,15 +57,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Release development image
-        run: |
-          make build-hook-image
-      - name: Release development image
-        run: |
-          export IMAGE_TAG=development
-          make push-hook-image
-      - name: Release prod image
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      - name: Build hooks image
+        run: make build-hook-image
+      - name: Push branch image
+        if: github.ref_type == 'branch'
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: make push-hook-image
+      - name: Push tag image
+        if: github.ref_type == 'tag'
         run: |
           export IMAGE_TAG=${GITHUB_REF#refs/tags/v}
           make push-hook-image
@@ -89,18 +89,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/neuro-inc/app-lightrag
-          tags: |
-            type=ref,event=pr
       - name: Build Docker image
         run: make build-hook-image
       - name: Push release for testing
         if: github.actor != 'dependabot[bot]'
-        run: |
-          FULL_IMAGE_NAME=${{ steps.meta.outputs.tags }}
-          export IMAGE_TAG=${FULL_IMAGE_NAME##*:}
-          make push-hook-image
+        env:
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+        run: make push-hook-image
