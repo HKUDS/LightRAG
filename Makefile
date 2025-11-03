@@ -13,7 +13,9 @@ CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 
 GITHUB_USERNAME := $(shell echo "$$APOLO_GITHUB_TOKEN" | base64 -d 2>/dev/null | cut -d: -f1 2>/dev/null || echo "oauth2")
 
-.PHONY: help helm-package helm-push clean
+.PHONY: all help helm-package helm-push clean test
+
+all: help
 
 help:
 	@echo "Available targets:"
@@ -51,3 +53,6 @@ clean:
 	@echo "Removing packaged charts..."
 	rm -rf $(CHART_PACKAGE_DIR)
 	@echo "✅ Cleaned"
+
+test:
+	@echo "No automated tests for Helm packaging. Use 'helm test' as needed."

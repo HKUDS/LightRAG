@@ -34,27 +34,6 @@ pytest-asyncio = "^0.25.3"
 pytest-cov = "^6.2.1"
 mypy = "^1.17.1"
 
-[tool.ruff]
-target-version = "py311"
-lint.select = [
-    "E", "F", "I", "C90", "UP", "B", "ASYNC", "N", "FBT", "A", "C4", "EM", "FA", "ICN",
-    "G", "PIE", "T20", "PYI", "PT", "RET", "PTH"
-]
-lint.ignore = [
-  "A003",
-  "N818"
-]
-
-[tool.ruff.lint.isort.sections]
-ApoloSDK = ["apolo-sdk"]
-
-[tool.ruff.lint.isort]
-combine-as-imports = true
-lines-after-imports = 2
-section-order = ["future", "standard-library", "third-party", "ApoloSDK", "first-party", "local-folder"]
-known-first-party = ["apolo_app_types"]
-known-local-folder = ["tests"]
-
 [tool.mypy]
 check_untyped_defs = true
 disallow_any_generics = true
