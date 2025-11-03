@@ -21,6 +21,7 @@ GITHUB_USERNAME := $(shell echo "$$APOLO_GITHUB_TOKEN" | base64 -d 2>/dev/null |
 POETRY ?= poetry
 IMAGE_NAME ?= app-lightrag
 IMAGE_TAG ?= latest
+HOOKS_IMAGE_TARGET ?= ghcr.io/neuro-inc/LightRAG
 
 APP_CHART_NAME := lightrag
 APP_CHART_DIR := k8s-deploy/$(APP_CHART_NAME)
@@ -86,8 +87,8 @@ build-hook-image:
 		.
 
 push-hook-image: build-hook-image
-	docker tag $(IMAGE_NAME):latest ghcr.io/neuro-inc/$(IMAGE_NAME):$(IMAGE_TAG)
-	docker push ghcr.io/neuro-inc/$(IMAGE_NAME):$(IMAGE_TAG)
+	docker tag $(IMAGE_NAME):latest $(HOOKS_IMAGE_TARGET):$(IMAGE_TAG)
+	docker push $(HOOKS_IMAGE_TARGET):$(IMAGE_TAG)
 
 # ------------------------------------------------------------------------------
 # Upstream Helm packaging targets (kept minimal to ease syncing with source)

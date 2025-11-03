@@ -8,12 +8,12 @@
     schema_path: .apolo/src/apolo_apps_lightrag/schemas/LightRAGAppInputs.json
     types_name: LightRAGAppInputs
     processor: LightRAGInputsProcessor
-    image: ghcr.io/neuro-inc/app-lightrag
+    image: ghcr.io/neuro-inc/LightRAG
   outputs:
     schema_path: .apolo/src/apolo_apps_lightrag/schemas/LightRAGAppOutputs.json
     types_name: LightRAGAppOutputs
     processor: LightRAGOutputsProcessor
-    image: ghcr.io/neuro-inc/app-lightrag
+    image: ghcr.io/neuro-inc/LightRAG
   short_description: Advanced RAG framework with graph-enhanced retrieval capabilities
   description: |
     LightRAG is a simple and fast Retrieval-Augmented Generation (RAG) system that incorporates
