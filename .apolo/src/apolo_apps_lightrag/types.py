@@ -172,56 +172,6 @@ class AnthropicLLMProvider(RestAPI):
     )
 
 
-class OllamaLLMProvider(RestAPI):
-    """Ollama LLM provider configuration."""
-
-    model_config = ConfigDict(
-        protected_namespaces=(),
-        json_schema_extra=SchemaExtraMetadata(
-            title="Ollama LLM Provider",
-            description="Configuration for a self-hosted Ollama server.",
-            meta_type=SchemaMetaType.INLINE,
-        ).as_json_schema_extra(),
-    )
-
-    host: str = Field(
-        json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Ollama server host.",
-        ).as_json_schema_extra(),
-    )
-    port: int = Field(
-        default=11434,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Port",
-            description="Ollama server port.",
-        ).as_json_schema_extra(),
-    )
-    protocol: Literal["http", "https"] = Field(
-        default="http",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Protocol",
-            description="Ollama server protocol.",
-        ).as_json_schema_extra(),
-    )
-    timeout: int | None = Field(
-        default=300,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Timeout",
-            description="Configure connection timeout in seconds.",
-        ).as_json_schema_extra(),
-    )
-    base_path: str = "/api"
-    provider: Literal["ollama"] = "ollama"
-    model: str = Field(
-        default="llama3.1:8b-instruct-q4_0",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description="Ollama model name.",
-        ).as_json_schema_extra(),
-    )
-
-
 class GeminiLLMProvider(RestAPI):
     """Google Gemini LLM provider configuration."""
 
@@ -279,7 +229,6 @@ LLMProvider = (
     | OpenAICompatChatProvider
     | OpenAILLMProvider
     | AnthropicLLMProvider
-    | OllamaLLMProvider
     | GeminiLLMProvider
 )
 
@@ -366,61 +315,8 @@ class OpenAIEmbeddingProvider(RestAPI):
     )
 
 
-class OllamaEmbeddingProvider(RestAPI):
-    """Ollama embedding provider configuration."""
-
-    model_config = ConfigDict(
-        protected_namespaces=(),
-        json_schema_extra=SchemaExtraMetadata(
-            title="Ollama Embedding Provider",
-            description="Ollama local embedding model configuration.",
-            meta_type=SchemaMetaType.INLINE,
-        ).as_json_schema_extra(),
-    )
-
-    host: str = Field(
-        json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Ollama server host.",
-        ).as_json_schema_extra(),
-    )
-    port: int = Field(
-        default=11434,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Port",
-            description="Ollama server port.",
-        ).as_json_schema_extra(),
-    )
-    protocol: Literal["http", "https"] = Field(
-        default="http",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Protocol",
-            description="Ollama server protocol.",
-        ).as_json_schema_extra(),
-    )
-    timeout: int | None = Field(
-        default=300,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Timeout",
-            description="Configure connection timeout in seconds.",
-        ).as_json_schema_extra(),
-    )
-    base_path: str = "/api"
-    provider: Literal["ollama"] = "ollama"
-    model: str = Field(
-        default="nomic-embed-text",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description="Ollama embedding model name.",
-        ).as_json_schema_extra(),
-    )
-
-
 EmbeddingProvider = (
-    OpenAICompatEmbeddingsAPI
-    | OpenAICompatEmbeddingsProvider
-    | OpenAIEmbeddingProvider
-    | OllamaEmbeddingProvider
+    OpenAICompatEmbeddingsAPI | OpenAICompatEmbeddingsProvider | OpenAIEmbeddingProvider
 )
 
 
@@ -471,8 +367,6 @@ __all__ = [
     "OpenAICompatEmbeddingsProvider",
     "OpenAILLMProvider",
     "AnthropicLLMProvider",
-    "OllamaLLMProvider",
     "GeminiLLMProvider",
     "OpenAIEmbeddingProvider",
-    "OllamaEmbeddingProvider",
 ]

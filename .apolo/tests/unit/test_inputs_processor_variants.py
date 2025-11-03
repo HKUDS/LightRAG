@@ -16,8 +16,6 @@ from apolo_apps_lightrag.types import (
     GeminiLLMProvider,
     LightRAGAppInputs,
     LightRAGPersistence,
-    OllamaEmbeddingProvider,
-    OllamaLLMProvider,
     OpenAICompatChatProvider,
     OpenAICompatEmbeddingsProvider,
     OpenAIEmbeddingProvider,
@@ -100,13 +98,6 @@ async def _generate_env(
             "claude-3",
             "https://api.anthropic.com:443/v1",
             "anthropic-key",
-        ),
-        (
-            OllamaLLMProvider(host="ollama.internal", model="llama3"),
-            "ollama",
-            "llama3",
-            "http://ollama.internal:11434/api",
-            "",
         ),
         (
             GeminiLLMProvider(model="gemini-pro", api_key="gemini-key"),
@@ -200,12 +191,6 @@ async def test_inputs_processor_openai_compat_with_model(
             "openai",
             "https://api.openai.com:443/v1",
             1536,
-        ),
-        (
-            OllamaEmbeddingProvider(host="ollama.internal", model="nomic-embed"),
-            "ollama",
-            "http://ollama.internal:11434/api",
-            1024,
         ),
     ],
 )

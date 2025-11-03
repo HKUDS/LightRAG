@@ -17,8 +17,6 @@ from .types import (
     AnthropicLLMProvider,
     GeminiLLMProvider,
     LightRAGAppInputs,
-    OllamaEmbeddingProvider,
-    OllamaLLMProvider,
     OpenAIEmbeddingProvider,
     OpenAILLMProvider,
 )
@@ -89,14 +87,6 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "host": host,
                 "api_key": llm_config.api_key,
             }
-        if isinstance(llm_config, OllamaLLMProvider):
-            host = _normalise_complete_url(llm_config)
-            return {
-                "binding": "ollama",
-                "model": llm_config.model,
-                "host": host,
-                "api_key": None,
-            }
         if isinstance(llm_config, GeminiLLMProvider):
             host = _normalise_complete_url(llm_config)
             return {
@@ -146,15 +136,6 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "model": embedding_config.model,
                 "api_key": embedding_config.api_key,
                 "dimensions": dimensions,
-                "host": host,
-            }
-        if isinstance(embedding_config, OllamaEmbeddingProvider):
-            host = embedding_config.complete_url
-            return {
-                "binding": "ollama",
-                "model": embedding_config.model,
-                "api_key": None,
-                "dimensions": 1024,
                 "host": host,
             }
         binding = getattr(embedding_config, "provider", "openai")

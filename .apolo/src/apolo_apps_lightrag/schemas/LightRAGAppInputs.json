@@ -605,180 +605,6 @@
       "x-title": "No Authentication",
       "x-type": "NoAuth"
     },
-    "OllamaEmbeddingProvider": {
-      "description": "Ollama embedding provider configuration.",
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string",
-          "x-description": "Ollama server host.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Host"
-        },
-        "port": {
-          "default": 11434,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "Ollama server port.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "default": "http",
-          "enum": [
-            "http",
-            "https"
-          ],
-          "title": "Protocol",
-          "type": "string",
-          "x-description": "Ollama server protocol.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Protocol"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 300,
-          "title": "Timeout",
-          "x-description": "Configure connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Timeout"
-        },
-        "base_path": {
-          "default": "/api",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "provider": {
-          "const": "ollama",
-          "default": "ollama",
-          "title": "Provider",
-          "type": "string"
-        },
-        "model": {
-          "default": "nomic-embed-text",
-          "title": "Model",
-          "type": "string",
-          "x-description": "Ollama embedding model name.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "OllamaEmbeddingProvider",
-      "type": "object",
-      "x-description": "Ollama local embedding model configuration.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "inline",
-      "x-title": "Ollama Embedding Provider",
-      "x-type": "OllamaEmbeddingProvider"
-    },
-    "OllamaLLMProvider": {
-      "description": "Ollama LLM provider configuration.",
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string",
-          "x-description": "Ollama server host.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Host"
-        },
-        "port": {
-          "default": 11434,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "Ollama server port.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "default": "http",
-          "enum": [
-            "http",
-            "https"
-          ],
-          "title": "Protocol",
-          "type": "string",
-          "x-description": "Ollama server protocol.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Protocol"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 300,
-          "title": "Timeout",
-          "x-description": "Configure connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Timeout"
-        },
-        "base_path": {
-          "default": "/api",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "provider": {
-          "const": "ollama",
-          "default": "ollama",
-          "title": "Provider",
-          "type": "string"
-        },
-        "model": {
-          "default": "llama3.1:8b-instruct-q4_0",
-          "title": "Model",
-          "type": "string",
-          "x-description": "Ollama model name.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "OllamaLLMProvider",
-      "type": "object",
-      "x-description": "Configuration for a self-hosted Ollama server.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "inline",
-      "x-title": "Ollama LLM Provider",
-      "x-type": "OllamaLLMProvider"
-    },
     "OpenAICompatChatAPI": {
       "properties": {
         "host": {
@@ -1476,9 +1302,6 @@
           "$ref": "#/$defs/AnthropicLLMProvider"
         },
         {
-          "$ref": "#/$defs/OllamaLLMProvider"
-        },
-        {
           "$ref": "#/$defs/GeminiLLMProvider"
         }
       ],
@@ -1512,9 +1335,6 @@
         },
         {
           "$ref": "#/$defs/OpenAIEmbeddingProvider"
-        },
-        {
-          "$ref": "#/$defs/OllamaEmbeddingProvider"
         }
       ],
       "default": {
