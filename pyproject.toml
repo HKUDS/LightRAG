@@ -122,6 +122,11 @@ evaluation = [
     "pytest-asyncio>=1.2.0",
 ]
 
+observability = [
+    # LLM observability and tracing dependencies
+    "langfuse>=3.8.1",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
