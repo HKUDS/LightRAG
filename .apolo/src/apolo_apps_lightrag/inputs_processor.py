@@ -18,7 +18,7 @@ from .types import (
     OpenAIAPICloudProvider,
     OpenAICompatEmbeddingsProvider,
     OpenAICompatibleAPI,
-    OpenAIEmbeddingProvider,
+    OpenAIEmbeddingCloudProvider,
 )
 
 
@@ -62,7 +62,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
         ):
             if llm_config.hf_model is None:
                 msg = (
-                    "OpenAI compatible LLM configuration requires a Hugging Face model"
+                    "OpenAI-compatible LLM configuration requires a Hugging Face model"
                 )
                 raise ValueError(msg)
             model = llm_config.hf_model.model_hf_name
@@ -90,13 +90,10 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
             embedding_config,
             (OpenAICompatEmbeddingsProvider, OpenAICompatEmbeddingsAPI),
         ):
-            if embedding_config.hf_model is not None:
-                model = embedding_config.hf_model.model_hf_name
-            else:
-                model = getattr(embedding_config, "model", None)
-                if not model:
-                    msg = "OpenAI-compatible embedding configuration requires a model name or Hugging Face model"
-                    raise ValueError(msg)
+            if embedding_config.hf_model is None:
+                msg = "OpenAI-compatible embedding configuration requires a Hugging Face model"
+                raise ValueError(msg)
+            model = embedding_config.hf_model.model_hf_name
             host = _normalise_complete_url(embedding_config)
             dimensions = getattr(embedding_config, "dimensions", None)
             if dimensions is None:
@@ -109,7 +106,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "dimensions": dimensions,
                 "host": host,
             }
-        if isinstance(embedding_config, OpenAIEmbeddingProvider):
+        if isinstance(embedding_config, OpenAIEmbeddingCloudProvider):
             host = _normalise_complete_url(embedding_config)
             dimensions = embedding_config.dimensions
             return {

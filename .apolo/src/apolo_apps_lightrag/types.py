@@ -9,7 +9,6 @@ from apolo_app_types.protocols.common import (
     SchemaExtraMetadata,
     SchemaMetaType,
 )
-from apolo_app_types.protocols.common.hugging_face import HuggingFaceModel
 from apolo_app_types.protocols.common.networking import HttpApi, RestAPI, ServiceAPI
 from apolo_app_types.protocols.common.openai_compat import (
     OpenAICompatChatAPI,
@@ -35,13 +34,6 @@ class OpenAICompatibleAPI(OpenAICompatChatAPI):
         ).as_json_schema_extra(),
     )
 
-    hf_model: HuggingFaceModel = Field(
-        ...,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Hugging Face Model",
-            description="Fully qualified Hugging Face model identifier served by the deployment.",
-        ).as_json_schema_extra(),
-    )
     api_key: str | None = Field(
         default=None,
         json_schema_extra=SchemaExtraMetadata(
@@ -136,17 +128,9 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
     model_config = ConfigDict(
         protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="OpenAI Like API Embeddings",
-            description="Use for OpenAI-compatible embeddings APIs (OpenAI, OpenRouter, self-hosted services).",
+            title="OpenAI Compatible API Embeddings",
+            description="Use for OpenAI-compatible embeddings APIs (Self-hosted services).",
             meta_type=SchemaMetaType.INLINE,
-        ).as_json_schema_extra(),
-    )
-
-    model: str | None = Field(
-        default=None,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description="Embedding model identifier understood by the provider.",
         ).as_json_schema_extra(),
     )
     host: str = Field(
@@ -181,13 +165,13 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
     )
 
 
-class OpenAIEmbeddingProvider(RestAPI):
+class OpenAIEmbeddingCloudProvider(RestAPI):
     """Official OpenAI embeddings configuration."""
 
     model_config = ConfigDict(
         protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="OpenAI Embeddings",
+            title="OpenAI Embeddings Cloud Provider",
             description="Use the official OpenAI embeddings endpoint with recommended defaults.",
             meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
@@ -242,7 +226,7 @@ class OpenAIEmbeddingProvider(RestAPI):
 
 LLMProvider = OpenAICompatibleAPI | OpenAIAPICloudProvider
 
-EmbeddingProvider = OpenAICompatEmbeddingsProvider | OpenAIEmbeddingProvider
+EmbeddingProvider = OpenAICompatEmbeddingsProvider | OpenAIEmbeddingCloudProvider
 
 
 LightRAGLLMConfig = LLMProvider
@@ -291,5 +275,5 @@ __all__ = [
     "OpenAICompatibleAPI",
     "OpenAIAPICloudProvider",
     "OpenAICompatEmbeddingsProvider",
-    "OpenAIEmbeddingProvider",
+    "OpenAIEmbeddingCloudProvider",
 ]

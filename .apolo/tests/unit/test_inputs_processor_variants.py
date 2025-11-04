@@ -13,7 +13,7 @@ from apolo_apps_lightrag.types import (
     OpenAIAPICloudProvider,
     OpenAICompatEmbeddingsProvider,
     OpenAICompatibleAPI,
-    OpenAIEmbeddingProvider,
+    OpenAIEmbeddingCloudProvider,
 )
 
 
@@ -50,8 +50,8 @@ def _default_llm_provider() -> OpenAIAPICloudProvider:
     )
 
 
-def _default_embedding_provider() -> OpenAIEmbeddingProvider:
-    return OpenAIEmbeddingProvider(
+def _default_embedding_provider() -> OpenAIEmbeddingCloudProvider:
+    return OpenAIEmbeddingCloudProvider(
         host="api.openai.com",
         model="text-embedding-3-large",
         api_key="embed-key",
@@ -165,7 +165,7 @@ async def test_inputs_processor_openai_compat_provider(
     ("embedding_config", "expected_binding", "expected_host", "expected_dim"),
     [
         (
-            OpenAIEmbeddingProvider(
+            OpenAIEmbeddingCloudProvider(
                 host="api.openai.com",
                 model="text-embedding-3-small",
                 api_key="embed-key",
@@ -180,7 +180,7 @@ async def test_inputs_processor_openai_compat_provider(
                 host="router.example.com",
                 port=8443,
                 protocol="https",
-                model="openrouter/embedding-model",
+                hf_model=HuggingFaceModel(model_hf_name="openrouter/embedding-model"),
                 dimensions=1024,
             ),
             "openai",
@@ -246,7 +246,7 @@ async def test_inputs_processor_openai_compat_embedding_requires_model(
 
     with pytest.raises(
         ValueError,
-        match="requires a model name or Hugging Face model",
+        match="requires a Hugging Face model",
     ):
         await _generate_env(
             monkeypatch,

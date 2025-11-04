@@ -13,7 +13,7 @@ from apolo_apps_lightrag.types import (
     LightRAGAppInputs,
     LightRAGPersistence,
     OpenAIAPICloudProvider,
-    OpenAIEmbeddingProvider,
+    OpenAIEmbeddingCloudProvider,
 )
 
 
@@ -54,7 +54,7 @@ async def test_gen_extra_values_merges_sources(monkeypatch: pytest.MonkeyPatch) 
             model="gpt-4.1",
             api_key="llm-key",
         ),
-        embedding_config=OpenAIEmbeddingProvider(
+        embedding_config=OpenAIEmbeddingCloudProvider(
             host="api.openai.com",
             model="text-embedding-3-large",
             api_key="embed-key",

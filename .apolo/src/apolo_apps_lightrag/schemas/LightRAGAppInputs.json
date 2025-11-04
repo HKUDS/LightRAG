@@ -600,22 +600,6 @@
           "x-meta-type": "integration",
           "x-title": "Hugging Face Model"
         },
-        "model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Model",
-          "x-description": "Embedding model identifier understood by the provider.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        },
         "dimensions": {
           "title": "Dimensions",
           "type": "integer",
@@ -630,10 +614,10 @@
       ],
       "title": "OpenAICompatEmbeddingsProvider",
       "type": "object",
-      "x-description": "Use for OpenAI-compatible embeddings APIs (OpenAI, OpenRouter, self-hosted services).",
+      "x-description": "Use for OpenAI-compatible embeddings APIs (Self-hosted services).",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI Like API Embeddings",
+      "x-title": "OpenAI Compatible API Embeddings",
       "x-type": "OpenAICompatEmbeddingsProvider"
     },
     "OpenAICompatibleAPI": {
@@ -711,9 +695,19 @@
           "type": "string"
         },
         "hf_model": {
-          "$ref": "#/$defs/HuggingFaceModel",
-          "x-description": "Fully qualified Hugging Face model identifier served by the deployment.",
-          "x-meta-type": "inline"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "integration",
+          "x-title": "Hugging Face Model"
         },
         "api_key": {
           "anyOf": [
@@ -733,8 +727,7 @@
         }
       },
       "required": [
-        "host",
-        "hf_model"
+        "host"
       ],
       "title": "OpenAICompatibleAPI",
       "type": "object",
@@ -744,7 +737,7 @@
       "x-title": "OpenAI Compatible API",
       "x-type": "OpenAICompatibleAPI"
     },
-    "OpenAIEmbeddingProvider": {
+    "OpenAIEmbeddingCloudProvider": {
       "description": "Official OpenAI embeddings configuration.",
       "properties": {
         "host": {
@@ -834,13 +827,13 @@
         "api_key",
         "dimensions"
       ],
-      "title": "OpenAIEmbeddingProvider",
+      "title": "OpenAIEmbeddingCloudProvider",
       "type": "object",
       "x-description": "Use the official OpenAI embeddings endpoint with recommended defaults.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI Embeddings",
-      "x-type": "OpenAIEmbeddingProvider"
+      "x-title": "OpenAI Embeddings Cloud Provider",
+      "x-type": "OpenAIEmbeddingCloudProvider"
     },
     "PostgresURI": {
       "description": "Configuration for the Postgres connection URI.",
@@ -919,7 +912,7 @@
           "$ref": "#/$defs/OpenAICompatEmbeddingsProvider"
         },
         {
-          "$ref": "#/$defs/OpenAIEmbeddingProvider"
+          "$ref": "#/$defs/OpenAIEmbeddingCloudProvider"
         }
       ],
       "title": "Embedding Config",
