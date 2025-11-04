@@ -87,6 +87,68 @@ async def _generate_env(
     return values["env"]
 
 
+def test_light_rag_inputs_select_cloud_provider_when_model_present() -> None:
+    inputs = _make_base_inputs(
+        llm_config={
+            "host": "api.openai.com",
+            "model": "gpt-4o",
+            "api_key": "llm-key",
+        },
+        embedding_config=_default_embedding_provider(),
+    )
+
+    assert isinstance(inputs.llm_config, OpenAIAPICloudProvider)
+    assert inputs.llm_config.model == "gpt-4o"
+
+
+def test_light_rag_inputs_select_compat_provider_when_hf_model_present() -> None:
+    inputs = _make_base_inputs(
+        llm_config={
+            "host": "router.example.com",
+            "protocol": "https",
+            "port": 9443,
+            "hf_model": {"model_hf_name": "hf/awesome-model"},
+        },
+        embedding_config=_default_embedding_provider(),
+    )
+
+    assert isinstance(inputs.llm_config, OpenAICompatibleAPI)
+    assert inputs.llm_config.hf_model is not None
+    assert inputs.llm_config.hf_model.model_hf_name == "hf/awesome-model"
+
+
+def test_light_rag_inputs_select_embedding_cloud_when_model_present() -> None:
+    inputs = _make_base_inputs(
+        llm_config=_default_llm_provider(),
+        embedding_config={
+            "host": "api.openai.com",
+            "model": "text-embedding-3-large",
+            "api_key": "embed-key",
+            "dimensions": 3072,
+        },
+    )
+
+    assert isinstance(inputs.embedding_config, OpenAIEmbeddingCloudProvider)
+    assert inputs.embedding_config.model == "text-embedding-3-large"
+
+
+def test_light_rag_inputs_select_embedding_compat_when_hf_model_present() -> None:
+    inputs = _make_base_inputs(
+        llm_config=_default_llm_provider(),
+        embedding_config={
+            "host": "router.example.com",
+            "protocol": "https",
+            "port": 8443,
+            "hf_model": {"model_hf_name": "hf/embed-model"},
+            "dimensions": 1024,
+        },
+    )
+
+    assert isinstance(inputs.embedding_config, OpenAICompatEmbeddingsProvider)
+    assert inputs.embedding_config.hf_model is not None
+    assert inputs.embedding_config.hf_model.model_hf_name == "hf/embed-model"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (

@@ -78,7 +78,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
             }
 
         elif isinstance(llm_config, OpenAICompatChatAPI):
-            print(f"llm_config: {llm_config}")
+            logger.debug("Processing OpenAI-compatible LLM config: %r", llm_config)
             if llm_config.hf_model is None:
                 msg = (
                     "OpenAI-compatible LLM configuration requires a Hugging Face model"
