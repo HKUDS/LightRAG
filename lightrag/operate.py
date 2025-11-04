@@ -3375,7 +3375,7 @@ async def _get_vector_context(
                     "content": result["content"],
                     "created_at": result.get("created_at", None),
                     "file_path": result.get("file_path", "unknown_source"),
-                    "source_type": "vector",  # Mark the source type
+                    "source_type": "vectors.vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
                 }
                 valid_chunks.append(chunk_with_metadata)
@@ -4828,7 +4828,7 @@ async def naive_query(
         unique_chunks=chunks,
         query_param=query_param,
         global_config=global_config,
-        source_type="vector",
+        source_type="vectors.vector",
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
 

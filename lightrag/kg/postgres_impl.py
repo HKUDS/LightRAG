@@ -370,10 +370,10 @@ class PostgreSQLDB:
     async def configure_vector_extension(connection: asyncpg.Connection) -> None:
         """Create VECTOR extension if it doesn't exist for vector similarity operations."""
         try:
-            await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
-            logger.info("PostgreSQL, VECTOR extension enabled")
+            await connection.execute("CREATE EXTENSION IF NOT EXISTS vectors")  # type: ignore
+            logger.info("PostgreSQL, vectors extension enabled")
         except Exception as e:
-            logger.warning(f"Could not create VECTOR extension: {e}")
+            logger.warning(f"Could not create vectors extension: {e}")
             # Don't raise - let the system continue without vector extension
 
     @staticmethod
@@ -1382,7 +1382,7 @@ class PostgreSQLDB:
                 vector_index_exists = await self.query(check_vector_index_sql)
                 if not vector_index_exists:
                     # Only set vector dimension when index doesn't exist
-                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE vectors.vector({embedding_dim})"
                     await self.execute(alter_sql)
                     logger.debug(f"Ensured vector dimension for {k}")
 
@@ -1422,7 +1422,7 @@ class PostgreSQLDB:
                 exists = await self.query(check_index_sql)
                 if not exists:
                     # Only set vector dimension when index doesn't exist
-                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE vectors.vector({embedding_dim})"
                     await self.execute(alter_sql)
                     logger.debug(f"Ensured vector dimension for {k}")
 
@@ -4868,7 +4868,7 @@ TABLES = {
                     chunk_order_index INTEGER,
                     tokens INTEGER,
                     content TEXT,
-                    content_vector VECTOR({os.environ.get("EMBEDDING_DIM", 1024)}),
+                    content_vector vectors.vector({os.environ.get("EMBEDDING_DIM", 1024)}),
                     file_path TEXT NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
@@ -4881,7 +4881,7 @@ TABLES = {
                     workspace VARCHAR(255),
                     entity_name VARCHAR(512),
                     content TEXT,
-                    content_vector VECTOR({os.environ.get("EMBEDDING_DIM", 1024)}),
+                    content_vector vectors.vector({os.environ.get("EMBEDDING_DIM", 1024)}),
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
@@ -4896,7 +4896,7 @@ TABLES = {
                     source_id VARCHAR(512),
                     target_id VARCHAR(512),
                     content TEXT,
-                    content_vector VECTOR({os.environ.get("EMBEDDING_DIM", 1024)}),
+                    content_vector vectors.vector({os.environ.get("EMBEDDING_DIM", 1024)}),
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
@@ -5163,8 +5163,8 @@ SQL_TEMPLATES = {
                             EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
                      FROM LIGHTRAG_VDB_RELATION r
                      WHERE r.workspace = $1
-                       AND r.content_vector <=> '[{embedding_string}]'::vector < $2
-                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
+                       AND r.content_vector <=> '[{embedding_string}]'::vectors.vector < $2
+                     ORDER BY r.content_vector <=> '[{embedding_string}]'::vectors.vector
                      LIMIT $3;
                      """,
     "entities": """
@@ -5172,8 +5172,8 @@ SQL_TEMPLATES = {
                        EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
                 FROM LIGHTRAG_VDB_ENTITY e
                 WHERE e.workspace = $1
-                  AND e.content_vector <=> '[{embedding_string}]'::vector < $2
-                ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
+                  AND e.content_vector <=> '[{embedding_string}]'::vectors.vector < $2
+                ORDER BY e.content_vector <=> '[{embedding_string}]'::vectors.vector
                 LIMIT $3;
                 """,
     "chunks": """
@@ -5183,8 +5183,8 @@ SQL_TEMPLATES = {
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
               FROM LIGHTRAG_VDB_CHUNKS c
               WHERE c.workspace = $1
-                AND c.content_vector <=> '[{embedding_string}]'::vector < $2
-              ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
+                AND c.content_vector <=> '[{embedding_string}]'::vectors.vector < $2
+              ORDER BY c.content_vector <=> '[{embedding_string}]'::vectors.vector
               LIMIT $3;
               """,
     # DROP tables
