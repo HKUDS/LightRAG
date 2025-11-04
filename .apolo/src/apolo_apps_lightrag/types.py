@@ -9,7 +9,7 @@ from apolo_app_types.protocols.common import (
     SchemaExtraMetadata,
     SchemaMetaType,
 )
-from apolo_app_types.protocols.common.networking import HttpApi, ServiceAPI
+from apolo_app_types.protocols.common.networking import HttpApi, RestAPI, ServiceAPI
 from apolo_app_types.protocols.common.openai_compat import (
     OpenAICompatChatAPI,
     OpenAICompatEmbeddingsAPI,
@@ -18,7 +18,7 @@ from apolo_app_types.protocols.postgres import CrunchyPostgresUserCredentials
 
 
 class OpenAICompatibleAPI(OpenAICompatChatAPI):
-    """OpenAI-compatible chat configuration backed by Hugging Face models."""
+    """OpenAI-compatible chat configuration for self-hosted or REST providers."""
 
     base_path: str = "/v1"
 
@@ -27,8 +27,8 @@ class OpenAICompatibleAPI(OpenAICompatChatAPI):
         json_schema_extra=SchemaExtraMetadata(
             title="OpenAI Compatible API",
             description=(
-                "Use for self-hosted services (for example vLLM) that expose an "
-                "OpenAI-compatible API and are configured via a Hugging Face model."
+                "Use for self-hosted services (for example vLLM) or OpenAI-compatible"
+                " REST providers. Supply a Hugging Face model."
             ),
             meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
@@ -78,7 +78,7 @@ class LightRAGPersistence(BaseModel):
         return value
 
 
-class OpenAIAPICloudProvider(BaseModel):
+class OpenAIAPICloudProvider(RestAPI):
     """Hosted OpenAI-compatible provider configuration."""
 
     model_config = ConfigDict(
@@ -90,11 +90,11 @@ class OpenAIAPICloudProvider(BaseModel):
         ).as_json_schema_extra(),
     )
 
-    host: str = Field(
-        ...,
+    port: int | None = Field(
+        default=None,
         json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Hostname of the provider endpoint (omit protocol).",
+            title="Port",
+            description="Optional port override for the provider endpoint.",
         ).as_json_schema_extra(),
     )
     protocol: Literal["https"] = "https"
@@ -105,7 +105,13 @@ class OpenAIAPICloudProvider(BaseModel):
             description="Connection timeout in seconds.",
         ).as_json_schema_extra(),
     )
-    base_path: str = "/v1"
+    base_path: str = Field(
+        default="/v1",
+        json_schema_extra=SchemaExtraMetadata(
+            title="Base Path",
+            description="Path prefix for the API (defaults to `/v1`).",
+        ).as_json_schema_extra(),
+    )
     model: str = Field(
         ...,
         json_schema_extra=SchemaExtraMetadata(
@@ -120,10 +126,6 @@ class OpenAIAPICloudProvider(BaseModel):
             description="API key used to authenticate with the provider.",
         ).as_json_schema_extra(),
     )
-
-    @property
-    def port(self) -> int | None:
-        return None
 
 
 class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
@@ -168,7 +170,7 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
     )
 
 
-class OpenAIEmbeddingCloudProvider(BaseModel):
+class OpenAIEmbeddingCloudProvider(RestAPI):
     """Official OpenAI embeddings configuration."""
 
     model_config = ConfigDict(
@@ -180,11 +182,11 @@ class OpenAIEmbeddingCloudProvider(BaseModel):
         ).as_json_schema_extra(),
     )
 
-    host: str = Field(
-        ...,
+    port: int | None = Field(
+        default=None,
         json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Hostname for api.openai.com (omit protocol).",
+            title="Port",
+            description="Optional port override for the endpoint.",
         ).as_json_schema_extra(),
     )
     protocol: Literal["https"] = "https"
@@ -195,7 +197,13 @@ class OpenAIEmbeddingCloudProvider(BaseModel):
             description="Connection timeout in seconds.",
         ).as_json_schema_extra(),
     )
-    base_path: str = "/v1"
+    base_path: str = Field(
+        default="/v1",
+        json_schema_extra=SchemaExtraMetadata(
+            title="Base Path",
+            description="Path prefix for the embeddings API (defaults to `/v1`).",
+        ).as_json_schema_extra(),
+    )
     provider: Literal["openai"] = "openai"
     model: str = Field(
         ...,
@@ -218,10 +226,6 @@ class OpenAIEmbeddingCloudProvider(BaseModel):
             description="Embedding vector dimensionality returned by the model.",
         ).as_json_schema_extra(),
     )
-
-    @property
-    def port(self) -> int | None:
-        return None
 
 
 LLMProvider = OpenAICompatibleAPI | OpenAIAPICloudProvider

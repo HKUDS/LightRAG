@@ -437,10 +437,26 @@
         "host": {
           "title": "Host",
           "type": "string",
-          "x-description": "Hostname of the provider endpoint (omit protocol).",
+          "x-description": "The hostname of the HTTP endpoint.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
-          "x-title": "Host"
+          "x-title": "Hostname"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port",
+          "x-description": "Optional port override for the provider endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
         },
         "protocol": {
           "const": "https",
@@ -467,6 +483,16 @@
         "base_path": {
           "default": "/v1",
           "title": "Base Path",
+          "type": "string",
+          "x-description": "Path prefix for the API (defaults to `/v1`).",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Base Path"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
           "type": "string"
         },
         "model": {
@@ -496,7 +522,8 @@
       "x-description": "Use for hosted OpenAI-compatible APIs such as OpenAI or OpenRouter.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI API Cloud Provider"
+      "x-title": "OpenAI API Cloud Provider",
+      "x-type": "OpenAIAPICloudProvider"
     },
     "OpenAICompatEmbeddingsProvider": {
       "description": "OpenAI-compatible embeddings configuration for hosted providers.",
@@ -605,7 +632,7 @@
       "x-type": "OpenAICompatEmbeddingsProvider"
     },
     "OpenAICompatibleAPI": {
-      "description": "OpenAI-compatible chat configuration backed by Hugging Face models.",
+      "description": "OpenAI-compatible chat configuration for self-hosted or REST providers.",
       "properties": {
         "host": {
           "title": "Host",
@@ -715,7 +742,7 @@
       ],
       "title": "OpenAICompatibleAPI",
       "type": "object",
-      "x-description": "Use for self-hosted services (for example vLLM) that expose an OpenAI-compatible API and are configured via a Hugging Face model.",
+      "x-description": "Use for self-hosted services (for example vLLM) or OpenAI-compatible REST providers. Supply a Hugging Face model.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
       "x-title": "OpenAI Compatible API",
@@ -727,10 +754,26 @@
         "host": {
           "title": "Host",
           "type": "string",
-          "x-description": "Hostname for api.openai.com (omit protocol).",
+          "x-description": "The hostname of the HTTP endpoint.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
-          "x-title": "Host"
+          "x-title": "Hostname"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port",
+          "x-description": "Optional port override for the endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
         },
         "protocol": {
           "const": "https",
@@ -757,6 +800,16 @@
         "base_path": {
           "default": "/v1",
           "title": "Base Path",
+          "type": "string",
+          "x-description": "Path prefix for the embeddings API (defaults to `/v1`).",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Base Path"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
           "type": "string"
         },
         "provider": {
@@ -801,7 +854,8 @@
       "x-description": "Use the official OpenAI embeddings endpoint with recommended defaults.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI Embeddings Cloud Provider"
+      "x-title": "OpenAI Embeddings Cloud Provider",
+      "x-type": "OpenAIEmbeddingCloudProvider"
     },
     "PostgresURI": {
       "description": "Configuration for the Postgres connection URI.",

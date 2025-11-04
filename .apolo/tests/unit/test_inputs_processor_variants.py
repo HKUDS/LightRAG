@@ -4,6 +4,7 @@ import pytest
 
 from apolo_app_types.protocols.common import IngressHttp, Preset
 from apolo_app_types.protocols.common.hugging_face import HuggingFaceModel
+from apolo_app_types.protocols.common.openai_compat import OpenAICompatChatAPI
 from apolo_app_types.protocols.postgres import CrunchyPostgresUserCredentials
 
 from apolo_apps_lightrag.inputs_processor import LightRAGInputsProcessor
@@ -108,9 +109,9 @@ async def _generate_env(
                 host="vllm.internal",
                 port=9443,
                 protocol="https",
-                hf_model=HuggingFaceModel(model_hf_name="hf/awesome-model"),
+                hf_model=HuggingFaceModel(model_hf_name="something/awesome-model"),
             ),
-            "hf/awesome-model",
+            "something/awesome-model",
             "https://vllm.internal:9443/v1",
         ),
     ],
@@ -143,7 +144,7 @@ async def test_inputs_processor_openai_compat_provider(
         host="compat.example.com",
         port=9443,
         protocol="https",
-        hf_model=HuggingFaceModel(model_hf_name="hf/awesome-model"),
+        hf_model=HuggingFaceModel(model_hf_name="something/awesome-model"),
         api_key="compat-key",
     )
 
@@ -154,10 +155,34 @@ async def test_inputs_processor_openai_compat_provider(
     )
 
     assert env["LLM_BINDING"] == "openai"
-    assert env["LLM_MODEL"] == "hf/awesome-model"
+    assert env["LLM_MODEL"] == "something/awesome-model"
     assert env["LLM_BINDING_HOST"] == "https://compat.example.com:9443/v1"
     assert env["LLM_BINDING_API_KEY"] == "compat-key"
     assert env["OPENAI_API_KEY"] == "compat-key"
+
+
+@pytest.mark.asyncio
+async def test_inputs_processor_cloud_provider_base_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_config = OpenAIAPICloudProvider(
+        host="openrouter.ai",
+        base_path="/api/v1",
+        model="openrouter/meta-llama-3-70b",
+        api_key="router-key",
+    )
+
+    env = await _generate_env(
+        monkeypatch,
+        llm_config=llm_config,
+        embedding_config=_default_embedding_provider(),
+    )
+
+    assert env["LLM_BINDING"] == "openai"
+    assert env["LLM_MODEL"] == "openrouter/meta-llama-3-70b"
+    assert env["LLM_BINDING_HOST"] == "https://openrouter.ai/api/v1"
+    assert env["LLM_BINDING_API_KEY"] == "router-key"
+    assert env["OPENAI_API_KEY"] == "router-key"
 
 
 @pytest.mark.asyncio
@@ -253,3 +278,57 @@ async def test_inputs_processor_openai_compat_embedding_requires_model(
             llm_config=_default_llm_provider(),
             embedding_config=embedding_config,
         )
+
+
+def test_extract_llm_config_requires_model_for_compatible() -> None:
+    processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
+    llm_config = OpenAICompatibleAPI(
+        host="router.example.com", protocol="https", port=443
+    )
+
+    with pytest.raises(ValueError, match="requires a Hugging Face model"):
+        processor._extract_llm_config(llm_config)
+
+
+def test_extract_llm_config_compatible_with_model() -> None:
+    processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
+    llm_config = OpenAIAPICloudProvider(
+        host="router.example.com",
+        port=443,
+        protocol="https",
+        model="openrouter/meta-llama",
+        api_key="router-key",
+    )
+
+    config = processor._extract_llm_config(llm_config)
+
+    assert config["model"] == "openrouter/meta-llama"
+    assert config["host"] == "https://router.example.com/v1"
+    assert config["api_key"] == "router-key"
+
+
+def test_extract_llm_config_chat_requires_hf() -> None:
+    processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
+    llm_config = OpenAICompatChatAPI(
+        host="hf.example.com",
+        port=8443,
+        protocol="https",
+    )
+
+    with pytest.raises(ValueError, match="requires a Hugging Face model"):
+        processor._extract_llm_config(llm_config)
+
+
+def test_extract_llm_config_chat_with_hf_model() -> None:
+    processor = LightRAGInputsProcessor(client=object())  # type: ignore[arg-type]
+    llm_config = OpenAICompatChatAPI(
+        host="hf.example.com",
+        port=8443,
+        protocol="https",
+        hf_model=HuggingFaceModel(model_hf_name="hf/awesome-model"),
+    )
+
+    config = processor._extract_llm_config(llm_config)
+
+    assert config["model"] == "hf/awesome-model"
+    assert config["host"] == "https://hf.example.com:8443/v1"

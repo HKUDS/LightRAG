@@ -17,7 +17,6 @@ from .types import (
     LightRAGAppInputs,
     OpenAIAPICloudProvider,
     OpenAICompatEmbeddingsProvider,
-    OpenAICompatibleAPI,
     OpenAIEmbeddingCloudProvider,
 )
 
@@ -40,6 +39,8 @@ def _normalise_complete_url(api: RestAPI) -> str:
             protocol = parsed.scheme
         if parsed.port:
             port = parsed.port
+        else:
+            port = None
         if parsed.path:
             base_path = parsed.path
     else:
@@ -66,9 +67,8 @@ def _normalise_complete_url(api: RestAPI) -> str:
 class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
     def _extract_llm_config(self, llm_config: t.Any) -> dict[str, t.Any]:
         """Extract LLM configuration from provider-specific config."""
-        if isinstance(llm_config, OpenAICompatibleAPI) or isinstance(
-            llm_config, OpenAICompatChatAPI
-        ):
+        if isinstance(llm_config, OpenAICompatChatAPI):
+            print(f"llm_config: {llm_config}")
             if llm_config.hf_model is None:
                 msg = (
                     "OpenAI-compatible LLM configuration requires a Hugging Face model"
@@ -82,7 +82,8 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "host": host,
                 "api_key": getattr(llm_config, "api_key", None),
             }
-        if isinstance(llm_config, OpenAIAPICloudProvider):
+
+        elif isinstance(llm_config, OpenAIAPICloudProvider):
             host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
