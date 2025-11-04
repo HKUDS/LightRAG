@@ -52,10 +52,10 @@ try:
     from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
+        AnswerRelevancy,
+        ContextPrecision,
+        ContextRecall,
+        Faithfulness,
     )
     from ragas.llms import LangchainLLMWrapper
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -399,10 +399,10 @@ class RAGEvaluator:
                 eval_results = evaluate(
                     dataset=eval_dataset,
                     metrics=[
-                        faithfulness,
-                        answer_relevancy,
-                        context_recall,
-                        context_precision,
+                        Faithfulness(),
+                        AnswerRelevancy(),
+                        ContextRecall(),
+                        ContextPrecision(),
                     ],
                     llm=self.eval_llm,
                     embeddings=self.eval_embeddings,
