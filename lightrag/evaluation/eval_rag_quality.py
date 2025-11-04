@@ -36,9 +36,10 @@ from lightrag.utils import logger
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Load .env from project root
-project_root = Path(__file__).parent.parent.parent
-load_dotenv(project_root / ".env")
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # Conditional imports - will raise ImportError if dependencies not installed
 try:
@@ -165,10 +166,19 @@ class RAGEvaluator:
                 "top_k": 10,
             }
 
+            # Get API key from environment for authentication
+            api_key = os.getenv("LIGHTRAG_API_KEY")
+            
+            # Prepare headers with optional authentication
+            headers = {}
+            if api_key:
+                headers["X-API-Key"] = api_key
+
             # Single optimized API call - gets both answer AND chunk content
             response = await client.post(
                 f"{self.rag_api_url}/query",
                 json=payload,
+                headers=headers if headers else None,
             )
             response.raise_for_status()
             result = response.json()
