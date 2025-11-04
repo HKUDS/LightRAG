@@ -82,6 +82,7 @@ try:
     )
     from ragas.llms import LangchainLLMWrapper
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    from tqdm import tqdm
 
     RAGAS_AVAILABLE = True
 
@@ -405,7 +406,11 @@ class RAGEvaluator:
             # Run RAGAS evaluation
             # IMPORTANT: Create fresh metric instances for each evaluation to avoid
             # concurrent state conflicts when multiple tasks run in parallel
+            pbar = None
             try:
+                # Create standard tqdm progress bar for RAGAS evaluation
+                pbar = tqdm(total=4, desc=f"Eval-{idx}", leave=True)
+                
                 eval_results = evaluate(
                     dataset=eval_dataset,
                     metrics=[
@@ -416,6 +421,7 @@ class RAGEvaluator:
                     ],
                     llm=self.eval_llm,
                     embeddings=self.eval_embeddings,
+                    _pbar=pbar,
                 )
 
                 # Convert to DataFrame (RAGAS v0.3+ API)
@@ -472,6 +478,10 @@ class RAGEvaluator:
                     "ragas_score": 0,
                     "timestamp": datetime.now().isoformat(),
                 }
+            finally:
+                # Force close progress bar to ensure completion
+                if pbar is not None:
+                    pbar.close()
 
     async def evaluate_responses(self) -> List[Dict[str, Any]]:
         """
@@ -794,16 +804,6 @@ class RAGEvaluator:
         )
         with open(json_path, "w") as f:
             json.dump(summary, f, indent=2)
-
-        # Add a small delay to ensure all buffered output is completely written
-        await asyncio.sleep(0.8)
-        # Flush all output buffers to ensure RAGAS progress bars are fully displayed
-        sys.stdout.flush()
-        sys.stderr.flush()
-        sys.stdout.write("\n")
-        sys.stderr.write("\n")
-        sys.stdout.flush()
-        sys.stderr.flush()
 
         # Display results table
         self._display_results_table(results)
