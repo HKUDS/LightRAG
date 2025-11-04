@@ -370,7 +370,8 @@ class PostgreSQLDB:
     async def configure_vector_extension(connection: asyncpg.Connection) -> None:
         """Create VECTOR extension if it doesn't exist for vector similarity operations."""
         try:
-            await connection.execute("CREATE EXTENSION IF NOT EXISTS vectors")  # type: ignore
+            await connection.execute("CREATE EXTENSION IF NOT EXISTS vectors")
+            await connection.execute("SET search_path public, extensions, vectors;")  # type: ignore
             logger.info("PostgreSQL, vectors extension enabled")
         except Exception as e:
             logger.warning(f"Could not create vectors extension: {e}")
