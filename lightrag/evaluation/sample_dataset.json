@@ -3,17 +3,17 @@
     {
       "question": "How does LightRAG solve the hallucination problem in large language models?",
       "ground_truth": "LightRAG solves the hallucination problem by combining large language models with external knowledge retrieval. The framework ensures accurate responses by grounding LLM outputs in actual documents. LightRAG provides contextual responses that reduce hallucinations significantly.",
-      "context": "lightrag_overview"
+      "project": "lightrag_overview"
     },
     {
       "question": "What are the three main components required in a RAG system?",
       "ground_truth": "A RAG system requires three main components: a retrieval system (vector database or search engine) to find relevant documents, an embedding model to convert text into vector representations for similarity search, and a large language model (LLM) to generate responses based on retrieved context.",
-      "context": "rag_architecture"
+      "project": "rag_architecture"
     },
     {
       "question": "How does LightRAG's retrieval performance compare to traditional RAG approaches?",
       "ground_truth": "LightRAG delivers faster retrieval performance than traditional RAG approaches. The framework optimizes document retrieval operations for speed, while traditional RAG systems often suffer from slow query response times. LightRAG achieves high quality results with improved performance.",
-      "context": "lightrag_improvements"
+      "project": "lightrag_improvements"
     }
   ]
 }
