@@ -103,6 +103,11 @@ class QueryRequest(BaseModel):
         description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",
     )
 
+    include_chunk_content: Optional[bool] = Field(
+        default=False,
+        description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
+    )
+
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
@@ -130,7 +135,10 @@ class QueryRequest(BaseModel):
     def to_query_params(self, is_stream: bool) -> "QueryParam":
         """Converts a QueryRequest instance into a QueryParam instance."""
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
-        request_data = self.model_dump(exclude_none=True, exclude={"query"})
+        # Exclude API-level parameters that don't belong in QueryParam
+        request_data = self.model_dump(
+            exclude_none=True, exclude={"query", "include_chunk_content"}
+        )
 
         # Ensure `mode` and `stream` are set explicitly
         param = QueryParam(**request_data)
@@ -138,11 +146,22 @@ class QueryRequest(BaseModel):
         return param
 
 
+class ReferenceItem(BaseModel):
+    """A single reference item in query responses."""
+
+    reference_id: str = Field(description="Unique reference identifier")
+    file_path: str = Field(description="Path to the source file")
+    content: Optional[List[str]] = Field(
+        default=None,
+        description="List of chunk contents from this file (only present when include_chunk_content=True)",
+    )
+
+
 class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
     )
-    references: Optional[List[Dict[str, str]]] = Field(
+    references: Optional[List[ReferenceItem]] = Field(
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
@@ -200,6 +219,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         "properties": {
                                             "reference_id": {"type": "string"},
                                             "file_path": {"type": "string"},
+                                            "content": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                                "description": "List of chunk contents from this file (only included when include_chunk_content=True)",
+                                            },
                                         },
                                     },
                                     "description": "Reference list (only included when include_references=True)",
@@ -221,6 +245,30 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         {
                                             "reference_id": "2",
                                             "file_path": "/documents/machine_learning.txt",
+                                        },
+                                    ],
+                                },
+                            },
+                            "with_chunk_content": {
+                                "summary": "Response with chunk content",
+                                "description": "Example response when include_references=True and include_chunk_content=True. Note: content is an array of chunks from the same file.",
+                                "value": {
+                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
+                                    "references": [
+                                        {
+                                            "reference_id": "1",
+                                            "file_path": "/documents/ai_overview.pdf",
+                                            "content": [
+                                                "Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.",
+                                                "AI systems can be categorized into narrow AI, which is designed for specific tasks, and general AI, which aims to match human cognitive abilities across a wide range of domains.",
+                                            ],
+                                        },
+                                        {
+                                            "reference_id": "2",
+                                            "file_path": "/documents/machine_learning.txt",
+                                            "content": [
+                                                "Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves."
+                                            ],
                                         },
                                     ],
                                 },
@@ -368,12 +416,36 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
-            references = result.get("data", {}).get("references", [])
+            data = result.get("data", {})
+            references = data.get("references", [])
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
             if not response_content:
                 response_content = "No relevant context found for the query."
+
+            # Enrich references with chunk content if requested
+            if request.include_references and request.include_chunk_content:
+                chunks = data.get("chunks", [])
+                # Create a mapping from reference_id to chunk content
+                ref_id_to_content = {}
+                for chunk in chunks:
+                    ref_id = chunk.get("reference_id", "")
+                    content = chunk.get("content", "")
+                    if ref_id and content:
+                        # Collect chunk content; join later to avoid quadratic string concatenation
+                        ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                # Add content to references
+                enriched_references = []
+                for ref in references:
+                    ref_copy = ref.copy()
+                    ref_id = ref.get("reference_id", "")
+                    if ref_id in ref_id_to_content:
+                        # Keep content as a list of chunks (one file may have multiple chunks)
+                        ref_copy["content"] = ref_id_to_content[ref_id]
+                    enriched_references.append(ref_copy)
+                references = enriched_references
 
             # Return response with or without references based on request
             if request.include_references:
@@ -403,6 +475,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "summary": "Streaming mode with references (stream=true)",
                                 "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.",
                                 "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
+                            },
+                            "streaming_with_chunk_content": {
+                                "summary": "Streaming mode with chunk content (stream=true, include_chunk_content=true)",
+                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.",
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
                             },
                             "streaming_without_references": {
                                 "summary": "Streaming mode without references (stream=true)",
@@ -599,6 +676,30 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 # Extract references and LLM response from unified result
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
+
+                # Enrich references with chunk content if requested
+                if request.include_references and request.include_chunk_content:
+                    data = result.get("data", {})
+                    chunks = data.get("chunks", [])
+                    # Create a mapping from reference_id to chunk content
+                    ref_id_to_content = {}
+                    for chunk in chunks:
+                        ref_id = chunk.get("reference_id", "")
+                        content = chunk.get("content", "")
+                        if ref_id and content:
+                            # Collect chunk content
+                            ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                    # Add content to references
+                    enriched_references = []
+                    for ref in references:
+                        ref_copy = ref.copy()
+                        ref_id = ref.get("reference_id", "")
+                        if ref_id in ref_id_to_content:
+                            # Keep content as a list of chunks (one file may have multiple chunks)
+                            ref_copy["content"] = ref_id_to_content[ref_id]
+                        enriched_references.append(ref_copy)
+                    references = enriched_references
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks

@@ -113,6 +113,15 @@ offline = [
     "lightrag-hku[offline-docs,offline-storage,offline-llm]",
 ]
 
+evaluation = [
+    # RAG evaluation dependencies (RAGAS framework)
+    "ragas>=0.3.7",
+    "datasets>=4.3.0",
+    "httpx>=0.28.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
+
 observability = [
     # LLM observability and tracing dependencies
     "langfuse>=3.8.1",
