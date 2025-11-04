@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "Project Repository",
     "logout": "Logout",
+    "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
       "switchToLight": "Switch to light theme",
       "switchToDark": "Switch to dark theme"
@@ -50,11 +51,36 @@
       "confirmPlaceholder": "Type yes to confirm",
       "clearCache": "Clear LLM cache",
       "confirmButton": "YES",
+      "clearing": "Clearing...",
+      "timeout": "Clear operation timed out, please try again",
       "success": "Documents cleared successfully",
       "cacheCleared": "Cache cleared successfully",
       "cacheClearFailed": "Failed to clear cache:\n{{error}}",
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Delete",
+      "tooltip": "Delete selected documents",
+      "title": "Delete Documents",
+      "description": "This will permanently delete the selected documents from the system",
+      "warning": "WARNING: This action will permanently delete the selected documents and cannot be undone!",
+      "confirm": "Do you really want to delete {{count}} selected document(s)?",
+      "confirmPrompt": "Type 'yes' to confirm this action",
+      "confirmPlaceholder": "Type yes to confirm",
+      "confirmButton": "YES",
+      "deleteFileOption": "Also delete uploaded files",
+      "deleteFileTooltip": "Check this option to also delete the corresponding uploaded files on the server",
+      "deleteLLMCacheOption": "Also delete extracted LLM cache",
+      "success": "Document deletion pipeline started successfully",
+      "failed": "Delete Documents Failed:\n{{message}}",
+      "error": "Delete Documents Failed:\n{{error}}",
+      "busy": "Pipeline is busy, please try again later",
+      "notAllowed": "No permission to perform this operation"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Select Current Page ({{count}})",
+      "deselectAll": "Deselect All ({{count}})"
     },
     "uploadDocuments": {
       "button": "Upload",
@@ -73,7 +99,7 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
@@ -89,27 +115,31 @@
     },
     "documentManager": {
       "title": "Document Management",
-      "scanButton": "Scan",
-      "scanTooltip": "Scan documents in input folder",
-      "pipelineStatusButton": "Pipeline Status",
-      "pipelineStatusTooltip": "View pipeline status",
+      "scanButton": "Scan/Retry",
+      "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
+      "refreshTooltip": "Reset document list",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "View document processing pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
       "emptyDescription": "There are no uploaded documents yet.",
       "columns": {
         "id": "ID",
+        "fileName": "File Name",
         "summary": "Summary",
         "status": "Status",
         "length": "Length",
         "chunks": "Chunks",
         "created": "Created",
         "updated": "Updated",
-        "metadata": "Metadata"
+        "metadata": "Metadata",
+        "select": "Select"
       },
       "status": {
         "all": "All",
         "completed": "Completed",
+        "preprocessed": "Preprocessed",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
@@ -129,14 +159,24 @@
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
       "requestPending": "Request Pending",
+      "cancellationRequested": "Cancellation Requested",
       "jobName": "Job Name",
       "startTime": "Start Time",
       "progress": "Progress",
-      "unit": "batch",
-      "latestMessage": "Latest Message",
-      "historyMessages": "History Messages",
+      "unit": "Batch",
+      "pipelineMessages": "Pipeline Messages",
+      "cancelButton": "Cancel",
+      "cancelTooltip": "Cancel pipeline processing",
+      "cancelConfirmTitle": "Confirm Pipeline Cancellation",
+      "cancelConfirmDescription": "This will interrupt the ongoing pipeline processing. Are you sure you want to continue?",
+      "cancelConfirmButton": "Confirm Cancellation",
+      "cancelInProgress": "Cancellation in progress...",
+      "pipelineNotRunning": "Pipeline not running",
+      "cancelSuccess": "Pipeline cancellation requested",
+      "cancelFailed": "Failed to cancel pipeline\n{{error}}",
+      "cancelNotBusy": "Pipeline is not running, no need to cancel",
       "errors": {
-        "fetchFailed": "Failed to get pipeline status\n{{error}}"
+        "fetchFailed": "Failed to fetch pipeline status\n{{error}}"
       }
     }
   },
@@ -160,7 +200,21 @@
       "unknown": "Unknown",
       "object": "Object",
       "group": "Group",
-      "technology": "Technology"
+      "technology": "Technology",
+      "product": "Product",
+      "document": "Document",
+      "content": "Content",
+      "data": "Data",
+      "artifact": "Artifact",
+      "concept": "Concept",
+      "naturalobject": "Natural Object",
+      "method": "Method",
+      "creature": "Creature",
+      "plant": "Plant",
+      "disease": "Disease",
+      "drug": "Drug",
+      "food": "Food",
+      "other": "Other"
     },
     "sideBar": {
       "settings": {
@@ -220,23 +274,31 @@
     },
     "statusCard": {
       "unavailable": "Status information unavailable",
-      "storageInfo": "Storage Info",
+      "serverInfo": "Server Info",
       "workingDirectory": "Working Directory",
       "inputDirectory": "Input Directory",
+      "maxParallelInsert": "Concurrent Doc Processing",
+      "summarySettings": "Summary Settings",
       "llmConfig": "LLM Configuration",
       "llmBinding": "LLM Binding",
-      "llmBindingHost": "LLM Binding Host",
+      "llmBindingHost": "LLM Endpoint",
       "llmModel": "LLM Model",
-      "maxTokens": "Max Tokens",
       "embeddingConfig": "Embedding Configuration",
       "embeddingBinding": "Embedding Binding",
-      "embeddingBindingHost": "Embedding Binding Host",
+      "embeddingBindingHost": "Embedding Endpoint",
       "embeddingModel": "Embedding Model",
       "storageConfig": "Storage Configuration",
       "kvStorage": "KV Storage",
       "docStatusStorage": "Doc Status Storage",
       "graphStorage": "Graph Storage",
-      "vectorStorage": "Vector Storage"
+      "vectorStorage": "Vector Storage",
+      "workspace": "Workspace",
+      "maxGraphNodes": "Max Graph Nodes",
+      "rerankerConfig": "Reranker Configuration",
+      "rerankerBindingHost": "Reranker Endpoint",
+      "rerankerModel": "Reranker Model",
+      "lockStatus": "Lock Status",
+      "threshold": "Threshold"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",
@@ -244,11 +306,24 @@
       "errors": {
         "duplicateName": "Node name already exists",
         "updateFailed": "Failed to update node",
-        "tryAgainLater": "Please try again later"
+        "tryAgainLater": "Please try again later",
+        "updateSuccessButMergeFailed": "Properties updated, but merge failed: {{error}}",
+        "mergeFailed": "Merge failed: {{error}}"
       },
       "success": {
         "entityUpdated": "Node updated successfully",
-        "relationUpdated": "Relation updated successfully"
+        "relationUpdated": "Relation updated successfully",
+        "entityMerged": "Nodes merged successfully"
+      },
+      "mergeOptionLabel": "Automatically merge when a duplicate name is found",
+      "mergeOptionDescription": "If enabled, renaming to an existing name will merge this node into the existing one instead of failing.",
+      "mergeDialog": {
+        "title": "Node merged",
+        "description": "\"{{source}}\" has been merged into \"{{target}}\".",
+        "refreshHint": "Refresh the graph to load the latest structure.",
+        "keepCurrentStart": "Refresh and keep current start node",
+        "useMergedStart": "Refresh and use merged node",
+        "refreshing": "Refreshing graph..."
       },
       "node": {
         "title": "Node",
@@ -266,9 +341,9 @@
           "description": "Description",
           "entity_id": "Name",
           "entity_type": "Type",
-          "source_id": "SrcID",
+          "source_id": "C-ID",
           "Neighbour": "Neigh",
-          "file_path": "Source",
+          "file_path": "File",
           "keywords": "Keys",
           "weight": "Weight"
         }
@@ -283,23 +358,34 @@
       }
     },
     "search": {
-      "placeholder": "Search nodes...",
-      "message": "And {count} others"
+      "placeholder": "Search nodes in page...",
+      "message": "And {{count}} others"
     },
     "graphLabels": {
-      "selectTooltip": "Select query label",
-      "noLabels": "No labels found",
-      "label": "Label",
-      "placeholder": "Search labels...",
-      "andOthers": "And {count} others",
-      "refreshTooltip": "Reload data(After file added)"
+      "selectTooltip": "Get subgraph of a node (label)",
+      "noLabels": "No matching nodes found",
+      "label": "Search node name",
+      "placeholder": "Search node name...",
+      "andOthers": "And {{count}} others",
+      "refreshGlobalTooltip": "Refresh global graph data and reset search history",
+      "refreshCurrentLabelTooltip": "Refresh current page graph data",
+      "refreshingTooltip": "Refreshing data..."
     },
     "emptyGraph": "Empty(Try Reload Again)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "Copy to clipboard",
-      "copyError": "Failed to copy text to clipboard"
+      "copyError": "Failed to copy text to clipboard",
+      "copyEmpty": "No content to copy",
+      "copySuccess": "Content copied to clipboard",
+      "copySuccessLegacy": "Content copied (legacy method)",
+      "copySuccessManual": "Content copied (manual method)",
+      "copyFailed": "Failed to copy content",
+      "copyManualInstruction": "Please select and copy the text manually",
+      "thinking": "Thinking...",
+      "thinkingTime": "Thinking time {{time}}s",
+      "thinkingInProgress": "Thinking in progress..."
     },
     "retrieval": {
       "startPrompt": "Start a retrieval by typing your query below",
@@ -314,7 +400,7 @@
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
-      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval\n• Bypass: Passes query directly to LLM without retrieval",
+      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
@@ -330,15 +416,18 @@
         "singleParagraph": "Single Paragraph",
         "bulletPoints": "Bullet Points"
       },
-      "topK": "Top K Results",
-      "topKTooltip": "Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode",
-      "topKPlaceholder": "Number of results",
-      "maxTokensTextUnit": "Max Tokens for Text Unit",
-      "maxTokensTextUnitTooltip": "Maximum number of tokens allowed for each retrieved text chunk",
-      "maxTokensGlobalContext": "Max Tokens for Global Context",
-      "maxTokensGlobalContextTooltip": "Maximum number of tokens allocated for relationship descriptions in global retrieval",
-      "maxTokensLocalContext": "Max Tokens for Local Context",
-      "maxTokensLocalContextTooltip": "Maximum number of tokens allocated for entity descriptions in local retrieval",
+      "topK": "KG Top K",
+      "topKTooltip": "Number of entities and relations to retrieve. Applicable for non-naive modes.",
+      "topKPlaceholder": "Enter top_k value",
+      "chunkTopK": "Chunk Top K",
+      "chunkTopKTooltip": "Number of text chunks to retrieve, applicable for all modes.",
+      "chunkTopKPlaceholder": "Enter chunk_top_k value",
+      "maxEntityTokens": "Max Entity Tokens",
+      "maxEntityTokensTooltip": "Maximum number of tokens allocated for entity context in unified token control system",
+      "maxRelationTokens": "Max Relation Tokens",
+      "maxRelationTokensTooltip": "Maximum number of tokens allocated for relationship context in unified token control system",
+      "maxTotalTokens": "Max Total Tokens",
+      "maxTotalTokensTooltip": "Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)",
       "historyTurns": "History Turns",
       "historyTurnsTooltip": "Number of complete conversation turns (user-assistant pairs) to consider in the response context",
       "historyTurnsPlaceholder": "Number of history turns",
@@ -348,9 +437,11 @@
       "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
-      "userPrompt": "User Prompt",
+      "userPrompt": "Additional Output Prompt",
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
-      "userPromptPlaceholder": "Enter custom prompt (optional)"
+      "userPromptPlaceholder": "Enter custom prompt (optional)",
+      "enableRerank": "Enable Rerank",
+      "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }
   },
   "apiSite": {
@@ -361,5 +452,14 @@
     "description": "Please enter your API key to access the service",
     "placeholder": "Enter your API key",
     "save": "Save"
+  },
+  "pagination": {
+    "showing": "Showing {{start}} to {{end}} of {{total}} entries",
+    "page": "Page",
+    "pageSize": "Page Size",
+    "firstPage": "First Page",
+    "prevPage": "Previous Page",
+    "nextPage": "Next Page",
+    "lastPage": "Last Page"
   }
 }

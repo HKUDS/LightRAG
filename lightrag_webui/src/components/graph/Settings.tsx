@@ -1,4 +1,4 @@
-import { useState, useCallback} from 'react'
+import { useState, useCallback, useEffect} from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -7,8 +7,10 @@ import Input from '@/components/ui/Input'
 
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
+import { useGraphStore } from '@/stores/graph'
+import useRandomGraph from '@/hooks/useRandomGraph'
 
-import { SettingsIcon, Undo2 } from 'lucide-react'
+import { SettingsIcon, Undo2, Shuffle } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -61,6 +63,10 @@ const LabeledNumberInput = ({
   const [currentValue, setCurrentValue] = useState<number | null>(value)
   // Create unique ID using the label text converted to lowercase with spaces removed
   const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
+
+  useEffect(() => {
+    setCurrentValue(value)
+  }, [value])
 
   const onValueChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,9 +160,13 @@ export default function Settings() {
   const maxEdgeSize = useSettingsStore.use.maxEdgeSize()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
   const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
+  const backendMaxGraphNodes = useSettingsStore.use.backendMaxGraphNodes()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
+
+  // Random graph functionality for development/testing
+  const { randomGraph } = useRandomGraph()
 
   const setEnableNodeDrag = useCallback(
     () => useSettingsStore.setState((pre) => ({ enableNodeDrag: !pre.enableNodeDrag })),
@@ -213,19 +223,20 @@ export default function Settings() {
   }, [])
 
   const setGraphMaxNodes = useCallback((nodes: number) => {
-    if (nodes < 1 || nodes > 1000) return
-    useSettingsStore.setState({ graphMaxNodes: nodes })
-    const currentLabel = useSettingsStore.getState().queryLabel
-    useSettingsStore.getState().setQueryLabel('')
-    setTimeout(() => {
-      useSettingsStore.getState().setQueryLabel(currentLabel)
-    }, 300)
-  }, [])
+    const maxLimit = backendMaxGraphNodes || 1000
+    if (nodes < 1 || nodes > maxLimit) return
+    useSettingsStore.getState().setGraphMaxNodes(nodes, true)
+  }, [backendMaxGraphNodes])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
     if (iterations < 1) return
     useSettingsStore.setState({ graphLayoutMaxIterations: iterations })
   }, [])
+
+  const handleGenerateRandomGraph = useCallback(() => {
+    const graph = randomGraph()
+    useGraphStore.getState().setSigmaGraph(graph)
+  }, [randomGraph])
 
   const { t } = useTranslation();
 
@@ -360,11 +371,11 @@ export default function Settings() {
               onEditFinished={setGraphQueryMaxDepth}
             />
             <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.maxNodes')}
+              label={`${t('graphPanel.sideBar.settings.maxNodes')} (≤ ${backendMaxGraphNodes || 1000})`}
               min={1}
-              max={1000}
+              max={backendMaxGraphNodes || 1000}
               value={graphMaxNodes}
-              defaultValue={1000}
+              defaultValue={backendMaxGraphNodes || 1000}
               onEditFinished={setGraphMaxNodes}
             />
             <LabeledNumberInput
@@ -375,7 +386,29 @@ export default function Settings() {
               defaultValue={15}
               onEditFinished={setGraphLayoutMaxIterations}
             />
-            <Separator />
+            {/* Development/Testing Section - Only visible in development mode */}
+            {import.meta.env.DEV && (
+              <>
+                <Separator />
+
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm leading-none font-medium text-muted-foreground">
+                    Dev Options
+                  </label>
+                  <Button
+                    onClick={handleGenerateRandomGraph}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                  >
+                    <Shuffle className="h-3.5 w-3.5" />
+                    Gen Random Graph
+                  </Button>
+                </div>
+
+                <Separator />
+              </>
+            )}
             <Button
               onClick={saveSettings}
               variant="outline"

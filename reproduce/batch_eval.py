@@ -57,6 +57,10 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
                 "Winner": "[Answer 1 or Answer 2]",
                 "Explanation": "[Provide explanation here]"
             }},
+            "Diversity": {{
+                "Winner": "[Answer 1 or Answer 2]",
+                "Explanation": "[Provide explanation here]"
+            }},
             "Empowerment": {{
                 "Winner": "[Answer 1 or Answer 2]",
                 "Explanation": "[Provide explanation here]"
@@ -69,7 +73,7 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
         """
 
         request_data = {
-            "custom_id": f"request-{i+1}",
+            "custom_id": f"request-{i + 1}",
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {

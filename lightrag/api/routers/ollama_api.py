@@ -11,7 +11,7 @@ import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import TiktokenTokenizer
-from lightrag.api.utils_api import ollama_server_infos, get_combined_auth_dependency
+from lightrag.api.utils_api import get_combined_auth_dependency
 from fastapi import Depends
 
 
@@ -199,7 +199,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
         "/mix ": (SearchMode.mix, False),
         "/bypass ": (SearchMode.bypass, False),
         "/context": (
-            SearchMode.hybrid,
+            SearchMode.mix,
             True,
         ),
         "/localcontext": (SearchMode.local, True),
@@ -215,13 +215,13 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
             cleaned_query = query[len(prefix) :].lstrip()
             return cleaned_query, mode, only_need_context, user_prompt
 
-    return query, SearchMode.hybrid, False, user_prompt
+    return query, SearchMode.mix, False, user_prompt
 
 
 class OllamaAPI:
     def __init__(self, rag: LightRAG, top_k: int = 60, api_key: Optional[str] = None):
         self.rag = rag
-        self.ollama_server_infos = ollama_server_infos
+        self.ollama_server_infos = rag.ollama_server_infos
         self.top_k = top_k
         self.api_key = api_key
         self.router = APIRouter(tags=["ollama"])
@@ -234,7 +234,7 @@ class OllamaAPI:
         @self.router.get("/version", dependencies=[Depends(combined_auth)])
         async def get_version():
             """Get Ollama version information"""
-            return OllamaVersionResponse(version="0.5.4")
+            return OllamaVersionResponse(version="0.9.3")
 
         @self.router.get("/tags", dependencies=[Depends(combined_auth)])
         async def get_tags():
@@ -244,9 +244,9 @@ class OllamaAPI:
                     {
                         "name": self.ollama_server_infos.LIGHTRAG_MODEL,
                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
+                        "modified_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                         "size": self.ollama_server_infos.LIGHTRAG_SIZE,
                         "digest": self.ollama_server_infos.LIGHTRAG_DIGEST,
-                        "modified_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                         "details": {
                             "parent_model": "",
                             "format": "gguf",
@@ -337,7 +337,10 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "response": "",
                                     "done": True,
+                                    "done_reason": "stop",
+                                    "context": [],
                                     "total_duration": total_time,
                                     "load_duration": 0,
                                     "prompt_eval_count": prompt_tokens,
@@ -377,6 +380,7 @@ class OllamaAPI:
                                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                                         "response": f"\n\nError: {error_msg}",
+                                        "error": f"\n\nError: {error_msg}",
                                         "done": False,
                                     }
                                     yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
@@ -385,6 +389,7 @@ class OllamaAPI:
                                     final_data = {
                                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                        "response": "",
                                         "done": True,
                                     }
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
@@ -399,7 +404,10 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "response": "",
                                     "done": True,
+                                    "done_reason": "stop",
+                                    "context": [],
                                     "total_duration": total_time,
                                     "load_duration": 0,
                                     "prompt_eval_count": prompt_tokens,
@@ -444,6 +452,8 @@ class OllamaAPI:
                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                         "response": str(response_text),
                         "done": True,
+                        "done_reason": "stop",
+                        "context": [],
                         "total_duration": total_time,
                         "load_duration": 0,
                         "prompt_eval_count": prompt_tokens,
@@ -459,8 +469,8 @@ class OllamaAPI:
             "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
         )
         async def chat(raw_request: Request):
-            """Process chat completion requests acting as an Ollama model
-            Routes user queries through LightRAG by selecting query mode based on prefix indicators.
+            """Process chat completion requests by acting as an Ollama model.
+            Routes user queries through LightRAG by selecting query mode based on query prefix.
             Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
             Supports both application/json and application/octet-stream Content-Types.
             """
@@ -472,6 +482,12 @@ class OllamaAPI:
                 messages = request.messages
                 if not messages:
                     raise HTTPException(status_code=400, detail="No messages provided")
+
+                # Validate that the last message is from a user
+                if messages[-1].role != "user":
+                    raise HTTPException(
+                        status_code=400, detail="Last message must be from user role"
+                    )
 
                 # Get the last message as query and previous messages as history
                 query = messages[-1].content
@@ -489,7 +505,7 @@ class OllamaAPI:
                 prompt_tokens = estimate_tokens(cleaned_query)
 
                 param_dict = {
-                    "mode": mode,
+                    "mode": mode.value,
                     "stream": request.stream,
                     "only_need_context": only_need_context,
                     "conversation_history": conversation_history,
@@ -499,12 +515,6 @@ class OllamaAPI:
                 # Add user_prompt to param_dict
                 if user_prompt is not None:
                     param_dict["user_prompt"] = user_prompt
-
-                if (
-                    hasattr(self.rag, "args")
-                    and self.rag.args.history_turns is not None
-                ):
-                    param_dict["history_turns"] = self.rag.args.history_turns
 
                 query_param = QueryParam(**param_dict)
 
@@ -557,6 +567,12 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": "",
+                                        "images": None,
+                                    },
+                                    "done_reason": "stop",
                                     "done": True,
                                     "total_duration": total_time,
                                     "load_duration": 0,
@@ -605,6 +621,7 @@ class OllamaAPI:
                                             "content": f"\n\nError: {error_msg}",
                                             "images": None,
                                         },
+                                        "error": f"\n\nError: {error_msg}",
                                         "done": False,
                                     }
                                     yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
@@ -613,6 +630,11 @@ class OllamaAPI:
                                     final_data = {
                                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": "",
+                                            "images": None,
+                                        },
                                         "done": True,
                                     }
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
@@ -633,6 +655,7 @@ class OllamaAPI:
                                         "content": "",
                                         "images": None,
                                     },
+                                    "done_reason": "stop",
                                     "done": True,
                                     "total_duration": total_time,
                                     "load_duration": 0,
@@ -697,6 +720,7 @@ class OllamaAPI:
                             "content": str(response_text),
                             "images": None,
                         },
+                        "done_reason": "stop",
                         "done": True,
                         "total_duration": total_time,
                         "load_duration": 0,

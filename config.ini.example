@@ -2,6 +2,13 @@
 uri = neo4j+s://xxxxxxxx.databases.neo4j.io
 username = neo4j
 password = your-password
+connection_pool_size = 100
+connection_timeout = 30.0
+connection_acquisition_timeout = 30.0
+max_transaction_retry_time = 30.0
+max_connection_lifetime = 300.0
+liveness_check_timeout = 30.0
+keep_alive = true
 
 [mongodb]
 uri = mongodb+srv://name:password@your-cluster-address
@@ -19,5 +26,12 @@ port = 5432
 user = your_username
 password = your_password
 database = your_database
-workspace = default  # 可选,默认为default
+# workspace = default
 max_connections = 12
+vector_index_type = HNSW        # HNSW or IVFFLAT
+hnsw_m = 16
+hnsw_ef = 64
+ivfflat_lists = 100
+
+[memgraph]
+uri = bolt://localhost:7687

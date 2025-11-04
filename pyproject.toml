@@ -1,90 +1,155 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "apolo-apps-lightrag"
-version = "0.0.1"
-description = "Apolo LightRAG application"
-authors = [
-    {name = "Apolo", email = "dev@apolo.us"}
-]
-readme = "README.md"
+name = "lightrag-hku"
 dynamic = ["version"]
-requires-python = ">=3.11.0,<4.0"
-
-[tool.poetry]
-name = "apolo-apps-lightrag"
-authors = ["Apolo.us"]
-packages = [
-  { include = "apolo_apps_lightrag", from = ".apolo/src" },
+authors = [
+    {name = "Zirui Guo"}
+]
+description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "aiohttp",
+    "configparser",
+    "future",
+    "json_repair",
+    "nano-vectordb",
+    "networkx",
+    "numpy",
+    "pandas>=2.0.0,<2.4.0",
+    "pipmaster",
+    "pydantic",
+    "pypinyin",
+    "python-dotenv",
+    "setuptools",
+    "tenacity",
+    "tiktoken",
+    "xlsxwriter>=3.1.0",
 ]
 
-[tool.poetry.dependencies]
-apolo-sdk = "^25.7.2"
-pydantic = "^2.9.2"
-pyyaml = "^6.0.2"
-yarl = "^1.18.3"
-apolo-app-types = "^25.9.0"
-
-[tool.poetry.group.dev]
-optional = true
-
-[tool.poetry.group.dev.dependencies]
-pre-commit = "^4.2.0"
-types-PyYAML = "^6.0.12.20241230"
-pytest = "^8.3.4"
-pytest-asyncio = "^0.25.3"
-pytest-cov = "^6.2.1"
-mypy = "^1.17.1"
-
-[tool.mypy]
-check_untyped_defs = true
-disallow_any_generics = true
-disallow_untyped_defs = true
-follow_imports = "silent"
-strict_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_unused_configs = true
-plugins = ['pydantic.mypy']
-exclude = [
-  "tests/"
+[project.optional-dependencies]
+api = [
+    # Core dependencies
+    "aiohttp",
+    "configparser",
+    "future",
+    "json_repair",
+    "nano-vectordb",
+    "networkx",
+    "numpy",
+    "openai>=1.0.0,<3.0.0",
+    "pandas>=2.0.0,<2.4.0",
+    "pipmaster",
+    "pydantic",
+    "pypinyin",
+    "python-dotenv",
+    "setuptools",
+    "tenacity",
+    "tiktoken",
+    "xlsxwriter>=3.1.0",
+    # API-specific dependencies
+    "aiofiles",
+    "ascii_colors",
+    "asyncpg",
+    "distro",
+    "fastapi",
+    "httpcore",
+    "httpx",
+    "jiter",
+    "passlib[bcrypt]",
+    "psutil",
+    "PyJWT>=2.8.0,<3.0.0",
+    "python-jose[cryptography]",
+    "python-multipart",
+    "pytz",
+    "uvicorn",
 ]
 
-[[tool.mypy.overrides]]
-module = "pytest"
-ignore_missing_imports = true
-
-[tool.flake8]
-extend-exclude = [
-  ".git",
-  ".env",
-  "__pycache__",
-  ".eggs",
-]
-max-line-length = 88
-extend-ignore = [
-  "N801",
-  "N802",
-  "N803",
-  "E252",
-  "W503",
-  "E133",
-  "E203",
-  "F541",
+# Offline deployment dependencies (layered design for flexibility)
+offline-docs = [
+    # Document processing dependencies
+    "openpyxl>=3.0.0,<4.0.0",
+    "pycryptodome>=3.0.0,<4.0.0",
+    "pypdf2>=3.0.0",
+    "python-docx>=0.8.11,<2.0.0",
+    "python-pptx>=0.6.21,<2.0.0",
 ]
 
-[tool.coverage.report]
-fail_under = 0
-skip_empty = true
-sort = "-cover"
-omit = [
-    "./apolo/tests/*",
+offline-storage = [
+    # Storage backend dependencies
+    "redis>=5.0.0,<8.0.0",
+    "neo4j>=5.0.0,<7.0.0",
+    "pymilvus>=2.6.2,<3.0.0",
+    "pymongo>=4.0.0,<5.0.0",
+    "asyncpg>=0.29.0,<1.0.0",
+    "qdrant-client>=1.7.0,<2.0.0",
 ]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "session"
-log_cli = false
-log_level = "INFO"
-junit_family = "xunit2"
-testpaths = [
-  "./apolo/tests/",
+offline-llm = [
+    # LLM provider dependencies
+    "openai>=1.0.0,<3.0.0",
+    "anthropic>=0.18.0,<1.0.0",
+    "ollama>=0.1.0,<1.0.0",
+    "zhipuai>=2.0.0,<3.0.0",
+    "aioboto3>=12.0.0,<16.0.0",
+    "voyageai>=0.2.0,<1.0.0",
+    "llama-index>=0.9.0,<1.0.0",
 ]
+
+offline = [
+    # Complete offline package (includes all offline dependencies)
+    "lightrag-hku[offline-docs,offline-storage,offline-llm]",
+]
+
+evaluation = [
+    # RAG evaluation dependencies (RAGAS framework)
+    "ragas>=0.3.7",
+    "datasets>=4.3.0",
+    "httpx>=0.28.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
+
+observability = [
+    # LLM observability and tracing dependencies
+    "langfuse>=3.8.1",
+]
+
+[project.scripts]
+lightrag-server = "lightrag.api.lightrag_server:main"
+lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
+lightrag-download-cache = "lightrag.tools.download_cache:main"
+
+[project.urls]
+Homepage = "https://github.com/HKUDS/LightRAG"
+Documentation = "https://github.com/HKUDS/LightRAG"
+Repository = "https://github.com/HKUDS/LightRAG"
+"Bug Tracker" = "https://github.com/HKUDS/LightRAG/issues"
+
+[tool.setuptools.packages.find]
+include = ["lightrag*"]
+exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*", "output_complete*", "rag_storage*", "inputs*"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "lightrag.__version__"}
+
+[tool.setuptools.package-data]
+lightrag = ["api/webui/**/*", "api/static/**/*"]
+
+[tool.ruff]
+target-version = "py310"

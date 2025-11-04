@@ -10,7 +10,6 @@ from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__ as api_version
 from lightrag import __version__ as core_version
 from lightrag.constants import (
-    DEFAULT_MAX_TOKEN_SUMMARY,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
 from fastapi import HTTPException, Security, Request, status
@@ -175,12 +174,24 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         args: Parsed command line arguments
     """
     # Banner
-    ASCIIColors.cyan(f"""
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                  🚀 LightRAG Server v{core_version}/{api_version}              ║
-    ║          Fast, Lightweight RAG Server Implementation         ║
-    ╚══════════════════════════════════════════════════════════════╝
-    """)
+    # Banner
+    top_border = "╔══════════════════════════════════════════════════════════════╗"
+    bottom_border = "╚══════════════════════════════════════════════════════════════╝"
+    width = len(top_border) - 4  # width inside the borders
+
+    line1_text = f"LightRAG Server v{core_version}/{api_version}"
+    line2_text = "Fast, Lightweight RAG Server Implementation"
+
+    line1 = f"║ {line1_text.center(width)} ║"
+    line2 = f"║ {line2_text.center(width)} ║"
+
+    banner = f"""
+    {top_border}
+    {line1}
+    {line2}
+    {bottom_border}
+    """
+    ASCIIColors.cyan(banner)
 
     # Server Configuration
     ASCIIColors.magenta("\n📡 Server Configuration:")
@@ -190,6 +201,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.port}")
     ASCIIColors.white("    ├─ Workers: ", end="")
     ASCIIColors.yellow(f"{args.workers}")
+    ASCIIColors.white("    ├─ Timeout: ", end="")
+    ASCIIColors.yellow(f"{args.timeout}")
     ASCIIColors.white("    ├─ CORS Origins: ", end="")
     ASCIIColors.yellow(f"{args.cors_origins}")
     ASCIIColors.white("    ├─ SSL Enabled: ", end="")
@@ -205,8 +218,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.log_level}")
     ASCIIColors.white("    ├─ Verbose Debug: ", end="")
     ASCIIColors.yellow(f"{args.verbose}")
-    ASCIIColors.white("    ├─ History Turns: ", end="")
-    ASCIIColors.yellow(f"{args.history_turns}")
     ASCIIColors.white("    ├─ API Key: ", end="")
     ASCIIColors.yellow("Set" if args.key else "Not Set")
     ASCIIColors.white("    └─ JWT Auth: ", end="")
@@ -227,14 +238,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.llm_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.llm_model}")
-    ASCIIColors.white("    ├─ Temperature: ", end="")
-    ASCIIColors.yellow(f"{args.temperature}")
     ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
     ASCIIColors.yellow(f"{args.max_async}")
-    ASCIIColors.white("    ├─ Max Tokens: ", end="")
-    ASCIIColors.yellow(f"{args.max_tokens}")
-    ASCIIColors.white("    ├─ Timeout: ", end="")
-    ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
+    ASCIIColors.white("    ├─ Summary Context Size: ", end="")
+    ASCIIColors.yellow(f"{args.summary_context_size}")
     ASCIIColors.white("    ├─ LLM Cache Enabled: ", end="")
     ASCIIColors.yellow(f"{args.enable_llm_cache}")
     ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
@@ -255,10 +262,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
     ASCIIColors.white("    ├─ Summary Language: ", end="")
     ASCIIColors.yellow(f"{args.summary_language}")
+    ASCIIColors.white("    ├─ Entity Types: ", end="")
+    ASCIIColors.yellow(f"{args.entity_types}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
     ASCIIColors.yellow(f"{args.max_parallel_insert}")
-    ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")
-    ASCIIColors.yellow(f"{args.max_embed_tokens}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")
     ASCIIColors.yellow(f"{args.chunk_size}")
     ASCIIColors.white("    ├─ Chunk Overlap Size: ", end="")
@@ -267,10 +274,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.cosine_threshold}")
     ASCIIColors.white("    ├─ Top-K: ", end="")
     ASCIIColors.yellow(f"{args.top_k}")
-    ASCIIColors.white("    ├─ Max Token Summary: ", end="")
-    ASCIIColors.yellow(
-        f"{get_env_value('MAX_TOKEN_SUMMARY', DEFAULT_MAX_TOKEN_SUMMARY, int)}"
-    )
     ASCIIColors.white("    └─ Force LLM Summary on Merge: ", end="")
     ASCIIColors.yellow(
         f"{get_env_value('FORCE_LLM_SUMMARY_ON_MERGE', DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int)}"
@@ -284,8 +287,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.vector_storage}")
     ASCIIColors.white("    ├─ Graph Storage: ", end="")
     ASCIIColors.yellow(f"{args.graph_storage}")
-    ASCIIColors.white("    └─ Document Status Storage: ", end="")
+    ASCIIColors.white("    ├─ Document Status Storage: ", end="")
     ASCIIColors.yellow(f"{args.doc_status_storage}")
+    ASCIIColors.white("    └─ Workspace: ", end="")
+    ASCIIColors.yellow(f"{args.workspace if args.workspace else '-'}")
 
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")

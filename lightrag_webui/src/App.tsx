@@ -3,7 +3,7 @@ import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/status/StatusIndicator'
-import { healthCheckInterval, SiteInfo, webuiPrefix } from '@/lib/constants'
+import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
@@ -56,9 +56,6 @@ function App() {
 
   // Health check - can be disabled
   useEffect(() => {
-    // Only execute if health check is enabled and ApiKeyAlert is closed
-    if (!enableHealthCheck || apiKeyAlertOpen) return;
-
     // Health check function
     const performHealthCheck = async () => {
       try {
@@ -71,17 +68,27 @@ function App() {
       }
     };
 
-    // On first mount or when enableHealthCheck becomes true and apiKeyAlertOpen is false,
-    // perform an immediate health check
-    if (!healthCheckInitializedRef.current) {
-      healthCheckInitializedRef.current = true;
-      // Immediate health check on first load
-      performHealthCheck();
+    // Set health check function in the store
+    useBackendState.getState().setHealthCheckFunction(performHealthCheck);
+
+    if (!enableHealthCheck || apiKeyAlertOpen) {
+      useBackendState.getState().clearHealthCheckTimer();
+      return;
     }
 
-    // Set interval for periodic execution
-    const interval = setInterval(performHealthCheck, healthCheckInterval * 1000);
-    return () => clearInterval(interval);
+    // On first mount or when enableHealthCheck becomes true and apiKeyAlertOpen is false,
+    // perform an immediate health check and start the timer
+    if (!healthCheckInitializedRef.current) {
+      healthCheckInitializedRef.current = true;
+    }
+
+    // Start/reset the health check timer using the store
+    useBackendState.getState().resetHealthCheckTimer();
+
+    // Component unmount cleanup
+    return () => {
+      useBackendState.getState().clearHealthCheckTimer();
+    };
   }, [enableHealthCheck, apiKeyAlertOpen]);
 
   // Version check - independent and executed only once
@@ -182,7 +189,7 @@ function App() {
             {/* Loading indicator in content area */}
             <div className="flex flex-1 items-center justify-center">
               <div className="text-center">
-                <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+                <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto"></div>
                 <p>Initializing...</p>
               </div>
             </div>

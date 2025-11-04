@@ -49,8 +49,13 @@ async def zhipu_complete_if_cache(
     api_key: Optional[str] = None,
     system_prompt: Optional[str] = None,
     history_messages: List[Dict[str, str]] = [],
+    enable_cot: bool = False,
     **kwargs,
 ) -> str:
+    if enable_cot:
+        logger.debug(
+            "enable_cot=True is not supported for ZhipuAI and will be ignored."
+        )
     # dynamically load ZhipuAI
     try:
         from zhipuai import ZhipuAI
@@ -91,7 +96,12 @@ async def zhipu_complete_if_cache(
 
 
 async def zhipu_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    enable_cot: bool = False,
+    **kwargs,
 ):
     # Pop keyword_extraction from kwargs to avoid passing it to zhipu_complete_if_cache
     keyword_extraction = kwargs.pop("keyword_extraction", None)
@@ -122,6 +132,7 @@ async def zhipu_complete(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 history_messages=history_messages,
+                enable_cot=enable_cot,
                 **kwargs,
             )
 
@@ -163,11 +174,12 @@ async def zhipu_complete(
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            enable_cot=enable_cot,
             **kwargs,
         )
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=1024)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),

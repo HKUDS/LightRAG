@@ -59,9 +59,10 @@ def run_queries_and_save_to_json(
 ):
     loop = always_get_an_event_loop()
 
-    with open(output_file, "a", encoding="utf-8") as result_file, open(
-        error_file, "a", encoding="utf-8"
-    ) as err_file:
+    with (
+        open(output_file, "a", encoding="utf-8") as result_file,
+        open(error_file, "a", encoding="utf-8") as err_file,
+    ):
         result_file.write("[\n")
         first_entry = True
 
@@ -91,9 +92,7 @@ if __name__ == "__main__":
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=4096, max_token_size=8192, func=embedding_func
-        ),
+        embedding_func=EmbeddingFunc(embedding_dim=4096, func=embedding_func),
     )
     query_param = QueryParam(mode=mode)
 

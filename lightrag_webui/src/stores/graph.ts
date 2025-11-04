@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
-import { getGraphLabels } from '@/api/lightrag'
 import MiniSearch from 'minisearch'
+import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
 export type RawNodeType = {
   // for NetworkX: id is identical to properties['entity_id']
@@ -84,7 +84,6 @@ interface GraphState {
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
   sigmaInstance: any | null
-  allDatabaseLabels: string[]
 
   searchEngine: MiniSearch | null
 
@@ -113,11 +112,12 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
-  setAllDatabaseLabels: (labels: string[]) => void
-  fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
 
-  // 搜索引擎方法
+  // Legend color mapping methods
+  setTypeColorMap: (typeColorMap: Map<string, string>) => void
+
+  // Search engine methods
   setSearchEngine: (engine: MiniSearch | null) => void
   resetSearchEngine: () => void
 
@@ -160,7 +160,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   rawGraph: null,
   sigmaGraph: null,
   sigmaInstance: null,
-  allDatabaseLabels: ['*'],
 
   typeColorMap: new Map<string, string>(),
 
@@ -207,21 +206,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     set({ sigmaGraph });
   },
 
-  setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
-
-  fetchAllDatabaseLabels: async () => {
-    try {
-      console.log('Fetching all database labels...');
-      const labels = await getGraphLabels();
-      set({ allDatabaseLabels: ['*', ...labels] });
-      return;
-    } catch (error) {
-      console.error('Failed to fetch all database labels:', error);
-      set({ allDatabaseLabels: ['*'] });
-      throw error;
-    }
-  },
-
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 
   setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
@@ -263,7 +247,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
       console.log('updateNodeAndSelect', nodeId, entityId, propertyName, newValue)
 
-      // For entity_id changes (node renaming) with NetworkX graph storage
+      // For entity_id changes (node renaming) with raw graph storage
       if ((nodeId === entityId) && (propertyName === 'entity_id')) {
         // Create new node with updated ID but same attributes
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
@@ -336,10 +320,20 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
         // For non-NetworkX nodes or non-entity_id changes
         const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
         if (nodeIndex !== undefined) {
-          rawGraph.nodes[nodeIndex].properties[propertyName] = newValue
+          const nodeRef = rawGraph.nodes[nodeIndex]
+          nodeRef.properties[propertyName] = newValue
           if (propertyName === 'entity_id') {
-            rawGraph.nodes[nodeIndex].labels = [newValue]
+            nodeRef.labels = [newValue]
             sigmaGraph.setNodeAttribute(String(nodeId), 'label', newValue)
+          }
+          if (propertyName === 'entity_type') {
+            const { color, map, updated } = resolveNodeColor(newValue, state.typeColorMap)
+            const resolvedColor = color || DEFAULT_NODE_COLOR
+            nodeRef.color = resolvedColor
+            sigmaGraph.setNodeAttribute(String(nodeId), 'color', resolvedColor)
+            if (updated) {
+              set({ typeColorMap: map })
+            }
           }
         }
 

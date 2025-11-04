@@ -10,150 +10,18 @@ import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
-
-const TYPE_SYNONYMS: Record<string, string> = {
-  'unknown': 'unknown',
-  '未知': 'unknown',
-  'other': 'unknown',
-
-  'category': 'category',
-  '类别': 'category',
-  'type': 'category',
-  '分类': 'category',
-
-  'organization': 'organization',
-  '组织': 'organization',
-  'org': 'organization',
-  'company': 'organization',
-  '公司': 'organization',
-  '机构': 'organization',
-
-  'event': 'event',
-  '事件': 'event',
-  'activity': 'event',
-  '活动': 'event',
-
-  'person': 'person',
-  '人物': 'person',
-  'people': 'person',
-  'human': 'person',
-  '人': 'person',
-
-  'animal': 'animal',
-  '动物': 'animal',
-  'creature': 'animal',
-  '生物': 'animal',
-
-  'geo': 'geo',
-  '地理': 'geo',
-  'geography': 'geo',
-  '地域': 'geo',
-
-  'location': 'location',
-  '地点': 'location',
-  'place': 'location',
-  'address': 'location',
-  '位置': 'location',
-  '地址': 'location',
-
-  'technology': 'technology',
-  '技术': 'technology',
-  'tech': 'technology',
-  '科技': 'technology',
-
-  'equipment': 'equipment',
-  '设备': 'equipment',
-  'device': 'equipment',
-  '装备': 'equipment',
-
-  'weapon': 'weapon',
-  '武器': 'weapon',
-  'arms': 'weapon',
-  '军火': 'weapon',
-
-  'object': 'object',
-  '物品': 'object',
-  'stuff': 'object',
-  '物体': 'object',
-
-  'group': 'group',
-  '群组': 'group',
-  'community': 'group',
-  '社区': 'group'
-};
-
-// 节点类型到颜色的映射
-const NODE_TYPE_COLORS: Record<string, string> = {
-  'unknown': '#f4d371', // Yellow
-  'category': '#e3493b', // GoogleRed
-  'organization': '#0f705d', // Green
-  'event': '#00bfa0', // Turquoise
-  'person': '#4169E1', // RoyalBlue
-  'animal': '#84a3e1', // SkyBlue
-  'geo': '#ff99cc', // Pale Pink
-  'location': '#cf6d17', // Carrot
-  'technology': '#b300b3', // Purple
-  'equipment': '#2F4F4F', // DarkSlateGray
-  'weapon': '#4421af', // DeepPurple
-  'object': '#00cc00', // Green
-  'group': '#0f558a', // NavyBlue
-};
-
-// Extended colors pool - Used for unknown node types
-const EXTENDED_COLORS = [
-  '#5a2c6d', // DeepViolet
-  '#0000ff', // Blue
-  '#cd071e', // ChinaRed
-  '#00CED1', // DarkTurquoise
-  '#9b3a31', // DarkBrown
-  '#b2e061', // YellowGreen
-  '#bd7ebe', // LightViolet
-  '#6ef7b3', // LightGreen
-  '#003366', // DarkBlue
-  '#DEB887', // BurlyWood
-];
+import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
 // Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
+  const state = useGraphStore.getState()
+  const { color, map, updated } = resolveNodeColor(nodeType, state.typeColorMap)
 
-  const defaultColor = '#5D6D7E';
-
-  const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown';
-  const typeColorMap = useGraphStore.getState().typeColorMap;
-
-  // Return previous color if already mapped
-  if (typeColorMap.has(normalizedType)) {
-    return typeColorMap.get(normalizedType) || defaultColor;
+  if (updated) {
+    useGraphStore.setState({ typeColorMap: map })
   }
 
-  const standardType = TYPE_SYNONYMS[normalizedType];
-  if (standardType) {
-    const color = NODE_TYPE_COLORS[standardType];
-    // Update color mapping
-    const newMap = new Map(typeColorMap);
-    newMap.set(normalizedType, color);
-    useGraphStore.setState({ typeColorMap: newMap });
-    return color;
-  }
-
-  // For unpredefind nodeTypes, use extended colors
-  // Find used extended colors
-  const usedExtendedColors = new Set(
-    Array.from(typeColorMap.entries())
-      .filter(([, color]) => !Object.values(NODE_TYPE_COLORS).includes(color))
-      .map(([, color]) => color)
-  );
-
-  // Find and use the first unused extended color
-  const unusedColor = EXTENDED_COLORS.find(color => !usedExtendedColors.has(color));
-  const newColor = unusedColor || defaultColor;
-
-  // Update color mapping
-  const newMap = new Map(typeColorMap);
-  newMap.set(normalizedType, newColor);
-  useGraphStore.setState({ typeColorMap: newMap });
-
-  return newColor;
+  return color || DEFAULT_NODE_COLOR
 };
 
 
@@ -225,18 +93,6 @@ export type EdgeType = {
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
   let rawData: any = null;
 
-  // Check if we need to fetch all database labels first
-  const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
-  if (!lastSuccessfulQueryLabel) {
-    console.log('Last successful queryLabel is empty');
-    try {
-      await useGraphStore.getState().fetchAllDatabaseLabels();
-    } catch (e) {
-      console.error('Failed to fetch all database labels:', e);
-      // Continue with graph fetch even if labels fetch fails
-    }
-  }
-
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
   useGraphStore.getState().setLabelsFetchAttempted(true)
@@ -274,13 +130,14 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
       const source = nodeIdMap[edge.source]
       const target = nodeIdMap[edge.target]
-      if (source !== undefined && source !== undefined) {
+      if (source !== undefined && target !== undefined) {
         const sourceNode = rawData.nodes[source]
-        const targetNode = rawData.nodes[target]
         if (!sourceNode) {
           console.error(`Source node ${edge.source} is undefined`)
           continue
         }
+
+        const targetNode = rawData.nodes[target]
         if (!targetNode) {
           console.error(`Target node ${edge.target} is undefined`)
           continue
@@ -411,6 +268,7 @@ const useLightrangeGraph = () => {
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
+  const graphDataVersion = useGraphStore.use.graphDataVersion()
 
 
   // Use ref to track if data has been loaded and initial load
@@ -597,7 +455,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
 
   // Handle node expansion
   useEffect(() => {

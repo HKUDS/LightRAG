@@ -1,11 +1,6 @@
-import sys
+from collections.abc import AsyncIterator
 
-if sys.version_info < (3, 9):
-    from typing import AsyncIterator
-else:
-    from collections.abc import AsyncIterator
-
-import pipmaster as pm  # Pipmaster for dynamic library install
+import pipmaster as pm
 
 # install specific modules
 if not pm.is_installed("ollama"):
@@ -43,14 +38,19 @@ async def _ollama_model_if_cache(
     prompt,
     system_prompt=None,
     history_messages=[],
+    enable_cot: bool = False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    if enable_cot:
+        logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
     stream = True if kwargs.get("stream") else False
 
     kwargs.pop("max_tokens", None)
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None) or 300  # Default timeout 300s
+    timeout = kwargs.pop("timeout", None)
+    if timeout == 0:
+        timeout = None
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
     headers = {
@@ -121,7 +121,12 @@ async def _ollama_model_if_cache(
 
 
 async def ollama_model_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    enable_cot: bool = False,
+    keyword_extraction=False,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
@@ -132,6 +137,7 @@ async def ollama_model_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 
@@ -146,12 +152,14 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
         headers["Authorization"] = f"Bearer {api_key}"
 
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None) or 90  # Default time out 90s
+    timeout = kwargs.pop("timeout", None)
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
-
     try:
-        data = await ollama_client.embed(model=embed_model, input=texts)
+        options = kwargs.pop("options", {})
+        data = await ollama_client.embed(
+            model=embed_model, input=texts, options=options
+        )
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")

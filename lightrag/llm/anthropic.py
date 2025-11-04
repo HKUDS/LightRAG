@@ -59,12 +59,17 @@ async def anthropic_complete_if_cache(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
+    enable_cot: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
         history_messages = []
+    if enable_cot:
+        logger.debug(
+            "enable_cot=True is not supported for the Anthropic API and will be ignored."
+        )
     if not api_key:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
 
@@ -77,14 +82,23 @@ async def anthropic_complete_if_cache(
     if not VERBOSE_DEBUG and logger.level == logging.DEBUG:
         logging.getLogger("anthropic").setLevel(logging.INFO)
 
+    kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
+    timeout = kwargs.pop("timeout", None)
+
     anthropic_async_client = (
-        AsyncAnthropic(default_headers=default_headers, api_key=api_key)
+        AsyncAnthropic(
+            default_headers=default_headers, api_key=api_key, timeout=timeout
+        )
         if base_url is None
         else AsyncAnthropic(
-            base_url=base_url, default_headers=default_headers, api_key=api_key
+            base_url=base_url,
+            default_headers=default_headers,
+            api_key=api_key,
+            timeout=timeout,
         )
     )
-    kwargs.pop("hashing_kv", None)
+
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -141,6 +155,7 @@ async def anthropic_complete(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
+    enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
@@ -151,6 +166,7 @@ async def anthropic_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 
@@ -160,6 +176,7 @@ async def claude_3_opus_complete(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
+    enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
@@ -169,6 +186,7 @@ async def claude_3_opus_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 
@@ -178,6 +196,7 @@ async def claude_3_sonnet_complete(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
+    enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
@@ -187,6 +206,7 @@ async def claude_3_sonnet_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 
@@ -196,6 +216,7 @@ async def claude_3_haiku_complete(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
+    enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
@@ -205,6 +226,7 @@ async def claude_3_haiku_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=enable_cot,
         **kwargs,
     )
 

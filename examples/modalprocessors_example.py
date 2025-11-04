@@ -9,6 +9,7 @@ import argparse
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag import LightRAG
+from lightrag.utils import EmbeddingFunc
 from raganything.modalprocessors import (
     ImageModalProcessor,
     TableModalProcessor,
@@ -165,11 +166,15 @@ async def process_equation_example(lightrag: LightRAG, llm_model_func):
 async def initialize_rag(api_key: str, base_url: str = None):
     rag = LightRAG(
         working_dir=WORKING_DIR,
-        embedding_func=lambda texts: openai_embed(
-            texts,
-            model="text-embedding-3-large",
-            api_key=api_key,
-            base_url=base_url,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=3072,
+            max_token_size=8192,
+            func=lambda texts: openai_embed(
+                texts,
+                model="text-embedding-3-large",
+                api_key=api_key,
+                base_url=base_url,
+            ),
         ),
         llm_model_func=lambda prompt,
         system_prompt=None,

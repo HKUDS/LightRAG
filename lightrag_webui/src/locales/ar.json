@@ -13,6 +13,7 @@
     "api": "واجهة برمجة التطبيقات",
     "projectRepository": "مستودع المشروع",
     "logout": "تسجيل الخروج",
+    "frontendNeedsRebuild": "الواجهة الأمامية تحتاج إلى إعادة البناء",
     "themeToggle": {
       "switchToLight": "التحويل إلى السمة الفاتحة",
       "switchToDark": "التحويل إلى السمة الداكنة"
@@ -50,11 +51,36 @@
       "confirmPlaceholder": "اكتب yes للتأكيد",
       "clearCache": "مسح كاش نموذج اللغة",
       "confirmButton": "نعم",
+      "clearing": "جارٍ المسح...",
+      "timeout": "انتهت مهلة عملية المسح، يرجى المحاولة مرة أخرى",
       "success": "تم مسح المستندات بنجاح",
       "cacheCleared": "تم مسح ذاكرة التخزين المؤقت بنجاح",
       "cacheClearFailed": "فشل مسح ذاكرة التخزين المؤقت:\n{{error}}",
       "failed": "فشل مسح المستندات:\n{{message}}",
       "error": "فشل مسح المستندات:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "حذف",
+      "tooltip": "حذف المستندات المحددة",
+      "title": "حذف المستندات",
+      "description": "سيؤدي هذا إلى حذف المستندات المحددة نهائيًا من النظام",
+      "warning": "تحذير: سيؤدي هذا الإجراء إلى حذف المستندات المحددة نهائيًا ولا يمكن التراجع عنه!",
+      "confirm": "هل تريد حقًا حذف {{count}} مستند(ات) محدد(ة)؟",
+      "confirmPrompt": "اكتب 'yes' لتأكيد هذا الإجراء",
+      "confirmPlaceholder": "اكتب yes للتأكيد",
+      "confirmButton": "نعم",
+      "deleteFileOption": "حذف الملفات المرفوعة أيضًا",
+      "deleteFileTooltip": "حدد هذا الخيار لحذف الملفات المرفوعة المقابلة على الخادم أيضًا",
+      "deleteLLMCacheOption": "حذف ذاكرة LLM المؤقتة للاستخراج أيضًا",
+      "success": "تم بدء تشغيل خط معالجة حذف المستندات بنجاح",
+      "failed": "فشل حذف المستندات:\n{{message}}",
+      "error": "فشل حذف المستندات:\n{{error}}",
+      "busy": "خط المعالجة مشغول، يرجى المحاولة مرة أخرى لاحقًا",
+      "notAllowed": "لا توجد صلاحية لتنفيذ هذه العملية"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "تحديد الصفحة الحالية ({{count}})",
+      "deselectAll": "إلغاء تحديد الكل ({{count}})"
     },
     "uploadDocuments": {
       "button": "رفع",
@@ -73,7 +99,7 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
@@ -89,27 +115,31 @@
     },
     "documentManager": {
       "title": "إدارة المستندات",
-      "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
-      "pipelineStatusButton": "حالة خط المعالجة",
-      "pipelineStatusTooltip": "عرض حالة خط المعالجة",
+      "scanButton": "مسح/إعادة محاولة",
+      "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
+      "refreshTooltip": "إعادة تعيين قائمة المستندات",
+      "pipelineStatusButton": "خط المعالجة",
+      "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
       "emptyTitle": "لا توجد مستندات",
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
       "columns": {
         "id": "المعرف",
+        "fileName": "اسم الملف",
         "summary": "الملخص",
         "status": "الحالة",
         "length": "الطول",
         "chunks": "الأجزاء",
         "created": "تم الإنشاء",
         "updated": "تم التحديث",
-        "metadata": "البيانات الوصفية"
+        "metadata": "البيانات الوصفية",
+        "select": "اختيار"
       },
       "status": {
         "all": "الكل",
         "completed": "مكتمل",
+        "preprocessed": "مُعالج مسبقًا",
         "processing": "قيد المعالجة",
         "pending": "معلق",
         "failed": "فشل"
@@ -126,17 +156,27 @@
       "hideFileNameTooltip": "إخفاء اسم الملف"
     },
     "pipelineStatus": {
-      "title": "حالة خط المعالجة",
-      "busy": "خط المعالجة مشغول",
-      "requestPending": "الطلب معلق",
+      "title": "حالة خط الأنابيب",
+      "busy": "خط الأنابيب مشغول",
+      "requestPending": "طلب معلق",
+      "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
       "progress": "التقدم",
       "unit": "دفعة",
-      "latestMessage": "آخر رسالة",
-      "historyMessages": "سجل الرسائل",
+      "pipelineMessages": "رسائل خط الأنابيب",
+      "cancelButton": "إلغاء",
+      "cancelTooltip": "إلغاء معالجة خط الأنابيب",
+      "cancelConfirmTitle": "تأكيد إلغاء خط الأنابيب",
+      "cancelConfirmDescription": "سيؤدي هذا الإجراء إلى إيقاف معالجة خط الأنابيب الجارية. هل أنت متأكد من أنك تريد المتابعة؟",
+      "cancelConfirmButton": "تأكيد الإلغاء",
+      "cancelInProgress": "الإلغاء قيد التقدم...",
+      "pipelineNotRunning": "خط الأنابيب غير قيد التشغيل",
+      "cancelSuccess": "تم طلب إلغاء خط الأنابيب",
+      "cancelFailed": "فشل إلغاء خط الأنابيب\n{{error}}",
+      "cancelNotBusy": "خط الأنابيب غير قيد التشغيل، لا حاجة للإلغاء",
       "errors": {
-        "fetchFailed": "فشل في جلب حالة خط المعالجة\n{{error}}"
+        "fetchFailed": "فشل في جلب حالة خط الأنابيب\n{{error}}"
       }
     }
   },
@@ -160,7 +200,21 @@
       "unknown": "غير معروف",
       "object": "مصنوع",
       "group": "مجموعة",
-      "technology": "العلوم"
+      "technology": "العلوم",
+      "product": "منتج",
+      "document": "وثيقة",
+      "content": "محتوى",
+      "data": "بيانات",
+      "artifact": "قطعة أثرية",
+      "concept": "مفهوم",
+      "naturalobject": "كائن طبيعي",
+      "method": "عملية",
+      "creature": "مخلوق",
+      "plant": "نبات",
+      "disease": "مرض",
+      "drug": "دواء",
+      "food": "طعام",
+      "other": "أخرى"
     },
     "sideBar": {
       "settings": {
@@ -220,23 +274,31 @@
     },
     "statusCard": {
       "unavailable": "معلومات الحالة غير متوفرة",
-      "storageInfo": "معلومات التخزين",
+      "serverInfo": "معلومات الخادم",
       "workingDirectory": "دليل العمل",
       "inputDirectory": "دليل الإدخال",
+      "maxParallelInsert": "معالجة المستندات المتزامنة",
+      "summarySettings": "إعدادات الملخص",
       "llmConfig": "تكوين نموذج اللغة الكبير",
       "llmBinding": "ربط نموذج اللغة الكبير",
-      "llmBindingHost": "مضيف ربط نموذج اللغة الكبير",
+      "llmBindingHost": "نقطة نهاية نموذج اللغة الكبير",
       "llmModel": "نموذج اللغة الكبير",
-      "maxTokens": "أقصى عدد من الرموز",
       "embeddingConfig": "تكوين التضمين",
       "embeddingBinding": "ربط التضمين",
-      "embeddingBindingHost": "مضيف ربط التضمين",
+      "embeddingBindingHost": "نقطة نهاية التضمين",
       "embeddingModel": "نموذج التضمين",
       "storageConfig": "تكوين التخزين",
       "kvStorage": "تخزين المفتاح-القيمة",
       "docStatusStorage": "تخزين حالة المستند",
       "graphStorage": "تخزين الرسم البياني",
-      "vectorStorage": "تخزين المتجهات"
+      "vectorStorage": "تخزين المتجهات",
+      "workspace": "مساحة العمل",
+      "maxGraphNodes": "الحد الأقصى لعقد الرسم البياني",
+      "rerankerConfig": "تكوين إعادة الترتيب",
+      "rerankerBindingHost": "نقطة نهاية إعادة الترتيب",
+      "rerankerModel": "نموذج إعادة الترتيب",
+      "lockStatus": "حالة القفل",
+      "threshold": "العتبة"
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",
@@ -244,11 +306,24 @@
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",
         "updateFailed": "فشل تحديث العقدة",
-        "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا"
+        "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا",
+        "updateSuccessButMergeFailed": "تم تحديث الخصائص، لكن الدمج فشل: {{error}}",
+        "mergeFailed": "فشل الدمج: {{error}}"
       },
       "success": {
         "entityUpdated": "تم تحديث العقدة بنجاح",
-        "relationUpdated": "تم تحديث العلاقة بنجاح"
+        "relationUpdated": "تم تحديث العلاقة بنجاح",
+        "entityMerged": "تم دمج العقد بنجاح"
+      },
+      "mergeOptionLabel": "دمج تلقائي عند العثور على اسم مكرر",
+      "mergeOptionDescription": "عند التفعيل، سيتم دمج هذه العقدة تلقائيًا في العقدة الموجودة بدلاً من ظهور خطأ عند إعادة التسمية بنفس الاسم.",
+      "mergeDialog": {
+        "title": "تم دمج العقدة",
+        "description": "\"{{source}}\" تم دمجها في \"{{target}}\".",
+        "refreshHint": "يجب تحديث الرسم البياني لتحميل البنية الأحدث.",
+        "keepCurrentStart": "تحديث مع الحفاظ على عقدة البدء الحالية",
+        "useMergedStart": "تحديث واستخدام العقدة المدمجة كنقطة بدء",
+        "refreshing": "جارٍ تحديث الرسم البياني..."
       },
       "node": {
         "title": "عقدة",
@@ -266,10 +341,10 @@
           "description": "الوصف",
           "entity_id": "الاسم",
           "entity_type": "النوع",
-          "source_id": "معرف المصدر",
+          "source_id": "C-ID",
           "Neighbour": "الجار",
-          "file_path": "المصدر",
-          "keywords": "الكلمات الرئيسية",
+          "file_path": "File",
+          "keywords": "Keyword",
           "weight": "الوزن"
         }
       },
@@ -283,23 +358,34 @@
       }
     },
     "search": {
-      "placeholder": "ابحث في العقد...",
+      "placeholder": "ابحث في العقد في الصفحة...",
       "message": "و {{count}} آخرون"
     },
     "graphLabels": {
-      "selectTooltip": "حدد تسمية الاستعلام",
-      "noLabels": "لم يتم العثور على تسميات",
-      "label": "التسمية",
-      "placeholder": "ابحث في التسميات...",
+      "selectTooltip": "الحصول على الرسم البياني الفرعي لعقدة (تسمية)",
+      "noLabels": "لم يتم العثور على عقد مطابقة",
+      "label": "البحث عن اسم العقدة",
+      "placeholder": "البحث عن اسم العقدة...",
       "andOthers": "و {{count}} آخرون",
-      "refreshTooltip": "إعادة تحميل البيانات (بعد إضافة الملف)"
+      "refreshGlobalTooltip": "تحديث بيانات الرسم البياني العالمي وإعادة تعيين سجل البحث",
+      "refreshCurrentLabelTooltip": "تحديث بيانات الرسم البياني للصفحة الحالية",
+      "refreshingTooltip": "جارٍ تحديث البيانات..."
     },
     "emptyGraph": "فارغ (حاول إعادة التحميل)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "نسخ إلى الحافظة",
-      "copyError": "فشل نسخ النص إلى الحافظة"
+      "copyError": "فشل نسخ النص إلى الحافظة",
+      "copyEmpty": "لا يوجد محتوى للنسخ",
+      "copySuccess": "تم نسخ المحتوى إلى الحافظة",
+      "copySuccessLegacy": "تم نسخ المحتوى (الطريقة التقليدية)",
+      "copySuccessManual": "تم نسخ المحتوى (الطريقة اليدوية)",
+      "copyFailed": "فشل نسخ المحتوى",
+      "copyManualInstruction": "يرجى تحديد ونسخ النص يدوياً",
+      "thinking": "جاري التفكير...",
+      "thinkingTime": "وقت التفكير {{time}} ثانية",
+      "thinkingInProgress": "التفكير قيد التقدم..."
     },
     "retrieval": {
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
@@ -314,7 +400,7 @@
       "parametersTitle": "المعلمات",
       "parametersDescription": "تكوين معلمات الاستعلام الخاص بك",
       "queryMode": "وضع الاستعلام",
-      "queryModeTooltip": "حدد استراتيجية الاسترجاع:\n• ساذج: بحث أساسي بدون تقنيات متقدمة\n• محلي: استرجاع معلومات يعتمد على السياق\n• عالمي: يستخدم قاعدة المعرفة العالمية\n• مختلط: يجمع بين الاسترجاع المحلي والعالمي\n• مزيج: يدمج شبكة المعرفة مع الاسترجاع المتجهي\n• تجاوز: يمرر الاستعلام مباشرة إلى LLM بدون استرجاع",
+      "queryModeTooltip": "حدد استراتيجية الاسترجاع:\n• ساذج: استرجاع متجهي تقليدي لقطع النص\n• محلي: يركز على استرجاع الكيانات\n• عالمي: يركز على استرجاع العلاقات\n• مختلط: محلي+عالمي\n• مزيج: محلي+عالمي+ساذج\n• تجاوز: تخطي الاسترجاع، إرسال تاريخ المحادثة والسؤال الحالي إلى LLM",
       "queryModeOptions": {
         "naive": "ساذج",
         "local": "محلي",
@@ -330,16 +416,19 @@
         "singleParagraph": "فقرة واحدة",
         "bulletPoints": "نقاط نقطية"
       },
-      "topK": "أعلى K نتائج",
-      "topKTooltip": "عدد العناصر العلوية للاسترجاع. يمثل الكيانات في وضع 'محلي' والعلاقات في وضع 'عالمي'",
-      "topKPlaceholder": "عدد النتائج",
-      "maxTokensTextUnit": "أقصى عدد من الرموز لوحدة النص",
-      "maxTokensTextUnitTooltip": "الحد الأقصى لعدد الرموز المسموح به لكل جزء نصي مسترجع",
-      "maxTokensGlobalContext": "أقصى عدد من الرموز للسياق العالمي",
-      "maxTokensGlobalContextTooltip": "الحد الأقصى لعدد الرموز المخصص لأوصاف العلاقات في الاسترجاع العالمي",
-      "maxTokensLocalContext": "أقصى عدد من الرموز للسياق المحلي",
-      "maxTokensLocalContextTooltip": "الحد الأقصى لعدد الرموز المخصص لأوصاف الكيانات في الاسترجاع المحلي",
-      "historyTurns": "دورات التاريخ",
+      "topK": "KG أعلى K",
+      "topKTooltip": "عدد الكيانات والعلاقات المطلوب استردادها، لا ينطبق على الوضع наивный.",
+      "topKPlaceholder": "أدخل قيمة top_k",
+      "chunkTopK": "أعلى K للقطع",
+      "chunkTopKTooltip": "عدد أجزاء النص المطلوب استردادها، وينطبق على جميع الأوضاع.",
+      "chunkTopKPlaceholder": "أدخل قيمة chunk_top_k",
+      "maxEntityTokens": "الحد الأقصى لرموز الكيان",
+      "maxEntityTokensTooltip": "الحد الأقصى لعدد الرموز المخصصة لسياق الكيان في نظام التحكم الموحد في الرموز",
+      "maxRelationTokens": "الحد الأقصى لرموز العلاقة",
+      "maxRelationTokensTooltip": "الحد الأقصى لعدد الرموز المخصصة لسياق العلاقة في نظام التحكم الموحد في الرموز",
+      "maxTotalTokens": "إجمالي الحد الأقصى للرموز",
+      "maxTotalTokensTooltip": "الحد الأقصى الإجمالي لميزانية الرموز لسياق الاستعلام بالكامل (الكيانات + العلاقات + الأجزاء + موجه النظام)",
+      "historyTurns": "أدوار التاريخ",
       "historyTurnsTooltip": "عدد الدورات الكاملة للمحادثة (أزواج المستخدم-المساعد) التي يجب مراعاتها في سياق الرد",
       "historyTurnsPlaceholder": "عدد دورات التاريخ",
       "onlyNeedContext": "تحتاج فقط إلى السياق",
@@ -348,9 +437,11 @@
       "onlyNeedPromptTooltip": "إذا كان صحيحًا، يتم إرجاع المطالبة المولدة فقط دون إنتاج رد",
       "streamResponse": "تدفق الرد",
       "streamResponseTooltip": "إذا كان صحيحًا، يتيح إخراج التدفق للردود في الوقت الفعلي",
-      "userPrompt": "مطالبة مخصصة",
+      "userPrompt": "مطالبة إخراج إضافية",
       "userPromptTooltip": "تقديم متطلبات استجابة إضافية إلى نموذج اللغة الكبير (غير متعلقة بمحتوى الاستعلام، فقط لمعالجة المخرجات).",
-      "userPromptPlaceholder": "أدخل مطالبة مخصصة (اختياري)"
+      "userPromptPlaceholder": "أدخل مطالبة مخصصة (اختياري)",
+      "enableRerank": "تمكين إعادة الترتيب",
+      "enableRerankTooltip": "تمكين إعادة ترتيب أجزاء النص المسترجعة. إذا كان True ولكن لم يتم تكوين نموذج إعادة الترتيب، فسيتم إصدار تحذير. افتراضي True."
     }
   },
   "apiSite": {
@@ -361,5 +452,14 @@
     "description": "الرجاء إدخال مفتاح واجهة برمجة التطبيقات للوصول إلى الخدمة",
     "placeholder": "أدخل مفتاح واجهة برمجة التطبيقات",
     "save": "حفظ"
+  },
+  "pagination": {
+    "showing": "عرض {{start}} إلى {{end}} من أصل {{total}} إدخالات",
+    "page": "الصفحة",
+    "pageSize": "حجم الصفحة",
+    "firstPage": "الصفحة الأولى",
+    "prevPage": "الصفحة السابقة",
+    "nextPage": "الصفحة التالية",
+    "lastPage": "الصفحة الأخيرة"
   }
 }

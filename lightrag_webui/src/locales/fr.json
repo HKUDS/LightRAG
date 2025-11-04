@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "Référentiel du projet",
     "logout": "Déconnexion",
+    "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
     "themeToggle": {
       "switchToLight": "Passer au thème clair",
       "switchToDark": "Passer au thème sombre"
@@ -50,11 +51,36 @@
       "confirmPlaceholder": "Tapez yes pour confirmer",
       "clearCache": "Effacer le cache LLM",
       "confirmButton": "OUI",
+      "clearing": "Effacement en cours...",
+      "timeout": "L'opération d'effacement a expiré, veuillez réessayer",
       "success": "Documents effacés avec succès",
       "cacheCleared": "Cache effacé avec succès",
       "cacheClearFailed": "Échec de l'effacement du cache :\n{{error}}",
       "failed": "Échec de l'effacement des documents :\n{{message}}",
       "error": "Échec de l'effacement des documents :\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Supprimer",
+      "tooltip": "Supprimer les documents sélectionnés",
+      "title": "Supprimer les documents",
+      "description": "Cette action supprimera définitivement les documents sélectionnés du système",
+      "warning": "ATTENTION : Cette action supprimera définitivement les documents sélectionnés et ne peut pas être annulée !",
+      "confirm": "Voulez-vous vraiment supprimer {{count}} document(s) sélectionné(s) ?",
+      "confirmPrompt": "Tapez 'yes' pour confirmer cette action",
+      "confirmPlaceholder": "Tapez yes pour confirmer",
+      "confirmButton": "OUI",
+      "deleteFileOption": "Supprimer également les fichiers téléchargés",
+      "deleteFileTooltip": "Cochez cette option pour supprimer également les fichiers téléchargés correspondants sur le serveur",
+      "deleteLLMCacheOption": "Supprimer également le cache LLM d'extraction",
+      "success": "Pipeline de suppression de documents démarré avec succès",
+      "failed": "Échec de la suppression des documents :\n{{message}}",
+      "error": "Échec de la suppression des documents :\n{{error}}",
+      "busy": "Le pipeline est occupé, veuillez réessayer plus tard",
+      "notAllowed": "Aucune autorisation pour effectuer cette opération"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Sélectionner la page actuelle ({{count}})",
+      "deselectAll": "Tout désélectionner ({{count}})"
     },
     "uploadDocuments": {
       "button": "Télécharger",
@@ -73,7 +99,7 @@
         "error": "Certains fichiers n'ont pas pu être téléchargés"
       },
       "generalError": "Échec du téléchargement\n{{error}}",
-      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
@@ -89,27 +115,31 @@
     },
     "documentManager": {
       "title": "Gestion des documents",
-      "scanButton": "Scanner",
-      "scanTooltip": "Scanner les documents dans le dossier d'entrée",
-      "pipelineStatusButton": "État du Pipeline",
-      "pipelineStatusTooltip": "Voir l'état du pipeline",
+      "scanButton": "Scanner/Retraiter",
+      "scanTooltip": "Scanner et traiter les documents dans le dossier d'entrée, et retraiter également tous les documents échoués",
+      "refreshTooltip": "Réinitialiser la liste des documents",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "Voir l'état du pipeline de traitement des documents",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
       "emptyTitle": "Aucun document",
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
       "columns": {
         "id": "ID",
+        "fileName": "Nom du fichier",
         "summary": "Résumé",
         "status": "Statut",
         "length": "Longueur",
         "chunks": "Fragments",
         "created": "Créé",
         "updated": "Mis à jour",
-        "metadata": "Métadonnées"
+        "metadata": "Métadonnées",
+        "select": "Sélectionner"
       },
       "status": {
         "all": "Tous",
         "completed": "Terminé",
+        "preprocessed": "Prétraité",
         "processing": "En traitement",
         "pending": "En attente",
         "failed": "Échoué"
@@ -127,14 +157,24 @@
     },
     "pipelineStatus": {
       "title": "État du Pipeline",
-      "busy": "Pipeline occupé",
-      "requestPending": "Requête en attente",
-      "jobName": "Nom du travail",
-      "startTime": "Heure de début",
-      "progress": "Progression",
-      "unit": "lot",
-      "latestMessage": "Dernier message",
-      "historyMessages": "Historique des messages",
+      "busy": "Pipeline Occupé",
+      "requestPending": "Demande en Attente",
+      "cancellationRequested": "Annulation Demandée",
+      "jobName": "Nom du Travail",
+      "startTime": "Heure de Début",
+      "progress": "Progrès",
+      "unit": "Lot",
+      "pipelineMessages": "Messages de Pipeline",
+      "cancelButton": "Annuler",
+      "cancelTooltip": "Annuler le traitement du pipeline",
+      "cancelConfirmTitle": "Confirmer l'Annulation du Pipeline",
+      "cancelConfirmDescription": "Cette action interrompra le traitement du pipeline en cours. Êtes-vous sûr de vouloir continuer ?",
+      "cancelConfirmButton": "Confirmer l'Annulation",
+      "cancelInProgress": "Annulation en cours...",
+      "pipelineNotRunning": "Le pipeline n'est pas en cours d'exécution",
+      "cancelSuccess": "Annulation du pipeline demandée",
+      "cancelFailed": "Échec de l'annulation du pipeline\n{{error}}",
+      "cancelNotBusy": "Le pipeline n'est pas en cours d'exécution, pas besoin d'annuler",
       "errors": {
         "fetchFailed": "Échec de la récupération de l'état du pipeline\n{{error}}"
       }
@@ -160,7 +200,21 @@
       "unknown": "Inconnu",
       "object": "Objet",
       "group": "Groupe",
-      "technology": "Technologie"
+      "technology": "Technologie",
+      "product": "Produit",
+      "document": "Document",
+      "content": "Contenu",
+      "data": "Données",
+      "artifact": "Artefact",
+      "concept": "Concept",
+      "naturalobject": "Objet naturel",
+      "method": "Méthode",
+      "creature": "Créature",
+      "plant": "Plante",
+      "disease": "Maladie",
+      "drug": "Médicament",
+      "food": "Nourriture",
+      "other": "Autre"
     },
     "sideBar": {
       "settings": {
@@ -220,23 +274,31 @@
     },
     "statusCard": {
       "unavailable": "Informations sur l'état indisponibles",
-      "storageInfo": "Informations de stockage",
+      "serverInfo": "Informations du serveur",
       "workingDirectory": "Répertoire de travail",
       "inputDirectory": "Répertoire d'entrée",
+      "maxParallelInsert": "Traitement simultané des documents",
+      "summarySettings": "Paramètres de résumé",
       "llmConfig": "Configuration du modèle de langage",
       "llmBinding": "Liaison du modèle de langage",
-      "llmBindingHost": "Hôte de liaison du modèle de langage",
+      "llmBindingHost": "Point de terminaison LLM",
       "llmModel": "Modèle de langage",
-      "maxTokens": "Nombre maximum de jetons",
       "embeddingConfig": "Configuration d'incorporation",
       "embeddingBinding": "Liaison d'incorporation",
-      "embeddingBindingHost": "Hôte de liaison d'incorporation",
+      "embeddingBindingHost": "Point de terminaison d'incorporation",
       "embeddingModel": "Modèle d'incorporation",
       "storageConfig": "Configuration de stockage",
       "kvStorage": "Stockage clé-valeur",
       "docStatusStorage": "Stockage de l'état des documents",
       "graphStorage": "Stockage du graphe",
-      "vectorStorage": "Stockage vectoriel"
+      "vectorStorage": "Stockage vectoriel",
+      "workspace": "Espace de travail",
+      "maxGraphNodes": "Nombre maximum de nœuds du graphe",
+      "rerankerConfig": "Configuration du reclassement",
+      "rerankerBindingHost": "Point de terminaison de reclassement",
+      "rerankerModel": "Modèle de reclassement",
+      "lockStatus": "État des verrous",
+      "threshold": "Seuil"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",
@@ -244,11 +306,24 @@
       "errors": {
         "duplicateName": "Le nom du nœud existe déjà",
         "updateFailed": "Échec de la mise à jour du nœud",
-        "tryAgainLater": "Veuillez réessayer plus tard"
+        "tryAgainLater": "Veuillez réessayer plus tard",
+        "updateSuccessButMergeFailed": "Propriétés mises à jour, mais la fusion a échoué : {{error}}",
+        "mergeFailed": "Échec de la fusion : {{error}}"
       },
       "success": {
         "entityUpdated": "Nœud mis à jour avec succès",
-        "relationUpdated": "Relation mise à jour avec succès"
+        "relationUpdated": "Relation mise à jour avec succès",
+        "entityMerged": "Fusion des nœuds réussie"
+      },
+      "mergeOptionLabel": "Fusionner automatiquement en cas de nom dupliqué",
+      "mergeOptionDescription": "Si activé, renommer vers un nom existant fusionnera automatiquement ce nœud avec celui-ci au lieu d'échouer.",
+      "mergeDialog": {
+        "title": "Nœud fusionné",
+        "description": "\"{{source}}\" a été fusionné dans \"{{target}}\".",
+        "refreshHint": "Actualisez le graphe pour charger la structure la plus récente.",
+        "keepCurrentStart": "Actualiser en conservant le nœud de départ actuel",
+        "useMergedStart": "Actualiser en utilisant le nœud fusionné",
+        "refreshing": "Actualisation du graphe..."
       },
       "node": {
         "title": "Nœud",
@@ -266,9 +341,9 @@
           "description": "Description",
           "entity_id": "Nom",
           "entity_type": "Type",
-          "source_id": "ID source",
+          "source_id": "C-ID",
           "Neighbour": "Voisin",
-          "file_path": "Source",
+          "file_path": "File",
           "keywords": "Keys",
           "weight": "Poids"
         }
@@ -283,23 +358,34 @@
       }
     },
     "search": {
-      "placeholder": "Rechercher des nœuds...",
+      "placeholder": "Rechercher des nœuds dans la page...",
       "message": "Et {{count}} autres"
     },
     "graphLabels": {
-      "selectTooltip": "Sélectionner l'étiquette de la requête",
-      "noLabels": "Aucune étiquette trouvée",
-      "label": "Étiquette",
-      "placeholder": "Rechercher des étiquettes...",
+      "selectTooltip": "Obtenir le sous-graphe d'un nœud (étiquette)",
+      "noLabels": "Aucun nœud correspondant trouvé",
+      "label": "Rechercher le nom du nœud",
+      "placeholder": "Rechercher le nom du nœud...",
       "andOthers": "Et {{count}} autres",
-      "refreshTooltip": "Recharger les données (Après l'ajout de fichier)"
+      "refreshGlobalTooltip": "Actualiser les données du graphe global et réinitialiser l'historique de recherche",
+      "refreshCurrentLabelTooltip": "Actualiser les données du graphe de la page actuelle",
+      "refreshingTooltip": "Actualisation des données en cours..."
     },
     "emptyGraph": "Vide (Essayez de recharger)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "Copier dans le presse-papiers",
-      "copyError": "Échec de la copie du texte dans le presse-papiers"
+      "copyError": "Échec de la copie du texte dans le presse-papiers",
+      "copyEmpty": "Aucun contenu à copier",
+      "copySuccess": "Contenu copié dans le presse-papiers",
+      "copySuccessLegacy": "Contenu copié (méthode héritée)",
+      "copySuccessManual": "Contenu copié (méthode manuelle)",
+      "copyFailed": "Échec de la copie du contenu",
+      "copyManualInstruction": "Veuillez sélectionner et copier le texte manuellement",
+      "thinking": "Réflexion en cours...",
+      "thinkingTime": "Temps de réflexion {{time}}s",
+      "thinkingInProgress": "Réflexion en cours..."
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
@@ -314,7 +400,7 @@
       "parametersTitle": "Paramètres",
       "parametersDescription": "Configurez vos paramètres de requête",
       "queryMode": "Mode de requête",
-      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Recherche de base sans techniques avancées\n• Local : Récupération d'informations dépendante du contexte\n• Global : Utilise une base de connaissances globale\n• Hybride : Combine récupération locale et globale\n• Mixte : Intègre le graphe de connaissances avec la récupération vectorielle\n• Bypass : Transmet directement la requête au LLM sans récupération",
+      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Récupération vectorielle traditionnelle par blocs de texte\n• Local : Axé sur la récupération d'entités\n• Global : Axé sur la récupération de relations\n• Hybride : Local+Global\n• Mixte : Local+Global+Naïf\n• Bypass : Ignorer la récupération, envoyer l'historique de conversation et la question actuelle au LLM",
       "queryModeOptions": {
         "naive": "Naïf",
         "local": "Local",
@@ -330,15 +416,18 @@
         "singleParagraph": "Paragraphe unique",
         "bulletPoints": "Points à puces"
       },
-      "topK": "Top K résultats",
-      "topKTooltip": "Nombre d'éléments supérieurs à récupérer. Représente les entités en mode 'local' et les relations en mode 'global'",
-      "topKPlaceholder": "Nombre de résultats",
-      "maxTokensTextUnit": "Nombre maximum de jetons pour l'unité de texte",
-      "maxTokensTextUnitTooltip": "Nombre maximum de jetons autorisés pour chaque fragment de texte récupéré",
-      "maxTokensGlobalContext": "Nombre maximum de jetons pour le contexte global",
-      "maxTokensGlobalContextTooltip": "Nombre maximum de jetons alloués pour les descriptions des relations dans la récupération globale",
-      "maxTokensLocalContext": "Nombre maximum de jetons pour le contexte local",
-      "maxTokensLocalContextTooltip": "Nombre maximum de jetons alloués pour les descriptions des entités dans la récupération locale",
+      "topK": "KG Top K",
+      "topKTooltip": "Nombre d'entités et de relations à récupérer. Applicable pour les modes non-naïfs.",
+      "topKPlaceholder": "Entrez la valeur top_k",
+      "chunkTopK": "Top K des Chunks",
+      "chunkTopKTooltip": "Nombre de morceaux de texte à récupérer, applicable à tous les modes.",
+      "chunkTopKPlaceholder": "Entrez la valeur chunk_top_k",
+      "maxEntityTokens": "Limite de jetons d'entité",
+      "maxEntityTokensTooltip": "Nombre maximum de jetons alloués au contexte d'entité dans le système de contrôle de jetons unifié",
+      "maxRelationTokens": "Limite de jetons de relation",
+      "maxRelationTokensTooltip": "Nombre maximum de jetons alloués au contexte de relation dans le système de contrôle de jetons unifié",
+      "maxTotalTokens": "Limite totale de jetons",
+      "maxTotalTokensTooltip": "Budget total maximum de jetons pour l'ensemble du contexte de requête (entités + relations + blocs + prompt système)",
       "historyTurns": "Tours d'historique",
       "historyTurnsTooltip": "Nombre de tours complets de conversation (paires utilisateur-assistant) à prendre en compte dans le contexte de la réponse",
       "historyTurnsPlaceholder": "Nombre de tours d'historique",
@@ -348,9 +437,11 @@
       "onlyNeedPromptTooltip": "Si vrai, ne renvoie que l'invite générée sans produire de réponse",
       "streamResponse": "Réponse en flux",
       "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel",
-      "userPrompt": "Invite personnalisée",
+      "userPrompt": "Invite de sortie supplémentaire",
       "userPromptTooltip": "Fournir des exigences de réponse supplémentaires au LLM (sans rapport avec le contenu de la requête, uniquement pour le traitement de sortie).",
-      "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)"
+      "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)",
+      "enableRerank": "Activer le Reclassement",
+      "enableRerankTooltip": "Active le reclassement pour les fragments de texte récupérés. Si True mais qu'aucun modèle de reclassement n'est configuré, un avertissement sera émis. True par défaut."
     }
   },
   "apiSite": {
@@ -361,5 +452,14 @@
     "description": "Veuillez entrer votre clé API pour accéder au service",
     "placeholder": "Entrez votre clé API",
     "save": "Sauvegarder"
+  },
+  "pagination": {
+    "showing": "Affichage de {{start}} à {{end}} sur {{total}} entrées",
+    "page": "Page",
+    "pageSize": "Taille de la page",
+    "firstPage": "Première page",
+    "prevPage": "Page précédente",
+    "nextPage": "Page suivante",
+    "lastPage": "Dernière page"
   }
 }

@@ -5,19 +5,32 @@ export const webuiPrefix = '/webui/'
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
-export const labelColorDarkTheme = '#B2EBF2'
-export const LabelColorHighlightedDarkTheme = '#000'
+export const labelColorDarkTheme = '#FFFFFF'
+export const LabelColorHighlightedDarkTheme = '#000000'
+export const labelColorLightTheme = '#000'
 
 export const nodeColorDisabled = '#E2E2E2'
 export const nodeBorderColor = '#EEEEEE'
 export const nodeBorderColorSelected = '#F57F17'
 
-export const edgeColorDarkTheme = '#969696'
+export const edgeColorDarkTheme = '#888888'
 export const edgeColorSelected = '#F57F17'
-export const edgeColorHighlighted = '#B2EBF2'
+export const edgeColorHighlightedDarkTheme = '#F57F17'
+export const edgeColorHighlightedLightTheme = '#F57F17'
 
 export const searchResultLimit = 50
 export const labelListLimit = 100
+
+// Search History Configuration
+export const searchHistoryMaxItems = 500
+export const searchHistoryVersion = '1.0'
+
+// API Request Limits
+export const popularLabelsDefaultLimit = 300
+export const searchLabelsDefaultLimit = 50
+
+// UI Display Limits
+export const dropdownDisplayLimit = 300
 
 export const minNodeSize = 4
 export const maxNodeSize = 20
@@ -31,42 +44,42 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
-    '.html',
-    '.htm',
-    '.tex',
-    '.json',
-    '.xml',
-    '.yaml',
-    '.yml',
-    '.rtf',
-    '.odt',
-    '.epub',
-    '.csv',
-    '.log',
-    '.conf',
-    '.ini',
-    '.properties',
-    '.sql',
-    '.bat',
-    '.sh',
-    '.c',
-    '.cpp',
-    '.py',
-    '.java',
-    '.js',
-    '.ts',
-    '.swift',
-    '.go',
-    '.rb',
-    '.php',
-    '.css',
-    '.scss',
+    '.rtf',  //# Rich Text Format
+    '.odt', // # OpenDocument Text
+    '.tex', // # LaTeX
+    '.epub', // # Electronic Publication
+    '.html', // # HyperText Markup Language
+    '.htm', // # HyperText Markup Language
+    '.csv', // # Comma-Separated Values
+    '.json', // # JavaScript Object Notation
+    '.xml', // # eXtensible Markup Language
+    '.yaml', // # YAML Ain't Markup Language
+    '.yml', // # YAML
+    '.log', // # Log files
+    '.conf', // # Configuration files
+    '.ini', // # Initialization files
+    '.properties', // # Java properties files
+    '.sql', // # SQL scripts
+    '.bat', // # Batch files
+    '.sh', // # Shell scripts
+    '.c', // # C source code
+    '.cpp', // # C++ source code
+    '.py', // # Python source code
+    '.java', // # Java source code
+    '.js', // # JavaScript source code
+    '.ts', // # TypeScript source code
+    '.swift', // # Swift source code
+    '.go', // # Go source code
+    '.rb', // # Ruby source code
+    '.php', // # PHP source code
+    '.css', // # Cascading Style Sheets
+    '.scss',  //# Sassy CSS
     '.less'
   ],
   'application/pdf': ['.pdf'],
-  'application/msword': ['.doc'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx']
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
 }
 
 export const SiteInfo = {

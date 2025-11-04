@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "專案庫",
     "logout": "登出",
+    "frontendNeedsRebuild": "前端程式碼需重新建置",
     "themeToggle": {
       "switchToLight": "切換至淺色主題",
       "switchToDark": "切換至深色主題"
@@ -50,11 +51,36 @@
       "confirmPlaceholder": "輸入 yes 以確認",
       "clearCache": "清空 LLM 快取",
       "confirmButton": "確定",
+      "clearing": "正在清除...",
+      "timeout": "清除操作逾時，請重試",
       "success": "文件清空成功",
       "cacheCleared": "快取清空成功",
       "cacheClearFailed": "清空快取失敗：\n{{error}}",
       "failed": "清空文件失敗：\n{{message}}",
       "error": "清空文件失敗：\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "刪除",
+      "tooltip": "刪除選取的文件",
+      "title": "刪除文件",
+      "description": "此操作將永久刪除選取的文件",
+      "warning": "警告：此操作將永久刪除選取的文件，無法復原！",
+      "confirm": "確定要刪除 {{count}} 個選取的文件嗎？",
+      "confirmPrompt": "請輸入 yes 確認操作",
+      "confirmPlaceholder": "輸入 yes 以確認",
+      "confirmButton": "確定",
+      "deleteFileOption": "同時刪除上傳檔案",
+      "deleteFileTooltip": "選取此選項將同時刪除伺服器上對應的上傳檔案",
+      "deleteLLMCacheOption": "同時刪除實體關係擷取 LLM 快取",
+      "success": "文件刪除流水線啟動成功",
+      "failed": "刪除文件失敗：\n{{message}}",
+      "error": "刪除文件失敗：\n{{error}}",
+      "busy": "pipeline 被佔用，請稍後再試",
+      "notAllowed": "沒有操作權限"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "全選當前頁 ({{count}})",
+      "deselectAll": "取消全選 ({{count}})"
     },
     "uploadDocuments": {
       "button": "上傳",
@@ -73,7 +99,7 @@
         "error": "部分檔案上傳失敗"
       },
       "generalError": "上傳失敗\n{{error}}",
-      "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
@@ -89,27 +115,31 @@
     },
     "documentManager": {
       "title": "文件管理",
-      "scanButton": "掃描",
-      "scanTooltip": "掃描輸入目錄中的文件",
-      "pipelineStatusButton": "pipeline 狀態",
-      "pipelineStatusTooltip": "查看pipeline 狀態",
+      "scanButton": "掃描/重試",
+      "scanTooltip": "掃描處理輸入目錄中的文件，同時重新處理所有失敗的文件",
+      "refreshTooltip": "重設文件清單",
+      "pipelineStatusButton": "管線狀態",
+      "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
       "emptyTitle": "無文件",
       "emptyDescription": "尚未上傳任何文件",
       "columns": {
         "id": "ID",
+        "fileName": "檔案名稱",
         "summary": "摘要",
         "status": "狀態",
         "length": "長度",
         "chunks": "分塊",
         "created": "建立時間",
         "updated": "更新時間",
-        "metadata": "元資料"
+        "metadata": "元資料",
+        "select": "選擇"
       },
       "status": {
         "all": "全部",
         "completed": "已完成",
+        "preprocessed": "預處理",
         "processing": "處理中",
         "pending": "等待中",
         "failed": "失敗"
@@ -126,17 +156,27 @@
       "hideFileNameTooltip": "隱藏檔案名稱"
     },
     "pipelineStatus": {
-      "title": "pipeline 狀態",
-      "busy": "pipeline 忙碌中",
+      "title": "流水線狀態",
+      "busy": "流水線忙碌",
       "requestPending": "待處理請求",
-      "jobName": "工作名稱",
+      "cancellationRequested": "取消請求",
+      "jobName": "作業名稱",
       "startTime": "開始時間",
       "progress": "進度",
-      "unit": "梯次",
-      "latestMessage": "最新訊息",
-      "historyMessages": "歷史訊息",
+      "unit": "批",
+      "pipelineMessages": "流水線消息",
+      "cancelButton": "中斷",
+      "cancelTooltip": "中斷流水線處理",
+      "cancelConfirmTitle": "確認中斷流水線",
+      "cancelConfirmDescription": "此操作將中斷正在進行的流水線處理。確定要繼續嗎？",
+      "cancelConfirmButton": "確認中斷",
+      "cancelInProgress": "取消請求進行中...",
+      "pipelineNotRunning": "流水線未運行",
+      "cancelSuccess": "流水線中斷請求已發送",
+      "cancelFailed": "中斷流水線失敗\n{{error}}",
+      "cancelNotBusy": "流水線未運行，無需中斷",
       "errors": {
-        "fetchFailed": "取得pipeline 狀態失敗\n{{error}}"
+        "fetchFailed": "獲取流水線狀態失敗\n{{error}}"
       }
     }
   },
@@ -160,7 +200,21 @@
       "unknown": "未知",
       "object": "物品",
       "group": "群組",
-      "technology": "技術"
+      "technology": "技術",
+      "product": "產品",
+      "document": "文檔",
+      "content": "內容",
+      "data": "資料",
+      "artifact": "人工製品",
+      "concept": "概念",
+      "naturalobject": "自然物品",
+      "method": "方法",
+      "creature": "生物神怪",
+      "plant": "植物",
+      "disease": "疾病",
+      "drug": "藥物",
+      "food": "食物",
+      "other": "其他"
     },
     "sideBar": {
       "settings": {
@@ -220,23 +274,31 @@
     },
     "statusCard": {
       "unavailable": "狀態資訊不可用",
-      "storageInfo": "儲存資訊",
+      "serverInfo": "伺服器資訊",
       "workingDirectory": "工作目錄",
       "inputDirectory": "輸入目錄",
+      "maxParallelInsert": "並行處理文档",
+      "summarySettings": "摘要設定",
       "llmConfig": "LLM 設定",
       "llmBinding": "LLM 綁定",
-      "llmBindingHost": "LLM 綁定主機",
+      "llmBindingHost": "LLM 端點",
       "llmModel": "LLM 模型",
-      "maxTokens": "最大權杖數",
       "embeddingConfig": "嵌入設定",
       "embeddingBinding": "嵌入綁定",
-      "embeddingBindingHost": "嵌入綁定主機",
+      "embeddingBindingHost": "嵌入端點",
       "embeddingModel": "嵌入模型",
       "storageConfig": "儲存設定",
       "kvStorage": "KV 儲存",
       "docStatusStorage": "文件狀態儲存",
       "graphStorage": "圖形儲存",
-      "vectorStorage": "向量儲存"
+      "vectorStorage": "向量儲存",
+      "workspace": "工作空間",
+      "maxGraphNodes": "最大圖形節點數",
+      "rerankerConfig": "重排序設定",
+      "rerankerBindingHost": "重排序端點",
+      "rerankerModel": "重排序模型",
+      "lockStatus": "鎖定狀態",
+      "threshold": "閾值"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",
@@ -244,11 +306,24 @@
       "errors": {
         "duplicateName": "節點名稱已存在",
         "updateFailed": "更新節點失敗",
-        "tryAgainLater": "請稍後重試"
+        "tryAgainLater": "請稍後重試",
+        "updateSuccessButMergeFailed": "屬性已更新，但合併失敗：{{error}}",
+        "mergeFailed": "合併失敗：{{error}}"
       },
       "success": {
         "entityUpdated": "節點更新成功",
-        "relationUpdated": "關係更新成功"
+        "relationUpdated": "關係更新成功",
+        "entityMerged": "節點合併成功"
+      },
+      "mergeOptionLabel": "遇到重名時自動合併",
+      "mergeOptionDescription": "勾選後，重新命名為既有名稱時會自動將當前節點合併過去，不再報錯。",
+      "mergeDialog": {
+        "title": "節點已合併",
+        "description": "\"{{source}}\" 已合併到 \"{{target}}\"。",
+        "refreshHint": "請重新整理圖譜以取得最新結構。",
+        "keepCurrentStart": "重新整理並保留目前的起始節點",
+        "useMergedStart": "重新整理並以合併後的節點為起始節點",
+        "refreshing": "正在重新整理圖譜..."
       },
       "node": {
         "title": "節點",
@@ -266,12 +341,12 @@
           "description": "描述",
           "entity_id": "名稱",
           "entity_type": "類型",
-          "source_id": "來源ID",
+          "source_id": "C-ID",
           "Neighbour": "鄰接",
-          "file_path": "來源",
+          "file_path": "檔案",
           "keywords": "Keys",
           "weight": "權重"
-          }
+        }
       },
       "edge": {
         "title": "關係",
@@ -283,23 +358,34 @@
       }
     },
     "search": {
-      "placeholder": "搜尋節點...",
-      "message": "還有 {count} 個"
+      "placeholder": "頁面內搜尋節點...",
+      "message": "還有 {{count}} 個"
     },
     "graphLabels": {
-      "selectTooltip": "選擇查詢標籤",
-      "noLabels": "未找到標籤",
-      "label": "標籤",
-      "placeholder": "搜尋標籤...",
-      "andOthers": "還有 {count} 個",
-      "refreshTooltip": "重載圖形數據(新增檔案後需重載)"
+      "selectTooltip": "獲取節點(標籤)子圖",
+      "noLabels": "未找到匹配的節點",
+      "label": "搜尋節點名稱",
+      "placeholder": "搜尋節點名稱...",
+      "andOthers": "還有 {{count}} 個",
+      "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
+      "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
+      "refreshingTooltip": "正在重新整理資料..."
     },
     "emptyGraph": "無數據(請重載圖形數據)"
   },
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "複製到剪貼簿",
-      "copyError": "複製文字到剪貼簿失敗"
+      "copyError": "複製文字到剪貼簿失敗",
+      "copyEmpty": "沒有內容可複製",
+      "copySuccess": "內容已複製到剪貼簿",
+      "copySuccessLegacy": "內容已複製（傳統方法）",
+      "copySuccessManual": "內容已複製（手動方法）",
+      "copyFailed": "複製內容失敗",
+      "copyManualInstruction": "請手動選取並複製文字",
+      "thinking": "正在思考...",
+      "thinkingTime": "思考用時 {{time}} 秒",
+      "thinkingInProgress": "思考進行中..."
     },
     "retrieval": {
       "startPrompt": "輸入查詢開始檢索",
@@ -314,7 +400,7 @@
       "parametersTitle": "參數",
       "parametersDescription": "設定查詢參數",
       "queryMode": "查詢模式",
-      "queryModeTooltip": "選擇檢索策略：\n• Naive：基礎搜尋，無進階技術\n• Local：上下文相關資訊檢索\n• Global：利用全域知識庫\n• Hybrid：結合本地和全域檢索\n• Mix：整合知識圖譜和向量檢索\n• Bypass：直接傳遞查詢到LLM，不進行檢索",
+      "queryModeTooltip": "選擇檢索策略：\n• Naive：傳統文字塊向量檢索\n• Local：側重實體檢索\n• Global：側重關係檢索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳過檢索，把歷史會話與當前問題送LLM",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
@@ -330,15 +416,12 @@
         "singleParagraph": "單段落",
         "bulletPoints": "重點"
       },
-      "topK": "Top K結果",
-      "topKTooltip": "檢索的前幾項結果數。在'local'模式下表示實體，在'global'模式下表示關係",
-      "topKPlaceholder": "結果數量",
-      "maxTokensTextUnit": "文字單元最大權杖數",
-      "maxTokensTextUnitTooltip": "每個檢索文字區塊允許的最大權杖數",
-      "maxTokensGlobalContext": "全域上下文最大權杖數",
-      "maxTokensGlobalContextTooltip": "全域檢索中關係描述的最大權杖數",
-      "maxTokensLocalContext": "本地上下文最大權杖數",
-      "maxTokensLocalContextTooltip": "本地檢索中實體描述的最大權杖數",
+      "topK": "知識圖譜 Top K",
+      "topKTooltip": "實體關係檢索數量，適用於非 naive 模式。",
+      "topKPlaceholder": "輸入 top_k 值",
+      "chunkTopK": "文本區塊 Top K",
+      "chunkTopKTooltip": "文本區塊檢索數量，適用於所有模式。",
+      "chunkTopKPlaceholder": "輸入文本區塊 chunk_top_k 值",
       "historyTurns": "歷史輪次",
       "historyTurnsTooltip": "回應上下文中考慮的完整對話輪次（使用者-助手對）數量",
       "historyTurnsPlaceholder": "歷史輪次數",
@@ -348,9 +431,17 @@
       "onlyNeedPromptTooltip": "如果為True，僅回傳產生的提示而不產生回應",
       "streamResponse": "串流回應",
       "streamResponseTooltip": "如果為True，啟用即時串流輸出回應",
-      "userPrompt": "用戶提示詞",
+      "userPrompt": "附加輸出提示詞",
       "userPromptTooltip": "向LLM提供額外的響應要求（與查詢內容無關，僅用於處理輸出）。",
-      "userPromptPlaceholder": "輸入自定義提示詞（可選）"
+      "userPromptPlaceholder": "輸入自定義提示詞（可選）",
+      "enableRerank": "啟用重排",
+      "enableRerankTooltip": "為檢索到的文本塊啟用重排。如果為True但未配置重排模型，將發出警告。默認為True。",
+      "maxEntityTokens": "實體令牌數上限",
+      "maxEntityTokensTooltip": "統一令牌控制系統中分配給實體上下文的最大令牌數",
+      "maxRelationTokens": "關係令牌數上限",
+      "maxRelationTokensTooltip": "統一令牌控制系統中分配給關係上下文的最大令牌數",
+      "maxTotalTokens": "總令牌數上限",
+      "maxTotalTokensTooltip": "整個查詢上下文的最大總令牌預算（實體+關係+文檔塊+系統提示）"
     }
   },
   "apiSite": {
@@ -361,5 +452,14 @@
     "description": "請輸入您的 API key 以存取服務",
     "placeholder": "請輸入 API key",
     "save": "儲存"
+  },
+  "pagination": {
+    "showing": "顯示第 {{start}} 到 {{end}} 筆，共 {{total}} 筆記錄",
+    "page": "頁",
+    "pageSize": "每頁顯示",
+    "firstPage": "第一頁",
+    "prevPage": "上一頁",
+    "nextPage": "下一頁",
+    "lastPage": "最後一頁"
   }
 }

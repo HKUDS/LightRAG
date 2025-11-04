@@ -58,3 +58,57 @@ class RateLimitError(APIStatusError):
 class APITimeoutError(APIConnectionError):
     def __init__(self, request: httpx.Request) -> None:
         super().__init__(message="Request timed out.", request=request)
+
+
+class StorageNotInitializedError(RuntimeError):
+    """Raised when storage operations are attempted before initialization."""
+
+    def __init__(self, storage_type: str = "Storage"):
+        super().__init__(
+            f"{storage_type} not initialized. Please ensure proper initialization:\n"
+            f"\n"
+            f"  rag = LightRAG(...)\n"
+            f"  await rag.initialize_storages()  # Required\n"
+            f"  \n"
+            f"  from lightrag.kg.shared_storage import initialize_pipeline_status\n"
+            f"  await initialize_pipeline_status()  # Required for pipeline operations\n"
+            f"\n"
+            f"See: https://github.com/HKUDS/LightRAG#important-initialization-requirements"
+        )
+
+
+class PipelineNotInitializedError(KeyError):
+    """Raised when pipeline status is accessed before initialization."""
+
+    def __init__(self, namespace: str = ""):
+        msg = (
+            f"Pipeline namespace '{namespace}' not found. "
+            f"This usually means pipeline status was not initialized.\n"
+            f"\n"
+            f"Please call 'await initialize_pipeline_status()' after initializing storages:\n"
+            f"\n"
+            f"  from lightrag.kg.shared_storage import initialize_pipeline_status\n"
+            f"  await initialize_pipeline_status()\n"
+            f"\n"
+            f"Full initialization sequence:\n"
+            f"  rag = LightRAG(...)\n"
+            f"  await rag.initialize_storages()\n"
+            f"  await initialize_pipeline_status()"
+        )
+        super().__init__(msg)
+
+
+class PipelineCancelledException(Exception):
+    """Raised when pipeline processing is cancelled by user request."""
+
+    def __init__(self, message: str = "User cancelled"):
+        super().__init__(message)
+        self.message = message
+
+
+class QdrantMigrationError(Exception):
+    """Raised when Qdrant data migration from legacy collections fails."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message

@@ -5,15 +5,7 @@ from typing import final
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
-
-import pipmaster as pm
-
-if not pm.is_installed("networkx"):
-    pm.install("networkx")
-
-if not pm.is_installed("graspologic"):
-    pm.install("graspologic")
-
+from lightrag.constants import GRAPH_FIELD_SEP
 import networkx as nx
 from .shared_storage import (
     get_storage_lock,
@@ -28,8 +20,6 @@ from dotenv import load_dotenv
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
-
 
 @final
 @dataclass
@@ -41,15 +31,27 @@ class NetworkXStorage(BaseGraphStorage):
         return None
 
     @staticmethod
-    def write_nx_graph(graph: nx.Graph, file_name):
+    def write_nx_graph(graph: nx.Graph, file_name, workspace="_"):
         logger.info(
-            f"Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
+            f"[{workspace}] Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
         )
         nx.write_graphml(graph, file_name)
 
     def __post_init__(self):
+        working_dir = self.global_config["working_dir"]
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
+        else:
+            # Default behavior when workspace is empty
+            self.final_namespace = self.namespace
+            workspace_dir = working_dir
+            self.workspace = "_"
+
+        os.makedirs(workspace_dir, exist_ok=True)
         self._graphml_xml_file = os.path.join(
-            self.global_config["working_dir"], f"graph_{self.namespace}.graphml"
+            workspace_dir, f"graph_{self.namespace}.graphml"
         )
         self._storage_lock = None
         self.storage_updated = None
@@ -59,16 +61,18 @@ class NetworkXStorage(BaseGraphStorage):
         preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
         if preloaded_graph is not None:
             logger.info(
-                f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
+                f"[{self.workspace}] Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
             )
         else:
-            logger.info("Created new empty graph")
+            logger.info(
+                f"[{self.workspace}] Created new empty graph file: {self._graphml_xml_file}"
+            )
         self._graph = preloaded_graph or nx.Graph()
 
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.namespace)
+        self.storage_updated = await get_update_flag(self.final_namespace)
         # Get the storage lock for use in other methods
         self._storage_lock = get_storage_lock()
 
@@ -79,7 +83,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Check if data needs to be reloaded
             if self.storage_updated.value:
                 logger.info(
-                    f"Process {os.getpid()} reloading graph {self.namespace} due to update by another process"
+                    f"[{self.workspace}] Process {os.getpid()} reloading graph {self._graphml_xml_file} due to modifications by another process"
                 )
                 # Reload data
                 self._graph = (
@@ -108,7 +112,9 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         graph = await self._get_graph()
-        return graph.degree(src_id) + graph.degree(tgt_id)
+        src_degree = graph.degree(src_id) if graph.has_node(src_id) else 0
+        tgt_degree = graph.degree(tgt_id) if graph.has_node(tgt_id) else 0
+        return src_degree + tgt_degree
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -154,9 +160,11 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         if graph.has_node(node_id):
             graph.remove_node(node_id)
-            logger.debug(f"Node {node_id} deleted from the graph.")
+            logger.debug(f"[{self.workspace}] Node {node_id} deleted from the graph")
         else:
-            logger.warning(f"Node {node_id} not found in the graph for deletion.")
+            logger.warning(
+                f"[{self.workspace}] Node {node_id} not found in the graph for deletion"
+            )
 
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
@@ -204,11 +212,92 @@ class NetworkXStorage(BaseGraphStorage):
         # Return sorted list
         return sorted(list(labels))
 
+    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+        """
+        Get popular labels by node degree (most connected entities)
+
+        Args:
+            limit: Maximum number of labels to return
+
+        Returns:
+            List of labels sorted by degree (highest first)
+        """
+        graph = await self._get_graph()
+
+        # Get degrees of all nodes and sort by degree descending
+        degrees = dict(graph.degree())
+        sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+
+        # Return top labels limited by the specified limit
+        popular_labels = [str(node) for node, _ in sorted_nodes[:limit]]
+
+        logger.debug(
+            f"[{self.workspace}] Retrieved {len(popular_labels)} popular labels (limit: {limit})"
+        )
+
+        return popular_labels
+
+    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        """
+        Search labels with fuzzy matching
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching labels sorted by relevance
+        """
+        graph = await self._get_graph()
+        query_lower = query.lower().strip()
+
+        if not query_lower:
+            return []
+
+        # Collect matching nodes with relevance scores
+        matches = []
+        for node in graph.nodes():
+            node_str = str(node)
+            node_lower = node_str.lower()
+
+            # Skip if no match
+            if query_lower not in node_lower:
+                continue
+
+            # Calculate relevance score
+            # Exact match gets highest score
+            if node_lower == query_lower:
+                score = 1000
+            # Prefix match gets high score
+            elif node_lower.startswith(query_lower):
+                score = 500
+            # Contains match gets base score, with bonus for shorter strings
+            else:
+                # Shorter strings with matches are more relevant
+                score = 100 - len(node_str)
+                # Bonus for word boundary matches
+                if f" {query_lower}" in node_lower or f"_{query_lower}" in node_lower:
+                    score += 50
+
+            matches.append((node_str, score))
+
+        # Sort by relevance score (desc) then alphabetically
+        matches.sort(key=lambda x: (-x[1], x[0]))
+
+        # Return top matches limited by the specified limit
+        search_results = [match[0] for match in matches[:limit]]
+
+        logger.debug(
+            f"[{self.workspace}] Search query '{query}' returned {len(search_results)} results (limit: {limit})"
+        )
+
+        return search_results
+
     async def get_knowledge_graph(
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        max_nodes: int = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -222,6 +311,13 @@ class NetworkXStorage(BaseGraphStorage):
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
         """
+        # Get max_nodes from global_config if not provided
+        if max_nodes is None:
+            max_nodes = self.global_config.get("max_graph_nodes", 1000)
+        else:
+            # Limit max_nodes to not exceed global_config max_graph_nodes
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+
         graph = await self._get_graph()
 
         result = KnowledgeGraph()
@@ -237,7 +333,7 @@ class NetworkXStorage(BaseGraphStorage):
             if len(sorted_nodes) > max_nodes:
                 result.is_truncated = True
                 logger.info(
-                    f"Graph truncated: {len(sorted_nodes)} nodes found, limited to {max_nodes}"
+                    f"[{self.workspace}] Graph truncated: {len(sorted_nodes)} nodes found, limited to {max_nodes}"
                 )
 
             limited_nodes = [node for node, _ in sorted_nodes[:max_nodes]]
@@ -246,7 +342,9 @@ class NetworkXStorage(BaseGraphStorage):
         else:
             # Check if node exists
             if node_label not in graph:
-                logger.warning(f"Node {node_label} not found in the graph")
+                logger.warning(
+                    f"[{self.workspace}] Node {node_label} not found in the graph"
+                )
                 return KnowledgeGraph()  # Return empty graph
 
             # Use modified BFS to get nodes, prioritizing high-degree nodes at the same depth
@@ -254,6 +352,9 @@ class NetworkXStorage(BaseGraphStorage):
             visited = set()
             # Store (node, depth, degree) in the queue
             queue = [(node_label, 0, graph.degree(node_label))]
+
+            # Flag to track if there are unexplored neighbors due to depth limit
+            has_unexplored_neighbors = False
 
             # Modified breadth-first search with degree-based prioritization
             while queue and len(bfs_nodes) < max_nodes:
@@ -286,18 +387,30 @@ class NetworkXStorage(BaseGraphStorage):
                             for neighbor in unvisited_neighbors:
                                 neighbor_degree = graph.degree(neighbor)
                                 queue.append((neighbor, depth + 1, neighbor_degree))
+                        else:
+                            # Check if there are unexplored neighbors (skipped due to depth limit)
+                            neighbors = list(graph.neighbors(current_node))
+                            unvisited_neighbors = [
+                                n for n in neighbors if n not in visited
+                            ]
+                            if unvisited_neighbors:
+                                has_unexplored_neighbors = True
 
                     # Check if we've reached max_nodes
                     if len(bfs_nodes) >= max_nodes:
                         break
 
-            # Check if graph is truncated - if we still have nodes in the queue
-            # and we've reached max_nodes, then the graph is truncated
-            if queue and len(bfs_nodes) >= max_nodes:
-                result.is_truncated = True
-                logger.info(
-                    f"Graph truncated: breadth-first search limited to {max_nodes} nodes"
-                )
+            # Check if graph is truncated - either due to max_nodes limit or depth limit
+            if (queue and len(bfs_nodes) >= max_nodes) or has_unexplored_neighbors:
+                if len(bfs_nodes) >= max_nodes:
+                    result.is_truncated = True
+                    logger.info(
+                        f"[{self.workspace}] Graph truncated: max_nodes limit {max_nodes} reached"
+                    )
+                else:
+                    logger.info(
+                        f"[{self.workspace}] Graph truncated: found {len(bfs_nodes)} nodes within max_depth {max_depth}"
+                    )
 
             # Create subgraph with BFS discovered nodes
             subgraph = graph.subgraph(bfs_nodes)
@@ -353,9 +466,65 @@ class NetworkXStorage(BaseGraphStorage):
             seen_edges.add(edge_id)
 
         logger.info(
-            f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+            f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
         )
         return result
+
+    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        chunk_ids_set = set(chunk_ids)
+        graph = await self._get_graph()
+        matching_nodes = []
+        for node_id, node_data in graph.nodes(data=True):
+            if "source_id" in node_data:
+                node_source_ids = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
+                if not node_source_ids.isdisjoint(chunk_ids_set):
+                    node_data_with_id = node_data.copy()
+                    node_data_with_id["id"] = node_id
+                    matching_nodes.append(node_data_with_id)
+        return matching_nodes
+
+    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        chunk_ids_set = set(chunk_ids)
+        graph = await self._get_graph()
+        matching_edges = []
+        for u, v, edge_data in graph.edges(data=True):
+            if "source_id" in edge_data:
+                edge_source_ids = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
+                if not edge_source_ids.isdisjoint(chunk_ids_set):
+                    edge_data_with_nodes = edge_data.copy()
+                    edge_data_with_nodes["source"] = u
+                    edge_data_with_nodes["target"] = v
+                    matching_edges.append(edge_data_with_nodes)
+        return matching_edges
+
+    async def get_all_nodes(self) -> list[dict]:
+        """Get all nodes in the graph.
+
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties
+        """
+        graph = await self._get_graph()
+        all_nodes = []
+        for node_id, node_data in graph.nodes(data=True):
+            node_data_with_id = node_data.copy()
+            node_data_with_id["id"] = node_id
+            all_nodes.append(node_data_with_id)
+        return all_nodes
+
+    async def get_all_edges(self) -> list[dict]:
+        """Get all edges in the graph.
+
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties
+        """
+        graph = await self._get_graph()
+        all_edges = []
+        for u, v, edge_data in graph.edges(data=True):
+            edge_data_with_nodes = edge_data.copy()
+            edge_data_with_nodes["source"] = u
+            edge_data_with_nodes["target"] = v
+            all_edges.append(edge_data_with_nodes)
+        return all_edges
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""
@@ -364,7 +533,7 @@ class NetworkXStorage(BaseGraphStorage):
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.info(
-                    f"Graph for {self.namespace} was updated by another process, reloading..."
+                    f"[{self.workspace}] Graph was updated by another process, reloading..."
                 )
                 self._graph = (
                     NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
@@ -377,14 +546,16 @@ class NetworkXStorage(BaseGraphStorage):
         async with self._storage_lock:
             try:
                 # Save data to disk
-                NetworkXStorage.write_nx_graph(self._graph, self._graphml_xml_file)
+                NetworkXStorage.write_nx_graph(
+                    self._graph, self._graphml_xml_file, self.workspace
+                )
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
-                logger.error(f"Error saving graph for {self.namespace}: {e}")
+                logger.error(f"[{self.workspace}] Error saving graph: {e}")
                 return False  # Return error
 
         return True
@@ -410,13 +581,15 @@ class NetworkXStorage(BaseGraphStorage):
                     os.remove(self._graphml_xml_file)
                 self._graph = nx.Graph()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 logger.info(
-                    f"Process {os.getpid()} drop graph {self.namespace} (file:{self._graphml_xml_file})"
+                    f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
                 )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping graph {self.namespace}: {e}")
+            logger.error(
+                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}"
+            )
             return {"status": "error", "message": str(e)}

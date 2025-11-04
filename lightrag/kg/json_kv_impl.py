@@ -10,6 +10,7 @@ from lightrag.utils import (
     logger,
     write_json,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
     get_storage_lock,
@@ -26,7 +27,19 @@ from .shared_storage import (
 class JsonKVStorage(BaseKVStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
-        self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
+        else:
+            # Default behavior when workspace is empty
+            workspace_dir = working_dir
+            self.final_namespace = self.namespace
+            self.workspace = "_"
+
+        os.makedirs(workspace_dir, exist_ok=True)
+        self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
+
         self._data = None
         self._storage_lock = None
         self.storage_updated = None
@@ -34,30 +47,25 @@ class JsonKVStorage(BaseKVStorage):
     async def initialize(self):
         """Initialize storage data"""
         self._storage_lock = get_storage_lock()
-        self.storage_updated = await get_update_flag(self.namespace)
+        self.storage_updated = await get_update_flag(self.final_namespace)
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(self.namespace)
-            self._data = await get_namespace_data(self.namespace)
+            need_init = await try_initialize_namespace(self.final_namespace)
+            self._data = await get_namespace_data(self.final_namespace)
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
                 async with self._storage_lock:
-                    self._data.update(loaded_data)
-
-                    # Calculate data count based on namespace
-                    if self.namespace.endswith("cache"):
-                        # For cache namespaces, sum the cache entries across all cache types
-                        data_count = sum(
-                            len(first_level_dict)
-                            for first_level_dict in loaded_data.values()
-                            if isinstance(first_level_dict, dict)
+                    # Migrate legacy cache structure if needed
+                    if self.namespace.endswith("_cache"):
+                        loaded_data = await self._migrate_legacy_cache_structure(
+                            loaded_data
                         )
-                    else:
-                        # For non-cache namespaces, use the original count method
-                        data_count = len(loaded_data)
+
+                    self._data.update(loaded_data)
+                    data_count = len(loaded_data)
 
                     logger.info(
-                        f"Process {os.getpid()} KV load {self.namespace} with {data_count} records"
+                        f"[{self.workspace}] Process {os.getpid()} KV load {self.namespace} with {data_count} records"
                     )
 
     async def index_done_callback(self) -> None:
@@ -67,47 +75,45 @@ class JsonKVStorage(BaseKVStorage):
                     dict(self._data) if hasattr(self._data, "_getvalue") else self._data
                 )
 
-                # Calculate data count based on namespace
-                if self.namespace.endswith("cache"):
-                    # # For cache namespaces, sum the cache entries across all cache types
-                    data_count = sum(
-                        len(first_level_dict)
-                        for first_level_dict in data_dict.values()
-                        if isinstance(first_level_dict, dict)
-                    )
-                else:
-                    # For non-cache namespaces, use the original count method
-                    data_count = len(data_dict)
+                # Calculate data count - all data is now flattened
+                data_count = len(data_dict)
 
                 logger.debug(
-                    f"Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
+                    f"[{self.workspace}] Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
                 )
                 write_json(data_dict, self._file_name)
-                await clear_all_update_flags(self.namespace)
-
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        async with self._storage_lock:
-            return dict(self._data)
+                await clear_all_update_flags(self.final_namespace)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
-            return self._data.get(id)
+            result = self._data.get(id)
+            if result:
+                # Create a copy to avoid modifying the original data
+                result = dict(result)
+                # Ensure time fields are present, provide default values for old data
+                result.setdefault("create_time", 0)
+                result.setdefault("update_time", 0)
+                # Ensure _id field contains the clean ID
+                result["_id"] = id
+            return result
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._storage_lock:
-            return [
-                (
-                    {k: v for k, v in self._data[id].items()}
-                    if self._data.get(id, None)
-                    else None
-                )
-                for id in ids
-            ]
+            results = []
+            for id in ids:
+                data = self._data.get(id, None)
+                if data:
+                    # Create a copy to avoid modifying the original data
+                    result = {k: v for k, v in data.items()}
+                    # Ensure time fields are present, provide default values for old data
+                    result.setdefault("create_time", 0)
+                    result.setdefault("update_time", 0)
+                    # Ensure _id field contains the clean ID
+                    result["_id"] = id
+                    results.append(result)
+                else:
+                    results.append(None)
+            return results
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._storage_lock:
@@ -121,10 +127,35 @@ class JsonKVStorage(BaseKVStorage):
         """
         if not data:
             return
-        logger.debug(f"Inserting {len(data)} records to {self.namespace}")
+
+        import time
+
+        current_time = int(time.time())  # Get current Unix timestamp
+
+        logger.debug(
+            f"[{self.workspace}] Inserting {len(data)} records to {self.namespace}"
+        )
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
         async with self._storage_lock:
+            # Add timestamps to data based on whether key exists
+            for k, v in data.items():
+                # For text_chunks namespace, ensure llm_cache_list field exists
+                if self.namespace.endswith("text_chunks"):
+                    if "llm_cache_list" not in v:
+                        v["llm_cache_list"] = []
+
+                # Add timestamps based on whether key exists
+                if k in self._data:  # Key exists, only update update_time
+                    v["update_time"] = current_time
+                else:  # New key, set both create_time and update_time
+                    v["create_time"] = current_time
+                    v["update_time"] = current_time
+
+                v["_id"] = k
+
             self._data.update(data)
-            await set_all_update_flags(self.namespace)
+            await set_all_update_flags(self.final_namespace)
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -147,30 +178,16 @@ class JsonKVStorage(BaseKVStorage):
                     any_deleted = True
 
             if any_deleted:
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Delete specific records from storage by by cache mode
-
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
-
-        Args:
-            ids (list[str]): List of cache mode to be drop from storage
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
 
         Returns:
-             True: if the cache drop successfully
-             False: if the cache drop failed
+            bool: True if storage contains no data, False otherwise
         """
-        if not modes:
-            return False
-
-        try:
-            await self.delete(modes)
-            return True
-        except Exception:
-            return False
+        async with self._storage_lock:
+            return len(self._data) == 0
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
@@ -189,18 +206,69 @@ class JsonKVStorage(BaseKVStorage):
         try:
             async with self._storage_lock:
                 self._data.clear()
-                await set_all_update_flags(self.namespace)
+                await set_all_update_flags(self.final_namespace)
 
             await self.index_done_callback()
-            logger.info(f"Process {os.getpid()} drop {self.namespace}")
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}"
+            )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping {self.namespace}: {e}")
+            logger.error(f"[{self.workspace}] Error dropping {self.namespace}: {e}")
             return {"status": "error", "message": str(e)}
+
+    async def _migrate_legacy_cache_structure(self, data: dict) -> dict:
+        """Migrate legacy nested cache structure to flattened structure
+
+        Args:
+            data: Original data dictionary that may contain legacy structure
+
+        Returns:
+            Migrated data dictionary with flattened cache keys
+        """
+        from lightrag.utils import generate_cache_key
+
+        # Early return if data is empty
+        if not data:
+            return data
+
+        # Check first entry to see if it's already in new format
+        first_key = next(iter(data.keys()))
+        if ":" in first_key and len(first_key.split(":")) == 3:
+            # Already in flattened format, return as-is
+            return data
+
+        migrated_data = {}
+        migration_count = 0
+
+        for key, value in data.items():
+            # Check if this is a legacy nested cache structure
+            if isinstance(value, dict) and all(
+                isinstance(v, dict) and "return" in v for v in value.values()
+            ):
+                # This looks like a legacy cache mode with nested structure
+                mode = key
+                for cache_hash, cache_entry in value.items():
+                    cache_type = cache_entry.get("cache_type", "extract")
+                    flattened_key = generate_cache_key(mode, cache_type, cache_hash)
+                    migrated_data[flattened_key] = cache_entry
+                    migration_count += 1
+            else:
+                # Keep non-cache data or already flattened cache data as-is
+                migrated_data[key] = value
+
+        if migration_count > 0:
+            logger.info(
+                f"[{self.workspace}] Migrated {migration_count} legacy cache entries to flattened structure"
+            )
+            # Persist migrated data immediately
+            write_json(migrated_data, self._file_name)
+
+        return migrated_data
 
     async def finalize(self):
         """Finalize storage resources
         Persistence cache data to disk before exiting
         """
-        if self.namespace.endswith("cache"):
+        if self.namespace.endswith("_cache"):
             await self.index_done_callback()
