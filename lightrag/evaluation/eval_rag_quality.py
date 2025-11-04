@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RAGAS Evaluation Script for Portfolio RAG System
+RAGAS Evaluation Script for LightRAG System
 
 Evaluates RAG response quality using RAGAS metrics:
 - Faithfulness: Is the answer factually accurate based on context?
@@ -17,11 +17,11 @@ Results are saved to: lightrag/evaluation/results/
     - results_YYYYMMDD_HHMMSS.csv   (CSV export for analysis)
     - results_YYYYMMDD_HHMMSS.json  (Full results with details)
 
-Note on Custom OpenAI-Compatible Endpoints:
-    This script uses bypass_n=True mode for answer_relevancy metric to ensure
-    compatibility with custom endpoints that may not support OpenAI's 'n' parameter
-    for multiple completions. This generates multiple outputs through repeated prompts
-    instead, maintaining evaluation quality while supporting broader endpoint compatibility.
+Technical Notes:
+    - Uses stable RAGAS API (LangchainLLMWrapper) for maximum compatibility
+    - Supports custom OpenAI-compatible endpoints via EVAL_LLM_BINDING_HOST
+    - Enables bypass_n mode for endpoints that don't support 'n' parameter
+    - Deprecation warnings are suppressed for cleaner output
 """
 
 import asyncio
@@ -31,6 +31,7 @@ import math
 import os
 import sys
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -38,6 +39,14 @@ from typing import Any, Dict, List
 import httpx
 from dotenv import load_dotenv
 from lightrag.utils import logger
+
+# Suppress LangchainLLMWrapper deprecation warning
+# We use LangchainLLMWrapper for stability and compatibility with all RAGAS versions
+warnings.filterwarnings(
+    "ignore",
+    message=".*LangchainLLMWrapper is deprecated.*",
+    category=DeprecationWarning,
+)
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -119,7 +128,7 @@ class RAGEvaluator:
                 "or ensure OPENAI_API_KEY is set."
             )
 
-        eval_model = os.getenv("EVAL_LLM_MODEL", "gpt-4.1")
+        eval_model = os.getenv("EVAL_LLM_MODEL", "gpt-4o-mini")
         eval_embedding_model = os.getenv(
             "EVAL_EMBEDDING_MODEL", "text-embedding-3-large"
         )
@@ -185,24 +194,22 @@ class RAGEvaluator:
 
     def _display_configuration(self):
         """Display all evaluation configuration settings"""
-        logger.info("EVALUATION CONFIGURATION")
-
-        logger.info("  Evaluation Models:")
+        logger.info("Evaluation Models:")
         logger.info("  • LLM Model:            %s", self.eval_model)
         logger.info("  • Embedding Model:      %s", self.eval_embedding_model)
         if self.eval_base_url:
             logger.info("  • Custom Endpoint:      %s", self.eval_base_url)
-            logger.info("  • Bypass N-Parameter:   Enabled (for compatibility)")
+            logger.info("  • Bypass N-Parameter:   Enabled (use LangchainLLMWrapperfor compatibility)")
         else:
             logger.info("  • Endpoint:             OpenAI Official API")
 
-        logger.info("  Concurrency & Rate Limiting:")
+        logger.info("Concurrency & Rate Limiting:")
         query_top_k = int(os.getenv("EVAL_QUERY_TOP_K", "10"))
         logger.info("  • Query Top-K:          %s Entities/Relations", query_top_k)
         logger.info("  • LLM Max Retries:      %s", self.eval_max_retries)
         logger.info("  • LLM Timeout:          %s seconds", self.eval_timeout)
 
-        logger.info("  Test Configuration:")
+        logger.info("Test Configuration:")
         logger.info("  • Total Test Cases:     %s", len(self.test_cases))
         logger.info("  • Test Dataset:         %s", self.test_dataset_path.name)
         logger.info("  • LightRAG API:         %s", self.rag_api_url)
@@ -460,9 +467,8 @@ class RAGEvaluator:
         # Get evaluation concurrency from environment (default to 1 for serial evaluation)
         max_async = int(os.getenv("EVAL_MAX_CONCURRENT", "3"))
 
-        logger.info("")
         logger.info("%s", "=" * 70)
-        logger.info("🚀 Starting RAGAS Evaluation of Portfolio RAG System")
+        logger.info("🚀 Starting RAGAS Evaluation of LightRAG System")
         logger.info("🔧 Concurrent evaluations: %s", max_async)
         logger.info("%s", "=" * 70)
 
@@ -580,7 +586,6 @@ class RAGEvaluator:
         Args:
             results: List of evaluation results
         """
-        logger.info("")
         logger.info("%s", "=" * 115)
         logger.info("📊 EVALUATION RESULTS SUMMARY")
         logger.info("%s", "=" * 115)
@@ -755,13 +760,13 @@ class RAGEvaluator:
         elapsed_time = time.time() - start_time
 
         # Add a small delay to ensure all buffered output is completely written
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.5)
         # Flush all output buffers to ensure RAGAS progress bars are fully displayed
         sys.stdout.flush()
         sys.stderr.flush()
-
-        await asyncio.sleep(0.2)
+        sys.stdout.write("\n")
         sys.stderr.write("\n")
+        sys.stdout.flush()
         sys.stderr.flush()
 
         # Display results table

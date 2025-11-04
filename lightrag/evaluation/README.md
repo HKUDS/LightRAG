@@ -117,7 +117,7 @@ python lightrag/evaluation/eval_rag_quality.py
 **Custom Model:**
 ```bash
 export OPENAI_API_KEY=sk-xxx
-export EVAL_LLM_MODEL=gpt-4.1
+export EVAL_LLM_MODEL=gpt-4o-mini
 export EVAL_EMBEDDING_MODEL=text-embedding-3-large
 python lightrag/evaluation/eval_rag_quality.py
 ```
