@@ -67,7 +67,17 @@ def _normalise_complete_url(api: RestAPI) -> str:
 class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
     def _extract_llm_config(self, llm_config: t.Any) -> dict[str, t.Any]:
         """Extract LLM configuration from provider-specific config."""
-        if isinstance(llm_config, OpenAICompatChatAPI):
+
+        if isinstance(llm_config, OpenAIAPICloudProvider):
+            host = _normalise_complete_url(llm_config)
+            return {
+                "binding": "openai",
+                "model": llm_config.model,
+                "host": host,
+                "api_key": llm_config.api_key,
+            }
+
+        elif isinstance(llm_config, OpenAICompatChatAPI):
             print(f"llm_config: {llm_config}")
             if llm_config.hf_model is None:
                 msg = (
@@ -83,14 +93,6 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "api_key": getattr(llm_config, "api_key", None),
             }
 
-        elif isinstance(llm_config, OpenAIAPICloudProvider):
-            host = _normalise_complete_url(llm_config)
-            return {
-                "binding": "openai",
-                "model": llm_config.model,
-                "host": host,
-                "api_key": llm_config.api_key,
-            }
         msg = f"Unsupported LLM configuration type: {type(llm_config)!r}"
         raise ValueError(msg)
 
