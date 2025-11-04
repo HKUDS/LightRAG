@@ -431,6 +431,89 @@
       "x-title": "No Authentication",
       "x-type": "NoAuth"
     },
+    "OpenAIAPICloudProvider": {
+      "description": "Hosted OpenAI-compatible provider configuration.",
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "The hostname of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hostname"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "HTTPS port for the provider endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string",
+          "x-description": "Model identifier exposed by the provider (for example `gpt-4o`).",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "api_key": {
+          "title": "Api Key",
+          "type": "string",
+          "x-description": "API key used to authenticate with the provider.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "API Key"
+        }
+      },
+      "required": [
+        "host",
+        "model",
+        "api_key"
+      ],
+      "title": "OpenAIAPICloudProvider",
+      "type": "object",
+      "x-description": "Use for hosted OpenAI-compatible APIs such as OpenAI or OpenRouter.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "OpenAI API Cloud Provider",
+      "x-type": "OpenAIAPICloudProvider"
+    },
     "OpenAICompatEmbeddingsProvider": {
       "description": "OpenAI-compatible embeddings configuration for hosted providers.",
       "properties": {
@@ -526,7 +609,7 @@
               "type": "null"
             }
           ],
-          "default": "text-embedding-3-large",
+          "default": null,
           "title": "Model",
           "x-description": "Embedding model identifier understood by the provider.",
           "x-is-advanced-field": false,
@@ -534,7 +617,6 @@
           "x-title": "Model"
         },
         "dimensions": {
-          "default": 3072,
           "title": "Dimensions",
           "type": "integer",
           "x-description": "Embedding vector dimensionality reported by the provider.",
@@ -543,6 +625,9 @@
           "x-title": "Embedding Dimensions"
         }
       },
+      "required": [
+        "dimensions"
+      ],
       "title": "OpenAICompatEmbeddingsProvider",
       "type": "object",
       "x-description": "Use for OpenAI-compatible embeddings APIs (OpenAI, OpenRouter, self-hosted services).",
@@ -551,191 +636,8 @@
       "x-title": "OpenAI Like API Embeddings",
       "x-type": "OpenAICompatEmbeddingsProvider"
     },
-    "OpenAIEmbeddingProvider": {
-      "description": "Official OpenAI embeddings configuration.",
-      "properties": {
-        "host": {
-          "default": "api.openai.com",
-          "title": "Host",
-          "type": "string",
-          "x-description": "Hostname for api.openai.com (omit protocol).",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Host"
-        },
-        "port": {
-          "default": 443,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "HTTPS port for the endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "const": "https",
-          "default": "https",
-          "title": "Protocol",
-          "type": "string"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 60,
-          "title": "Timeout",
-          "x-description": "Connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Timeout"
-        },
-        "base_path": {
-          "default": "/v1",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "provider": {
-          "const": "openai",
-          "default": "openai",
-          "title": "Provider",
-          "type": "string"
-        },
-        "model": {
-          "default": "text-embedding-3-large",
-          "title": "Model",
-          "type": "string",
-          "x-description": "OpenAI embedding model identifier.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        },
-        "api_key": {
-          "default": "",
-          "title": "Api Key",
-          "type": "string",
-          "x-description": "OpenAI API key.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "API Key"
-        },
-        "dimensions": {
-          "default": 3072,
-          "title": "Dimensions",
-          "type": "integer",
-          "x-description": "Embedding vector dimensionality returned by the model.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Embedding Dimensions"
-        }
-      },
-      "title": "OpenAIEmbeddingProvider",
-      "type": "object",
-      "x-description": "Use the official OpenAI embeddings endpoint with recommended defaults.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "inline",
-      "x-title": "OpenAI Embeddings",
-      "x-type": "OpenAIEmbeddingProvider"
-    },
-    "OpenAILikeAPIProvider": {
-      "description": "OpenAI-compatible REST provider configuration.",
-      "properties": {
-        "host": {
-          "default": "api.openai.com",
-          "title": "Host",
-          "type": "string",
-          "x-description": "Hostname of the provider endpoint (omit protocol).",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Host"
-        },
-        "port": {
-          "default": 443,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "HTTPS port for the provider endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "const": "https",
-          "default": "https",
-          "title": "Protocol",
-          "type": "string"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 60,
-          "title": "Timeout",
-          "x-description": "Connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Timeout"
-        },
-        "base_path": {
-          "default": "/v1",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "provider": {
-          "const": "openai",
-          "default": "openai",
-          "title": "Provider",
-          "type": "string"
-        },
-        "model": {
-          "default": "gpt-4.1",
-          "title": "Model",
-          "type": "string",
-          "x-description": "Model identifier exposed by the provider (for example `gpt-4o`).",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        },
-        "api_key": {
-          "default": "",
-          "title": "Api Key",
-          "type": "string",
-          "x-description": "API key used to authenticate with the provider.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "API Key"
-        }
-      },
-      "title": "OpenAILikeAPIProvider",
-      "type": "object",
-      "x-description": "Use for hosted OpenAI-compatible APIs such as OpenAI, OpenRouter, or Azure OpenAI.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "inline",
-      "x-title": "OpenAI Like API Provider",
-      "x-type": "OpenAILikeAPIProvider"
-    },
-    "OpenAILikeAPIVLLM": {
-      "description": "OpenAI-compatible chat configuration for vLLM deployments.",
+    "OpenAICompatibleAPI": {
+      "description": "OpenAI-compatible chat configuration backed by Hugging Face models.",
       "properties": {
         "host": {
           "title": "Host",
@@ -809,21 +711,11 @@
           "type": "string"
         },
         "hf_model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HuggingFaceModel"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "integration",
-          "x-title": "Hugging Face Model"
+          "$ref": "#/$defs/HuggingFaceModel",
+          "x-description": "Fully qualified Hugging Face model identifier served by the deployment.",
+          "x-meta-type": "inline"
         },
-        "model": {
+        "api_key": {
           "anyOf": [
             {
               "type": "string"
@@ -832,24 +724,123 @@
               "type": "null"
             }
           ],
-          "default": "gpt-4.1",
-          "title": "Model",
-          "x-description": "Model identifier served by the vLLM deployment (leave empty when providing a Hugging Face model).",
+          "default": null,
+          "title": "Api Key",
+          "x-description": "Optional API key used to access the compatible endpoint.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
-          "x-title": "Model"
+          "x-title": "API Key"
         }
       },
       "required": [
-        "host"
+        "host",
+        "hf_model"
       ],
-      "title": "OpenAILikeAPIVLLM",
+      "title": "OpenAICompatibleAPI",
       "type": "object",
-      "x-description": "Use for self-hosted vLLM services exposing an OpenAI-compatible API.",
+      "x-description": "Use for self-hosted services (for example vLLM) that expose an OpenAI-compatible API and are configured via a Hugging Face model.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI Like API (vLLM)",
-      "x-type": "OpenAILikeAPIVLLM"
+      "x-title": "OpenAI Compatible API",
+      "x-type": "OpenAICompatibleAPI"
+    },
+    "OpenAIEmbeddingProvider": {
+      "description": "Official OpenAI embeddings configuration.",
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "Hostname for api.openai.com (omit protocol).",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "HTTPS port for the endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "provider": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string",
+          "x-description": "OpenAI embedding model identifier.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "api_key": {
+          "title": "Api Key",
+          "type": "string",
+          "x-description": "OpenAI API key.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "API Key"
+        },
+        "dimensions": {
+          "title": "Dimensions",
+          "type": "integer",
+          "x-description": "Embedding vector dimensionality returned by the model.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Embedding Dimensions"
+        }
+      },
+      "required": [
+        "host",
+        "model",
+        "api_key",
+        "dimensions"
+      ],
+      "title": "OpenAIEmbeddingProvider",
+      "type": "object",
+      "x-description": "Use the official OpenAI embeddings endpoint with recommended defaults.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "OpenAI Embeddings",
+      "x-type": "OpenAIEmbeddingProvider"
     },
     "PostgresURI": {
       "description": "Configuration for the Postgres connection URI.",
@@ -910,24 +901,12 @@
     "llm_config": {
       "anyOf": [
         {
-          "$ref": "#/$defs/OpenAILikeAPIVLLM"
+          "$ref": "#/$defs/OpenAICompatibleAPI"
         },
         {
-          "$ref": "#/$defs/OpenAILikeAPIProvider"
+          "$ref": "#/$defs/OpenAIAPICloudProvider"
         }
       ],
-      "default": {
-        "host": "api.openai.com",
-        "port": 443,
-        "protocol": "https",
-        "timeout": 60,
-        "base_path": "/v1",
-        "api_type": "rest",
-        "provider": "openai",
-        "model": "gpt-4.1",
-        "api_key": "",
-        "__type__": "OpenAILikeAPIProvider"
-      },
       "title": "Llm Config",
       "x-description": "LLM provider configuration.",
       "x-is-advanced-field": false,
@@ -943,19 +922,6 @@
           "$ref": "#/$defs/OpenAIEmbeddingProvider"
         }
       ],
-      "default": {
-        "host": "api.openai.com",
-        "port": 443,
-        "protocol": "https",
-        "timeout": 60,
-        "base_path": "/v1",
-        "api_type": "rest",
-        "provider": "openai",
-        "model": "text-embedding-3-large",
-        "api_key": "",
-        "dimensions": 3072,
-        "__type__": "OpenAIEmbeddingProvider"
-      },
       "title": "Embedding Config",
       "x-description": "Embedding provider configuration.",
       "x-is-advanced-field": false,
@@ -970,7 +936,10 @@
   "required": [
     "preset",
     "ingress_http",
-    "pgvector_user"
+    "pgvector_user",
+    "llm_config",
+    "embedding_config",
+    "persistence"
   ],
   "title": "LightRAGAppInputs",
   "type": "object"

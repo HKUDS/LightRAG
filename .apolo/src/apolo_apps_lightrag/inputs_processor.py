@@ -15,10 +15,10 @@ from apolo_app_types.protocols.common.secrets_ import serialize_optional_secret
 
 from .types import (
     LightRAGAppInputs,
+    OpenAIAPICloudProvider,
     OpenAICompatEmbeddingsProvider,
+    OpenAICompatibleAPI,
     OpenAIEmbeddingProvider,
-    OpenAILikeAPIProvider,
-    OpenAILikeAPIVLLM,
 )
 
 
@@ -57,13 +57,15 @@ def _normalise_complete_url(api: RestAPI) -> str:
 class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
     def _extract_llm_config(self, llm_config: t.Any) -> dict[str, t.Any]:
         """Extract LLM configuration from provider-specific config."""
-        if isinstance(llm_config, OpenAILikeAPIVLLM) or isinstance(
+        if isinstance(llm_config, OpenAICompatibleAPI) or isinstance(
             llm_config, OpenAICompatChatAPI
         ):
-            if llm_config.hf_model:
-                model = llm_config.hf_model.model_hf_name
-            else:
-                model = getattr(llm_config, "model", None) or "gpt-4.1"
+            if llm_config.hf_model is None:
+                msg = (
+                    "OpenAI compatible LLM configuration requires a Hugging Face model"
+                )
+                raise ValueError(msg)
+            model = llm_config.hf_model.model_hf_name
             host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
@@ -71,7 +73,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "host": host,
                 "api_key": getattr(llm_config, "api_key", None),
             }
-        if isinstance(llm_config, OpenAILikeAPIProvider):
+        if isinstance(llm_config, OpenAIAPICloudProvider):
             host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
@@ -79,17 +81,8 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "host": host,
                 "api_key": llm_config.api_key,
             }
-        binding = getattr(llm_config, "provider", "openai")
-        model = getattr(llm_config, "model", "gpt-4.1")
-        api_key = getattr(llm_config, "api_key", None)
-        host = ""
-        if hasattr(llm_config, "complete_url"):
-            host = _normalise_complete_url(llm_config)
-        elif hasattr(llm_config, "host") and llm_config.host:
-            protocol = getattr(llm_config, "protocol", "https")
-            port = getattr(llm_config, "port", 443)
-            host = f"{protocol}://{llm_config.host}:{port}"
-        return {"binding": binding, "model": model, "host": host, "api_key": api_key}
+        msg = f"Unsupported LLM configuration type: {type(llm_config)!r}"
+        raise ValueError(msg)
 
     def _extract_embedding_config(self, embedding_config: t.Any) -> dict[str, t.Any]:
         """Extract embedding configuration from provider-specific config."""
@@ -100,9 +93,10 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
             if embedding_config.hf_model is not None:
                 model = embedding_config.hf_model.model_hf_name
             else:
-                model = (
-                    getattr(embedding_config, "model", None) or "text-embedding-3-large"
-                )
+                model = getattr(embedding_config, "model", None)
+                if not model:
+                    msg = "OpenAI-compatible embedding configuration requires a model name or Hugging Face model"
+                    raise ValueError(msg)
             host = _normalise_complete_url(embedding_config)
             dimensions = getattr(embedding_config, "dimensions", None)
             if dimensions is None:
@@ -125,27 +119,8 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "dimensions": dimensions,
                 "host": host,
             }
-        binding = getattr(embedding_config, "provider", "openai")
-        model = getattr(embedding_config, "model", "text-embedding-3-large")
-        api_key = getattr(embedding_config, "api_key", None)
-        dimensions = getattr(embedding_config, "dimensions", None)
-        if dimensions is None:
-            msg = "Embedding configuration must specify dimensions"
-            raise ValueError(msg)
-        host = ""
-        if hasattr(embedding_config, "complete_url"):
-            host = _normalise_complete_url(embedding_config)
-        elif hasattr(embedding_config, "host") and embedding_config.host:
-            protocol = getattr(embedding_config, "protocol", "https")
-            port = getattr(embedding_config, "port", 443)
-            host = f"{protocol}://{embedding_config.host}:{port}"
-        return {
-            "binding": binding,
-            "model": model,
-            "api_key": api_key,
-            "dimensions": dimensions,
-            "host": host,
-        }
+        msg = f"Unsupported embedding configuration type: {type(embedding_config)!r}"
+        raise ValueError(msg)
 
     async def _get_environment_values(
         self,

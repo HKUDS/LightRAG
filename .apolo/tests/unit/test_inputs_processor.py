@@ -12,8 +12,8 @@ from apolo_apps_lightrag.inputs_processor import LightRAGInputsProcessor
 from apolo_apps_lightrag.types import (
     LightRAGAppInputs,
     LightRAGPersistence,
+    OpenAIAPICloudProvider,
     OpenAIEmbeddingProvider,
-    OpenAILikeAPIProvider,
 )
 
 
@@ -49,8 +49,17 @@ async def test_gen_extra_values_merges_sources(monkeypatch: pytest.MonkeyPatch) 
             rag_storage_size=20,
             inputs_storage_size=15,
         ),
-        llm_config=OpenAILikeAPIProvider(api_key="llm-key", model="gpt-4.1"),
-        embedding_config=OpenAIEmbeddingProvider(api_key="embed-key"),
+        llm_config=OpenAIAPICloudProvider(
+            host="api.openai.com",
+            model="gpt-4.1",
+            api_key="llm-key",
+        ),
+        embedding_config=OpenAIEmbeddingProvider(
+            host="api.openai.com",
+            model="text-embedding-3-large",
+            api_key="embed-key",
+            dimensions=3072,
+        ),
     )
 
     values = await processor.gen_extra_values(

@@ -9,6 +9,7 @@ from apolo_app_types.protocols.common import (
     SchemaExtraMetadata,
     SchemaMetaType,
 )
+from apolo_app_types.protocols.common.hugging_face import HuggingFaceModel
 from apolo_app_types.protocols.common.networking import HttpApi, RestAPI, ServiceAPI
 from apolo_app_types.protocols.common.openai_compat import (
     OpenAICompatChatAPI,
@@ -17,25 +18,35 @@ from apolo_app_types.protocols.common.openai_compat import (
 from apolo_app_types.protocols.postgres import CrunchyPostgresUserCredentials
 
 
-class OpenAILikeAPIVLLM(OpenAICompatChatAPI):
-    """OpenAI-compatible chat configuration for vLLM deployments."""
+class OpenAICompatibleAPI(OpenAICompatChatAPI):
+    """OpenAI-compatible chat configuration backed by Hugging Face models."""
 
     base_path: str = "/v1"
 
     model_config = ConfigDict(
         protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="OpenAI Like API (vLLM)",
-            description="Use for self-hosted vLLM services exposing an OpenAI-compatible API.",
+            title="OpenAI Compatible API",
+            description=(
+                "Use for self-hosted services (for example vLLM) that expose an "
+                "OpenAI-compatible API and are configured via a Hugging Face model."
+            ),
             meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
     )
 
-    model: str | None = Field(
-        default="gpt-4.1",
+    hf_model: HuggingFaceModel = Field(
+        ...,
         json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description="Model identifier served by the vLLM deployment (leave empty when providing a Hugging Face model).",
+            title="Hugging Face Model",
+            description="Fully qualified Hugging Face model identifier served by the deployment.",
+        ).as_json_schema_extra(),
+    )
+    api_key: str | None = Field(
+        default=None,
+        json_schema_extra=SchemaExtraMetadata(
+            title="API Key",
+            description="Optional API key used to access the compatible endpoint.",
         ).as_json_schema_extra(),
     )
 
@@ -75,25 +86,18 @@ class LightRAGPersistence(BaseModel):
         return value
 
 
-class OpenAILikeAPIProvider(RestAPI):
-    """OpenAI-compatible REST provider configuration."""
+class OpenAIAPICloudProvider(RestAPI):
+    """Hosted OpenAI-compatible provider configuration."""
 
     model_config = ConfigDict(
         protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="OpenAI Like API Provider",
-            description="Use for hosted OpenAI-compatible APIs such as OpenAI, OpenRouter, or Azure OpenAI.",
+            title="OpenAI API Cloud Provider",
+            description="Use for hosted OpenAI-compatible APIs such as OpenAI or OpenRouter.",
             meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
     )
 
-    host: str = Field(
-        default="api.openai.com",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Hostname of the provider endpoint (omit protocol).",
-        ).as_json_schema_extra(),
-    )
     port: int = Field(
         default=443,
         json_schema_extra=SchemaExtraMetadata(
@@ -110,16 +114,15 @@ class OpenAILikeAPIProvider(RestAPI):
         ).as_json_schema_extra(),
     )
     base_path: str = "/v1"
-    provider: Literal["openai"] = "openai"
     model: str = Field(
-        default="gpt-4.1",
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="Model identifier exposed by the provider (for example `gpt-4o`).",
         ).as_json_schema_extra(),
     )
     api_key: str = Field(
-        default="",
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="API Key",
             description="API key used to authenticate with the provider.",
@@ -140,7 +143,7 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
     )
 
     model: str | None = Field(
-        default="text-embedding-3-large",
+        default=None,
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="Embedding model identifier understood by the provider.",
@@ -170,7 +173,7 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
     )
     base_path: str = "/v1"
     dimensions: int = Field(
-        default=3072,
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Dimensions",
             description="Embedding vector dimensionality reported by the provider.",
@@ -191,7 +194,7 @@ class OpenAIEmbeddingProvider(RestAPI):
     )
 
     host: str = Field(
-        default="api.openai.com",
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Host",
             description="Hostname for api.openai.com (omit protocol).",
@@ -215,21 +218,21 @@ class OpenAIEmbeddingProvider(RestAPI):
     base_path: str = "/v1"
     provider: Literal["openai"] = "openai"
     model: str = Field(
-        default="text-embedding-3-large",
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
             description="OpenAI embedding model identifier.",
         ).as_json_schema_extra(),
     )
     api_key: str = Field(
-        default="",
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="API Key",
             description="OpenAI API key.",
         ).as_json_schema_extra(),
     )
     dimensions: int = Field(
-        default=3072,
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Dimensions",
             description="Embedding vector dimensionality returned by the model.",
@@ -237,7 +240,7 @@ class OpenAIEmbeddingProvider(RestAPI):
     )
 
 
-LLMProvider = OpenAILikeAPIVLLM | OpenAILikeAPIProvider
+LLMProvider = OpenAICompatibleAPI | OpenAIAPICloudProvider
 
 EmbeddingProvider = OpenAICompatEmbeddingsProvider | OpenAIEmbeddingProvider
 
@@ -251,21 +254,21 @@ class LightRAGAppInputs(AppInputs):
     ingress_http: IngressHttp
     pgvector_user: CrunchyPostgresUserCredentials
     llm_config: LightRAGLLMConfig = Field(
-        default=OpenAILikeAPIProvider(),
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="LLM Configuration",
             description="LLM provider configuration.",
         ).as_json_schema_extra(),
     )
     embedding_config: LightRAGEmbeddingConfig = Field(
-        default=OpenAIEmbeddingProvider(),
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Configuration",
             description="Embedding provider configuration.",
         ).as_json_schema_extra(),
     )
     persistence: LightRAGPersistence = Field(
-        default_factory=LightRAGPersistence,
+        ...,
         json_schema_extra=SchemaExtraMetadata(
             title="Persistence Configuration",
             description="Configure persistent storage for LightRAG data and inputs.",
@@ -285,8 +288,8 @@ __all__ = [
     "LightRAGEmbeddingConfig",
     "LightRAGLLMConfig",
     "LightRAGPersistence",
-    "OpenAILikeAPIVLLM",
-    "OpenAILikeAPIProvider",
+    "OpenAICompatibleAPI",
+    "OpenAIAPICloudProvider",
     "OpenAICompatEmbeddingsProvider",
     "OpenAIEmbeddingProvider",
 ]
