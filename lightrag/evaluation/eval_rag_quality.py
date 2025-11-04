@@ -481,7 +481,7 @@ class RAGEvaluator:
             List of evaluation results with metrics
         """
         # Get evaluation concurrency from environment (default to 1 for serial evaluation)
-        max_async = int(os.getenv("EVAL_MAX_CONCURRENT", "3"))
+        max_async = int(os.getenv("EVAL_MAX_CONCURRENT", "2"))
 
         logger.info("%s", "=" * 70)
         logger.info("🚀 Starting RAGAS Evaluation of LightRAG System")
