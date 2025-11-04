@@ -98,7 +98,17 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
 
     def _extract_embedding_config(self, embedding_config: t.Any) -> dict[str, t.Any]:
         """Extract embedding configuration from provider-specific config."""
-        if isinstance(
+        if isinstance(embedding_config, OpenAIEmbeddingCloudProvider):
+            host = _normalise_complete_url(embedding_config)
+            dimensions = embedding_config.dimensions
+            return {
+                "binding": "openai",
+                "model": embedding_config.model,
+                "api_key": embedding_config.api_key,
+                "dimensions": dimensions,
+                "host": host,
+            }
+        elif isinstance(
             embedding_config,
             (OpenAICompatEmbeddingsProvider, OpenAICompatEmbeddingsAPI),
         ):
@@ -118,16 +128,7 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "dimensions": dimensions,
                 "host": host,
             }
-        if isinstance(embedding_config, OpenAIEmbeddingCloudProvider):
-            host = _normalise_complete_url(embedding_config)
-            dimensions = embedding_config.dimensions
-            return {
-                "binding": "openai",
-                "model": embedding_config.model,
-                "api_key": embedding_config.api_key,
-                "dimensions": dimensions,
-                "host": host,
-            }
+
         msg = f"Unsupported embedding configuration type: {type(embedding_config)!r}"
         raise ValueError(msg)
 
