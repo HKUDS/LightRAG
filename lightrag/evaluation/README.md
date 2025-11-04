@@ -60,15 +60,30 @@ pip install -e ".[offline-llm]"
 
 ### 2. Run Evaluation
 
+**Basic usage (uses defaults):**
 ```bash
 cd /path/to/LightRAG
-python -m lightrag.evaluation.eval_rag_quality
+python lightrag/evaluation/eval_rag_quality.py
 ```
 
-Or directly:
-
+**Specify custom dataset:**
 ```bash
-python lightrag/evaluation/eval_rag_quality.py
+python lightrag/evaluation/eval_rag_quality.py --dataset my_test.json
+```
+
+**Specify custom RAG endpoint:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py --ragendpoint http://my-server.com:9621
+```
+
+**Specify both (short form):**
+```bash
+python lightrag/evaluation/eval_rag_quality.py -d my_test.json -r http://localhost:9621
+```
+
+**Get help:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py --help
 ```
 
 ### 3. View Results
@@ -86,6 +101,49 @@ results/
 - 📊 Per-metric averages (Faithfulness, Answer Relevance, Context Recall, Context Precision)
 - 📋 Individual test case results
 - 📈 Performance breakdown by question
+
+---
+
+## 📋 Command-Line Arguments
+
+The evaluation script supports command-line arguments for easy configuration:
+
+| Argument | Short | Default | Description |
+|----------|-------|---------|-------------|
+| `--dataset` | `-d` | `sample_dataset.json` | Path to test dataset JSON file |
+| `--ragendpoint` | `-r` | `http://localhost:9621` or `$LIGHTRAG_API_URL` | LightRAG API endpoint URL |
+
+### Usage Examples
+
+**Use default dataset and endpoint:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py
+```
+
+**Custom dataset with default endpoint:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py --dataset path/to/my_dataset.json
+```
+
+**Default dataset with custom endpoint:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py --ragendpoint http://my-server.com:9621
+```
+
+**Custom dataset and endpoint:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py -d my_dataset.json -r http://localhost:9621
+```
+
+**Absolute path to dataset:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py -d /path/to/custom_dataset.json
+```
+
+**Show help message:**
+```bash
+python lightrag/evaluation/eval_rag_quality.py --help
+```
 
 ---
 
