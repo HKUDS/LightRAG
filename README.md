@@ -103,19 +103,27 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-# create a Python virtual enviroment if neccesary
+# Create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
-cp env.example .env
+
+cp env.example .env  # Update the .env with your LLM and embedding configurations
+
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
+
 lightrag-server
 ```
 
 * Launching the LightRAG Server with Docker Compose
 
-```
+```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env
+cp env.example .env  # Update the .env with your LLM and embedding configurations
 # modify LLM and Embedding settings in .env
 docker compose up
 ```
@@ -933,7 +941,8 @@ maxclients 500
 The `workspace` parameter ensures data isolation between different LightRAG instances. Once initialized, the `workspace` is immutable and cannot be changed.Here is how workspaces are implemented for different types of storage:
 
 - **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
-- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
 
@@ -1538,7 +1547,7 @@ The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](htt
 
 ### Generate Query
 
-LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `example/generate_query.py`.
+LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `examples/generate_query.py`.
 
 <details>
 <summary> Prompt </summary>

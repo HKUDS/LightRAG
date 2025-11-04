@@ -62,6 +62,12 @@ export default function SiteHeader() {
     ? `${coreVersion}/${apiVersion}`
     : null;
 
+  // Check if frontend needs rebuild (apiVersion ends with warning symbol)
+  const hasWarning = apiVersion?.endsWith('⚠️');
+  const versionTooltip = hasWarning
+    ? t('header.frontendNeedsRebuild')
+    : versionDisplay ? `v${versionDisplay}` : '';
+
   const handleLogout = () => {
     navigationService.navigateToLogin();
   }
@@ -106,9 +112,18 @@ export default function SiteHeader() {
       <nav className="w-[200px] flex items-center justify-end">
         <div className="flex items-center gap-2">
           {versionDisplay && (
-            <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">
-              v{versionDisplay}
-            </span>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1 cursor-default">
+                    v{versionDisplay}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {versionTooltip}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
           <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
             <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">

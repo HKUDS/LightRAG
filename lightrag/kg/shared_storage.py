@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
 
 from lightrag.exceptions import PipelineNotInitializedError
 
+DEBUG_LOCKS = False
+
 
 # Define a direct print function for critical logs that must be visible in all processes
 def direct_log(message, enable_output: bool = True, level: str = "DEBUG"):
@@ -90,7 +92,6 @@ _storage_keyed_lock: Optional["KeyedUnifiedLock"] = None
 # async locks for coroutine synchronization in multiprocess mode
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
-DEBUG_LOCKS = False
 _debug_n_locks_acquired: int = 0
 
 

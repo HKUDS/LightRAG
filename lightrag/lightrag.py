@@ -1871,7 +1871,7 @@ class LightRAG:
                                     chunks, pipeline_status, pipeline_status_lock
                                 )
                             )
-                            await entity_relation_task
+                            chunk_results = await entity_relation_task
                             file_extraction_stage_ok = True
 
                         except Exception as e:
@@ -1961,6 +1961,7 @@ class LightRAG:
                                 if self.enable_deduplication:
                                     dedup_service = LightRAGDeduplicationService(self)
 
+                                # Use chunk_results from entity_relation_task
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
@@ -3190,6 +3191,9 @@ class LightRAG:
                         ]
 
                     if not existing_sources:
+                        # No chunk references means this entity should be deleted
+                        entities_to_delete.add(node_label)
+                        entity_chunk_updates[node_label] = []
                         continue
 
                     remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
@@ -3211,6 +3215,7 @@ class LightRAG:
 
                 # Process relationships
                 for edge_data in affected_edges:
+                    # source target is not in normalize order in graph db property
                     src = edge_data.get("source")
                     tgt = edge_data.get("target")
 
@@ -3247,6 +3252,9 @@ class LightRAG:
                         ]
 
                     if not existing_sources:
+                        # No chunk references means this relationship should be deleted
+                        relationships_to_delete.add(edge_tuple)
+                        relation_chunk_updates[edge_tuple] = []
                         continue
 
                     remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
@@ -3330,36 +3338,7 @@ class LightRAG:
                         logger.error(f"Failed to delete chunks: {e}")
                         raise Exception(f"Failed to delete document chunks: {e}") from e
 
-                # 6. Delete entities that have no remaining sources
-                if entities_to_delete:
-                    try:
-                        # Delete from vector database
-                        entity_vdb_ids = [
-                            compute_mdhash_id(entity, prefix="ent-")
-                            for entity in entities_to_delete
-                        ]
-                        await self.entities_vdb.delete(entity_vdb_ids)
-
-                        # Delete from graph
-                        await self.chunk_entity_relation_graph.remove_nodes(
-                            list(entities_to_delete)
-                        )
-
-                        # Delete from entity_chunks storage
-                        if self.entity_chunks:
-                            await self.entity_chunks.delete(list(entities_to_delete))
-
-                        async with pipeline_status_lock:
-                            log_message = f"Successfully deleted {len(entities_to_delete)} entities"
-                            logger.info(log_message)
-                            pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
-
-                    except Exception as e:
-                        logger.error(f"Failed to delete entities: {e}")
-                        raise Exception(f"Failed to delete entities: {e}") from e
-
-                # 7. Delete relationships that have no remaining sources
+                # 6. Delete relationships that have no remaining sources
                 if relationships_to_delete:
                     try:
                         # Delete from vector database
@@ -3395,6 +3374,96 @@ class LightRAG:
                     except Exception as e:
                         logger.error(f"Failed to delete relationships: {e}")
                         raise Exception(f"Failed to delete relationships: {e}") from e
+
+                # 7. Delete entities that have no remaining sources
+                if entities_to_delete:
+                    try:
+                        # Debug: Check and log all edges before deleting nodes
+                        edges_to_delete = set()
+                        edges_still_exist = 0
+                        for entity in entities_to_delete:
+                            edges = (
+                                await self.chunk_entity_relation_graph.get_node_edges(
+                                    entity
+                                )
+                            )
+                            if edges:
+                                for src, tgt in edges:
+                                    # Normalize edge representation (sorted for consistency)
+                                    edge_tuple = tuple(sorted((src, tgt)))
+                                    edges_to_delete.add(edge_tuple)
+
+                                    if (
+                                        src in entities_to_delete
+                                        and tgt in entities_to_delete
+                                    ):
+                                        logger.warning(
+                                            f"Edge still exists: {src} <-> {tgt}"
+                                        )
+                                    elif src in entities_to_delete:
+                                        logger.warning(
+                                            f"Edge still exists: {src} --> {tgt}"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Edge still exists: {src} <-- {tgt}"
+                                        )
+                                edges_still_exist += 1
+                        if edges_still_exist:
+                            logger.warning(
+                                f"⚠️ {edges_still_exist} entities still has edges before deletion"
+                            )
+
+                        # Clean residual edges from VDB and storage before deleting nodes
+                        if edges_to_delete:
+                            # Delete from relationships_vdb
+                            rel_ids_to_delete = []
+                            for src, tgt in edges_to_delete:
+                                rel_ids_to_delete.extend(
+                                    [
+                                        compute_mdhash_id(src + tgt, prefix="rel-"),
+                                        compute_mdhash_id(tgt + src, prefix="rel-"),
+                                    ]
+                                )
+                            await self.relationships_vdb.delete(rel_ids_to_delete)
+
+                            # Delete from relation_chunks storage
+                            if self.relation_chunks:
+                                relation_storage_keys = [
+                                    make_relation_chunk_key(src, tgt)
+                                    for src, tgt in edges_to_delete
+                                ]
+                                await self.relation_chunks.delete(relation_storage_keys)
+
+                            logger.info(
+                                f"Cleaned {len(edges_to_delete)} residual edges from VDB and chunk-tracking storage"
+                            )
+
+                        # Delete from graph (edges will be auto-deleted with nodes)
+                        await self.chunk_entity_relation_graph.remove_nodes(
+                            list(entities_to_delete)
+                        )
+
+                        # Delete from vector database
+                        entity_vdb_ids = [
+                            compute_mdhash_id(entity, prefix="ent-")
+                            for entity in entities_to_delete
+                        ]
+                        await self.entities_vdb.delete(entity_vdb_ids)
+
+                        # Delete from entity_chunks storage
+                        if self.entity_chunks:
+                            await self.entity_chunks.delete(list(entities_to_delete))
+
+                        async with pipeline_status_lock:
+                            log_message = f"Successfully deleted {len(entities_to_delete)} entities"
+                            logger.info(log_message)
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+
+                    except Exception as e:
+                        logger.error(f"Failed to delete entities: {e}")
+                        raise Exception(f"Failed to delete entities: {e}") from e
 
                 # Persist changes to graph database before releasing graph database lock
                 await self._insert_done()
@@ -3620,7 +3689,11 @@ class LightRAG:
         )
 
     async def aedit_entity(
-        self, entity_name: str, updated_data: dict[str, str], allow_rename: bool = True
+        self,
+        entity_name: str,
+        updated_data: dict[str, str],
+        allow_rename: bool = True,
+        allow_merge: bool = False,
     ) -> dict[str, Any]:
         """Asynchronously edit entity information.
 
@@ -3631,6 +3704,7 @@ class LightRAG:
             entity_name: Name of the entity to edit
             updated_data: Dictionary containing updated attributes, e.g. {"description": "new description", "entity_type": "new type"}
             allow_rename: Whether to allow entity renaming, defaults to True
+            allow_merge: Whether to merge into an existing entity when renaming to an existing name
 
         Returns:
             Dictionary containing updated entity information
@@ -3644,16 +3718,21 @@ class LightRAG:
             entity_name,
             updated_data,
             allow_rename,
+            allow_merge,
             self.entity_chunks,
             self.relation_chunks,
         )
 
     def edit_entity(
-        self, entity_name: str, updated_data: dict[str, str], allow_rename: bool = True
+        self,
+        entity_name: str,
+        updated_data: dict[str, str],
+        allow_rename: bool = True,
+        allow_merge: bool = False,
     ) -> dict[str, Any]:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.aedit_entity(entity_name, updated_data, allow_rename)
+            self.aedit_entity(entity_name, updated_data, allow_rename, allow_merge)
         )
 
     async def aedit_relation(
@@ -3793,6 +3872,8 @@ class LightRAG:
             target_entity,
             merge_strategy,
             target_entity_data,
+            self.entity_chunks,
+            self.relation_chunks,
         )
 
     def merge_entities(

@@ -9,6 +9,7 @@
 
 # Document processing dependencies (with version constraints matching pyproject.toml)
 openpyxl>=3.0.0,<4.0.0
+pycryptodome>=3.0.0,<4.0.0
 pypdf2>=3.0.0
 python-docx>=0.8.11,<2.0.0
 python-pptx>=0.6.21,<2.0.0

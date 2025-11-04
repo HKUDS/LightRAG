@@ -104,18 +104,26 @@ lightrag-server
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 # 如有必要，创建Python虚拟环境
-# 以可编辑模式安装并支持API
+# 以可开发（编辑）模式安装LightRAG服务器
 pip install -e ".[api]"
-cp env.example .env
+
+cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+
+# 构建前端代码
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
+
 lightrag-server
 ```
 
 * 使用 Docker Compose 启动 LightRAG 服务器
 
-```
+```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env
+cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
 # modify LLM and Embedding settings in .env
 docker compose up
 ```
