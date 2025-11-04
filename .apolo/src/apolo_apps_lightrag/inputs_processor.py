@@ -29,8 +29,9 @@ def _normalise_complete_url(api: RestAPI) -> str:
     """Return a best-effort fully qualified URL for a RestAPI definition."""
     raw_host = getattr(api, "host", "")
     protocol = getattr(api, "protocol", "https")
-    port = getattr(api, "port", 443)
-    base_path = getattr(api, "base_path", "/")
+    port = getattr(api, "port", None)
+    base_path = getattr(api, "base_path", None)
+    api_base_path = getattr(api, "api_base_path", None)
 
     if raw_host.startswith(("http://", "https://")):
         parsed = urlparse(raw_host)
@@ -44,6 +45,9 @@ def _normalise_complete_url(api: RestAPI) -> str:
     else:
         host = raw_host
 
+    if not base_path or base_path == "/":
+        base_path = api_base_path or "/"
+
     if not base_path.startswith("/"):
         base_path = f"/{base_path}"
 
@@ -51,7 +55,12 @@ def _normalise_complete_url(api: RestAPI) -> str:
         # Nothing better to do; fall back to raw host string.
         host = raw_host
 
-    return f"{protocol}://{host}:{port}{base_path}"
+    default_port = 443 if protocol == "https" else 80
+    port_segment = ""
+    if port and port != default_port:
+        port_segment = f":{port}"
+
+    return f"{protocol}://{host}{port_segment}{base_path}"
 
 
 class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):

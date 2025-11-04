@@ -437,19 +437,10 @@
         "host": {
           "title": "Host",
           "type": "string",
-          "x-description": "The hostname of the HTTP endpoint.",
+          "x-description": "Hostname of the provider endpoint (omit protocol).",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
-          "x-title": "Hostname"
-        },
-        "port": {
-          "default": 443,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "HTTPS port for the provider endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
+          "x-title": "Host"
         },
         "protocol": {
           "const": "https",
@@ -476,12 +467,6 @@
         "base_path": {
           "default": "/v1",
           "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
           "type": "string"
         },
         "model": {
@@ -511,8 +496,7 @@
       "x-description": "Use for hosted OpenAI-compatible APIs such as OpenAI or OpenRouter.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI API Cloud Provider",
-      "x-type": "OpenAIAPICloudProvider"
+      "x-title": "OpenAI API Cloud Provider"
     },
     "OpenAICompatEmbeddingsProvider": {
       "description": "OpenAI-compatible embeddings configuration for hosted providers.",
@@ -558,7 +542,7 @@
           "x-title": "Timeout"
         },
         "base_path": {
-          "default": "/v1",
+          "default": "/",
           "title": "Base Path",
           "type": "string"
         },
@@ -748,15 +732,6 @@
           "x-meta-type": "inline",
           "x-title": "Host"
         },
-        "port": {
-          "default": 443,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "HTTPS port for the endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
         "protocol": {
           "const": "https",
           "default": "https",
@@ -782,12 +757,6 @@
         "base_path": {
           "default": "/v1",
           "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
           "type": "string"
         },
         "provider": {
@@ -832,8 +801,7 @@
       "x-description": "Use the official OpenAI embeddings endpoint with recommended defaults.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI Embeddings Cloud Provider",
-      "x-type": "OpenAIEmbeddingCloudProvider"
+      "x-title": "OpenAI Embeddings Cloud Provider"
     },
     "PostgresURI": {
       "description": "Configuration for the Postgres connection URI.",

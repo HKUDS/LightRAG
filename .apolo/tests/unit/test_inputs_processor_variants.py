@@ -101,7 +101,7 @@ async def _generate_env(
                 api_key="llm-key",
             ),
             "gpt-4o",
-            "https://api.openai.com:443/v1",
+            "https://api.openai.com/v1",
         ),
         (
             OpenAICompatibleAPI(
@@ -172,7 +172,7 @@ async def test_inputs_processor_openai_compat_provider(
                 dimensions=1536,
             ),
             "openai",
-            "https://api.openai.com:443/v1",
+            "https://api.openai.com/v1",
             1536,
         ),
         (
@@ -228,7 +228,7 @@ async def test_inputs_processor_openai_compat_embedding(
 
     assert env["EMBEDDING_BINDING"] == "openai"
     assert env["EMBEDDING_MODEL"] == "text-embedding-awesome"
-    assert env["EMBEDDING_BINDING_HOST"] == embedding_config.complete_url
+    assert env["EMBEDDING_BINDING_HOST"] == "https://embeddings.example.com:8080/v1"
     assert env["EMBEDDING_BINDING_API_KEY"] == "embed-key"
     assert env["EMBEDDING_DIM"] == 1536
 

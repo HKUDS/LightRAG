@@ -9,7 +9,7 @@ from apolo_app_types.protocols.common import (
     SchemaExtraMetadata,
     SchemaMetaType,
 )
-from apolo_app_types.protocols.common.networking import HttpApi, RestAPI, ServiceAPI
+from apolo_app_types.protocols.common.networking import HttpApi, ServiceAPI
 from apolo_app_types.protocols.common.openai_compat import (
     OpenAICompatChatAPI,
     OpenAICompatEmbeddingsAPI,
@@ -78,7 +78,7 @@ class LightRAGPersistence(BaseModel):
         return value
 
 
-class OpenAIAPICloudProvider(RestAPI):
+class OpenAIAPICloudProvider(BaseModel):
     """Hosted OpenAI-compatible provider configuration."""
 
     model_config = ConfigDict(
@@ -90,11 +90,11 @@ class OpenAIAPICloudProvider(RestAPI):
         ).as_json_schema_extra(),
     )
 
-    port: int = Field(
-        default=443,
+    host: str = Field(
+        ...,
         json_schema_extra=SchemaExtraMetadata(
-            title="Port",
-            description="HTTPS port for the provider endpoint.",
+            title="Host",
+            description="Hostname of the provider endpoint (omit protocol).",
         ).as_json_schema_extra(),
     )
     protocol: Literal["https"] = "https"
@@ -120,6 +120,10 @@ class OpenAIAPICloudProvider(RestAPI):
             description="API key used to authenticate with the provider.",
         ).as_json_schema_extra(),
     )
+
+    @property
+    def port(self) -> int | None:
+        return None
 
 
 class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
@@ -155,7 +159,6 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
             description="Connection timeout in seconds.",
         ).as_json_schema_extra(),
     )
-    base_path: str = "/v1"
     dimensions: int = Field(
         ...,
         json_schema_extra=SchemaExtraMetadata(
@@ -165,7 +168,7 @@ class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
     )
 
 
-class OpenAIEmbeddingCloudProvider(RestAPI):
+class OpenAIEmbeddingCloudProvider(BaseModel):
     """Official OpenAI embeddings configuration."""
 
     model_config = ConfigDict(
@@ -182,13 +185,6 @@ class OpenAIEmbeddingCloudProvider(RestAPI):
         json_schema_extra=SchemaExtraMetadata(
             title="Host",
             description="Hostname for api.openai.com (omit protocol).",
-        ).as_json_schema_extra(),
-    )
-    port: int = Field(
-        default=443,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Port",
-            description="HTTPS port for the endpoint.",
         ).as_json_schema_extra(),
     )
     protocol: Literal["https"] = "https"
@@ -222,6 +218,10 @@ class OpenAIEmbeddingCloudProvider(RestAPI):
             description="Embedding vector dimensionality returned by the model.",
         ).as_json_schema_extra(),
     )
+
+    @property
+    def port(self) -> int | None:
+        return None
 
 
 LLMProvider = OpenAICompatibleAPI | OpenAIAPICloudProvider
