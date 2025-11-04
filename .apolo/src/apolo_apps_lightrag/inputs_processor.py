@@ -14,11 +14,11 @@ from apolo_app_types.protocols.common.openai_compat import (
 from apolo_app_types.protocols.common.secrets_ import serialize_optional_secret
 
 from .types import (
-    AnthropicLLMProvider,
-    GeminiLLMProvider,
     LightRAGAppInputs,
+    OpenAICompatEmbeddingsProvider,
     OpenAIEmbeddingProvider,
-    OpenAILLMProvider,
+    OpenAILikeAPIProvider,
+    OpenAILikeAPIVLLM,
 )
 
 
@@ -57,13 +57,13 @@ def _normalise_complete_url(api: RestAPI) -> str:
 class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
     def _extract_llm_config(self, llm_config: t.Any) -> dict[str, t.Any]:
         """Extract LLM configuration from provider-specific config."""
-        if isinstance(llm_config, OpenAICompatChatAPI):
+        if isinstance(llm_config, OpenAILikeAPIVLLM) or isinstance(
+            llm_config, OpenAICompatChatAPI
+        ):
             if llm_config.hf_model:
                 model = llm_config.hf_model.model_hf_name
             else:
-                model = getattr(llm_config, "model", None)
-            if not model:
-                model = "gpt-4.1"
+                model = getattr(llm_config, "model", None) or "gpt-4.1"
             host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
@@ -71,26 +71,10 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
                 "host": host,
                 "api_key": getattr(llm_config, "api_key", None),
             }
-        if isinstance(llm_config, OpenAILLMProvider):
+        if isinstance(llm_config, OpenAILikeAPIProvider):
             host = _normalise_complete_url(llm_config)
             return {
                 "binding": "openai",
-                "model": llm_config.model,
-                "host": host,
-                "api_key": llm_config.api_key,
-            }
-        if isinstance(llm_config, AnthropicLLMProvider):
-            host = _normalise_complete_url(llm_config)
-            return {
-                "binding": "anthropic",
-                "model": llm_config.model,
-                "host": host,
-                "api_key": llm_config.api_key,
-            }
-        if isinstance(llm_config, GeminiLLMProvider):
-            host = _normalise_complete_url(llm_config)
-            return {
-                "binding": "gemini",
                 "model": llm_config.model,
                 "host": host,
                 "api_key": llm_config.api_key,
@@ -109,13 +93,16 @@ class LightRAGInputsProcessor(BaseChartValueProcessor[LightRAGAppInputs]):
 
     def _extract_embedding_config(self, embedding_config: t.Any) -> dict[str, t.Any]:
         """Extract embedding configuration from provider-specific config."""
-        if isinstance(embedding_config, OpenAICompatEmbeddingsAPI):
+        if isinstance(
+            embedding_config,
+            (OpenAICompatEmbeddingsProvider, OpenAICompatEmbeddingsAPI),
+        ):
             if embedding_config.hf_model is not None:
                 model = embedding_config.hf_model.model_hf_name
             else:
-                model = getattr(embedding_config, "model", None)
-            if not model:
-                model = "text-embedding-3-small"
+                model = (
+                    getattr(embedding_config, "model", None) or "text-embedding-3-large"
+                )
             host = _normalise_complete_url(embedding_config)
             dimensions = getattr(embedding_config, "dimensions", None)
             if dimensions is None:

@@ -4,22 +4,16 @@ import pytest
 
 from apolo_app_types.protocols.common import IngressHttp, Preset
 from apolo_app_types.protocols.common.hugging_face import HuggingFaceModel
-from apolo_app_types.protocols.common.openai_compat import (
-    OpenAICompatChatAPI,
-    OpenAICompatEmbeddingsAPI,
-)
 from apolo_app_types.protocols.postgres import CrunchyPostgresUserCredentials
 
 from apolo_apps_lightrag.inputs_processor import LightRAGInputsProcessor
 from apolo_apps_lightrag.types import (
-    AnthropicLLMProvider,
-    GeminiLLMProvider,
     LightRAGAppInputs,
     LightRAGPersistence,
-    OpenAICompatChatProvider,
     OpenAICompatEmbeddingsProvider,
     OpenAIEmbeddingProvider,
-    OpenAILLMProvider,
+    OpenAILikeAPIProvider,
+    OpenAILikeAPIVLLM,
 )
 
 
@@ -76,45 +70,36 @@ async def _generate_env(
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
         "llm_config",
-        "expected_binding",
         "expected_model",
         "expected_host",
-        "expected_api_key",
     ),
     [
         (
-            OpenAILLMProvider(model="gpt-4o", api_key="llm-key"),
-            "openai",
+            OpenAILikeAPIProvider(model="gpt-4o", api_key="llm-key"),
             "gpt-4o",
             "https://api.openai.com:443/v1",
-            "llm-key",
         ),
         (
-            AnthropicLLMProvider(model="claude-3", api_key="anthropic-key"),
-            "anthropic",
-            "claude-3",
-            "https://api.anthropic.com:443/v1",
-            "anthropic-key",
-        ),
-        (
-            GeminiLLMProvider(model="gemini-pro", api_key="gemini-key"),
-            "gemini",
-            "gemini-pro",
-            "https://generativelanguage.googleapis.com:443/v1beta",
-            "gemini-key",
+            OpenAILikeAPIVLLM(
+                host="vllm.internal",
+                port=9443,
+                protocol="https",
+                hf_model=HuggingFaceModel(model_hf_name="hf/awesome-model"),
+            ),
+            "hf/awesome-model",
+            "https://vllm.internal:9443/v1",
         ),
     ],
 )
 async def test_inputs_processor_llm_variants(
     monkeypatch: pytest.MonkeyPatch,
     llm_config: object,
-    expected_binding: str,
     expected_model: str,
     expected_host: str,
-    expected_api_key: str,
 ) -> None:
     env = await _generate_env(
         monkeypatch,
@@ -122,9 +107,10 @@ async def test_inputs_processor_llm_variants(
         embedding_config=OpenAIEmbeddingProvider(api_key="embed-key"),
     )
 
-    assert env["LLM_BINDING"] == expected_binding
+    assert env["LLM_BINDING"] == "openai"
     assert env["LLM_MODEL"] == expected_model
     assert env["LLM_BINDING_HOST"] == expected_host
+    expected_api_key = getattr(llm_config, "api_key", None) or ""
     assert env["LLM_BINDING_API_KEY"] == expected_api_key
     assert env["OPENAI_API_KEY"] == expected_api_key
 
@@ -133,7 +119,7 @@ async def test_inputs_processor_llm_variants(
 async def test_inputs_processor_openai_compat_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    llm_config = OpenAICompatChatAPI(
+    llm_config = OpenAILikeAPIVLLM(
         host="compat.example.com",
         port=9443,
         protocol="https",
@@ -158,7 +144,7 @@ async def test_inputs_processor_openai_compat_provider(
 async def test_inputs_processor_openai_compat_with_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    llm_config = OpenAICompatChatProvider(
+    llm_config = OpenAILikeAPIVLLM(
         host="https://openrouter.ai/api/v1",
         port=443,
         protocol="https",
@@ -203,7 +189,7 @@ async def test_inputs_processor_embedding_variants(
 ) -> None:
     env = await _generate_env(
         monkeypatch,
-        llm_config=OpenAILLMProvider(api_key="llm-key"),
+        llm_config=OpenAILikeAPIProvider(api_key="llm-key"),
         embedding_config=embedding_config,
     )
 
@@ -216,18 +202,18 @@ async def test_inputs_processor_embedding_variants(
 async def test_inputs_processor_openai_compat_embedding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    embedding_config = OpenAICompatEmbeddingsAPI(
+    embedding_config = OpenAICompatEmbeddingsProvider(
         host="embeddings.example.com",
         port=8080,
         protocol="https",
         hf_model=HuggingFaceModel(model_hf_name="text-embedding-awesome"),
+        dimensions=1536,
     )
     object.__setattr__(embedding_config, "api_key", "embed-key")
-    object.__setattr__(embedding_config, "dimensions", 1536)
 
     env = await _generate_env(
         monkeypatch,
-        llm_config=OpenAILLMProvider(api_key="llm-key"),
+        llm_config=OpenAILikeAPIProvider(api_key="llm-key"),
         embedding_config=embedding_config,
     )
 
@@ -242,7 +228,7 @@ async def test_inputs_processor_openai_compat_embedding(
 async def test_inputs_processor_openai_compat_without_hf_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    llm_config = OpenAICompatChatProvider(
+    llm_config = OpenAILikeAPIVLLM(
         host="https://openrouter.ai/api/v1",
         port=443,
         protocol="https",
@@ -275,18 +261,18 @@ async def test_inputs_processor_openai_compat_embedding_without_hf_model(
 
     env = await _generate_env(
         monkeypatch,
-        llm_config=OpenAILLMProvider(api_key="llm-key"),
+        llm_config=OpenAILikeAPIProvider(api_key="llm-key"),
         embedding_config=embedding_config,
     )
 
     assert env["EMBEDDING_BINDING"] == "openai"
-    assert env["EMBEDDING_MODEL"] == "text-embedding-3-small"
+    assert env["EMBEDDING_MODEL"] == "text-embedding-3-large"
     assert (
         env["EMBEDDING_BINDING_HOST"]
         == "https://generativelanguage.googleapis.com:443/v1beta/openai"
     )
     assert env["EMBEDDING_BINDING_API_KEY"] == "embed-key"
-    assert env["EMBEDDING_DIM"] == 1536
+    assert env["EMBEDDING_DIM"] == 3072
 
 
 @pytest.mark.asyncio
@@ -304,7 +290,7 @@ async def test_inputs_processor_openai_compat_embedding_with_model_override(
 
     env = await _generate_env(
         monkeypatch,
-        llm_config=OpenAILLMProvider(api_key="llm-key"),
+        llm_config=OpenAILikeAPIProvider(api_key="llm-key"),
         embedding_config=embedding_config,
     )
 

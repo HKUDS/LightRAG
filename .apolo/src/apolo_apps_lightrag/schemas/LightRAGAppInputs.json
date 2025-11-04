@@ -1,92 +1,5 @@
 {
   "$defs": {
-    "AnthropicLLMProvider": {
-      "description": "Anthropic LLM provider configuration.",
-      "properties": {
-        "host": {
-          "default": "api.anthropic.com",
-          "title": "Host",
-          "type": "string",
-          "x-description": "Anthropic API host",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Host"
-        },
-        "port": {
-          "default": 443,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "Set the port.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "const": "https",
-          "default": "https",
-          "title": "Protocol",
-          "type": "string"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 60,
-          "title": "Timeout",
-          "x-description": "Set the connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Timeout"
-        },
-        "base_path": {
-          "default": "/v1",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "provider": {
-          "const": "anthropic",
-          "default": "anthropic",
-          "title": "Provider",
-          "type": "string"
-        },
-        "model": {
-          "default": "claude-3-5-sonnet-latest",
-          "title": "Model",
-          "type": "string",
-          "x-description": "Anthropic Claude model name.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        },
-        "api_key": {
-          "default": "",
-          "title": "Api Key",
-          "type": "string",
-          "x-description": "Anthropic API key.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "API Key"
-        }
-      },
-      "title": "AnthropicLLMProvider",
-      "type": "object",
-      "x-description": "Anthropic Claude API configuration.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "inline",
-      "x-title": "Anthropic LLM Provider",
-      "x-type": "AnthropicLLMProvider"
-    },
     "ApoloAuth": {
       "properties": {
         "type": {
@@ -340,93 +253,6 @@
       "x-title": "Custom Authentication",
       "x-type": "CustomAuth"
     },
-    "GeminiLLMProvider": {
-      "description": "Google Gemini LLM provider configuration.",
-      "properties": {
-        "host": {
-          "default": "generativelanguage.googleapis.com",
-          "title": "Host",
-          "type": "string",
-          "x-description": "Google AI API host",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Host"
-        },
-        "port": {
-          "default": 443,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "Set the port.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "const": "https",
-          "default": "https",
-          "title": "Protocol",
-          "type": "string"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 60,
-          "title": "Timeout",
-          "x-description": "Configure connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Timeout"
-        },
-        "base_path": {
-          "default": "/v1beta",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "provider": {
-          "const": "gemini",
-          "default": "gemini",
-          "title": "Provider",
-          "type": "string"
-        },
-        "model": {
-          "default": "gemini-1.5-pro",
-          "title": "Model",
-          "type": "string",
-          "x-description": "Google Gemini model name.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        },
-        "api_key": {
-          "default": "",
-          "title": "Api Key",
-          "type": "string",
-          "x-description": "Google AI API key.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "API Key"
-        }
-      },
-      "title": "GeminiLLMProvider",
-      "type": "object",
-      "x-description": "Google Gemini API configuration.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "inline",
-      "x-title": "Gemini LLM Provider",
-      "x-type": "GeminiLLMProvider"
-    },
     "HuggingFaceCache": {
       "properties": {
         "files_path": {
@@ -605,457 +431,14 @@
       "x-title": "No Authentication",
       "x-type": "NoAuth"
     },
-    "OpenAICompatChatAPI": {
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string",
-          "x-description": "The hostname of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Hostname"
-        },
-        "port": {
-          "default": 80,
-          "exclusiveMinimum": 0,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "The port of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "default": "http",
-          "title": "Protocol",
-          "type": "string",
-          "x-description": "The protocol to use, e.g., http or https.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Protocol"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 30.0,
-          "title": "Timeout",
-          "x-description": "Connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Connection Timeout"
-        },
-        "base_path": {
-          "default": "/",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "api_base_path": {
-          "default": "/v1",
-          "title": "Api Base Path",
-          "type": "string"
-        },
-        "openai_api_type": {
-          "const": "chat",
-          "default": "chat",
-          "title": "Openai Api Type",
-          "type": "string"
-        },
-        "endpoint_url": {
-          "const": "/v1/chat",
-          "default": "/v1/chat",
-          "title": "Endpoint Url",
-          "type": "string"
-        },
-        "hf_model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HuggingFaceModel"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "integration",
-          "x-title": "Hugging Face Model"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "OpenAICompatChatAPI",
-      "type": "object",
-      "x-description": "Configuration for OpenAI compatible chat API.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "integration",
-      "x-title": "OpenAI Compatible Chat API",
-      "x-type": "OpenAICompatChatProvider"
-    },
-    "OpenAICompatChatProvider": {
-      "description": "LightRAG-specific OpenAI compatible chat configuration.",
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string",
-          "x-description": "The hostname of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Hostname"
-        },
-        "port": {
-          "default": 80,
-          "exclusiveMinimum": 0,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "The port of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "default": "http",
-          "title": "Protocol",
-          "type": "string",
-          "x-description": "The protocol to use, e.g., http or https.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Protocol"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 30.0,
-          "title": "Timeout",
-          "x-description": "Connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Connection Timeout"
-        },
-        "base_path": {
-          "default": "/",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "api_base_path": {
-          "default": "/v1",
-          "title": "Api Base Path",
-          "type": "string"
-        },
-        "openai_api_type": {
-          "const": "chat",
-          "default": "chat",
-          "title": "Openai Api Type",
-          "type": "string"
-        },
-        "endpoint_url": {
-          "const": "/v1/chat",
-          "default": "/v1/chat",
-          "title": "Endpoint Url",
-          "type": "string"
-        },
-        "hf_model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HuggingFaceModel"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "integration",
-          "x-title": "Hugging Face Model"
-        },
-        "model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": "gpt-4.1",
-          "title": "Model",
-          "x-description": "Model identifier understood by OpenAI-compatible providers (for example, OpenRouter). Leave empty when using a Hugging Face model via the fields below.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "OpenAICompatChatProvider",
-      "type": "object",
-      "x-description": "Configuration for OpenAI compatible chat API.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "integration",
-      "x-title": "OpenAI Compatible Chat API",
-      "x-type": "OpenAICompatChatProvider"
-    },
-    "OpenAICompatEmbeddingsAPI": {
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string",
-          "x-description": "The hostname of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Hostname"
-        },
-        "port": {
-          "default": 80,
-          "exclusiveMinimum": 0,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "The port of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "default": "http",
-          "title": "Protocol",
-          "type": "string",
-          "x-description": "The protocol to use, e.g., http or https.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Protocol"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 30.0,
-          "title": "Timeout",
-          "x-description": "Connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Connection Timeout"
-        },
-        "base_path": {
-          "default": "/",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "api_base_path": {
-          "default": "/v1",
-          "title": "Api Base Path",
-          "type": "string"
-        },
-        "openai_api_type": {
-          "const": "embeddings",
-          "default": "embeddings",
-          "title": "Openai Api Type",
-          "type": "string"
-        },
-        "endpoint_url": {
-          "const": "/v1/embeddings",
-          "default": "/v1/embeddings",
-          "title": "Endpoint Url",
-          "type": "string"
-        },
-        "hf_model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HuggingFaceModel"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "integration",
-          "x-title": "Hugging Face Model"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "OpenAICompatEmbeddingsAPI",
-      "type": "object",
-      "x-description": "Configuration for OpenAI compatible embeddings API.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "integration",
-      "x-title": "OpenAI Compatible Embeddings API",
-      "x-type": "OpenAICompatEmbeddingsProvider"
-    },
     "OpenAICompatEmbeddingsProvider": {
-      "description": "LightRAG-specific OpenAI compatible embeddings configuration.",
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string",
-          "x-description": "The hostname of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Hostname"
-        },
-        "port": {
-          "default": 80,
-          "exclusiveMinimum": 0,
-          "title": "Port",
-          "type": "integer",
-          "x-description": "The port of the HTTP endpoint.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Port"
-        },
-        "protocol": {
-          "default": "http",
-          "title": "Protocol",
-          "type": "string",
-          "x-description": "The protocol to use, e.g., http or https.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Protocol"
-        },
-        "timeout": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 30.0,
-          "title": "Timeout",
-          "x-description": "Connection timeout in seconds.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Connection Timeout"
-        },
-        "base_path": {
-          "default": "/",
-          "title": "Base Path",
-          "type": "string"
-        },
-        "api_type": {
-          "const": "rest",
-          "default": "rest",
-          "title": "Api Type",
-          "type": "string"
-        },
-        "api_base_path": {
-          "default": "/v1",
-          "title": "Api Base Path",
-          "type": "string"
-        },
-        "openai_api_type": {
-          "const": "embeddings",
-          "default": "embeddings",
-          "title": "Openai Api Type",
-          "type": "string"
-        },
-        "endpoint_url": {
-          "const": "/v1/embeddings",
-          "default": "/v1/embeddings",
-          "title": "Endpoint Url",
-          "type": "string"
-        },
-        "hf_model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HuggingFaceModel"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "integration",
-          "x-title": "Hugging Face Model"
-        },
-        "model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Model",
-          "x-description": "Embedding model identifier understood by OpenAI-compatible providers (for example, OpenRouter or self-hosted vLLM). Leave empty when using a Hugging Face model via the fields below.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Model"
-        },
-        "dimensions": {
-          "default": 1536,
-          "title": "Dimensions",
-          "type": "integer",
-          "x-description": "Embedding vector dimensionality.",
-          "x-is-advanced-field": false,
-          "x-meta-type": "inline",
-          "x-title": "Embedding Dimensions"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "OpenAICompatEmbeddingsProvider",
-      "type": "object",
-      "x-description": "Configuration for OpenAI compatible embeddings API.",
-      "x-is-advanced-field": false,
-      "x-meta-type": "integration",
-      "x-title": "OpenAI Compatible Embeddings API",
-      "x-type": "OpenAICompatEmbeddingsProvider"
-    },
-    "OpenAIEmbeddingProvider": {
-      "description": "OpenAI embedding provider configuration.",
+      "description": "OpenAI-compatible embeddings configuration for hosted providers.",
       "properties": {
         "host": {
           "default": "api.openai.com",
           "title": "Host",
           "type": "string",
-          "x-description": "OpenAI API host",
+          "x-description": "Hostname of the OpenAI-compatible embeddings endpoint.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Host"
@@ -1064,7 +447,127 @@
           "default": 443,
           "title": "Port",
           "type": "integer",
-          "x-description": "Set the port.",
+          "x-description": "HTTPS port for the embeddings endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "const": "https",
+          "default": "https",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 60,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "api_base_path": {
+          "default": "/v1",
+          "title": "Api Base Path",
+          "type": "string"
+        },
+        "openai_api_type": {
+          "const": "embeddings",
+          "default": "embeddings",
+          "title": "Openai Api Type",
+          "type": "string"
+        },
+        "endpoint_url": {
+          "const": "/v1/embeddings",
+          "default": "/v1/embeddings",
+          "title": "Endpoint Url",
+          "type": "string"
+        },
+        "hf_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "integration",
+          "x-title": "Hugging Face Model"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "text-embedding-3-large",
+          "title": "Model",
+          "x-description": "Embedding model identifier understood by the provider.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        },
+        "dimensions": {
+          "default": 3072,
+          "title": "Dimensions",
+          "type": "integer",
+          "x-description": "Embedding vector dimensionality reported by the provider.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Embedding Dimensions"
+        }
+      },
+      "title": "OpenAICompatEmbeddingsProvider",
+      "type": "object",
+      "x-description": "Use for OpenAI-compatible embeddings APIs (OpenAI, OpenRouter, self-hosted services).",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "OpenAI Like API Embeddings",
+      "x-type": "OpenAICompatEmbeddingsProvider"
+    },
+    "OpenAIEmbeddingProvider": {
+      "description": "Official OpenAI embeddings configuration.",
+      "properties": {
+        "host": {
+          "default": "api.openai.com",
+          "title": "Host",
+          "type": "string",
+          "x-description": "Hostname for api.openai.com (omit protocol).",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Host"
+        },
+        "port": {
+          "default": 443,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "HTTPS port for the endpoint.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Port"
@@ -1086,7 +589,7 @@
           ],
           "default": 60,
           "title": "Timeout",
-          "x-description": "Set the connection timeout in seconds.",
+          "x-description": "Connection timeout in seconds.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Timeout"
@@ -1112,7 +615,7 @@
           "default": "text-embedding-3-large",
           "title": "Model",
           "type": "string",
-          "x-description": "Embedding model name.",
+          "x-description": "OpenAI embedding model identifier.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Model"
@@ -1130,7 +633,7 @@
           "default": 3072,
           "title": "Dimensions",
           "type": "integer",
-          "x-description": "Embedding vector dimensionality.",
+          "x-description": "Embedding vector dimensionality returned by the model.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Embedding Dimensions"
@@ -1138,20 +641,20 @@
       },
       "title": "OpenAIEmbeddingProvider",
       "type": "object",
-      "x-description": "OpenAI embeddings API configuration.",
+      "x-description": "Use the official OpenAI embeddings endpoint with recommended defaults.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI Embedding Provider",
+      "x-title": "OpenAI Embeddings",
       "x-type": "OpenAIEmbeddingProvider"
     },
-    "OpenAILLMProvider": {
-      "description": "OpenAI LLM provider configuration.",
+    "OpenAILikeAPIProvider": {
+      "description": "OpenAI-compatible REST provider configuration.",
       "properties": {
         "host": {
           "default": "api.openai.com",
           "title": "Host",
           "type": "string",
-          "x-description": "OpenAI API host",
+          "x-description": "Hostname of the provider endpoint (omit protocol).",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Host"
@@ -1160,7 +663,7 @@
           "default": 443,
           "title": "Port",
           "type": "integer",
-          "x-description": "Set the port.",
+          "x-description": "HTTPS port for the provider endpoint.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Port"
@@ -1182,7 +685,7 @@
           ],
           "default": 60,
           "title": "Timeout",
-          "x-description": "Set the connection timeout in seconds.",
+          "x-description": "Connection timeout in seconds.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Timeout"
@@ -1208,7 +711,7 @@
           "default": "gpt-4.1",
           "title": "Model",
           "type": "string",
-          "x-description": "Chat completion model name.",
+          "x-description": "Model identifier exposed by the provider (for example `gpt-4o`).",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "Model"
@@ -1217,19 +720,136 @@
           "default": "",
           "title": "Api Key",
           "type": "string",
-          "x-description": "OpenAI API key.",
+          "x-description": "API key used to authenticate with the provider.",
           "x-is-advanced-field": false,
           "x-meta-type": "inline",
           "x-title": "API Key"
         }
       },
-      "title": "OpenAILLMProvider",
+      "title": "OpenAILikeAPIProvider",
       "type": "object",
-      "x-description": "OpenAI chat completion API configuration.",
+      "x-description": "Use for hosted OpenAI-compatible APIs such as OpenAI, OpenRouter, or Azure OpenAI.",
       "x-is-advanced-field": false,
       "x-meta-type": "inline",
-      "x-title": "OpenAI LLM Provider",
-      "x-type": "OpenAILLMProvider"
+      "x-title": "OpenAI Like API Provider",
+      "x-type": "OpenAILikeAPIProvider"
+    },
+    "OpenAILikeAPIVLLM": {
+      "description": "OpenAI-compatible chat configuration for vLLM deployments.",
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string",
+          "x-description": "The hostname of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Hostname"
+        },
+        "port": {
+          "default": 80,
+          "exclusiveMinimum": 0,
+          "title": "Port",
+          "type": "integer",
+          "x-description": "The port of the HTTP endpoint.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Port"
+        },
+        "protocol": {
+          "default": "http",
+          "title": "Protocol",
+          "type": "string",
+          "x-description": "The protocol to use, e.g., http or https.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Protocol"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "title": "Timeout",
+          "x-description": "Connection timeout in seconds.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Connection Timeout"
+        },
+        "base_path": {
+          "default": "/v1",
+          "title": "Base Path",
+          "type": "string"
+        },
+        "api_type": {
+          "const": "rest",
+          "default": "rest",
+          "title": "Api Type",
+          "type": "string"
+        },
+        "api_base_path": {
+          "default": "/v1",
+          "title": "Api Base Path",
+          "type": "string"
+        },
+        "openai_api_type": {
+          "const": "chat",
+          "default": "chat",
+          "title": "Openai Api Type",
+          "type": "string"
+        },
+        "endpoint_url": {
+          "const": "/v1/chat",
+          "default": "/v1/chat",
+          "title": "Endpoint Url",
+          "type": "string"
+        },
+        "hf_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HuggingFaceModel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-description": "Configure the Hugging Face model. Ensure it is available on the Hugging Face Hub and provide an API token with access rights if the repository is gated.",
+          "x-is-advanced-field": false,
+          "x-meta-type": "integration",
+          "x-title": "Hugging Face Model"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "gpt-4.1",
+          "title": "Model",
+          "x-description": "Model identifier served by the vLLM deployment (leave empty when providing a Hugging Face model).",
+          "x-is-advanced-field": false,
+          "x-meta-type": "inline",
+          "x-title": "Model"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "OpenAILikeAPIVLLM",
+      "type": "object",
+      "x-description": "Use for self-hosted vLLM services exposing an OpenAI-compatible API.",
+      "x-is-advanced-field": false,
+      "x-meta-type": "inline",
+      "x-title": "OpenAI Like API (vLLM)",
+      "x-type": "OpenAILikeAPIVLLM"
     },
     "PostgresURI": {
       "description": "Configuration for the Postgres connection URI.",
@@ -1290,34 +910,23 @@
     "llm_config": {
       "anyOf": [
         {
-          "$ref": "#/$defs/OpenAICompatChatAPI"
+          "$ref": "#/$defs/OpenAILikeAPIVLLM"
         },
         {
-          "$ref": "#/$defs/OpenAICompatChatProvider"
-        },
-        {
-          "$ref": "#/$defs/OpenAILLMProvider"
-        },
-        {
-          "$ref": "#/$defs/AnthropicLLMProvider"
-        },
-        {
-          "$ref": "#/$defs/GeminiLLMProvider"
+          "$ref": "#/$defs/OpenAILikeAPIProvider"
         }
       ],
       "default": {
-        "host": "",
+        "host": "api.openai.com",
         "port": 443,
         "protocol": "https",
-        "timeout": 30.0,
-        "base_path": "/",
+        "timeout": 60,
+        "base_path": "/v1",
         "api_type": "rest",
-        "api_base_path": "/v1",
-        "openai_api_type": "chat",
-        "endpoint_url": "/v1/chat",
-        "hf_model": null,
+        "provider": "openai",
         "model": "gpt-4.1",
-        "__type__": "OpenAICompatChatProvider"
+        "api_key": "",
+        "__type__": "OpenAILikeAPIProvider"
       },
       "title": "Llm Config",
       "x-description": "LLM provider configuration.",
@@ -1328,9 +937,6 @@
     "embedding_config": {
       "anyOf": [
         {
-          "$ref": "#/$defs/OpenAICompatEmbeddingsAPI"
-        },
-        {
           "$ref": "#/$defs/OpenAICompatEmbeddingsProvider"
         },
         {
@@ -1338,19 +944,17 @@
         }
       ],
       "default": {
-        "host": "",
+        "host": "api.openai.com",
         "port": 443,
         "protocol": "https",
-        "timeout": 30.0,
-        "base_path": "/",
+        "timeout": 60,
+        "base_path": "/v1",
         "api_type": "rest",
-        "api_base_path": "/v1",
-        "openai_api_type": "embeddings",
-        "endpoint_url": "/v1/embeddings",
-        "hf_model": null,
-        "model": null,
-        "dimensions": 1536,
-        "__type__": "OpenAICompatEmbeddingsProvider"
+        "provider": "openai",
+        "model": "text-embedding-3-large",
+        "api_key": "",
+        "dimensions": 3072,
+        "__type__": "OpenAIEmbeddingProvider"
       },
       "title": "Embedding Config",
       "x-description": "Embedding provider configuration.",

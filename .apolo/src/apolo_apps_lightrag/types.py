@@ -17,18 +17,25 @@ from apolo_app_types.protocols.common.openai_compat import (
 from apolo_app_types.protocols.postgres import CrunchyPostgresUserCredentials
 
 
-class OpenAICompatChatProvider(OpenAICompatChatAPI):
-    """LightRAG-specific OpenAI compatible chat configuration."""
+class OpenAILikeAPIVLLM(OpenAICompatChatAPI):
+    """OpenAI-compatible chat configuration for vLLM deployments."""
+
+    base_path: str = "/v1"
+
+    model_config = ConfigDict(
+        protected_namespaces=(),
+        json_schema_extra=SchemaExtraMetadata(
+            title="OpenAI Like API (vLLM)",
+            description="Use for self-hosted vLLM services exposing an OpenAI-compatible API.",
+            meta_type=SchemaMetaType.INLINE,
+        ).as_json_schema_extra(),
+    )
 
     model: str | None = Field(
         default="gpt-4.1",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
-            description=(
-                "Model identifier understood by OpenAI-compatible providers "
-                "(for example, OpenRouter). Leave empty when using a Hugging "
-                "Face model via the fields below."
-            ),
+            description="Model identifier served by the vLLM deployment (leave empty when providing a Hugging Face model).",
         ).as_json_schema_extra(),
     )
 
@@ -68,14 +75,14 @@ class LightRAGPersistence(BaseModel):
         return value
 
 
-class OpenAILLMProvider(RestAPI):
-    """OpenAI LLM provider configuration."""
+class OpenAILikeAPIProvider(RestAPI):
+    """OpenAI-compatible REST provider configuration."""
 
     model_config = ConfigDict(
         protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="OpenAI LLM Provider",
-            description="OpenAI chat completion API configuration.",
+            title="OpenAI Like API Provider",
+            description="Use for hosted OpenAI-compatible APIs such as OpenAI, OpenRouter, or Azure OpenAI.",
             meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
     )
@@ -84,14 +91,14 @@ class OpenAILLMProvider(RestAPI):
         default="api.openai.com",
         json_schema_extra=SchemaExtraMetadata(
             title="Host",
-            description="OpenAI API host",
+            description="Hostname of the provider endpoint (omit protocol).",
         ).as_json_schema_extra(),
     )
     port: int = Field(
         default=443,
         json_schema_extra=SchemaExtraMetadata(
             title="Port",
-            description="Set the port.",
+            description="HTTPS port for the provider endpoint.",
         ).as_json_schema_extra(),
     )
     protocol: Literal["https"] = "https"
@@ -99,7 +106,7 @@ class OpenAILLMProvider(RestAPI):
         default=60,
         json_schema_extra=SchemaExtraMetadata(
             title="Timeout",
-            description="Set the connection timeout in seconds.",
+            description="Connection timeout in seconds.",
         ).as_json_schema_extra(),
     )
     base_path: str = "/v1"
@@ -108,162 +115,77 @@ class OpenAILLMProvider(RestAPI):
         default="gpt-4.1",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
-            description="Chat completion model name.",
+            description="Model identifier exposed by the provider (for example `gpt-4o`).",
         ).as_json_schema_extra(),
     )
     api_key: str = Field(
         default="",
         json_schema_extra=SchemaExtraMetadata(
             title="API Key",
-            description="OpenAI API key.",
+            description="API key used to authenticate with the provider.",
         ).as_json_schema_extra(),
     )
-
-
-class AnthropicLLMProvider(RestAPI):
-    """Anthropic LLM provider configuration."""
-
-    model_config = ConfigDict(
-        protected_namespaces=(),
-        json_schema_extra=SchemaExtraMetadata(
-            title="Anthropic LLM Provider",
-            description="Anthropic Claude API configuration.",
-            meta_type=SchemaMetaType.INLINE,
-        ).as_json_schema_extra(),
-    )
-
-    host: str = Field(
-        default="api.anthropic.com",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Anthropic API host",
-        ).as_json_schema_extra(),
-    )
-    port: int = Field(
-        default=443,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Port",
-            description="Set the port.",
-        ).as_json_schema_extra(),
-    )
-    protocol: Literal["https"] = "https"
-    timeout: int | None = Field(
-        default=60,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Timeout",
-            description="Set the connection timeout in seconds.",
-        ).as_json_schema_extra(),
-    )
-    base_path: str = "/v1"
-    provider: Literal["anthropic"] = "anthropic"
-    model: str = Field(
-        default="claude-3-5-sonnet-latest",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description="Anthropic Claude model name.",
-        ).as_json_schema_extra(),
-    )
-    api_key: str = Field(
-        default="",
-        json_schema_extra=SchemaExtraMetadata(
-            title="API Key",
-            description="Anthropic API key.",
-        ).as_json_schema_extra(),
-    )
-
-
-class GeminiLLMProvider(RestAPI):
-    """Google Gemini LLM provider configuration."""
-
-    model_config = ConfigDict(
-        protected_namespaces=(),
-        json_schema_extra=SchemaExtraMetadata(
-            title="Gemini LLM Provider",
-            description="Google Gemini API configuration.",
-            meta_type=SchemaMetaType.INLINE,
-        ).as_json_schema_extra(),
-    )
-
-    host: str = Field(
-        default="generativelanguage.googleapis.com",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Host",
-            description="Google AI API host",
-        ).as_json_schema_extra(),
-    )
-    port: int = Field(
-        default=443,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Port",
-            description="Set the port.",
-        ).as_json_schema_extra(),
-    )
-    protocol: Literal["https"] = "https"
-    timeout: int | None = Field(
-        default=60,
-        json_schema_extra=SchemaExtraMetadata(
-            title="Timeout",
-            description="Configure connection timeout in seconds.",
-        ).as_json_schema_extra(),
-    )
-    base_path: str = "/v1beta"
-    provider: Literal["gemini"] = "gemini"
-    model: str = Field(
-        default="gemini-1.5-pro",
-        json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description="Google Gemini model name.",
-        ).as_json_schema_extra(),
-    )
-    api_key: str = Field(
-        default="",
-        json_schema_extra=SchemaExtraMetadata(
-            title="API Key",
-            description="Google AI API key.",
-        ).as_json_schema_extra(),
-    )
-
-
-LLMProvider = (
-    OpenAICompatChatAPI
-    | OpenAICompatChatProvider
-    | OpenAILLMProvider
-    | AnthropicLLMProvider
-    | GeminiLLMProvider
-)
 
 
 class OpenAICompatEmbeddingsProvider(OpenAICompatEmbeddingsAPI):
-    """LightRAG-specific OpenAI compatible embeddings configuration."""
+    """OpenAI-compatible embeddings configuration for hosted providers."""
 
-    model: str | None = Field(
-        default=None,
+    model_config = ConfigDict(
+        protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="Model",
-            description=(
-                "Embedding model identifier understood by OpenAI-compatible providers "
-                "(for example, OpenRouter or self-hosted vLLM). "
-                "Leave empty when using a Hugging Face model via the fields below."
-            ),
+            title="OpenAI Like API Embeddings",
+            description="Use for OpenAI-compatible embeddings APIs (OpenAI, OpenRouter, self-hosted services).",
+            meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
     )
+
+    model: str | None = Field(
+        default="text-embedding-3-large",
+        json_schema_extra=SchemaExtraMetadata(
+            title="Model",
+            description="Embedding model identifier understood by the provider.",
+        ).as_json_schema_extra(),
+    )
+    host: str = Field(
+        default="api.openai.com",
+        json_schema_extra=SchemaExtraMetadata(
+            title="Host",
+            description="Hostname of the OpenAI-compatible embeddings endpoint.",
+        ).as_json_schema_extra(),
+    )
+    port: int = Field(
+        default=443,
+        json_schema_extra=SchemaExtraMetadata(
+            title="Port",
+            description="HTTPS port for the embeddings endpoint.",
+        ).as_json_schema_extra(),
+    )
+    protocol: Literal["https"] = "https"
+    timeout: float | None = Field(
+        default=60,
+        json_schema_extra=SchemaExtraMetadata(
+            title="Timeout",
+            description="Connection timeout in seconds.",
+        ).as_json_schema_extra(),
+    )
+    base_path: str = "/v1"
     dimensions: int = Field(
-        default=1536,
+        default=3072,
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Dimensions",
-            description="Embedding vector dimensionality.",
+            description="Embedding vector dimensionality reported by the provider.",
         ).as_json_schema_extra(),
     )
 
 
 class OpenAIEmbeddingProvider(RestAPI):
-    """OpenAI embedding provider configuration."""
+    """Official OpenAI embeddings configuration."""
 
     model_config = ConfigDict(
         protected_namespaces=(),
         json_schema_extra=SchemaExtraMetadata(
-            title="OpenAI Embedding Provider",
-            description="OpenAI embeddings API configuration.",
+            title="OpenAI Embeddings",
+            description="Use the official OpenAI embeddings endpoint with recommended defaults.",
             meta_type=SchemaMetaType.INLINE,
         ).as_json_schema_extra(),
     )
@@ -272,14 +194,14 @@ class OpenAIEmbeddingProvider(RestAPI):
         default="api.openai.com",
         json_schema_extra=SchemaExtraMetadata(
             title="Host",
-            description="OpenAI API host",
+            description="Hostname for api.openai.com (omit protocol).",
         ).as_json_schema_extra(),
     )
     port: int = Field(
         default=443,
         json_schema_extra=SchemaExtraMetadata(
             title="Port",
-            description="Set the port.",
+            description="HTTPS port for the endpoint.",
         ).as_json_schema_extra(),
     )
     protocol: Literal["https"] = "https"
@@ -287,7 +209,7 @@ class OpenAIEmbeddingProvider(RestAPI):
         default=60,
         json_schema_extra=SchemaExtraMetadata(
             title="Timeout",
-            description="Set the connection timeout in seconds.",
+            description="Connection timeout in seconds.",
         ).as_json_schema_extra(),
     )
     base_path: str = "/v1"
@@ -296,7 +218,7 @@ class OpenAIEmbeddingProvider(RestAPI):
         default="text-embedding-3-large",
         json_schema_extra=SchemaExtraMetadata(
             title="Model",
-            description="Embedding model name.",
+            description="OpenAI embedding model identifier.",
         ).as_json_schema_extra(),
     )
     api_key: str = Field(
@@ -310,14 +232,14 @@ class OpenAIEmbeddingProvider(RestAPI):
         default=3072,
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Dimensions",
-            description="Embedding vector dimensionality.",
+            description="Embedding vector dimensionality returned by the model.",
         ).as_json_schema_extra(),
     )
 
 
-EmbeddingProvider = (
-    OpenAICompatEmbeddingsAPI | OpenAICompatEmbeddingsProvider | OpenAIEmbeddingProvider
-)
+LLMProvider = OpenAILikeAPIVLLM | OpenAILikeAPIProvider
+
+EmbeddingProvider = OpenAICompatEmbeddingsProvider | OpenAIEmbeddingProvider
 
 
 LightRAGLLMConfig = LLMProvider
@@ -329,14 +251,14 @@ class LightRAGAppInputs(AppInputs):
     ingress_http: IngressHttp
     pgvector_user: CrunchyPostgresUserCredentials
     llm_config: LightRAGLLMConfig = Field(
-        default=OpenAICompatChatProvider(host="", port=443, protocol="https"),
+        default=OpenAILikeAPIProvider(),
         json_schema_extra=SchemaExtraMetadata(
             title="LLM Configuration",
             description="LLM provider configuration.",
         ).as_json_schema_extra(),
     )
     embedding_config: LightRAGEmbeddingConfig = Field(
-        default=OpenAICompatEmbeddingsProvider(host="", port=443, protocol="https"),
+        default=OpenAIEmbeddingProvider(),
         json_schema_extra=SchemaExtraMetadata(
             title="Embedding Configuration",
             description="Embedding provider configuration.",
@@ -363,10 +285,8 @@ __all__ = [
     "LightRAGEmbeddingConfig",
     "LightRAGLLMConfig",
     "LightRAGPersistence",
-    "OpenAICompatChatProvider",
+    "OpenAILikeAPIVLLM",
+    "OpenAILikeAPIProvider",
     "OpenAICompatEmbeddingsProvider",
-    "OpenAILLMProvider",
-    "AnthropicLLMProvider",
-    "GeminiLLMProvider",
     "OpenAIEmbeddingProvider",
 ]
