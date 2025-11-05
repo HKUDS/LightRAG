@@ -95,6 +95,7 @@ offline-storage = [
     "pymongo>=4.0.0,<5.0.0",
     "asyncpg>=0.29.0,<1.0.0",
     "qdrant-client>=1.7.0,<2.0.0",
+    "pyTigerGraph>=1.9.0,<2.0.0",
 ]
 
 offline-llm = [
