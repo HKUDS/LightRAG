@@ -35,3 +35,9 @@ ivfflat_lists = 100
 
 [memgraph]
 uri = bolt://localhost:7687
+
+[tigergraph]
+uri = http://localhost:9000
+username = tigergraph
+password = your_password
+graph_name = lightrag
