@@ -62,6 +62,15 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
+# Suppress token usage warning for custom OpenAI-compatible endpoints
+# Custom endpoints (vLLM, SGLang, etc.) often don't return usage information
+# This is non-critical as token tracking is not required for RAGAS evaluation
+warnings.filterwarnings(
+    "ignore",
+    message=".*Unexpected type for token usage.*",
+    category=UserWarning,
+)
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
