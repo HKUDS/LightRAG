@@ -147,12 +147,22 @@ python lightrag/evaluation/eval_rag_quality.py --help
 
 The evaluation framework supports customization through environment variables:
 
+**⚠️ IMPORTANT: Both LLM and Embedding endpoints MUST be OpenAI-compatible**
+- The RAGAS framework requires OpenAI-compatible API interfaces
+- Custom endpoints must implement the OpenAI API format (e.g., vLLM, SGLang, LocalAI)
+- Non-compatible endpoints will cause evaluation failures
+
 | Variable | Default | Description |
 |----------|---------|-------------|
+| **LLM Configuration** | | |
 | `EVAL_LLM_MODEL` | `gpt-4o-mini` | LLM model used for RAGAS evaluation |
+| `EVAL_LLM_BINDING_API_KEY` | falls back to `OPENAI_API_KEY` | API key for LLM evaluation |
+| `EVAL_LLM_BINDING_HOST` | (optional) | Custom OpenAI-compatible endpoint URL for LLM |
+| **Embedding Configuration** | | |
 | `EVAL_EMBEDDING_MODEL` | `text-embedding-3-large` | Embedding model for evaluation |
-| `EVAL_LLM_BINDING_API_KEY` | falls back to `OPENAI_API_KEY` | API key for evaluation models |
-| `EVAL_LLM_BINDING_HOST` | (optional) | Custom endpoint URL for OpenAI-compatible services |
+| `EVAL_EMBEDDING_BINDING_API_KEY` | falls back to `EVAL_LLM_BINDING_API_KEY` → `OPENAI_API_KEY` | API key for embeddings |
+| `EVAL_EMBEDDING_BINDING_HOST` | falls back to `EVAL_LLM_BINDING_HOST` | Custom OpenAI-compatible endpoint URL for embeddings |
+| **Performance Tuning** | | |
 | `EVAL_MAX_CONCURRENT` | 2 | Number of concurrent test case evaluations (1=serial) |
 | `EVAL_QUERY_TOP_K` | 10 | Number of documents to retrieve per query |
 | `EVAL_LLM_MAX_RETRIES` | 5 | Maximum LLM request retries |
@@ -160,13 +170,14 @@ The evaluation framework supports customization through environment variables:
 
 ### Usage Examples
 
-**Default Configuration (OpenAI):**
+**Example 1: Default Configuration (OpenAI Official API)**
 ```bash
 export OPENAI_API_KEY=sk-xxx
 python lightrag/evaluation/eval_rag_quality.py
 ```
+Both LLM and embeddings use OpenAI's official API with default models.
 
-**Custom Model:**
+**Example 2: Custom Models on OpenAI**
 ```bash
 export OPENAI_API_KEY=sk-xxx
 export EVAL_LLM_MODEL=gpt-4o-mini
@@ -174,11 +185,60 @@ export EVAL_EMBEDDING_MODEL=text-embedding-3-large
 python lightrag/evaluation/eval_rag_quality.py
 ```
 
-**OpenAI-Compatible Endpoint:**
+**Example 3: Same Custom OpenAI-Compatible Endpoint for Both**
 ```bash
+# Both LLM and embeddings use the same custom endpoint
 export EVAL_LLM_BINDING_API_KEY=your-custom-key
-export EVAL_LLM_BINDING_HOST=https://api.openai.com/v1
+export EVAL_LLM_BINDING_HOST=http://localhost:8000/v1
 export EVAL_LLM_MODEL=qwen-plus
+export EVAL_EMBEDDING_MODEL=BAAI/bge-m3
+python lightrag/evaluation/eval_rag_quality.py
+```
+Embeddings automatically inherit LLM endpoint configuration.
+
+**Example 4: Separate Endpoints (Cost Optimization)**
+```bash
+# Use OpenAI for LLM (high quality)
+export EVAL_LLM_BINDING_API_KEY=sk-openai-key
+export EVAL_LLM_MODEL=gpt-4o-mini
+# No EVAL_LLM_BINDING_HOST means use OpenAI official API
+
+# Use local vLLM for embeddings (cost-effective)
+export EVAL_EMBEDDING_BINDING_API_KEY=local-key
+export EVAL_EMBEDDING_BINDING_HOST=http://localhost:8001/v1
+export EVAL_EMBEDDING_MODEL=BAAI/bge-m3
+
+python lightrag/evaluation/eval_rag_quality.py
+```
+LLM uses OpenAI official API, embeddings use local custom endpoint.
+
+**Example 5: Different Custom Endpoints for LLM and Embeddings**
+```bash
+# LLM on one OpenAI-compatible server
+export EVAL_LLM_BINDING_API_KEY=key1
+export EVAL_LLM_BINDING_HOST=http://llm-server:8000/v1
+export EVAL_LLM_MODEL=custom-llm
+
+# Embeddings on another OpenAI-compatible server
+export EVAL_EMBEDDING_BINDING_API_KEY=key2
+export EVAL_EMBEDDING_BINDING_HOST=http://embedding-server:8001/v1
+export EVAL_EMBEDDING_MODEL=custom-embedding
+
+python lightrag/evaluation/eval_rag_quality.py
+```
+Both use different custom OpenAI-compatible endpoints.
+
+**Example 6: Using Environment Variables from .env File**
+```bash
+# Create .env file in project root
+cat > .env << EOF
+EVAL_LLM_BINDING_API_KEY=your-key
+EVAL_LLM_BINDING_HOST=http://localhost:8000/v1
+EVAL_LLM_MODEL=qwen-plus
+EVAL_EMBEDDING_MODEL=BAAI/bge-m3
+EOF
+
+# Run evaluation (automatically loads .env)
 python lightrag/evaluation/eval_rag_quality.py
 ```
 

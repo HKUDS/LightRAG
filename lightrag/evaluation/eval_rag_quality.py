@@ -62,6 +62,15 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
+# Suppress token usage warning for custom OpenAI-compatible endpoints
+# Custom endpoints (vLLM, SGLang, etc.) often don't return usage information
+# This is non-critical as token tracking is not required for RAGAS evaluation
+warnings.filterwarnings(
+    "ignore",
+    message=".*Unexpected type for token usage.*",
+    category=UserWarning,
+)
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -118,8 +127,10 @@ class RAGEvaluator:
         Environment Variables:
             EVAL_LLM_MODEL: LLM model for evaluation (default: gpt-4o-mini)
             EVAL_EMBEDDING_MODEL: Embedding model for evaluation (default: text-embedding-3-small)
-            EVAL_LLM_BINDING_API_KEY: API key for evaluation models (fallback to OPENAI_API_KEY)
-            EVAL_LLM_BINDING_HOST: Custom endpoint URL for evaluation models (optional)
+            EVAL_LLM_BINDING_API_KEY: API key for LLM (fallback to OPENAI_API_KEY)
+            EVAL_LLM_BINDING_HOST: Custom endpoint URL for LLM (optional)
+            EVAL_EMBEDDING_BINDING_API_KEY: API key for embeddings (fallback: EVAL_LLM_BINDING_API_KEY -> OPENAI_API_KEY)
+            EVAL_EMBEDDING_BINDING_HOST: Custom endpoint URL for embeddings (fallback: EVAL_LLM_BINDING_HOST)
 
         Raises:
             ImportError: If ragas or datasets packages are not installed
@@ -132,11 +143,11 @@ class RAGEvaluator:
                 "Install with: pip install ragas datasets"
             )
 
-        # Configure evaluation models (for RAGAS scoring)
-        eval_api_key = os.getenv("EVAL_LLM_BINDING_API_KEY") or os.getenv(
+        # Configure evaluation LLM (for RAGAS scoring)
+        eval_llm_api_key = os.getenv("EVAL_LLM_BINDING_API_KEY") or os.getenv(
             "OPENAI_API_KEY"
         )
-        if not eval_api_key:
+        if not eval_llm_api_key:
             raise EnvironmentError(
                 "EVAL_LLM_BINDING_API_KEY or OPENAI_API_KEY is required for evaluation. "
                 "Set EVAL_LLM_BINDING_API_KEY to use a custom API key, "
@@ -144,23 +155,40 @@ class RAGEvaluator:
             )
 
         eval_model = os.getenv("EVAL_LLM_MODEL", "gpt-4o-mini")
+        eval_llm_base_url = os.getenv("EVAL_LLM_BINDING_HOST")
+
+        # Configure evaluation embeddings (for RAGAS scoring)
+        # Fallback chain: EVAL_EMBEDDING_BINDING_API_KEY -> EVAL_LLM_BINDING_API_KEY -> OPENAI_API_KEY
+        eval_embedding_api_key = (
+            os.getenv("EVAL_EMBEDDING_BINDING_API_KEY")
+            or os.getenv("EVAL_LLM_BINDING_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        )
         eval_embedding_model = os.getenv(
             "EVAL_EMBEDDING_MODEL", "text-embedding-3-large"
         )
-        eval_base_url = os.getenv("EVAL_LLM_BINDING_HOST")
+        # Fallback chain: EVAL_EMBEDDING_BINDING_HOST -> EVAL_LLM_BINDING_HOST -> None
+        eval_embedding_base_url = os.getenv("EVAL_EMBEDDING_BINDING_HOST") or os.getenv(
+            "EVAL_LLM_BINDING_HOST"
+        )
 
         # Create LLM and Embeddings instances for RAGAS
         llm_kwargs = {
             "model": eval_model,
-            "api_key": eval_api_key,
+            "api_key": eval_llm_api_key,
             "max_retries": int(os.getenv("EVAL_LLM_MAX_RETRIES", "5")),
             "request_timeout": int(os.getenv("EVAL_LLM_TIMEOUT", "180")),
         }
-        embedding_kwargs = {"model": eval_embedding_model, "api_key": eval_api_key}
+        embedding_kwargs = {
+            "model": eval_embedding_model,
+            "api_key": eval_embedding_api_key,
+        }
 
-        if eval_base_url:
-            llm_kwargs["base_url"] = eval_base_url
-            embedding_kwargs["base_url"] = eval_base_url
+        if eval_llm_base_url:
+            llm_kwargs["base_url"] = eval_llm_base_url
+
+        if eval_embedding_base_url:
+            embedding_kwargs["base_url"] = eval_embedding_base_url
 
         # Create base LangChain LLM
         base_llm = ChatOpenAI(**llm_kwargs)
@@ -200,7 +228,8 @@ class RAGEvaluator:
         # Store configuration values for display
         self.eval_model = eval_model
         self.eval_embedding_model = eval_embedding_model
-        self.eval_base_url = eval_base_url
+        self.eval_llm_base_url = eval_llm_base_url
+        self.eval_embedding_base_url = eval_embedding_base_url
         self.eval_max_retries = llm_kwargs["max_retries"]
         self.eval_timeout = llm_kwargs["request_timeout"]
 
@@ -212,13 +241,29 @@ class RAGEvaluator:
         logger.info("Evaluation Models:")
         logger.info("  • LLM Model:            %s", self.eval_model)
         logger.info("  • Embedding Model:      %s", self.eval_embedding_model)
-        if self.eval_base_url:
-            logger.info("  • Custom Endpoint:      %s", self.eval_base_url)
+
+        # Display LLM endpoint
+        if self.eval_llm_base_url:
+            logger.info("  • LLM Endpoint:         %s", self.eval_llm_base_url)
             logger.info(
-                "  • Bypass N-Parameter:   Enabled (use LangchainLLMWrapperfor compatibility)"
+                "  • Bypass N-Parameter:   Enabled (use LangchainLLMWrapper for compatibility)"
             )
         else:
-            logger.info("  • Endpoint:             OpenAI Official API")
+            logger.info("  • LLM Endpoint:         OpenAI Official API")
+
+        # Display Embedding endpoint (only if different from LLM)
+        if self.eval_embedding_base_url:
+            if self.eval_embedding_base_url != self.eval_llm_base_url:
+                logger.info(
+                    "  • Embedding Endpoint:   %s", self.eval_embedding_base_url
+                )
+            # If same as LLM endpoint, no need to display separately
+        elif not self.eval_llm_base_url:
+            # Both using OpenAI - already displayed above
+            pass
+        else:
+            # LLM uses custom endpoint, but embeddings use OpenAI
+            logger.info("  • Embedding Endpoint:   OpenAI Official API")
 
         logger.info("Concurrency & Rate Limiting:")
         query_top_k = int(os.getenv("EVAL_QUERY_TOP_K", "10"))
