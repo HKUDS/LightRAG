@@ -2026,9 +2026,9 @@ class PGKVStorage(BaseKVStorage):
                     "cache_type": v.get(
                         "cache_type", "extract"
                     ),  # Get cache_type from data
-                    "queryparam": json.dumps(v.get("queryparam"))
-                    if v.get("queryparam")
-                    else None,
+                    "queryparam": (
+                        json.dumps(v.get("queryparam")) if v.get("queryparam") else None
+                    ),
                 }
 
                 await self.db.execute(upsert_sql, _data)
@@ -3250,6 +3250,52 @@ class PGGraphStorage(BaseGraphStorage):
         normalized_id = normalized_id.replace('"', '\\"')
         return normalized_id
 
+    async def _get_vertex_properties_column(self) -> str:
+        """
+        Detect which column contains vertex properties in _ag_label_vertex table.
+
+        Apache AGE 1.5.0+ changed from 'properties' column to 'base' column.
+        This method detects the schema version and returns the correct column name.
+
+        Returns:
+            'base' for AGE 1.5.0+ or 'properties' for AGE 1.4.x and earlier.
+            Defaults to 'base' if detection fails (newer AGE is more common now).
+        """
+        if self.db is None or not hasattr(self, "graph_name") or not self.graph_name:
+            # Default to 'base' if db or graph_name not initialized yet
+            return "base"
+
+        try:
+            # Check which column exists in _ag_label_vertex table
+            check_sql = f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = '{self.graph_name}' 
+                AND table_name = '_ag_label_vertex'
+                AND column_name IN ('base', 'properties')
+                ORDER BY CASE column_name WHEN 'base' THEN 1 ELSE 2 END
+                LIMIT 1
+            """
+
+            result = await self.db.query(
+                check_sql,
+                None,
+                multirows=True,
+                with_age=False,
+            )
+
+            if result and len(result) > 0:
+                # result is a list of dictionaries when multirows=True
+                column_name = result[0].get("column_name")
+                if column_name:
+                    return column_name
+
+            # Default to 'base' for newer AGE versions if detection fails
+            return "base"
+        except Exception:
+            # If table doesn't exist yet or any error occurs, default to 'base' (newer AGE)
+            return "base"
+
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
@@ -3279,24 +3325,43 @@ class PGGraphStorage(BaseGraphStorage):
                 # First ensure AGE extension is created
                 await PostgreSQLDB.configure_age_extension(connection)
 
-            # Execute each statement separately and ignore errors
-            queries = [
+            # Create graph and labels first
+            initial_queries = [
                 f"SELECT create_graph('{self.graph_name}')",
                 f"SELECT create_vlabel('{self.graph_name}', 'base');",
                 f"SELECT create_elabel('{self.graph_name}', 'DIRECTED');",
+            ]
+
+            for query in initial_queries:
+                await self.db.execute(
+                    query,
+                    upsert=True,
+                    ignore_if_exists=True,
+                    with_age=True,
+                    graph_name=self.graph_name,
+                )
+
+            # Detect which column contains vertex properties (for Apache AGE 1.5.0+ compatibility)
+            vertex_props_col = await self._get_vertex_properties_column()
+            logger.info(
+                f"[{self.workspace}] Detected vertex properties column: '{vertex_props_col}' for graph '{self.graph_name}'"
+            )
+
+            # Execute each statement separately and ignore errors
+            queries = [
                 # f'CREATE INDEX CONCURRENTLY vertex_p_idx ON {self.graph_name}."_ag_label_vertex" (id)',
-                f'CREATE INDEX CONCURRENTLY vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator({vertex_props_col}, \'"entity_id"\'::agtype))',
                 # f'CREATE INDEX CONCURRENTLY edge_p_idx ON {self.graph_name}."_ag_label_edge" (id)',
-                f'CREATE INDEX CONCURRENTLY edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
-                f'CREATE INDEX CONCURRENTLY edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
-                f'CREATE INDEX CONCURRENTLY edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
-                f'CREATE INDEX CONCURRENTLY directed_p_idx ON {self.graph_name}."DIRECTED" (id)',
-                f'CREATE INDEX CONCURRENTLY directed_eid_idx ON {self.graph_name}."DIRECTED" (end_id)',
-                f'CREATE INDEX CONCURRENTLY directed_sid_idx ON {self.graph_name}."DIRECTED" (start_id)',
-                f'CREATE INDEX CONCURRENTLY directed_seid_idx ON {self.graph_name}."DIRECTED" (start_id,end_id)',
-                f'CREATE INDEX CONCURRENTLY entity_p_idx ON {self.graph_name}."base" (id)',
-                f'CREATE INDEX CONCURRENTLY entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
-                f'CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_p_idx ON {self.graph_name}."DIRECTED" (id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_eid_idx ON {self.graph_name}."DIRECTED" (end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_sid_idx ON {self.graph_name}."DIRECTED" (start_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_seid_idx ON {self.graph_name}."DIRECTED" (start_id,end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_p_idx ON {self.graph_name}."base" (id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
                 f'ALTER TABLE {self.graph_name}."DIRECTED" CLUSTER ON directed_sid_idx',
             ]
 
@@ -3724,7 +3789,10 @@ class PGGraphStorage(BaseGraphStorage):
         query = """SELECT * FROM cypher('%s', $$
                      MATCH (n:base {entity_id: "%s"})
                      DETACH DELETE n
-                   $$) AS (n agtype)""" % (self.graph_name, label)
+                   $$) AS (n agtype)""" % (
+            self.graph_name,
+            label,
+        )
 
         try:
             await self._query(query, readonly=False)
@@ -3746,7 +3814,10 @@ class PGGraphStorage(BaseGraphStorage):
                      MATCH (n:base)
                      WHERE n.entity_id IN [%s]
                      DETACH DELETE n
-                   $$) AS (n agtype)""" % (self.graph_name, node_id_list)
+                   $$) AS (n agtype)""" % (
+            self.graph_name,
+            node_id_list,
+        )
 
         try:
             await self._query(query, readonly=False)
@@ -3768,7 +3839,11 @@ class PGGraphStorage(BaseGraphStorage):
             query = """SELECT * FROM cypher('%s', $$
                          MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
                          DELETE r
-                       $$) AS (r agtype)""" % (self.graph_name, src_label, tgt_label)
+                       $$) AS (r agtype)""" % (
+                self.graph_name,
+                src_label,
+                tgt_label,
+            )
 
             try:
                 await self._query(query, readonly=False)
@@ -4300,7 +4375,10 @@ class PGGraphStorage(BaseGraphStorage):
         query = """SELECT * FROM cypher('%s', $$
                     MATCH (n:base {entity_id: "%s"})
                     RETURN id(n) as node_id, n
-                  $$) AS (node_id bigint, n agtype)""" % (self.graph_name, label)
+                  $$) AS (node_id bigint, n agtype)""" % (
+            self.graph_name,
+            label,
+        )
 
         node_result = await self._query(query)
         if not node_result or not node_result[0].get("n"):
@@ -4686,6 +4764,9 @@ class PGGraphStorage(BaseGraphStorage):
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get popular labels by node degree (most connected entities) using native SQL for performance."""
         try:
+            # Detect vertex properties column for Apache AGE 1.5.0+ compatibility
+            vertex_props_col = await self._get_vertex_properties_column()
+
             # Native SQL query to calculate node degrees directly from AGE's underlying tables
             # This is significantly faster than using the cypher() function wrapper
             query = f"""
@@ -4701,13 +4782,13 @@ class PGGraphStorage(BaseGraphStorage):
                 GROUP BY node_id
             )
             SELECT
-                (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
+                (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.{vertex_props_col}, '"entity_id"'::agtype]))::text AS label
             FROM
                 node_degrees d
             JOIN
                 {self.graph_name}._ag_label_vertex v ON d.node_id = v.id
             WHERE
-                ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
+                ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.{vertex_props_col}, '"entity_id"'::agtype]) IS NOT NULL
             ORDER BY
                 d.degree DESC,
                 label ASC
@@ -4733,17 +4814,20 @@ class PGGraphStorage(BaseGraphStorage):
             return []
 
         try:
+            # Detect vertex properties column for Apache AGE 1.5.0+ compatibility
+            vertex_props_col = await self._get_vertex_properties_column()
+
             # Re-implementing with the correct agtype access operator and full scoring logic.
             sql_query = f"""
             WITH ranked_labels AS (
                 SELECT
-                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text AS label,
-                    LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) AS label_lower
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[{vertex_props_col}, '"entity_id"'::agtype]))::text AS label,
+                    LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[{vertex_props_col}, '"entity_id"'::agtype]))::text) AS label_lower
                 FROM
                     {self.graph_name}._ag_label_vertex
                 WHERE
-                    ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]) IS NOT NULL
-                    AND LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[properties, '"entity_id"'::agtype]))::text) ILIKE $1
+                    ag_catalog.agtype_access_operator(VARIADIC ARRAY[{vertex_props_col}, '"entity_id"'::agtype]) IS NOT NULL
+                    AND LOWER((ag_catalog.agtype_access_operator(VARIADIC ARRAY[{vertex_props_col}, '"entity_id"'::agtype]))::text) ILIKE $1
             )
             SELECT
                 label
