@@ -33,7 +33,6 @@ from ..base import (
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
-from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock, get_storage_lock
 
 import pipmaster as pm
@@ -4174,102 +4173,6 @@ class PGGraphStorage(BaseGraphStorage):
             if result and isinstance(result, dict) and "label" in result:
                 labels.append(result["label"])
         return labels
-
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """
-        Retrieves nodes from the graph that are associated with a given list of chunk IDs.
-        This method uses a Cypher query with UNWIND to efficiently find all nodes
-        where the `source_id` property contains any of the specified chunk IDs.
-        """
-        # The string representation of the list for the cypher query
-        chunk_ids_str = json.dumps(chunk_ids)
-
-        query = f"""
-            SELECT * FROM cypher('{self.graph_name}', $$
-                UNWIND {chunk_ids_str} AS chunk_id
-                MATCH (n:base)
-                WHERE n.source_id IS NOT NULL AND chunk_id IN split(n.source_id, '{GRAPH_FIELD_SEP}')
-                RETURN n
-            $$) AS (n agtype);
-        """
-        results = await self._query(query)
-
-        # Build result list
-        nodes = []
-        for result in results:
-            if result["n"]:
-                node_dict = result["n"]["properties"]
-
-                # Process string result, parse it to JSON dictionary
-                if isinstance(node_dict, str):
-                    try:
-                        node_dict = json.loads(node_dict)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"[{self.workspace}] Failed to parse node string in batch: {node_dict}"
-                        )
-
-                node_dict["id"] = node_dict["entity_id"]
-                nodes.append(node_dict)
-
-        return nodes
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """
-        Retrieves edges from the graph that are associated with a given list of chunk IDs.
-        This method uses a Cypher query with UNWIND to efficiently find all edges
-        where the `source_id` property contains any of the specified chunk IDs.
-        """
-        chunk_ids_str = json.dumps(chunk_ids)
-
-        query = f"""
-            SELECT * FROM cypher('{self.graph_name}', $$
-                UNWIND {chunk_ids_str} AS chunk_id
-                MATCH ()-[r]-()
-                WHERE r.source_id IS NOT NULL AND chunk_id IN split(r.source_id, '{GRAPH_FIELD_SEP}')
-                RETURN DISTINCT r, startNode(r) AS source, endNode(r) AS target
-            $$) AS (edge agtype, source agtype, target agtype);
-        """
-        results = await self._query(query)
-        edges = []
-        if results:
-            for item in results:
-                edge_agtype = item["edge"]["properties"]
-                # Process string result, parse it to JSON dictionary
-                if isinstance(edge_agtype, str):
-                    try:
-                        edge_agtype = json.loads(edge_agtype)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"[{self.workspace}] Failed to parse edge string in batch: {edge_agtype}"
-                        )
-
-                source_agtype = item["source"]["properties"]
-                # Process string result, parse it to JSON dictionary
-                if isinstance(source_agtype, str):
-                    try:
-                        source_agtype = json.loads(source_agtype)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"[{self.workspace}] Failed to parse node string in batch: {source_agtype}"
-                        )
-
-                target_agtype = item["target"]["properties"]
-                # Process string result, parse it to JSON dictionary
-                if isinstance(target_agtype, str):
-                    try:
-                        target_agtype = json.loads(target_agtype)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"[{self.workspace}] Failed to parse node string in batch: {target_agtype}"
-                        )
-
-                if edge_agtype and source_agtype and target_agtype:
-                    edge_properties = edge_agtype
-                    edge_properties["source"] = source_agtype["entity_id"]
-                    edge_properties["target"] = target_agtype["entity_id"]
-                    edges.append(edge_properties)
-        return edges
 
     async def _bfs_subgraph(
         self, node_label: str, max_depth: int, max_nodes: int

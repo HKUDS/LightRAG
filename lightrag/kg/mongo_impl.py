@@ -1036,45 +1036,6 @@ class MongoGraphStorage(BaseGraphStorage):
 
         return result
 
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all nodes that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated nodes for.
-
-        Returns:
-            list[dict]: A list of nodes, where each node is a dictionary of its properties.
-                        An empty list if no matching nodes are found.
-        """
-        if not chunk_ids:
-            return []
-
-        cursor = self.collection.find({"source_ids": {"$in": chunk_ids}})
-        return [doc async for doc in cursor]
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all edges that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated edges for.
-
-        Returns:
-            list[dict]: A list of edges, where each edge is a dictionary of its properties.
-                        An empty list if no matching edges are found.
-        """
-        if not chunk_ids:
-            return []
-
-        cursor = self.edge_collection.find({"source_ids": {"$in": chunk_ids}})
-
-        edges = []
-        async for edge in cursor:
-            edge["source"] = edge["source_node_id"]
-            edge["target"] = edge["target_node_id"]
-            edges.append(edge)
-
-        return edges
-
     #
     # -------------------------------------------------------------------------
     # UPSERTS
