@@ -33,7 +33,7 @@ from ..base import (
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
-from ..kg.shared_storage import get_data_init_lock
+from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock, get_storage_lock
 
 import pipmaster as pm
 
@@ -77,9 +77,6 @@ class PostgreSQLDB:
         self.hnsw_m = config.get("hnsw_m")
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
-        self.vchordrq_build_options = config.get("vchordrq_build_options")
-        self.vchordrq_probes = config.get("vchordrq_probes")
-        self.vchordrq_epsilon = config.get("vchordrq_epsilon")
 
         # Server settings
         self.server_settings = config.get("server_settings")
@@ -365,8 +362,7 @@ class PostgreSQLDB:
                         await self.configure_age(connection, graph_name)
                     elif with_age and not graph_name:
                         raise ValueError("Graph name is required when with_age is True")
-                    if self.vector_index_type == "VCHORDRQ":
-                        await self.configure_vchordrq(connection)
+
                     return await operation(connection)
 
     @staticmethod
@@ -383,7 +379,7 @@ class PostgreSQLDB:
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
         """Create AGE extension if it doesn't exist for graph operations."""
         try:
-            await connection.execute("CREATE EXTENSION IF NOT EXISTS AGE CASCADE")  # type: ignore
+            await connection.execute("CREATE EXTENSION IF NOT EXISTS age")  # type: ignore
             logger.info("PostgreSQL, AGE extension enabled")
         except Exception as e:
             logger.warning(f"Could not create AGE extension: {e}")
@@ -411,14 +407,6 @@ class PostgreSQLDB:
             asyncpg.exceptions.UniqueViolationError,
         ):
             pass
-
-    async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
-        """Configure VCHORDRQ extension for vector similarity search."""
-        try:
-            await connection.execute(f"SET vchordrq.probes TO '{self.vchordrq_probes}'")
-            await connection.execute(f"SET vchordrq.epsilon TO {self.vchordrq_epsilon}")
-        except Exception as e:
-            logger.error(f"Failed to set vchordrq.probes or vchordrq.epsilon: {e}")
 
     async def _migrate_llm_cache_schema(self):
         """Migrate LLM cache schema: add new columns and remove deprecated mode field"""
@@ -1154,12 +1142,19 @@ class PostgreSQLDB:
                 f"PostgreSQL, Create vector indexs, type: {self.vector_index_type}"
             )
             try:
-                if self.vector_index_type in ["HNSW", "IVFFLAT", "VCHORDRQ"]:
-                    await self._create_vector_indexes()
+                if self.vector_index_type == "HNSW":
+                    await self._create_hnsw_vector_indexes()
+                elif self.vector_index_type == "IVFFLAT":
+                    await self._create_ivfflat_vector_indexes()
+                elif self.vector_index_type == "FLAT":
+                    logger.warning(
+                        "FLAT index type is not supported by pgvector. Skipping vector index creation. "
+                        "Please use 'HNSW' or 'IVFFLAT' instead."
+                    )
                 else:
                     logger.warning(
                         "Doesn't support this vector index type: {self.vector_index_type}. "
-                        "Supported types: HNSW, IVFFLAT, VCHORDRQ"
+                        "Supported types: HNSW, IVFFLAT"
                     )
             except Exception as e:
                 logger.error(
@@ -1366,39 +1361,21 @@ class PostgreSQLDB:
             except Exception as e:
                 logger.warning(f"Failed to create index {index['name']}: {e}")
 
-    async def _create_vector_indexes(self):
+    async def _create_hnsw_vector_indexes(self):
         vdb_tables = [
             "LIGHTRAG_VDB_CHUNKS",
             "LIGHTRAG_VDB_ENTITY",
             "LIGHTRAG_VDB_RELATION",
         ]
 
-        create_sql = {
-            "HNSW": f"""
-                CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING hnsw (content_vector vector_cosine_ops)
-                WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
-            """,
-            "IVFFLAT": f"""
-                CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING ivfflat (content_vector vector_cosine_ops)
-                WITH (lists = {self.ivfflat_lists})
-            """,
-            "VCHORDRQ": f"""
-                CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING vchordrq (content_vector vector_cosine_ops)
-                {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
-            """,
-        }
-
         embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
+
         for k in vdb_tables:
-            vector_index_name = (
-                f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
-            )
+            vector_index_name = f"idx_{k.lower()}_hnsw_cosine"
             check_vector_index_sql = f"""
                     SELECT 1 FROM pg_indexes
-                    WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
+                    WHERE indexname = '{vector_index_name}'
+                      AND tablename = '{k.lower()}'
                 """
             try:
                 vector_index_exists = await self.query(check_vector_index_sql)
@@ -1407,23 +1384,63 @@ class PostgreSQLDB:
                     alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
                     await self.execute(alter_sql)
                     logger.debug(f"Ensured vector dimension for {k}")
-                    logger.info(
-                        f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
-                    )
-                    await self.execute(
-                        create_sql[self.vector_index_type].format(
-                            vector_index_name=vector_index_name, k=k
-                        )
-                    )
+
+                    create_vector_index_sql = f"""
+                            CREATE INDEX {vector_index_name}
+                            ON {k} USING hnsw (content_vector vector_cosine_ops)
+                            WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
+                        """
+                    logger.info(f"Creating hnsw index {vector_index_name} on table {k}")
+                    await self.execute(create_vector_index_sql)
                     logger.info(
                         f"Successfully created vector index {vector_index_name} on table {k}"
                     )
                 else:
                     logger.info(
-                        f"{self.vector_index_type} vector index {vector_index_name} already exists on table {k}"
+                        f"HNSW vector index {vector_index_name} already exists on table {k}"
                     )
             except Exception as e:
                 logger.error(f"Failed to create vector index on table {k}, Got: {e}")
+
+    async def _create_ivfflat_vector_indexes(self):
+        vdb_tables = [
+            "LIGHTRAG_VDB_CHUNKS",
+            "LIGHTRAG_VDB_ENTITY",
+            "LIGHTRAG_VDB_RELATION",
+        ]
+
+        embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
+
+        for k in vdb_tables:
+            index_name = f"idx_{k.lower()}_ivfflat_cosine"
+            check_index_sql = f"""
+                    SELECT 1 FROM pg_indexes
+                    WHERE indexname = '{index_name}' AND tablename = '{k.lower()}'
+                """
+            try:
+                exists = await self.query(check_index_sql)
+                if not exists:
+                    # Only set vector dimension when index doesn't exist
+                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                    await self.execute(alter_sql)
+                    logger.debug(f"Ensured vector dimension for {k}")
+
+                    create_sql = f"""
+                            CREATE INDEX {index_name}
+                            ON {k} USING ivfflat (content_vector vector_cosine_ops)
+                            WITH (lists = {self.ivfflat_lists})
+                        """
+                    logger.info(f"Creating ivfflat index {index_name} on table {k}")
+                    await self.execute(create_sql)
+                    logger.info(
+                        f"Successfully created ivfflat index {index_name} on table {k}"
+                    )
+                else:
+                    logger.info(
+                        f"Ivfflat vector index {index_name} already exists on table {k}"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to create ivfflat index on {k}: {e}")
 
     async def query(
         self,
@@ -1579,20 +1596,6 @@ class ClientManager:
                     config.get("postgres", "ivfflat_lists", fallback="100"),
                 )
             ),
-            "vchordrq_build_options": os.environ.get(
-                "POSTGRES_VCHORDRQ_BUILD_OPTIONS",
-                config.get("postgres", "vchordrq_build_options", fallback=""),
-            ),
-            "vchordrq_probes": os.environ.get(
-                "POSTGRES_VCHORDRQ_PROBES",
-                config.get("postgres", "vchordrq_probes", fallback=""),
-            ),
-            "vchordrq_epsilon": float(
-                os.environ.get(
-                    "POSTGRES_VCHORDRQ_EPSILON",
-                    config.get("postgres", "vchordrq_epsilon", fallback="1.9"),
-                )
-            ),
             # Server settings for Supabase
             "server_settings": os.environ.get(
                 "POSTGRES_SERVER_SETTINGS",
@@ -1699,9 +1702,10 @@ class PGKVStorage(BaseKVStorage):
                 self.workspace = "default"
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_storage_lock():
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     ################ QUERY METHODS ################
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -2143,21 +2147,22 @@ class PGKVStorage(BaseKVStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
+        async with get_storage_lock():
+            try:
+                table_name = namespace_to_table_name(self.namespace)
+                if not table_name:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown namespace: {self.namespace}",
+                    }
 
-            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
-            )
-            await self.db.execute(drop_sql, {"workspace": self.workspace})
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=table_name
+                )
+                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2192,9 +2197,10 @@ class PGVectorStorage(BaseVectorStorage):
                 self.workspace = "default"
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_storage_lock():
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     def _upsert_chunks(
         self, item: dict[str, Any], current_time: datetime.datetime
@@ -2530,21 +2536,22 @@ class PGVectorStorage(BaseVectorStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
+        async with get_storage_lock():
+            try:
+                table_name = namespace_to_table_name(self.namespace)
+                if not table_name:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown namespace: {self.namespace}",
+                    }
 
-            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
-            )
-            await self.db.execute(drop_sql, {"workspace": self.workspace})
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=table_name
+                )
+                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2579,9 +2586,10 @@ class PGDocStatusStorage(DocStatusStorage):
                 self.workspace = "default"
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_storage_lock():
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
@@ -3156,21 +3164,22 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
+        async with get_storage_lock():
+            try:
+                table_name = namespace_to_table_name(self.namespace)
+                if not table_name:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown namespace: {self.namespace}",
+                    }
 
-            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
-            )
-            await self.db.execute(drop_sql, {"workspace": self.workspace})
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=table_name
+                )
+                await self.db.execute(drop_sql, {"workspace": self.workspace})
+                return {"status": "success", "message": "data dropped"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
 
 class PGGraphQueryException(Exception):
@@ -3302,9 +3311,10 @@ class PGGraphStorage(BaseGraphStorage):
                 )
 
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        async with get_graph_db_lock():
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -3558,13 +3568,17 @@ class PGGraphStorage(BaseGraphStorage):
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties"""
 
-        result = await self.get_nodes_batch(node_ids=[node_id])
+        label = self._normalize_node_id(node_id)
+
+        result = await self.get_nodes_batch(node_ids=[label])
         if result and node_id in result:
             return result[node_id]
         return None
 
     async def node_degree(self, node_id: str) -> int:
-        result = await self.node_degrees_batch(node_ids=[node_id])
+        label = self._normalize_node_id(node_id)
+
+        result = await self.node_degrees_batch(node_ids=[label])
         if result and node_id in result:
             return result[node_id]
 
@@ -3577,11 +3591,12 @@ class PGGraphStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes"""
-        result = await self.get_edges_batch(
-            [{"src": source_node_id, "tgt": target_node_id}]
-        )
-        if result and (source_node_id, target_node_id) in result:
-            return result[(source_node_id, target_node_id)]
+        src_label = self._normalize_node_id(source_node_id)
+        tgt_label = self._normalize_node_id(target_node_id)
+
+        result = await self.get_edges_batch([{"src": src_label, "tgt": tgt_label}])
+        if result and (src_label, tgt_label) in result:
+            return result[(src_label, tgt_label)]
         return None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -3779,17 +3794,13 @@ class PGGraphStorage(BaseGraphStorage):
         if not node_ids:
             return {}
 
-        seen: set[str] = set()
-        unique_ids: list[str] = []
-        lookup: dict[str, str] = {}
-        requested: set[str] = set()
+        seen = set()
+        unique_ids = []
         for nid in node_ids:
-            if nid not in seen:
-                seen.add(nid)
-                unique_ids.append(nid)
-            requested.add(nid)
-            lookup[nid] = nid
-            lookup[self._normalize_node_id(nid)] = nid
+            nid_norm = self._normalize_node_id(nid)
+            if nid_norm not in seen:
+                seen.add(nid_norm)
+                unique_ids.append(nid_norm)
 
         # Build result dictionary
         nodes_dict = {}
@@ -3828,18 +3839,10 @@ class PGGraphStorage(BaseGraphStorage):
                             node_dict = json.loads(node_dict)
                         except json.JSONDecodeError:
                             logger.warning(
-                                f"[{self.workspace}] Failed to parse node string in batch: {node_dict}"
+                                f"Failed to parse node string in batch: {node_dict}"
                             )
 
-                    node_key = result["node_id"]
-                    original_key = lookup.get(node_key)
-                    if original_key is None:
-                        logger.warning(
-                            f"[{self.workspace}] Node {node_key} not found in lookup map"
-                        )
-                        original_key = node_key
-                    if original_key in requested:
-                        nodes_dict[original_key] = node_dict
+                    nodes_dict[result["node_id"]] = node_dict
 
         return nodes_dict
 
@@ -3862,17 +3865,13 @@ class PGGraphStorage(BaseGraphStorage):
         if not node_ids:
             return {}
 
-        seen: set[str] = set()
+        seen = set()
         unique_ids: list[str] = []
-        lookup: dict[str, str] = {}
-        requested: set[str] = set()
         for nid in node_ids:
-            if nid not in seen:
-                seen.add(nid)
-                unique_ids.append(nid)
-            requested.add(nid)
-            lookup[nid] = nid
-            lookup[self._normalize_node_id(nid)] = nid
+            n = self._normalize_node_id(nid)
+            if n not in seen:
+                seen.add(n)
+                unique_ids.append(n)
 
         out_degrees = {}
         in_degrees = {}
@@ -3924,16 +3923,8 @@ class PGGraphStorage(BaseGraphStorage):
                 node_id = row["node_id"]
                 if not node_id:
                     continue
-                node_key = node_id
-                original_key = lookup.get(node_key)
-                if original_key is None:
-                    logger.warning(
-                        f"[{self.workspace}] Node {node_key} not found in lookup map"
-                    )
-                    original_key = node_key
-                if original_key in requested:
-                    out_degrees[original_key] = int(row.get("out_degree", 0) or 0)
-                    in_degrees[original_key] = int(row.get("in_degree", 0) or 0)
+                out_degrees[node_id] = int(row.get("out_degree", 0) or 0)
+                in_degrees[node_id] = int(row.get("in_degree", 0) or 0)
 
         degrees_dict = {}
         for node_id in node_ids:
@@ -4062,7 +4053,7 @@ class PGGraphStorage(BaseGraphStorage):
                             edge_props = json.loads(edge_props)
                         except json.JSONDecodeError:
                             logger.warning(
-                                f"[{self.workspace}]Failed to parse edge properties string: {edge_props}"
+                                f"Failed to parse edge properties string: {edge_props}"
                             )
                             continue
 
@@ -4078,7 +4069,7 @@ class PGGraphStorage(BaseGraphStorage):
                             edge_props = json.loads(edge_props)
                         except json.JSONDecodeError:
                             logger.warning(
-                                f"[{self.workspace}] Failed to parse edge properties string: {edge_props}"
+                                f"Failed to parse edge properties string: {edge_props}"
                             )
                             continue
 
@@ -4704,20 +4695,21 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        try:
-            drop_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                            MATCH (n)
-                            DETACH DELETE n
-                            $$) AS (result agtype)"""
+        async with get_graph_db_lock():
+            try:
+                drop_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                                MATCH (n)
+                                DETACH DELETE n
+                                $$) AS (result agtype)"""
 
-            await self._query(drop_query, readonly=False)
-            return {
-                "status": "success",
-                "message": f"workspace '{self.workspace}' graph data dropped",
-            }
-        except Exception as e:
-            logger.error(f"[{self.workspace}] Error dropping graph: {e}")
-            return {"status": "error", "message": str(e)}
+                await self._query(drop_query, readonly=False)
+                return {
+                    "status": "success",
+                    "message": f"workspace '{self.workspace}' graph data dropped",
+                }
+            except Exception as e:
+                logger.error(f"[{self.workspace}] Error dropping graph: {e}")
+                return {"status": "error", "message": str(e)}
 
 
 # Note: Order matters! More specific namespaces (e.g., "full_entities") must come before

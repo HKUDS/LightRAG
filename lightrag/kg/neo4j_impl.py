@@ -16,7 +16,7 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..kg.shared_storage import get_data_init_lock
+from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -340,9 +340,10 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def finalize(self):
         """Close the Neo4j driver and release all resources"""
-        if self._driver:
-            await self._driver.close()
-            self._driver = None
+        async with get_graph_db_lock():
+            if self._driver:
+                await self._driver.close()
+                self._driver = None
 
     async def __aexit__(self, exc_type, exc, tb):
         """Ensure driver is closed when context manager exits"""
@@ -352,20 +353,6 @@ class Neo4JStorage(BaseGraphStorage):
         # Neo4J handles persistence automatically
         pass
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def has_node(self, node_id: str) -> bool:
         """
         Check if a node with the given label exists in the database
@@ -384,7 +371,6 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
-            result = None
             try:
                 query = f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN count(n) > 0 AS node_exists"
                 result = await session.run(query, entity_id=node_id)
@@ -395,24 +381,9 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error checking node existence for {node_id}: {str(e)}"
                 )
-                if result is not None:
-                    await result.consume()  # Ensure results are consumed even on error
+                await result.consume()  # Ensure results are consumed even on error
                 raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if an edge exists between two nodes
@@ -432,7 +403,6 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
-            result = None
             try:
                 query = (
                     f"MATCH (a:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(b:`{workspace_label}` {{entity_id: $target_entity_id}}) "
@@ -450,24 +420,9 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
                 )
-                if result is not None:
-                    await result.consume()  # Ensure results are consumed even on error
+                await result.consume()  # Ensure results are consumed even on error
                 raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties
 
@@ -521,20 +476,6 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """
         Retrieve multiple nodes in one query using UNWIND.
@@ -571,20 +512,6 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()  # Make sure to consume the result fully
             return nodes
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def node_degree(self, node_id: str) -> int:
         """Get the degree (number of relationships) of a node with the given label.
         If multiple nodes have the same label, returns the degree of the first node.
@@ -633,20 +560,6 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """
         Retrieve the degree for multiple nodes in a single query using UNWIND.
@@ -731,20 +644,6 @@ class Neo4JStorage(BaseGraphStorage):
             edge_degrees[(src, tgt)] = degrees.get(src, 0) + degrees.get(tgt, 0)
         return edge_degrees
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
@@ -832,20 +731,6 @@ class Neo4JStorage(BaseGraphStorage):
             )
             raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
@@ -896,20 +781,6 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return edges_dict
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Retrieves all edges (relationships) for a particular node identified by its label.
 
@@ -928,7 +799,6 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                results = None
                 try:
                     workspace_label = self._get_workspace_label()
                     query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
@@ -966,10 +836,7 @@ class Neo4JStorage(BaseGraphStorage):
                     logger.error(
                         f"[{self.workspace}] Error getting edges for node {source_node_id}: {str(e)}"
                     )
-                    if results is not None:
-                        await (
-                            results.consume()
-                        )  # Ensure results are consumed even on error
+                    await results.consume()  # Ensure results are consumed even on error
                     raise
         except Exception as e:
             logger.error(
@@ -977,20 +844,6 @@ class Neo4JStorage(BaseGraphStorage):
             )
             raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-                AttributeError,
-            )
-        ),
-    )
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
@@ -1739,7 +1592,6 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
-            result = None
             try:
                 query = f"""
                 MATCH (n:`{workspace_label}`)
@@ -1764,8 +1616,7 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error getting popular labels: {str(e)}"
                 )
-                if result is not None:
-                    await result.consume()
+                await result.consume()
                 raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
@@ -1912,23 +1763,24 @@ class Neo4JStorage(BaseGraphStorage):
             - On success: {"status": "success", "message": "workspace data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        workspace_label = self._get_workspace_label()
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                # Delete all nodes and relationships in current workspace only
-                query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
-                result = await session.run(query)
-                await result.consume()  # Ensure result is fully consumed
+        async with get_graph_db_lock():
+            workspace_label = self._get_workspace_label()
+            try:
+                async with self._driver.session(database=self._DATABASE) as session:
+                    # Delete all nodes and relationships in current workspace only
+                    query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
+                    result = await session.run(query)
+                    await result.consume()  # Ensure result is fully consumed
 
-                # logger.debug(
-                #     f"[{self.workspace}] Process {os.getpid()} drop Neo4j workspace '{workspace_label}' in database {self._DATABASE}"
-                # )
-                return {
-                    "status": "success",
-                    "message": f"workspace '{workspace_label}' data dropped",
-                }
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
-            )
-            return {"status": "error", "message": str(e)}
+                    # logger.debug(
+                    #     f"[{self.workspace}] Process {os.getpid()} drop Neo4j workspace '{workspace_label}' in database {self._DATABASE}"
+                    # )
+                    return {
+                        "status": "success",
+                        "message": f"workspace '{workspace_label}' data dropped",
+                    }
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
+                )
+                return {"status": "error", "message": str(e)}
