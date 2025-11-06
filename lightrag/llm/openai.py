@@ -609,6 +609,7 @@ async def openai_embed(
     model: str = "text-embedding-3-small",
     base_url: str | None = None,
     api_key: str | None = None,
+    embedding_dim: int = None,
     client_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
 ) -> np.ndarray:
@@ -619,6 +620,7 @@ async def openai_embed(
         model: The OpenAI embedding model to use.
         base_url: Optional base URL for the OpenAI API.
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
+        embedding_dim: Optional embedding dimension. If None, uses the default embedding dimension for the model. (will be passed to API for dimension reduction).
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
@@ -638,9 +640,19 @@ async def openai_embed(
     )
 
     async with openai_async_client:
-        response = await openai_async_client.embeddings.create(
-            model=model, input=texts, encoding_format="base64"
-        )
+        # Prepare API call parameters
+        api_params = {
+            "model": model,
+            "input": texts,
+            "encoding_format": "base64",
+        }
+
+        # Add dimensions parameter only if embedding_dim is provided
+        if embedding_dim is not None:
+            api_params["dimensions"] = embedding_dim
+
+        # Make API call
+        response = await openai_async_client.embeddings.create(**api_params)
 
         if token_tracker and hasattr(response, "usage"):
             token_counts = {
