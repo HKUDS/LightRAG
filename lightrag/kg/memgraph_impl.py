@@ -8,7 +8,6 @@ import configparser
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
@@ -783,79 +782,6 @@ class MemgraphStorage(BaseGraphStorage):
 
         degrees = int(src_degree) + int(trg_degree)
         return degrees
-
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all nodes that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids: List of chunk IDs to find associated nodes for
-
-        Returns:
-            list[dict]: A list of nodes, where each node is a dictionary of its properties.
-                        An empty list if no matching nodes are found.
-        """
-        if self._driver is None:
-            raise RuntimeError(
-                "Memgraph driver is not initialized. Call 'await initialize()' first."
-            )
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            query = f"""
-            UNWIND $chunk_ids AS chunk_id
-            MATCH (n:`{workspace_label}`)
-            WHERE n.source_id IS NOT NULL AND chunk_id IN split(n.source_id, $sep)
-            RETURN DISTINCT n
-            """
-            result = await session.run(query, chunk_ids=chunk_ids, sep=GRAPH_FIELD_SEP)
-            nodes = []
-            async for record in result:
-                node = record["n"]
-                node_dict = dict(node)
-                node_dict["id"] = node_dict.get("entity_id")
-                nodes.append(node_dict)
-            await result.consume()
-            return nodes
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all edges that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids: List of chunk IDs to find associated edges for
-
-        Returns:
-            list[dict]: A list of edges, where each edge is a dictionary of its properties.
-                        An empty list if no matching edges are found.
-        """
-        if self._driver is None:
-            raise RuntimeError(
-                "Memgraph driver is not initialized. Call 'await initialize()' first."
-            )
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            query = f"""
-            UNWIND $chunk_ids AS chunk_id
-            MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
-            WHERE r.source_id IS NOT NULL AND chunk_id IN split(r.source_id, $sep)
-            WITH a, b, r, a.entity_id AS source_id, b.entity_id AS target_id
-            // Ensure we only return each unique edge once by ordering the source and target
-            WITH a, b, r,
-                 CASE WHEN source_id <= target_id THEN source_id ELSE target_id END AS ordered_source,
-                 CASE WHEN source_id <= target_id THEN target_id ELSE source_id END AS ordered_target
-            RETURN DISTINCT ordered_source AS source, ordered_target AS target, properties(r) AS properties
-            """
-            result = await session.run(query, chunk_ids=chunk_ids, sep=GRAPH_FIELD_SEP)
-            edges = []
-            async for record in result:
-                edge_properties = record["properties"]
-                edge_properties["source"] = record["source"]
-                edge_properties["target"] = record["target"]
-                edges.append(edge_properties)
-            await result.consume()
-            return edges
 
     async def get_knowledge_graph(
         self,
