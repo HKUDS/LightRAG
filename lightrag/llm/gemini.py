@@ -115,9 +115,12 @@ def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> s
 
 
 def _extract_response_text(response: Any) -> str:
-    if getattr(response, "text", None):
-        return response.text
+    """
+    Extract text content from Gemini response, avoiding warnings about non-text parts.
 
+    Always extracts text manually from parts to avoid triggering warnings when
+    non-text parts (like 'thought_signature') are present in the response.
+    """
     candidates = getattr(response, "candidates", None)
     if not candidates:
         return ""
@@ -127,6 +130,7 @@ def _extract_response_text(response: Any) -> str:
         if not getattr(candidate, "content", None):
             continue
         for part in getattr(candidate.content, "parts", []):
+            # Only extract text parts to avoid non-text content like thought_signature
             text = getattr(part, "text", None)
             if text:
                 parts.append(text)
@@ -191,9 +195,8 @@ async def gemini_complete_if_cache(
                     usage = getattr(chunk, "usage_metadata", None)
                     if usage is not None:
                         usage_container["usage"] = usage
-                    text_piece = getattr(chunk, "text", None) or _extract_response_text(
-                        chunk
-                    )
+                    # Always use manual extraction to avoid warnings about non-text parts
+                    text_piece = _extract_response_text(chunk)
                     if text_piece:
                         loop.call_soon_threadsafe(queue.put_nowait, text_piece)
                 loop.call_soon_threadsafe(queue.put_nowait, None)
