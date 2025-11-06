@@ -59,10 +59,19 @@ LightRAG can be configured using environment variables in the `.env` file:
 
 Docker instructions work the same on all platforms with Docker Desktop installed.
 
+### Build Optimization
+
+The Dockerfile uses BuildKit cache mounts to significantly improve build performance:
+
+- **Automatic cache management**: BuildKit is automatically enabled via `# syntax=docker/dockerfile:1` directive
+- **Faster rebuilds**: Only downloads changed dependencies when `uv.lock` or `bun.lock` files are modified
+- **Efficient package caching**: UV and Bun package downloads are cached across builds
+- **No manual configuration needed**: Works out of the box in Docker Compose and GitHub Actions
+
 ### Start LightRAG  server:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 LightRAG Server uses the following paths for data storage:
@@ -77,9 +86,9 @@ data/
 
 To update the Docker container:
 ```bash
-docker-compose pull
-docker-compose down
-docker-compose up
+docker compose pull
+docker compose down
+docker compose up
 ```
 
 ### Offline deployment
@@ -91,9 +100,14 @@ Software packages requiring `transformers`, `torch`, or `cuda` will is not prein
 ### For local development and testing
 
 ```bash
-# Build and run with docker-compose
+# Build and run with Docker Compose (BuildKit automatically enabled)
 docker compose up --build
+
+# Or explicitly enable BuildKit if needed
+DOCKER_BUILDKIT=1 docker compose up --build
 ```
+
+**Note**: BuildKit is automatically enabled by the `# syntax=docker/dockerfile:1` directive in the Dockerfile, ensuring optimal caching performance.
 
 ### For production release
 

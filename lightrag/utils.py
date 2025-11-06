@@ -15,7 +15,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional
+from typing import (
+    Any,
+    Protocol,
+    Callable,
+    TYPE_CHECKING,
+    List,
+    Optional,
+    Iterable,
+    Sequence,
+    Collection,
+)
 import numpy as np
 from dotenv import load_dotenv
 
@@ -25,7 +35,9 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_MAX_FILE_PATH_LENGTH,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    VALID_SOURCE_IDS_LIMIT_METHODS,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
 
 # Initialize logger with basic configuration
@@ -2465,63 +2477,156 @@ async def process_chunks_unified(
     return final_chunks
 
 
-def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with UTF-8 byte length limit and deduplication
+def normalize_source_ids_limit_method(method: str | None) -> str:
+    """Normalize the source ID limiting strategy and fall back to default when invalid."""
+
+    if not method:
+        return DEFAULT_SOURCE_IDS_LIMIT_METHOD
+
+    normalized = method.upper()
+    if normalized not in VALID_SOURCE_IDS_LIMIT_METHODS:
+        logger.warning(
+            "Unknown SOURCE_IDS_LIMIT_METHOD '%s', falling back to %s",
+            method,
+            DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+        )
+        return DEFAULT_SOURCE_IDS_LIMIT_METHOD
+
+    return normalized
+
+
+def merge_source_ids(
+    existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
+) -> list[str]:
+    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for sequence in (existing_ids, new_ids):
+        if not sequence:
+            continue
+        for source_id in sequence:
+            if not source_id:
+                continue
+            if source_id not in seen:
+                seen.add(source_id)
+                merged.append(source_id)
+
+    return merged
+
+
+def apply_source_ids_limit(
+    source_ids: Sequence[str],
+    limit: int,
+    method: str,
+    *,
+    identifier: str | None = None,
+) -> list[str]:
+    """Apply a limit strategy to a sequence of source IDs."""
+
+    if limit <= 0:
+        return []
+
+    source_ids_list = list(source_ids)
+    if len(source_ids_list) <= limit:
+        return source_ids_list
+
+    normalized_method = normalize_source_ids_limit_method(method)
+
+    if normalized_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+        truncated = source_ids_list[-limit:]
+    else:  # IGNORE_NEW
+        truncated = source_ids_list[:limit]
+
+    if identifier and len(truncated) < len(source_ids_list):
+        logger.debug(
+            "Source_id truncated: %s | %s keeping %s of %s entries",
+            identifier,
+            normalized_method,
+            len(truncated),
+            len(source_ids_list),
+        )
+
+    return truncated
+
+
+def compute_incremental_chunk_ids(
+    existing_full_chunk_ids: list[str],
+    old_chunk_ids: list[str],
+    new_chunk_ids: list[str],
+) -> list[str]:
+    """
+    Compute incrementally updated chunk IDs based on changes.
+
+    This function applies delta changes (additions and removals) to an existing
+    list of chunk IDs while maintaining order and ensuring deduplication.
+    Delta additions from new_chunk_ids are placed at the end.
 
     Args:
-        already_file_paths: List of existing file paths
-        data_list: List of data items containing file_path
-        target: Target name for logging warnings
+        existing_full_chunk_ids: Complete list of existing chunk IDs from storage
+        old_chunk_ids: Previous chunk IDs from source_id (chunks being replaced)
+        new_chunk_ids: New chunk IDs from updated source_id (chunks being added)
 
     Returns:
-        str: Combined file paths separated by GRAPH_FIELD_SEP
+        Updated list of chunk IDs with deduplication
+
+    Example:
+        >>> existing = ['chunk-1', 'chunk-2', 'chunk-3']
+        >>> old = ['chunk-1', 'chunk-2']
+        >>> new = ['chunk-2', 'chunk-4']
+        >>> compute_incremental_chunk_ids(existing, old, new)
+        ['chunk-3', 'chunk-2', 'chunk-4']
     """
-    # set: deduplication
-    file_paths_set = {fp for fp in already_file_paths if fp}
+    # Calculate changes
+    chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
+    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
 
-    # string: filter empty value and keep file order in already_file_paths
-    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+    # Apply changes to full chunk_ids
+    # Step 1: Remove chunks that are no longer needed
+    updated_chunk_ids = [
+        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+    ]
 
-    # Check if initial file_paths already exceeds byte length limit
-    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
-        logger.warning(
-            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"current size: {len(file_paths.encode('utf-8'))} bytes"
-        )
+    # Step 2: Add new chunks (preserving order from new_chunk_ids)
+    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    for cid in new_chunk_ids:
+        if cid in chunks_to_add and cid not in updated_chunk_ids:
+            updated_chunk_ids.append(cid)
 
-    # ignored file_paths
-    file_paths_ignore = ""
-    # add file_paths
-    for dp in data_list:
-        cur_file_path = dp.get("file_path")
-        # empty
-        if not cur_file_path:
-            continue
+    return updated_chunk_ids
 
-        # skip duplicate item
-        if cur_file_path in file_paths_set:
-            continue
-        # add
-        file_paths_set.add(cur_file_path)
 
-        # check the UTF-8 byte length
-        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-        if (
-            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
-            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
-        ):
-            # append
-            file_paths += new_addition
-        else:
-            # ignore
-            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
+def subtract_source_ids(
+    source_ids: Iterable[str],
+    ids_to_remove: Collection[str],
+) -> list[str]:
+    """Remove a collection of IDs from an ordered iterable while preserving order."""
 
-    if file_paths_ignore:
-        logger.warning(
-            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"ignoring file path: {file_paths_ignore}"
-        )
-    return file_paths
+    removal_set = set(ids_to_remove)
+    if not removal_set:
+        return [source_id for source_id in source_ids if source_id]
+
+    return [
+        source_id
+        for source_id in source_ids
+        if source_id and source_id not in removal_set
+    ]
+
+
+def make_relation_chunk_key(src: str, tgt: str) -> str:
+    """Create a deterministic storage key for relation chunk tracking."""
+
+    return GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+
+
+def parse_relation_chunk_key(key: str) -> tuple[str, str]:
+    """Parse a relation chunk storage key back into its entity pair."""
+
+    parts = key.split(GRAPH_FIELD_SEP)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid relation chunk key: {key}")
+    return parts[0], parts[1]
 
 
 def generate_track_id(prefix: str = "upload") -> str:

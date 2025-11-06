@@ -161,6 +161,28 @@ class ReprocessResponse(BaseModel):
         }
 
 
+class CancelPipelineResponse(BaseModel):
+    """Response model for pipeline cancellation operation
+
+    Attributes:
+        status: Status of the cancellation request
+        message: Message describing the operation result
+    """
+
+    status: Literal["cancellation_requested", "not_busy"] = Field(
+        description="Status of the cancellation request"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "cancellation_requested",
+                "message": "Pipeline cancellation has been requested. Documents will be marked as FAILED.",
+            }
+        }
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
@@ -336,6 +358,10 @@ class DeleteDocRequest(BaseModel):
         default=False,
         description="Whether to delete the corresponding file in the upload directory.",
     )
+    delete_llm_cache: bool = Field(
+        default=False,
+        description="Whether to delete cached LLM extraction results for the documents.",
+    )
 
     @field_validator("doc_ids", mode="after")
     @classmethod
@@ -454,7 +480,7 @@ class DocsStatusesResponse(BaseModel):
                             "id": "doc_789",
                             "content_summary": "Document pending final indexing",
                             "content_length": 7200,
-                            "status": "multimodal_processed",
+                            "status": "preprocessed",
                             "created_at": "2025-03-31T09:30:00",
                             "updated_at": "2025-03-31T09:35:00",
                             "track_id": "upload_20250331_093000_xyz789",
@@ -1057,11 +1083,74 @@ async def pipeline_enqueue_file(
                         else:
                             if not pm.is_installed("pypdf2"):  # type: ignore
                                 pm.install("pypdf2")
+                            if not pm.is_installed("pycryptodome"):  # type: ignore
+                                pm.install("pycryptodome")
                             from PyPDF2 import PdfReader  # type: ignore
                             from io import BytesIO
 
                             pdf_file = BytesIO(file)
                             reader = PdfReader(pdf_file)
+
+                            # Check if PDF is encrypted
+                            if reader.is_encrypted:
+                                pdf_password = global_args.pdf_decrypt_password
+                                if not pdf_password:
+                                    # PDF is encrypted but no password provided
+                                    error_files = [
+                                        {
+                                            "file_path": str(file_path.name),
+                                            "error_description": "[File Extraction]PDF is encrypted but no password provided",
+                                            "original_error": "Please set PDF_DECRYPT_PASSWORD environment variable to decrypt this PDF file",
+                                            "file_size": file_size,
+                                        }
+                                    ]
+                                    await rag.apipeline_enqueue_error_documents(
+                                        error_files, track_id
+                                    )
+                                    logger.error(
+                                        f"[File Extraction]PDF is encrypted but no password provided: {file_path.name}"
+                                    )
+                                    return False, track_id
+
+                                # Try to decrypt with password
+                                try:
+                                    decrypt_result = reader.decrypt(pdf_password)
+                                    if decrypt_result == 0:
+                                        # Password is incorrect
+                                        error_files = [
+                                            {
+                                                "file_path": str(file_path.name),
+                                                "error_description": "[File Extraction]Failed to decrypt PDF - incorrect password",
+                                                "original_error": "The provided PDF_DECRYPT_PASSWORD is incorrect for this file",
+                                                "file_size": file_size,
+                                            }
+                                        ]
+                                        await rag.apipeline_enqueue_error_documents(
+                                            error_files, track_id
+                                        )
+                                        logger.error(
+                                            f"[File Extraction]Incorrect PDF password: {file_path.name}"
+                                        )
+                                        return False, track_id
+                                except Exception as decrypt_error:
+                                    # Decryption process error
+                                    error_files = [
+                                        {
+                                            "file_path": str(file_path.name),
+                                            "error_description": "[File Extraction]PDF decryption failed",
+                                            "original_error": f"Error during PDF decryption: {str(decrypt_error)}",
+                                            "file_size": file_size,
+                                        }
+                                    ]
+                                    await rag.apipeline_enqueue_error_documents(
+                                        error_files, track_id
+                                    )
+                                    logger.error(
+                                        f"[File Extraction]PDF decryption error for {file_path.name}: {str(decrypt_error)}"
+                                    )
+                                    return False, track_id
+
+                            # Extract text from PDF (encrypted PDFs are now decrypted, unencrypted PDFs proceed directly)
                             for page in reader.pages:
                                 content += page.extract_text() + "\n"
                     except Exception as e:
@@ -1487,6 +1576,7 @@ async def background_delete_documents(
     doc_manager: DocumentManager,
     doc_ids: List[str],
     delete_file: bool = False,
+    delete_llm_cache: bool = False,
 ):
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
@@ -1521,11 +1611,27 @@ async def background_delete_documents(
         )
         # Use slice assignment to clear the list in place
         pipeline_status["history_messages"][:] = ["Starting document deletion process"]
+        if delete_llm_cache:
+            pipeline_status["history_messages"].append(
+                "LLM cache cleanup requested for this deletion job"
+            )
 
     try:
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
+            # Check for cancellation at the start of each document deletion
             async with pipeline_status_lock:
+                if pipeline_status.get("cancellation_requested", False):
+                    cancel_msg = f"Deletion cancelled by user at document {i}/{total_docs}. {len(successful_deletions)} deleted, {total_docs - i + 1} remaining."
+                    logger.info(cancel_msg)
+                    pipeline_status["latest_message"] = cancel_msg
+                    pipeline_status["history_messages"].append(cancel_msg)
+                    # Add remaining documents to failed list with cancellation reason
+                    failed_deletions.extend(
+                        doc_ids[i - 1 :]
+                    )  # i-1 because enumerate starts at 1
+                    break  # Exit the loop, remaining documents unchanged
+
                 start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
                 logger.info(start_msg)
                 pipeline_status["cur_batch"] = i
@@ -1534,7 +1640,9 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
-                result = await rag.adelete_by_doc_id(doc_id)
+                result = await rag.adelete_by_doc_id(
+                    doc_id, delete_llm_cache=delete_llm_cache
+                )
                 file_path = (
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
@@ -1686,6 +1794,10 @@ async def background_delete_documents(
         # Final summary and check for pending requests
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
+            pipeline_status["pending_requests"] = False  # Reset pending requests flag
+            pipeline_status["cancellation_requested"] = (
+                False  # Always reset cancellation flag
+            )
             completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
             pipeline_status["latest_message"] = completion_msg
             pipeline_status["history_messages"].append(completion_msg)
@@ -2003,6 +2115,8 @@ def create_document_routes(
                 rag.full_docs,
                 rag.full_entities,
                 rag.full_relations,
+                rag.entity_chunks,
+                rag.relation_chunks,
                 rag.entities_vdb,
                 rag.relationships_vdb,
                 rag.chunks_vdb,
@@ -2217,7 +2331,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    # TODO: Deprecated
+    # TODO: Deprecated, use /documents/paginated instead
     @router.get(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )
@@ -2342,36 +2456,26 @@ def create_document_routes(
         Delete documents and all their associated data by their IDs using background processing.
 
         Deletes specific documents and all their associated data, including their status,
-        text chunks, vector embeddings, and any related graph data.
+        text chunks, vector embeddings, and any related graph data. When requested,
+        cached LLM extraction responses are removed after graph deletion/rebuild completes.
         The deletion process runs in the background to avoid blocking the client connection.
-        It is disabled when llm cache for entity extraction is disabled.
 
         This operation is irreversible and will interact with the pipeline status.
 
         Args:
-            delete_request (DeleteDocRequest): The request containing the document IDs and delete_file options.
+            delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
             background_tasks: FastAPI BackgroundTasks for async processing
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
                 - status="deletion_started": The document deletion has been initiated in the background.
                 - status="busy": The pipeline is busy with another operation.
-                - status="not_allowed": Operation not allowed when LLM cache for entity extraction is disabled.
 
         Raises:
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
         doc_ids = delete_request.doc_ids
-
-        # The rag object is initialized from the server startup args,
-        # so we can access its properties here.
-        if not rag.enable_llm_cache_for_entity_extract:
-            return DeleteDocByIdResponse(
-                status="not_allowed",
-                message="Operation not allowed when LLM cache for entity extraction is disabled.",
-                doc_id=", ".join(delete_request.doc_ids),
-            )
 
         try:
             from lightrag.kg.shared_storage import get_namespace_data
@@ -2393,6 +2497,7 @@ def create_document_routes(
                 doc_manager,
                 doc_ids,
                 delete_request.delete_file,
+                delete_request.delete_llm_cache,
             )
 
             return DeleteDocByIdResponse(
@@ -2747,6 +2852,65 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/cancel_pipeline",
+        response_model=CancelPipelineResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def cancel_pipeline():
+        """
+        Request cancellation of the currently running pipeline.
+
+        This endpoint sets a cancellation flag in the pipeline status. The pipeline will:
+        1. Check this flag at key processing points
+        2. Stop processing new documents
+        3. Cancel all running document processing tasks
+        4. Mark all PROCESSING documents as FAILED with reason "User cancelled"
+
+        The cancellation is graceful and ensures data consistency. Documents that have
+        completed processing will remain in PROCESSED status.
+
+        Returns:
+            CancelPipelineResponse: Response with status and message
+                - status="cancellation_requested": Cancellation flag has been set
+                - status="not_busy": Pipeline is not currently running
+
+        Raises:
+            HTTPException: If an error occurs while setting cancellation flag (500).
+        """
+        try:
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_pipeline_status_lock,
+            )
+
+            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status_lock = get_pipeline_status_lock()
+
+            async with pipeline_status_lock:
+                if not pipeline_status.get("busy", False):
+                    return CancelPipelineResponse(
+                        status="not_busy",
+                        message="Pipeline is not currently running. No cancellation needed.",
+                    )
+
+                # Set cancellation flag
+                pipeline_status["cancellation_requested"] = True
+                cancel_msg = "Pipeline cancellation requested by user"
+                logger.info(cancel_msg)
+                pipeline_status["latest_message"] = cancel_msg
+                pipeline_status["history_messages"].append(cancel_msg)
+
+            return CancelPipelineResponse(
+                status="cancellation_requested",
+                message="Pipeline cancellation has been requested. Documents will be marked as FAILED.",
+            )
+
+        except Exception as e:
+            logger.error(f"Error requesting pipeline cancellation: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

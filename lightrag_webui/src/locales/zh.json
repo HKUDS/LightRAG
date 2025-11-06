@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "项目仓库",
     "logout": "退出登录",
+    "frontendNeedsRebuild": "前端代码需重新构建",
     "themeToggle": {
       "switchToLight": "切换到浅色主题",
       "switchToDark": "切换到深色主题"
@@ -70,6 +71,7 @@
       "confirmButton": "确定",
       "deleteFileOption": "同时删除上传文件",
       "deleteFileTooltip": "选中此选项将同时删除服务器上对应的上传文件",
+      "deleteLLMCacheOption": "同时删除实体关系抽取 LLM 缓存",
       "success": "文档删除流水线启动成功",
       "failed": "删除文档失败：\n{{message}}",
       "error": "删除文档失败：\n{{error}}",
@@ -113,10 +115,8 @@
     },
     "documentManager": {
       "title": "文档管理",
-      "scanButton": "扫描",
+      "scanButton": "扫描/重试",
       "scanTooltip": "扫描处理输入目录中的文档，同时重新处理所有失败的文档",
-      "retryFailedButton": "重试",
-      "retryFailedTooltip": "重新处理所有失败的文档",
       "refreshTooltip": "复位文档清单",
       "pipelineStatusButton": "流水线",
       "pipelineStatusTooltip": "查看文档处理流水线状态",
@@ -159,12 +159,22 @@
       "title": "流水线状态",
       "busy": "流水线忙碌",
       "requestPending": "待处理请求",
+      "cancellationRequested": "取消请求",
       "jobName": "作业名称",
       "startTime": "开始时间",
       "progress": "进度",
       "unit": "批",
-      "latestMessage": "最新消息",
-      "historyMessages": "历史消息",
+      "pipelineMessages": "流水线消息",
+      "cancelButton": "中断",
+      "cancelTooltip": "中断流水线处理",
+      "cancelConfirmTitle": "确认中断流水线",
+      "cancelConfirmDescription": "此操作将中断正在进行的流水线处理。确定要继续吗？",
+      "cancelConfirmButton": "确认中断",
+      "cancelInProgress": "取消请求进行中...",
+      "pipelineNotRunning": "流水线未运行",
+      "cancelSuccess": "流水线中断请求已发送",
+      "cancelFailed": "中断流水线失败\n{{error}}",
+      "cancelNotBusy": "流水线未运行，无需中断",
       "errors": {
         "fetchFailed": "获取流水线状态失败\n{{error}}"
       }
@@ -296,11 +306,24 @@
       "errors": {
         "duplicateName": "节点名称已存在",
         "updateFailed": "更新节点失败",
-        "tryAgainLater": "请稍后重试"
+        "tryAgainLater": "请稍后重试",
+        "updateSuccessButMergeFailed": "属性已更新，但合并失败：{{error}}",
+        "mergeFailed": "合并失败：{{error}}"
       },
       "success": {
         "entityUpdated": "节点更新成功",
-        "relationUpdated": "关系更新成功"
+        "relationUpdated": "关系更新成功",
+        "entityMerged": "节点合并成功"
+      },
+      "mergeOptionLabel": "重名时自动合并",
+      "mergeOptionDescription": "勾选后，重命名为已存在的名称会将当前节点自动合并过去，而不会报错。",
+      "mergeDialog": {
+        "title": "节点已合并",
+        "description": "\"{{source}}\" 已合并到 \"{{target}}\"。",
+        "refreshHint": "请刷新图谱以获取最新结构。",
+        "keepCurrentStart": "刷新并保持当前起始节点",
+        "useMergedStart": "刷新并以合并后的节点为起始节点",
+        "refreshing": "正在刷新图谱..."
       },
       "node": {
         "title": "节点",
@@ -318,9 +341,9 @@
           "description": "描述",
           "entity_id": "名称",
           "entity_type": "类型",
-          "source_id": "信源ID",
+          "source_id": "C-ID",
           "Neighbour": "邻接",
-          "file_path": "信源",
+          "file_path": "文件",
           "keywords": "Keys",
           "weight": "权重"
         }

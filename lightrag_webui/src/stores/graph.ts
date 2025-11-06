@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
 import MiniSearch from 'minisearch'
+import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
 export type RawNodeType = {
   // for NetworkX: id is identical to properties['entity_id']
@@ -246,7 +247,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
       console.log('updateNodeAndSelect', nodeId, entityId, propertyName, newValue)
 
-      // For entity_id changes (node renaming) with NetworkX graph storage
+      // For entity_id changes (node renaming) with raw graph storage
       if ((nodeId === entityId) && (propertyName === 'entity_id')) {
         // Create new node with updated ID but same attributes
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
@@ -319,10 +320,20 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
         // For non-NetworkX nodes or non-entity_id changes
         const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
         if (nodeIndex !== undefined) {
-          rawGraph.nodes[nodeIndex].properties[propertyName] = newValue
+          const nodeRef = rawGraph.nodes[nodeIndex]
+          nodeRef.properties[propertyName] = newValue
           if (propertyName === 'entity_id') {
-            rawGraph.nodes[nodeIndex].labels = [newValue]
+            nodeRef.labels = [newValue]
             sigmaGraph.setNodeAttribute(String(nodeId), 'label', newValue)
+          }
+          if (propertyName === 'entity_type') {
+            const { color, map, updated } = resolveNodeColor(newValue, state.typeColorMap)
+            const resolvedColor = color || DEFAULT_NODE_COLOR
+            nodeRef.color = resolvedColor
+            sigmaGraph.setNodeAttribute(String(nodeId), 'color', resolvedColor)
+            if (updated) {
+              set({ typeColorMap: map })
+            }
           }
         }
 

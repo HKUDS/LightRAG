@@ -355,6 +355,14 @@ class BaseKVStorage(StorageNameSpace, ABC):
             None
         """
 
+    @abstractmethod
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
+        """
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
@@ -712,7 +720,7 @@ class DocStatus(str, Enum):
 
     PENDING = "pending"
     PROCESSING = "processing"
-    PREPROCESSED = "multimodal_processed"
+    PREPROCESSED = "preprocessed"
     PROCESSED = "processed"
     FAILED = "failed"
 
@@ -743,6 +751,25 @@ class DocProcessingStatus:
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
+    multimodal_processed: bool | None = field(default=None, repr=False)
+    """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
+
+    def __post_init__(self):
+        """
+        Handle status conversion based on multimodal_processed field.
+
+        Business rules:
+        - If multimodal_processed is False and status is PROCESSED,
+          then change status to PREPROCESSED
+        - The multimodal_processed field is kept (with repr=False) for internal use and debugging
+        """
+        # Apply status conversion logic
+        if self.multimodal_processed is not None:
+            if (
+                self.multimodal_processed is False
+                and self.status == DocStatus.PROCESSED
+            ):
+                self.status = DocStatus.PREPROCESSED
 
 
 @dataclass

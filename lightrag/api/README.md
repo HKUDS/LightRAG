@@ -29,7 +29,7 @@ cd lightrag
 
 # Create a Python virtual environment
 uv venv --seed --python 3.12
-source .venv/bin/acivate
+source .venv/bin/activate
 
 # Install in editable mode with API support
 pip install -e ".[api]"
@@ -165,7 +165,8 @@ Configuring an independent working directory and a dedicated `.env` configuratio
 The command-line `workspace` argument and the `WORKSPACE` environment variable in the `.env` file can both be used to specify the workspace name for the current instance, with the command-line argument having higher priority. Here is how workspaces are implemented for different types of storage:
 
 - **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
-- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
 
@@ -188,24 +189,18 @@ MAX_ASYNC=4
 
 ### Install LightRAG as a Linux Service
 
-Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the `WorkingDirectory` and `ExecStart` in the service file:
+Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the start options the service file:
 
 ```text
-Description=LightRAG Ollama Service
-WorkingDirectory=<lightrag installed directory>
-ExecStart=<lightrag installed directory>/lightrag/api/lightrag-api
+# Set Enviroment to your Python virtual enviroment
+Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
+WorkingDirectory=/home/netman/lightrag-xyj
+# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
+ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
+
 ```
 
-Modify your service startup script: `lightrag-api`. Change your Python virtual environment activation command as needed:
-
-```shell
-#!/bin/bash
-
-# your python virtual environment activation
-source /home/netman/lightrag-xyj/venv/bin/activate
-# start lightrag api server
-lightrag-server
-```
+> The ExecStart command must be either `lightrag-gunicorn` or `lightrag-server`; no wrapper scripts are allowed. This is because service termination requires the main process to be one of these two executables.
 
 Install LightRAG service. If your system is Ubuntu, the following commands will work:
 
@@ -467,6 +462,59 @@ The `/query` and `/query/stream` API endpoints include an `enable_rerank` parame
 ```
 RERANK_BY_DEFAULT=False
 ```
+
+### Include Chunk Content in References
+
+By default, the `/query` and `/query/stream` endpoints return references with only `reference_id` and `file_path`. For evaluation, debugging, or citation purposes, you can request the actual retrieved chunk content to be included in references.
+
+The `include_chunk_content` parameter (default: `false`) controls whether the actual text content of retrieved chunks is included in the response references. This is particularly useful for:
+
+- **RAG Evaluation**: Testing systems like RAGAS that need access to retrieved contexts
+- **Debugging**: Verifying what content was actually used to generate the answer
+- **Citation Display**: Showing users the exact text passages that support the response
+- **Transparency**: Providing full visibility into the RAG retrieval process
+
+**Important**: The `content` field is an **array of strings**, where each string represents a chunk from the same file. A single file may correspond to multiple chunks, so the content is returned as a list to preserve chunk boundaries.
+
+**Example API Request:**
+
+```json
+{
+  "query": "What is LightRAG?",
+  "mode": "mix",
+  "include_references": true,
+  "include_chunk_content": true
+}
+```
+
+**Example Response (with chunk content):**
+
+```json
+{
+  "response": "LightRAG is a graph-based RAG system...",
+  "references": [
+    {
+      "reference_id": "1",
+      "file_path": "/documents/intro.md",
+      "content": [
+        "LightRAG is a retrieval-augmented generation system that combines knowledge graphs with vector similarity search...",
+        "The system uses a dual-indexing approach with both vector embeddings and graph structures for enhanced retrieval..."
+      ]
+    },
+    {
+      "reference_id": "2",
+      "file_path": "/documents/features.md",
+      "content": [
+        "The system provides multiple query modes including local, global, hybrid, and mix modes..."
+      ]
+    }
+  ]
+}
+```
+
+**Notes**:
+- This parameter only works when `include_references=true`. Setting `include_chunk_content=true` without including references has no effect.
+- **Breaking Change**: Prior versions returned `content` as a single concatenated string. Now it returns an array of strings to preserve individual chunk boundaries. If you need a single string, join the array elements with your preferred separator (e.g., `"\n\n".join(content)`).
 
 ### .env Examples
 

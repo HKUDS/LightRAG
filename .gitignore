@@ -46,11 +46,12 @@ neo4jWorkDir/
 
 # Data & Storage
 inputs/
+output/
 rag_storage/
-examples/input/
-examples/output/
-output*/
 data/
+
+# Evaluation results
+lightrag/evaluation/results/
 
 # Miscellaneous
 .DS_Store
@@ -59,18 +60,15 @@ ignore_this.txt
 *.ignore.*
 
 # Project-specific files
-dickens*/
-book.txt
-LightRAG.pdf
+/dickens*/
+/book.txt
 download_models_hf.py
-lightrag-dev/
-gui/
 
 # Frontend build output (built during PyPI release)
-lightrag/api/webui/
+/lightrag/api/webui/
 
 # unit-test files
 test_*
 
 # Cline files
-memory-bank/
+memory-bank

@@ -1,4 +1,0 @@
-#!/bin/bash
-
-source /home/netman/lightrag-xyj/venv/bin/activate
-lightrag-server

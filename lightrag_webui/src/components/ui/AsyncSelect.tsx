@@ -43,6 +43,8 @@ export interface AsyncSelectProps<T> {
   value: string
   /** Callback when selection changes */
   onChange: (value: string) => void
+  /** Callback before opening the dropdown (async supported) */
+  onBeforeOpen?: () => void | Promise<void>
   /** Accessibility label for the select field */
   ariaLabel?: string
   /** Placeholder text when no selection */
@@ -83,6 +85,7 @@ export function AsyncSelect<T>({
   searchPlaceholder,
   value,
   onChange,
+  onBeforeOpen,
   disabled = false,
   className,
   triggerClassName,
@@ -196,8 +199,18 @@ export function AsyncSelect<T>({
     [selectedValue, onChange, clearable, options, getOptionValue]
   )
 
+  const handleOpenChange = useCallback(
+    async (newOpen: boolean) => {
+      if (newOpen && onBeforeOpen) {
+        await onBeforeOpen()
+      }
+      setOpen(newOpen)
+    },
+    [onBeforeOpen]
+  )
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"

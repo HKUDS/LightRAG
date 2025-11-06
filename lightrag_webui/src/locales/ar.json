@@ -13,6 +13,7 @@
     "api": "واجهة برمجة التطبيقات",
     "projectRepository": "مستودع المشروع",
     "logout": "تسجيل الخروج",
+    "frontendNeedsRebuild": "الواجهة الأمامية تحتاج إلى إعادة البناء",
     "themeToggle": {
       "switchToLight": "التحويل إلى السمة الفاتحة",
       "switchToDark": "التحويل إلى السمة الداكنة"
@@ -70,6 +71,7 @@
       "confirmButton": "نعم",
       "deleteFileOption": "حذف الملفات المرفوعة أيضًا",
       "deleteFileTooltip": "حدد هذا الخيار لحذف الملفات المرفوعة المقابلة على الخادم أيضًا",
+      "deleteLLMCacheOption": "حذف ذاكرة LLM المؤقتة للاستخراج أيضًا",
       "success": "تم بدء تشغيل خط معالجة حذف المستندات بنجاح",
       "failed": "فشل حذف المستندات:\n{{message}}",
       "error": "فشل حذف المستندات:\n{{error}}",
@@ -113,10 +115,8 @@
     },
     "documentManager": {
       "title": "إدارة المستندات",
-      "scanButton": "مسح ضوئي",
+      "scanButton": "مسح/إعادة محاولة",
       "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
-      "retryFailedButton": "إعادة المحاولة",
-      "retryFailedTooltip": "إعادة معالجة جميع المستندات الفاشلة",
       "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
@@ -156,17 +156,27 @@
       "hideFileNameTooltip": "إخفاء اسم الملف"
     },
     "pipelineStatus": {
-      "title": "حالة خط المعالجة",
-      "busy": "خط المعالجة مشغول",
-      "requestPending": "الطلب معلق",
+      "title": "حالة خط الأنابيب",
+      "busy": "خط الأنابيب مشغول",
+      "requestPending": "طلب معلق",
+      "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
       "progress": "التقدم",
       "unit": "دفعة",
-      "latestMessage": "آخر رسالة",
-      "historyMessages": "سجل الرسائل",
+      "pipelineMessages": "رسائل خط الأنابيب",
+      "cancelButton": "إلغاء",
+      "cancelTooltip": "إلغاء معالجة خط الأنابيب",
+      "cancelConfirmTitle": "تأكيد إلغاء خط الأنابيب",
+      "cancelConfirmDescription": "سيؤدي هذا الإجراء إلى إيقاف معالجة خط الأنابيب الجارية. هل أنت متأكد من أنك تريد المتابعة؟",
+      "cancelConfirmButton": "تأكيد الإلغاء",
+      "cancelInProgress": "الإلغاء قيد التقدم...",
+      "pipelineNotRunning": "خط الأنابيب غير قيد التشغيل",
+      "cancelSuccess": "تم طلب إلغاء خط الأنابيب",
+      "cancelFailed": "فشل إلغاء خط الأنابيب\n{{error}}",
+      "cancelNotBusy": "خط الأنابيب غير قيد التشغيل، لا حاجة للإلغاء",
       "errors": {
-        "fetchFailed": "فشل في جلب حالة خط المعالجة\n{{error}}"
+        "fetchFailed": "فشل في جلب حالة خط الأنابيب\n{{error}}"
       }
     }
   },
@@ -296,11 +306,24 @@
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",
         "updateFailed": "فشل تحديث العقدة",
-        "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا"
+        "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا",
+        "updateSuccessButMergeFailed": "تم تحديث الخصائص، لكن الدمج فشل: {{error}}",
+        "mergeFailed": "فشل الدمج: {{error}}"
       },
       "success": {
         "entityUpdated": "تم تحديث العقدة بنجاح",
-        "relationUpdated": "تم تحديث العلاقة بنجاح"
+        "relationUpdated": "تم تحديث العلاقة بنجاح",
+        "entityMerged": "تم دمج العقد بنجاح"
+      },
+      "mergeOptionLabel": "دمج تلقائي عند العثور على اسم مكرر",
+      "mergeOptionDescription": "عند التفعيل، سيتم دمج هذه العقدة تلقائيًا في العقدة الموجودة بدلاً من ظهور خطأ عند إعادة التسمية بنفس الاسم.",
+      "mergeDialog": {
+        "title": "تم دمج العقدة",
+        "description": "\"{{source}}\" تم دمجها في \"{{target}}\".",
+        "refreshHint": "يجب تحديث الرسم البياني لتحميل البنية الأحدث.",
+        "keepCurrentStart": "تحديث مع الحفاظ على عقدة البدء الحالية",
+        "useMergedStart": "تحديث واستخدام العقدة المدمجة كنقطة بدء",
+        "refreshing": "جارٍ تحديث الرسم البياني..."
       },
       "node": {
         "title": "عقدة",
@@ -318,10 +341,10 @@
           "description": "الوصف",
           "entity_id": "الاسم",
           "entity_type": "النوع",
-          "source_id": "معرف المصدر",
+          "source_id": "C-ID",
           "Neighbour": "الجار",
-          "file_path": "المصدر",
-          "keywords": "الكلمات الرئيسية",
+          "file_path": "File",
+          "keywords": "Keyword",
           "weight": "الوزن"
         }
       },

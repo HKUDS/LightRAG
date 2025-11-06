@@ -184,9 +184,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             client = await self._get_client()
+            # Record count before deletion
+            before_count = len(client)
+
             client.delete(ids)
+
+            # Calculate actual deleted count
+            after_count = len(client)
+            deleted_count = before_count - after_count
+
             logger.debug(
-                f"[{self.workspace}] Successfully deleted {len(ids)} vectors from {self.namespace}"
+                f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
             )
         except Exception as e:
             logger.error(

@@ -10,17 +10,19 @@ from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
 
 from lightrag.exceptions import PipelineNotInitializedError
 
+DEBUG_LOCKS = False
+
 
 # Define a direct print function for critical logs that must be visible in all processes
-def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
+def direct_log(message, enable_output: bool = True, level: str = "DEBUG"):
     """
     Log a message directly to stderr to ensure visibility in all processes,
     including the Gunicorn master process.
 
     Args:
         message: The message to log
-        level: Log level (default: "DEBUG")
-        enable_output: Whether to actually output the log (default: True)
+        level: Log level for message (control the visibility of the message by comparing with the current logger level)
+        enable_output: Enable or disable log message (Force to turn off the message,)
     """
     if not enable_output:
         return
@@ -44,7 +46,6 @@ def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
     }
     message_level = level_mapping.get(level.upper(), logging.DEBUG)
 
-    # print(f"Diret_log: {level.upper()} {message_level} ? {current_level}", file=sys.stderr, flush=True)
     if message_level >= current_level:
         print(f"{level}: {message}", file=sys.stderr, flush=True)
 
@@ -91,7 +92,6 @@ _storage_keyed_lock: Optional["KeyedUnifiedLock"] = None
 # async locks for coroutine synchronization in multiprocess mode
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
-DEBUG_LOCKS = False
 _debug_n_locks_acquired: int = 0
 
 
@@ -141,7 +141,8 @@ class UnifiedLock(Generic[T]):
             if not self._is_async and self._async_lock is not None:
                 await self._async_lock.acquire()
                 direct_log(
-                    f"== Lock == Process {self._pid}: Async lock for '{self._name}' acquired",
+                    f"== Lock == Process {self._pid}: Acquired async lock '{self._name}",
+                    level="DEBUG",
                     enable_output=self._enable_logging,
                 )
 
@@ -152,7 +153,8 @@ class UnifiedLock(Generic[T]):
                 self._lock.acquire()
 
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' acquired (async={self._is_async})",
+                f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
             return self
@@ -168,7 +170,7 @@ class UnifiedLock(Generic[T]):
             direct_log(
                 f"== Lock == Process {self._pid}: Failed to acquire lock '{self._name}': {e}",
                 level="ERROR",
-                enable_output=self._enable_logging,
+                enable_output=True,
             )
             raise
 
@@ -183,7 +185,8 @@ class UnifiedLock(Generic[T]):
             main_lock_released = True
 
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' released (async={self._is_async})",
+                f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
 
@@ -191,7 +194,8 @@ class UnifiedLock(Generic[T]):
             if not self._is_async and self._async_lock is not None:
                 self._async_lock.release()
                 direct_log(
-                    f"== Lock == Process {self._pid}: Async lock '{self._name}' released",
+                    f"== Lock == Process {self._pid}: Released async lock {self._name}",
+                    level="DEBUG",
                     enable_output=self._enable_logging,
                 )
 
@@ -199,7 +203,7 @@ class UnifiedLock(Generic[T]):
             direct_log(
                 f"== Lock == Process {self._pid}: Failed to release lock '{self._name}': {e}",
                 level="ERROR",
-                enable_output=self._enable_logging,
+                enable_output=True,
             )
 
             # If main lock release failed but async lock hasn't been released, try to release it
@@ -211,19 +215,20 @@ class UnifiedLock(Generic[T]):
                 try:
                     direct_log(
                         f"== Lock == Process {self._pid}: Attempting to release async lock after main lock failure",
-                        level="WARNING",
+                        level="DEBUG",
                         enable_output=self._enable_logging,
                     )
                     self._async_lock.release()
                     direct_log(
                         f"== Lock == Process {self._pid}: Successfully released async lock after main lock failure",
+                        level="INFO",
                         enable_output=self._enable_logging,
                     )
                 except Exception as inner_e:
                     direct_log(
                         f"== Lock == Process {self._pid}: Failed to release async lock after main lock failure: {inner_e}",
                         level="ERROR",
-                        enable_output=self._enable_logging,
+                        enable_output=True,
                     )
 
             raise
@@ -234,12 +239,14 @@ class UnifiedLock(Generic[T]):
             if self._is_async:
                 raise RuntimeError("Use 'async with' for shared_storage lock")
             direct_log(
-                f"== Lock == Process {self._pid}: Acquiring lock '{self._name}' (sync)",
+                f"== Lock == Process {self._pid}: Acquiring lock {self._name} (sync)",
+                level="DEBUG",
                 enable_output=self._enable_logging,
             )
             self._lock.acquire()
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' acquired (sync)",
+                f"== Lock == Process {self._pid}: Acquired lock {self._name} (sync)",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
             return self
@@ -247,7 +254,7 @@ class UnifiedLock(Generic[T]):
             direct_log(
                 f"== Lock == Process {self._pid}: Failed to acquire lock '{self._name}' (sync): {e}",
                 level="ERROR",
-                enable_output=self._enable_logging,
+                enable_output=True,
             )
             raise
 
@@ -258,18 +265,20 @@ class UnifiedLock(Generic[T]):
                 raise RuntimeError("Use 'async with' for shared_storage lock")
             direct_log(
                 f"== Lock == Process {self._pid}: Releasing lock '{self._name}' (sync)",
+                level="DEBUG",
                 enable_output=self._enable_logging,
             )
             self._lock.release()
             direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' released (sync)",
+                f"== Lock == Process {self._pid}: Released lock {self._name} (sync)",
+                level="INFO",
                 enable_output=self._enable_logging,
             )
         except Exception as e:
             direct_log(
                 f"== Lock == Process {self._pid}: Failed to release lock '{self._name}' (sync): {e}",
                 level="ERROR",
-                enable_output=self._enable_logging,
+                enable_output=True,
             )
             raise
 
@@ -401,7 +410,7 @@ def _perform_lock_cleanup(
         direct_log(
             f"== {lock_type} Lock == Cleanup failed: {e}",
             level="ERROR",
-            enable_output=False,
+            enable_output=True,
         )
         return 0, earliest_cleanup_time, last_cleanup_time
 
@@ -689,7 +698,7 @@ class KeyedUnifiedLock:
                 direct_log(
                     f"Error during multiprocess lock cleanup: {e}",
                     level="ERROR",
-                    enable_output=False,
+                    enable_output=True,
                 )
 
         # 2. Cleanup async locks using generic function
@@ -718,7 +727,7 @@ class KeyedUnifiedLock:
             direct_log(
                 f"Error during async lock cleanup: {e}",
                 level="ERROR",
-                enable_output=False,
+                enable_output=True,
             )
 
         # 3. Get current status after cleanup
@@ -772,7 +781,7 @@ class KeyedUnifiedLock:
             direct_log(
                 f"Error getting keyed lock status: {e}",
                 level="ERROR",
-                enable_output=False,
+                enable_output=True,
             )
 
         return status
@@ -797,32 +806,239 @@ class _KeyedLockContext:
             if enable_logging is not None
             else parent._default_enable_logging
         )
-        self._ul: Optional[List["UnifiedLock"]] = None  # set in __aenter__
+        self._ul: Optional[List[Dict[str, Any]]] = None  # set in __aenter__
 
     # ----- enter -----
     async def __aenter__(self):
         if self._ul is not None:
             raise RuntimeError("KeyedUnifiedLock already acquired in current context")
 
-        # acquire locks for all keys in the namespace
         self._ul = []
-        for key in self._keys:
-            lock = self._parent._get_lock_for_key(
-                self._namespace, key, enable_logging=self._enable_logging
-            )
-            await lock.__aenter__()
-            inc_debug_n_locks_acquired()
-            self._ul.append(lock)
-        return self
+
+        try:
+            # Acquire locks for all keys in the namespace
+            for key in self._keys:
+                lock = None
+                entry = None
+
+                try:
+                    # 1. Get lock object (reference count is incremented here)
+                    lock = self._parent._get_lock_for_key(
+                        self._namespace, key, enable_logging=self._enable_logging
+                    )
+
+                    # 2. Immediately create and add entry to list (critical for rollback to work)
+                    entry = {
+                        "key": key,
+                        "lock": lock,
+                        "entered": False,
+                        "debug_inc": False,
+                        "ref_incremented": True,  # Mark that reference count has been incremented
+                    }
+                    self._ul.append(
+                        entry
+                    )  # Add immediately after _get_lock_for_key for rollback to work
+
+                    # 3. Try to acquire the lock
+                    # Use try-finally to ensure state is updated atomically
+                    lock_acquired = False
+                    try:
+                        await lock.__aenter__()
+                        lock_acquired = True  # Lock successfully acquired
+                    finally:
+                        if lock_acquired:
+                            entry["entered"] = True
+                            inc_debug_n_locks_acquired()
+                            entry["debug_inc"] = True
+
+                except asyncio.CancelledError:
+                    # Lock acquisition was cancelled
+                    # The finally block above ensures entry["entered"] is correct
+                    direct_log(
+                        f"Lock acquisition cancelled for key {key}",
+                        level="WARNING",
+                        enable_output=self._enable_logging,
+                    )
+                    raise
+                except Exception as e:
+                    # Other exceptions, log and re-raise
+                    direct_log(
+                        f"Lock acquisition failed for key {key}: {e}",
+                        level="ERROR",
+                        enable_output=True,
+                    )
+                    raise
+
+            return self
+
+        except BaseException:
+            # Critical: if any exception occurs (including CancelledError) during lock acquisition,
+            # we must rollback all already acquired locks to prevent lock leaks
+            # Use shield to ensure rollback completes
+            await asyncio.shield(self._rollback_acquired_locks())
+            raise
+
+    async def _rollback_acquired_locks(self):
+        """Rollback all acquired locks in case of exception during __aenter__"""
+        if not self._ul:
+            return
+
+        async def rollback_single_entry(entry):
+            """Rollback a single lock acquisition"""
+            key = entry["key"]
+            lock = entry["lock"]
+            debug_inc = entry["debug_inc"]
+            entered = entry["entered"]
+            ref_incremented = entry.get(
+                "ref_incremented", True
+            )  # Default to True for safety
+
+            errors = []
+
+            # 1. If lock was acquired, release it
+            if entered:
+                try:
+                    await lock.__aexit__(None, None, None)
+                except Exception as e:
+                    errors.append(("lock_exit", e))
+                    direct_log(
+                        f"Lock rollback error for key {key}: {e}",
+                        level="ERROR",
+                        enable_output=True,
+                    )
+
+            # 2. Release reference count (if it was incremented)
+            if ref_incremented:
+                try:
+                    self._parent._release_lock_for_key(self._namespace, key)
+                except Exception as e:
+                    errors.append(("ref_release", e))
+                    direct_log(
+                        f"Lock rollback reference release error for key {key}: {e}",
+                        level="ERROR",
+                        enable_output=True,
+                    )
+
+            # 3. Decrement debug counter
+            if debug_inc:
+                try:
+                    dec_debug_n_locks_acquired()
+                except Exception as e:
+                    errors.append(("debug_dec", e))
+                    direct_log(
+                        f"Lock rollback counter decrementing error for key {key}: {e}",
+                        level="ERROR",
+                        enable_output=True,
+                    )
+
+            return errors
+
+        # Release already acquired locks in reverse order
+        for entry in reversed(self._ul):
+            # Use shield to protect each lock's rollback
+            try:
+                await asyncio.shield(rollback_single_entry(entry))
+            except Exception as e:
+                # Log but continue rolling back other locks
+                direct_log(
+                    f"Lock rollback unexpected error for {entry['key']}: {e}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+
+        self._ul = None
 
     # ----- exit -----
     async def __aexit__(self, exc_type, exc, tb):
-        # The UnifiedLock takes care of proper release order
-        for ul, key in zip(reversed(self._ul), reversed(self._keys)):
-            await ul.__aexit__(exc_type, exc, tb)
-            self._parent._release_lock_for_key(self._namespace, key)
-            dec_debug_n_locks_acquired()
-        self._ul = None
+        if self._ul is None:
+            return
+
+        async def release_all_locks():
+            """Release all locks with comprehensive error handling, protected from cancellation"""
+
+            async def release_single_entry(entry, exc_type, exc, tb):
+                """Release a single lock with full protection"""
+                key = entry["key"]
+                lock = entry["lock"]
+                debug_inc = entry["debug_inc"]
+                entered = entry["entered"]
+
+                errors = []
+
+                # 1. Release the lock
+                if entered:
+                    try:
+                        await lock.__aexit__(exc_type, exc, tb)
+                    except Exception as e:
+                        errors.append(("lock_exit", e))
+                        direct_log(
+                            f"Lock release error for key {key}: {e}",
+                            level="ERROR",
+                            enable_output=True,
+                        )
+
+                # 2. Release reference count
+                try:
+                    self._parent._release_lock_for_key(self._namespace, key)
+                except Exception as e:
+                    errors.append(("ref_release", e))
+                    direct_log(
+                        f"Lock release reference error for key {key}: {e}",
+                        level="ERROR",
+                        enable_output=True,
+                    )
+
+                # 3. Decrement debug counter
+                if debug_inc:
+                    try:
+                        dec_debug_n_locks_acquired()
+                    except Exception as e:
+                        errors.append(("debug_dec", e))
+                        direct_log(
+                            f"Lock release counter decrementing error for key {key}: {e}",
+                            level="ERROR",
+                            enable_output=True,
+                        )
+
+                return errors
+
+            all_errors = []
+
+            # Release locks in reverse order
+            # This entire loop is protected by the outer shield
+            for entry in reversed(self._ul):
+                try:
+                    errors = await release_single_entry(entry, exc_type, exc, tb)
+                    for error_type, error in errors:
+                        all_errors.append((entry["key"], error_type, error))
+                except Exception as e:
+                    all_errors.append((entry["key"], "unexpected", e))
+                    direct_log(
+                        f"Lock release unexpected error for {entry['key']}: {e}",
+                        level="ERROR",
+                        enable_output=True,
+                    )
+
+            return all_errors
+
+        # CRITICAL: Protect the entire release process with shield
+        # This ensures that even if cancellation occurs, all locks are released
+        try:
+            all_errors = await asyncio.shield(release_all_locks())
+        except Exception as e:
+            direct_log(
+                f"Critical error during __aexit__ cleanup: {e}",
+                level="ERROR",
+                enable_output=True,
+            )
+            all_errors = []
+        finally:
+            # Always clear the lock list, even if shield was cancelled
+            self._ul = None
+
+        # If there were release errors and no other exception, raise the first release error
+        if all_errors and exc_type is None:
+            raise all_errors[0][2]  # (key, error_type, error)
 
 
 def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:

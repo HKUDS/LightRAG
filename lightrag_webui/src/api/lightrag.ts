@@ -143,6 +143,21 @@ export type QueryResponse = {
   response: string
 }
 
+export type EntityUpdateResponse = {
+  status: string
+  message: string
+  data: Record<string, any>
+  operation_summary?: {
+    merged: boolean
+    merge_status: 'success' | 'failed' | 'not_attempted'
+    merge_error: string | null
+    operation_status: 'success' | 'partial_success' | 'failure'
+    target_entity: string | null
+    final_entity?: string | null
+    renamed?: boolean
+  }
+}
+
 export type DocActionResponse = {
   status: 'success' | 'partial_success' | 'failure' | 'duplicated'
   message: string
@@ -167,7 +182,7 @@ export type DeleteDocResponse = {
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'multimodal_processed' | 'processed' | 'failed'
+export type DocStatus = 'pending' | 'processing' | 'preprocessed' | 'processed' | 'failed'
 
 export type DocStatusResponse = {
   id: string
@@ -242,6 +257,7 @@ export type PipelineStatusResponse = {
   batchs: number
   cur_batch: number
   request_pending: boolean
+  cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]
   update_status?: Record<string, any>
@@ -618,9 +634,13 @@ export const clearCache = async (): Promise<{
   return response.data
 }
 
-export const deleteDocuments = async (docIds: string[], deleteFile: boolean = false): Promise<DeleteDocResponse> => {
+export const deleteDocuments = async (
+  docIds: string[],
+  deleteFile: boolean = false,
+  deleteLLMCache: boolean = false
+): Promise<DeleteDocResponse> => {
   const response = await axiosInstance.delete('/documents/delete_document', {
-    data: { doc_ids: docIds, delete_file: deleteFile }
+    data: { doc_ids: docIds, delete_file: deleteFile, delete_llm_cache: deleteLLMCache }
   })
   return response.data
 }
@@ -687,6 +707,14 @@ export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
   return response.data
 }
 
+export const cancelPipeline = async (): Promise<{
+  status: 'cancellation_requested' | 'not_busy'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/cancel_pipeline')
+  return response.data
+}
+
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
   const formData = new FormData();
   formData.append('username', username);
@@ -706,17 +734,20 @@ export const loginToServer = async (username: string, password: string): Promise
  * @param entityName The name of the entity to update
  * @param updatedData Dictionary containing updated attributes
  * @param allowRename Whether to allow renaming the entity (default: false)
+ * @param allowMerge Whether to merge into an existing entity when renaming to a duplicate name
  * @returns Promise with the updated entity information
  */
 export const updateEntity = async (
   entityName: string,
   updatedData: Record<string, any>,
-  allowRename: boolean = false
-): Promise<DocActionResponse> => {
+  allowRename: boolean = false,
+  allowMerge: boolean = false
+): Promise<EntityUpdateResponse> => {
   const response = await axiosInstance.post('/graph/entity/edit', {
     entity_name: entityName,
     updated_data: updatedData,
-    allow_rename: allowRename
+    allow_rename: allowRename,
+    allow_merge: allowMerge
   })
   return response.data
 }

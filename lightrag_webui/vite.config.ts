@@ -40,7 +40,7 @@ export default defineConfig({
             changeOrigin: true,
             rewrite: endpoint === '/api' ?
               (path) => path.replace(/^\/api/, '') :
-              endpoint === '/docs' || endpoint === '/redoc' || endpoint === '/openapi.json' ?
+              endpoint === '/docs' || endpoint === '/redoc' || endpoint === '/openapi.json' || endpoint === '/static' ?
                 (path) => path : undefined
           }
         ])
