@@ -228,7 +228,7 @@ class BindingOptions:
                 argdef = {
                     "argname": f"{args_prefix}-{field.name}",
                     "env_name": f"{env_var_prefix}{field.name.upper()}",
-                "type": _resolve_optional_type(field.type),
+                    "type": _resolve_optional_type(field.type),
                     "default": default_value,
                     "help": f"{cls._binding_name} -- " + help.get(field.name, ""),
                 }
@@ -498,7 +498,7 @@ class GeminiLLMOptions(BindingOptions):
         "candidate_count": "Number of candidates returned per request",
         "presence_penalty": "Penalty for token presence (-2.0 to 2.0)",
         "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0)",
-        "stop_sequences": 'Stop sequences (JSON array of strings, e.g., \'["END"]\')',
+        "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
         "response_mime_type": "Desired MIME type for the response (e.g., application/json)",
         "safety_settings": "JSON object with Gemini safety settings overrides",
         "system_instruction": "Default system instruction applied to every request",

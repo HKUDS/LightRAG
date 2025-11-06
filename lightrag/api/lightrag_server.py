@@ -512,9 +512,7 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
-    def create_optimized_gemini_llm_func(
-        config_cache: LLMConfigCache, args
-    ):
+    def create_optimized_gemini_llm_func(config_cache: LLMConfigCache, args):
         """Create optimized Gemini LLM function with cached configuration"""
 
         async def optimized_gemini_model_complete(

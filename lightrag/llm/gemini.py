@@ -191,7 +191,9 @@ async def gemini_complete_if_cache(
                     usage = getattr(chunk, "usage_metadata", None)
                     if usage is not None:
                         usage_container["usage"] = usage
-                    text_piece = getattr(chunk, "text", None) or _extract_response_text(chunk)
+                    text_piece = getattr(chunk, "text", None) or _extract_response_text(
+                        chunk
+                    )
                     if text_piece:
                         loop.call_soon_threadsafe(queue.put_nowait, text_piece)
                 loop.call_soon_threadsafe(queue.put_nowait, None)
