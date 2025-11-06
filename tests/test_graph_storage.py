@@ -110,9 +110,9 @@ async def initialize_graph_storage():
         ),  # Working directory
     }
 
-    # If using NetworkXStorage, initialize shared_storage first
-    if graph_storage_type == "NetworkXStorage":
-        initialize_share_data()  # Use single-process mode
+    # Initialize shared_storage for all storage types (required for locks)
+    # All graph storage implementations use locks like get_data_init_lock() and get_graph_db_lock()
+    initialize_share_data()  # Use single-process mode (workers=1)
 
     try:
         storage = storage_class(
