@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
+import i18n from '@/i18n'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW'
@@ -142,11 +143,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       setLanguage: (language: Language) => {
         set({ language })
         // Update i18n after state is updated
-        import('i18next').then(({ default: i18n }) => {
-          if (i18n.language !== language) {
-            i18n.changeLanguage(language)
-          }
-        })
+        if (i18n.language !== language) {
+          i18n.changeLanguage(language)
+        }
       },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
