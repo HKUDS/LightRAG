@@ -53,7 +53,7 @@
 
 ## 🎉 新闻
 
-- [x] [2025.11.05]🎯📢添加**基于RAGAS的**LightRAG评估框架。
+- [x] [2025.11.05]🎯📢添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持。
 - [x] [2025.10.22]🎯📢消除处理**大规模数据集**的瓶颈。
 - [x] [2025.09.15]🎯📢显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
 - [x] [2025.08.29]🎯📢现已支持**Reranker**，显著提升混合查询性能。
@@ -1462,6 +1462,50 @@ LightRAG服务器旨在提供Web UI和API支持。**有关LightRAG服务器的�
 LightRAG服务器提供全面的知识图谱可视化功能。它支持各种重力布局、节点查询、子图过滤等。**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
 
 ![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
+
+## Langfuse 可观测性集成
+
+Langfuse 为 OpenAI 客户端提供了直接替代方案，可自动跟踪所有 LLM 交互，使开发者能够在无需修改代码的情况下监控、调试和优化其 RAG 系统。
+
+### 安装 Langfuse 可选依赖
+
+```
+pip install lightrag-hku
+pip install lightrag-hku[observability]
+
+# 或从源代码安装并启用调试模式
+pip install -e .
+pip install -e ".[observability]"
+```
+
+### 配置 Langfuse 环境变量
+
+修改 .env 文件：
+
+```
+## Langfuse 可观测性（可选）
+# LLM 可观测性和追踪平台
+# 安装命令: pip install lightrag-hku[observability]
+# 注册地址: https://cloud.langfuse.com 或自托管部署
+LANGFUSE_SECRET_KEY=""
+LANGFUSE_PUBLIC_KEY=""
+LANGFUSE_HOST="https://cloud.langfuse.com"  # 或您的自托管实例地址
+LANGFUSE_ENABLE_TRACE=true
+```
+
+### Langfuse 使用说明
+
+安装并配置完成后，Langfuse 会自动追踪所有 OpenAI LLM 调用。Langfuse 仪表板功能包括：
+
+- **追踪**：查看完整的 LLM 调用链
+- **分析**：Token 使用量、延迟、成本指标
+- **调试**：检查提示词和响应内容
+- **评估**：比较模型输出结果
+- **监控**：实时告警功能
+
+### 重要提示
+
+**注意**：LightRAG 目前仅把 OpenAI 兼容的 API 调用接入了 Langfuse。Ollama、Azure 和 AWS Bedrock 等 API 还无法使用 Langfuse 的可观测性功能。
 
 ## RAGAS评估
 

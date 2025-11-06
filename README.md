@@ -51,7 +51,7 @@
 
 ---
 ## 🎉 News
-- [x] [2025.11.05]🎯📢Add **RAGAS-based** Evaluation Framework for LightRAG.
+- [x] [2025.11.05]🎯📢Add **RAGAS-based** Evaluation Framework and **Langfuse** observability for LightRAG.
 - [x] [2025.10.22]🎯📢Eliminate bottlenecks in processing **large-scale datasets**.
 - [x] [2025.09.15]🎯📢Significantly enhances KG extraction accuracy for **small LLMs** like Qwen3-30B-A3B.
 - [x] [2025.08.29]🎯📢**Reranker** is supported now , significantly boosting performance for mixed queries.
@@ -1542,6 +1542,50 @@ The LightRAG Server is designed to provide Web UI and API support.  **For more i
 The LightRAG Server offers a comprehensive knowledge graph visualization feature. It supports various gravity layouts, node queries, subgraph filtering, and more. **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
 ![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
+
+## Langfuse observability integration
+
+Langfuse provides a drop-in replacement for the OpenAI client that automatically tracks all LLM interactions, enabling developers to monitor, debug, and optimize their RAG systems without code changes.
+
+### Installation with Langfuse option
+
+```
+pip install lightrag-hku
+pip install lightrag-hku[observability]
+
+# Or install from souce code with debug mode enabled
+pip install -e .
+pip install -e ".[observability]"
+```
+
+### Config Langfuse env vars
+
+modify .env file:
+
+```
+## Langfuse Observability (Optional)
+# LLM observability and tracing platform
+# Install with: pip install lightrag-hku[observability]
+# Sign up at: https://cloud.langfuse.com or self-host
+LANGFUSE_SECRET_KEY=""
+LANGFUSE_PUBLIC_KEY=""
+LANGFUSE_HOST="https://cloud.langfuse.com"  # or your self-hosted instance
+LANGFUSE_ENABLE_TRACE=true
+```
+
+### Langfuse Usage
+
+Once installed and configured, Langfuse automatically traces all OpenAI LLM calls. Langfuse dashboard features include:
+
+- **Tracing**: View complete LLM call chains
+- **Analytics**: Token usage, latency, cost metrics
+- **Debugging**: Inspect prompts and responses
+- **Evaluation**: Compare model outputs
+- **Monitoring**: Real-time alerting
+
+### Important Notice
+
+**Note**: LightRAG currently only integrates OpenAI-compatible API calls with Langfuse. APIs such as Ollama, Azure, and AWS Bedrock are not yet supported for Langfuse observability.
 
 ## RAGAS-based Evaluation
 
