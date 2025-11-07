@@ -643,9 +643,7 @@ def create_app(args):
                 elif binding == "jina":
                     from lightrag.llm.jina import jina_embed
 
-                    return await jina_embed(
-                        texts, base_url=host, api_key=api_key
-                    )
+                    return await jina_embed(texts, base_url=host, api_key=api_key)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
@@ -691,7 +689,7 @@ def create_app(args):
 
     # Create embedding function with optimized configuration
     import inspect
-    
+
     # Create the optimized embedding function
     optimized_embedding_func = create_optimized_embedding_function(
         config_cache=config_cache,
@@ -701,27 +699,33 @@ def create_app(args):
         api_key=args.embedding_binding_api_key,
         args=args,  # Pass args object for fallback option generation
     )
-    
+
     # Check environment variable for sending dimensions
     embedding_send_dim = os.getenv("EMBEDDING_SEND_DIM", "false").lower() == "true"
-    
+
     # Check if the function signature has embedding_dim parameter
     # Note: Since optimized_embedding_func is an async function, inspect its signature
     sig = inspect.signature(optimized_embedding_func)
-    has_embedding_dim_param = 'embedding_dim' in sig.parameters
-    
-    # Determine send_dimensions value
-    # Only send dimensions if both conditions are met:
-    # 1. EMBEDDING_SEND_DIM environment variable is true
-    # 2. The function has embedding_dim parameter
-    send_dimensions = embedding_send_dim and has_embedding_dim_param
-    
+    has_embedding_dim_param = "embedding_dim" in sig.parameters
+
+    # Determine send_dimensions value based on binding type
+    # Jina REQUIRES dimension parameter (forced to True)
+    # OpenAI and others: controlled by EMBEDDING_SEND_DIM environment variable
+    if args.embedding_binding == "jina":
+        # Jina API requires dimension parameter - always send it
+        send_dimensions = has_embedding_dim_param
+        dimension_control = "forced (Jina API requirement)"
+    else:
+        # For OpenAI and other bindings, respect EMBEDDING_SEND_DIM setting
+        send_dimensions = embedding_send_dim and has_embedding_dim_param
+        dimension_control = f"env_var={embedding_send_dim}"
+
     logger.info(
         f"Embedding configuration: send_dimensions={send_dimensions} "
-        f"(env_var={embedding_send_dim}, has_param={has_embedding_dim_param}, "
+        f"({dimension_control}, has_param={has_embedding_dim_param}, "
         f"binding={args.embedding_binding})"
     )
-    
+
     # Create EmbeddingFunc with send_dimensions attribute
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
