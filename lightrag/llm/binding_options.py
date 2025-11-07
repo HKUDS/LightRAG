@@ -486,9 +486,9 @@ class GeminiLLMOptions(BindingOptions):
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
     stop_sequences: List[str] = field(default_factory=list)
-    response_mime_type: str | None = None
+    seed: int | None = None
+    thinking_config: dict | None = None
     safety_settings: dict | None = None
-    system_instruction: str | None = None
 
     _help: ClassVar[dict[str, str]] = {
         "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
@@ -499,9 +499,9 @@ class GeminiLLMOptions(BindingOptions):
         "presence_penalty": "Penalty for token presence (-2.0 to 2.0)",
         "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0)",
         "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
-        "response_mime_type": "Desired MIME type for the response (e.g., application/json)",
+        "seed": "Random seed for reproducible generation (leave empty for random)",
+        "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
         "safety_settings": "JSON object with Gemini safety settings overrides",
-        "system_instruction": "Default system instruction applied to every request",
     }
 
 
