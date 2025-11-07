@@ -709,8 +709,8 @@ def create_app(args):
         args=args,  # Pass args object for fallback option generation
     )
 
-    # Check environment variable for sending dimensions
-    embedding_send_dim = os.getenv("EMBEDDING_SEND_DIM", "false").lower() == "true"
+    # Get embedding_send_dim from centralized configuration
+    embedding_send_dim = args.embedding_send_dim
 
     # Check if the function signature has embedding_dim parameter
     # Note: Since optimized_embedding_func is an async function, inspect its signature
