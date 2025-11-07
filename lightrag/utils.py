@@ -1795,7 +1795,7 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
         remove Chinese quotes
-        remove English queotes in and around chinese
+        remove English quotes in and around chinese
         Convert non-breaking spaces to regular spaces
         Convert narrow non-breaking spaces after non-digits to regular spaces
 

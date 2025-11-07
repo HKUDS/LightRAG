@@ -13,6 +13,7 @@ anthropic>=0.18.0,<1.0.0
 
 # Storage backend dependencies
 asyncpg>=0.29.0,<1.0.0
+google-genai>=1.0.0,<2.0.0
 
 # Document processing dependencies
 llama-index>=0.9.0,<1.0.0

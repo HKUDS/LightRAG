@@ -3235,38 +3235,31 @@ class LightRAG:
 
                 if entity_chunk_updates and self.entity_chunks:
                     entity_upsert_payload = {}
-                    entity_delete_ids: set[str] = set()
                     for entity_name, remaining in entity_chunk_updates.items():
                         if not remaining:
-                            entity_delete_ids.add(entity_name)
-                        else:
-                            entity_upsert_payload[entity_name] = {
-                                "chunk_ids": remaining,
-                                "count": len(remaining),
-                                "updated_at": current_time,
-                            }
-
-                    if entity_delete_ids:
-                        await self.entity_chunks.delete(list(entity_delete_ids))
+                            # Empty entities are deleted alongside graph nodes later
+                            continue
+                        entity_upsert_payload[entity_name] = {
+                            "chunk_ids": remaining,
+                            "count": len(remaining),
+                            "updated_at": current_time,
+                        }
                     if entity_upsert_payload:
                         await self.entity_chunks.upsert(entity_upsert_payload)
 
                 if relation_chunk_updates and self.relation_chunks:
                     relation_upsert_payload = {}
-                    relation_delete_ids: set[str] = set()
                     for edge_tuple, remaining in relation_chunk_updates.items():
-                        storage_key = make_relation_chunk_key(*edge_tuple)
                         if not remaining:
-                            relation_delete_ids.add(storage_key)
-                        else:
-                            relation_upsert_payload[storage_key] = {
-                                "chunk_ids": remaining,
-                                "count": len(remaining),
-                                "updated_at": current_time,
-                            }
+                            # Empty relations are deleted alongside graph edges later
+                            continue
+                        storage_key = make_relation_chunk_key(*edge_tuple)
+                        relation_upsert_payload[storage_key] = {
+                            "chunk_ids": remaining,
+                            "count": len(remaining),
+                            "updated_at": current_time,
+                        }
 
-                    if relation_delete_ids:
-                        await self.relation_chunks.delete(list(relation_delete_ids))
                     if relation_upsert_payload:
                         await self.relation_chunks.upsert(relation_upsert_payload)
 
@@ -3296,7 +3289,7 @@ class LightRAG:
                 # 6. Delete relationships that have no remaining sources
                 if relationships_to_delete:
                     try:
-                        # Delete from vector database
+                        # Delete from relation vdb
                         rel_ids_to_delete = []
                         for src, tgt in relationships_to_delete:
                             rel_ids_to_delete.extend(
@@ -3333,15 +3326,16 @@ class LightRAG:
                 # 7. Delete entities that have no remaining sources
                 if entities_to_delete:
                     try:
+                        # Batch get all edges for entities to avoid N+1 query problem
+                        nodes_edges_dict = await self.chunk_entity_relation_graph.get_nodes_edges_batch(
+                            list(entities_to_delete)
+                        )
+
                         # Debug: Check and log all edges before deleting nodes
                         edges_to_delete = set()
                         edges_still_exist = 0
-                        for entity in entities_to_delete:
-                            edges = (
-                                await self.chunk_entity_relation_graph.get_node_edges(
-                                    entity
-                                )
-                            )
+
+                        for entity, edges in nodes_edges_dict.items():
                             if edges:
                                 for src, tgt in edges:
                                     # Normalize edge representation (sorted for consistency)
@@ -3364,6 +3358,7 @@ class LightRAG:
                                             f"Edge still exists: {src} <-- {tgt}"
                                         )
                                 edges_still_exist += 1
+
                         if edges_still_exist:
                             logger.warning(
                                 f"⚠️ {edges_still_exist} entities still has edges before deletion"
@@ -3399,7 +3394,7 @@ class LightRAG:
                             list(entities_to_delete)
                         )
 
-                        # Delete from vector database
+                        # Delete from vector vdb
                         entity_vdb_ids = [
                             compute_mdhash_id(entity, prefix="ent-")
                             for entity in entities_to_delete

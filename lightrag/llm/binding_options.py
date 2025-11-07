@@ -9,10 +9,24 @@ from argparse import ArgumentParser, Namespace
 import argparse
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, ClassVar, List
+from typing import Any, ClassVar, List, get_args, get_origin
 
 from lightrag.utils import get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
+
+
+def _resolve_optional_type(field_type: Any) -> Any:
+    """Return the concrete type for Optional/Union annotations."""
+    origin = get_origin(field_type)
+    if origin in (list, dict, tuple):
+        return field_type
+
+    args = get_args(field_type)
+    if args:
+        non_none_args = [arg for arg in args if arg is not type(None)]
+        if len(non_none_args) == 1:
+            return non_none_args[0]
+    return field_type
 
 
 # =============================================================================
@@ -177,9 +191,13 @@ class BindingOptions:
                     help=arg_item["help"],
                 )
             else:
+                resolved_type = arg_item["type"]
+                if resolved_type is not None:
+                    resolved_type = _resolve_optional_type(resolved_type)
+
                 group.add_argument(
                     f"--{arg_item['argname']}",
-                    type=arg_item["type"],
+                    type=resolved_type,
                     default=get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS),
                     help=arg_item["help"],
                 )
@@ -210,7 +228,7 @@ class BindingOptions:
                 argdef = {
                     "argname": f"{args_prefix}-{field.name}",
                     "env_name": f"{env_var_prefix}{field.name.upper()}",
-                    "type": field.type,
+                    "type": _resolve_optional_type(field.type),
                     "default": default_value,
                     "help": f"{cls._binding_name} -- " + help.get(field.name, ""),
                 }
@@ -452,6 +470,39 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
 
     # mandatory name of binding
     _binding_name: ClassVar[str] = "ollama_llm"
+
+
+@dataclass
+class GeminiLLMOptions(BindingOptions):
+    """Options for Google Gemini models."""
+
+    _binding_name: ClassVar[str] = "gemini_llm"
+
+    temperature: float = DEFAULT_TEMPERATURE
+    top_p: float = 0.95
+    top_k: int = 40
+    max_output_tokens: int | None = None
+    candidate_count: int = 1
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    stop_sequences: List[str] = field(default_factory=list)
+    seed: int | None = None
+    thinking_config: dict | None = None
+    safety_settings: dict | None = None
+
+    _help: ClassVar[dict[str, str]] = {
+        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
+        "top_p": "Nucleus sampling parameter (0.0-1.0)",
+        "top_k": "Limits sampling to the top K tokens (1 disables the limit)",
+        "max_output_tokens": "Maximum tokens generated in the response",
+        "candidate_count": "Number of candidates returned per request",
+        "presence_penalty": "Penalty for token presence (-2.0 to 2.0)",
+        "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0)",
+        "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
+        "seed": "Random seed for reproducible generation (leave empty for random)",
+        "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
+        "safety_settings": "JSON object with Gemini safety settings overrides",
+    }
 
 
 # =============================================================================

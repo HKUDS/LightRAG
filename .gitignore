@@ -67,8 +67,8 @@ download_models_hf.py
 # Frontend build output (built during PyPI release)
 /lightrag/api/webui/
 
-# unit-test files
-test_*
+# temporary test files in project root
+/test_*
 
 # Cline files
 memory-bank

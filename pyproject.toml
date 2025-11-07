@@ -24,6 +24,7 @@ dependencies = [
     "aiohttp",
     "configparser",
     "future",
+    "google-genai>=1.0.0,<2.0.0",
     "json_repair",
     "nano-vectordb",
     "networkx",
@@ -59,6 +60,7 @@ api = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "google-genai>=1.0.0,<2.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
@@ -107,6 +109,7 @@ offline-llm = [
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
     "llama-index>=0.9.0,<1.0.0",
+    "google-genai>=1.0.0,<2.0.0",
 ]
 
 offline = [

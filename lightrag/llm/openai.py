@@ -138,6 +138,9 @@ async def openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     token_tracker: Any | None = None,
+    keyword_extraction: bool = False,  # Will be removed from kwargs before passing to OpenAI
+    stream: bool | None = None,
+    timeout: int | None = None,
     **kwargs: Any,
 ) -> str:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
@@ -172,8 +175,9 @@ async def openai_complete_if_cache(
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url).
-            - hashing_kv: Will be removed from kwargs before passing to OpenAI.
             - keyword_extraction: Will be removed from kwargs before passing to OpenAI.
+            - stream: Whether to stream the response. Default is False.
+            - timeout: Request timeout in seconds. Default is None.
 
     Returns:
         The completed text (with integrated COT content if available) or an async iterator
