@@ -868,7 +868,7 @@ rag = LightRAG(
 对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式储解解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
 
 * 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（请务必阅读概述）：https://hub.docker.com/r/shangor/postgres-for-rag
-* Apache AGE的性能不如Neo4j。最求高性能的图数据库请使用Noe4j。
+* Apache AGE的性能不如Neo4j。追求高性能的图数据库请使用Noe4j。
 
 </details>
 
