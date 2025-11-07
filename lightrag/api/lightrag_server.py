@@ -605,7 +605,7 @@ def create_app(args):
         Uses lazy imports for all bindings and avoids repeated configuration parsing.
         """
 
-        async def optimized_embedding_function(texts):
+        async def optimized_embedding_function(texts, embedding_dim=None):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
@@ -643,12 +643,14 @@ def create_app(args):
                 elif binding == "jina":
                     from lightrag.llm.jina import jina_embed
 
-                    return await jina_embed(texts, base_url=host, api_key=api_key)
+                    return await jina_embed(
+                        texts, embedding_dim=embedding_dim, base_url=host, api_key=api_key
+                    )
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
                     return await openai_embed(
-                        texts, model=model, base_url=host, api_key=api_key
+                        texts, model=model, base_url=host, api_key=api_key, embedding_dim=embedding_dim
                     )
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
