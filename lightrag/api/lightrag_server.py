@@ -644,13 +644,20 @@ def create_app(args):
                     from lightrag.llm.jina import jina_embed
 
                     return await jina_embed(
-                        texts, embedding_dim=embedding_dim, base_url=host, api_key=api_key
+                        texts,
+                        embedding_dim=embedding_dim,
+                        base_url=host,
+                        api_key=api_key,
                     )
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
                     return await openai_embed(
-                        texts, model=model, base_url=host, api_key=api_key, embedding_dim=embedding_dim
+                        texts,
+                        model=model,
+                        base_url=host,
+                        api_key=api_key,
+                        embedding_dim=embedding_dim,
                     )
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
