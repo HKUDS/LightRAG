@@ -3425,10 +3425,10 @@ async def _perform_kg_search(
     )
     query_embedding = None
     if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
-        embedding_func_config = text_chunks_db.embedding_func
-        if embedding_func_config and embedding_func_config.func:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if actual_embedding_func:
             try:
-                query_embedding = await embedding_func_config.func([query])
+                query_embedding = await actual_embedding_func([query])
                 query_embedding = query_embedding[
                     0
                 ]  # Extract first embedding from batch result
@@ -4336,25 +4336,21 @@ async def _find_related_text_unit_from_entities(
         num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
 
         # Get embedding function from global config
-        embedding_func_config = text_chunks_db.embedding_func
-        if not embedding_func_config:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if not actual_embedding_func:
             logger.warning("No embedding function found, falling back to WEIGHT method")
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                actual_embedding_func = embedding_func_config.func
-
-                selected_chunk_ids = None
-                if actual_embedding_func:
-                    selected_chunk_ids = await pick_by_vector_similarity(
-                        query=query,
-                        text_chunks_storage=text_chunks_db,
-                        chunks_vdb=chunks_vdb,
-                        num_of_chunks=num_of_chunks,
-                        entity_info=entities_with_chunks,
-                        embedding_func=actual_embedding_func,
-                        query_embedding=query_embedding,
-                    )
+                selected_chunk_ids = await pick_by_vector_similarity(
+                    query=query,
+                    text_chunks_storage=text_chunks_db,
+                    chunks_vdb=chunks_vdb,
+                    num_of_chunks=num_of_chunks,
+                    entity_info=entities_with_chunks,
+                    embedding_func=actual_embedding_func,
+                    query_embedding=query_embedding,
+                )
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"
@@ -4629,24 +4625,21 @@ async def _find_related_text_unit_from_relations(
         num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
 
         # Get embedding function from global config
-        embedding_func_config = text_chunks_db.embedding_func
-        if not embedding_func_config:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if not actual_embedding_func:
             logger.warning("No embedding function found, falling back to WEIGHT method")
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                actual_embedding_func = embedding_func_config.func
-
-                if actual_embedding_func:
-                    selected_chunk_ids = await pick_by_vector_similarity(
-                        query=query,
-                        text_chunks_storage=text_chunks_db,
-                        chunks_vdb=chunks_vdb,
-                        num_of_chunks=num_of_chunks,
-                        entity_info=relations_with_chunks,
-                        embedding_func=actual_embedding_func,
-                        query_embedding=query_embedding,
-                    )
+                selected_chunk_ids = await pick_by_vector_similarity(
+                    query=query,
+                    text_chunks_storage=text_chunks_db,
+                    chunks_vdb=chunks_vdb,
+                    num_of_chunks=num_of_chunks,
+                    entity_info=relations_with_chunks,
+                    embedding_func=actual_embedding_func,
+                    query_embedding=query_embedding,
+                )
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"
