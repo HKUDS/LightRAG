@@ -472,6 +472,9 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     _binding_name: ClassVar[str] = "ollama_llm"
 
 
+# =============================================================================
+# Binding Options for Gemini
+# =============================================================================
 @dataclass
 class GeminiLLMOptions(BindingOptions):
     """Options for Google Gemini models."""
