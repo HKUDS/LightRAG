@@ -17,7 +17,6 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
@@ -636,91 +635,6 @@ class TigerGraphStorage(BaseGraphStorage):
             edges = await self.get_node_edges(node_id)
             edges_dict[node_id] = edges if edges is not None else []
         return edges_dict
-
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all nodes that are associated with the given chunk_ids."""
-        workspace_label = self._get_workspace_label()
-        chunk_ids_set = set(chunk_ids)
-
-        def _get_nodes_by_chunk_ids():
-            try:
-                # Get all vertices and filter by source_id containing chunk_ids
-                result = self._conn.getVertices(workspace_label, limit=100000)
-                matching_nodes = []
-                for vertex in result:
-                    attrs = vertex.get("attributes", {})
-                    source_id = attrs.get("source_id")
-                    if source_id:
-                        node_source_ids = set(source_id.split(GRAPH_FIELD_SEP))
-                        if not node_source_ids.isdisjoint(chunk_ids_set):
-                            attrs["id"] = attrs.get("entity_id")
-                            matching_nodes.append(attrs)
-                return matching_nodes
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error getting nodes by chunk_ids: {str(e)}"
-                )
-                raise
-
-        return await asyncio.to_thread(_get_nodes_by_chunk_ids)
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all edges that are associated with the given chunk_ids."""
-        workspace_label = self._get_workspace_label()
-        chunk_ids_set = set(chunk_ids)
-
-        def _get_edges_by_chunk_ids():
-            try:
-                # Get all edges and filter by source_id containing chunk_ids
-                # We need to get all vertices first, then their edges
-                result = self._conn.getVertices(workspace_label, limit=100000)
-                matching_edges = []
-                processed_edges = set()
-
-                for vertex in result:
-                    source_id = vertex.get("attributes", {}).get("entity_id")
-                    if not source_id:
-                        continue
-
-                    # Get edges from this vertex
-                    try:
-                        edges = self._conn.getEdges(
-                            workspace_label,
-                            source_id,
-                            "DIRECTED",
-                            workspace_label,
-                            "*",
-                            limit=10000,
-                        )
-                        for edge in edges:
-                            edge_attrs = edge.get("attributes", {})
-                            edge_source_id = edge_attrs.get("source_id")
-                            if edge_source_id:
-                                edge_source_ids = set(
-                                    edge_source_id.split(GRAPH_FIELD_SEP)
-                                )
-                                if not edge_source_ids.isdisjoint(chunk_ids_set):
-                                    target_id = edge.get("to_id")
-                                    edge_tuple = tuple(sorted([source_id, target_id]))
-                                    if edge_tuple not in processed_edges:
-                                        edge_attrs["source"] = source_id
-                                        edge_attrs["target"] = target_id
-                                        matching_edges.append(edge_attrs)
-                                        processed_edges.add(edge_tuple)
-                    except Exception as e:
-                        logger.warning(
-                            f"[{self.workspace}] Error getting edges for vertex {source_id}: {str(e)}"
-                        )
-                        continue
-
-                return matching_edges
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error getting edges by chunk_ids: {str(e)}"
-                )
-                raise
-
-        return await asyncio.to_thread(_get_edges_by_chunk_ids)
 
     @retry(
         stop=stop_after_attempt(3),
