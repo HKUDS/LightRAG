@@ -508,6 +508,19 @@ class GeminiLLMOptions(BindingOptions):
     }
 
 
+@dataclass
+class GeminiEmbeddingOptions(BindingOptions):
+    """Options for Google Gemini embedding models."""
+
+    _binding_name: ClassVar[str] = "gemini_embedding"
+
+    task_type: str = "RETRIEVAL_DOCUMENT"
+
+    _help: ClassVar[dict[str, str]] = {
+        "task_type": "Task type for embedding optimization (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION)",
+    }
+
+
 # =============================================================================
 # Binding Options for OpenAI
 # =============================================================================

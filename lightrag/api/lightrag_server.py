@@ -89,6 +89,7 @@ class LLMConfigCache:
         # Initialize configurations based on binding conditions
         self.openai_llm_options = None
         self.gemini_llm_options = None
+        self.gemini_embedding_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
 
@@ -134,6 +135,23 @@ class LLMConfigCache:
                     "OllamaEmbeddingOptions not available, using default configuration"
                 )
                 self.ollama_embedding_options = {}
+
+        # Only initialize and log Gemini Embedding options when using Gemini Embedding binding
+        if args.embedding_binding == "gemini":
+            try:
+                from lightrag.llm.binding_options import GeminiEmbeddingOptions
+
+                self.gemini_embedding_options = GeminiEmbeddingOptions.options_dict(
+                    args
+                )
+                logger.info(
+                    f"Gemini Embedding Options: {self.gemini_embedding_options}"
+                )
+            except ImportError:
+                logger.warning(
+                    "GeminiEmbeddingOptions not available, using default configuration"
+                )
+                self.gemini_embedding_options = {}
 
 
 def check_frontend_build():
@@ -296,6 +314,7 @@ def create_app(args):
         "azure_openai",
         "aws_bedrock",
         "jina",
+        "gemini",
     ]:
         raise Exception("embedding binding not supported")
 
@@ -648,6 +667,26 @@ def create_app(args):
                         embedding_dim=embedding_dim,
                         base_url=host,
                         api_key=api_key,
+                    )
+                elif binding == "gemini":
+                    from lightrag.llm.gemini import gemini_embed
+
+                    # Use pre-processed configuration if available, otherwise fallback to dynamic parsing
+                    if config_cache.gemini_embedding_options is not None:
+                        gemini_options = config_cache.gemini_embedding_options
+                    else:
+                        # Fallback for cases where config cache wasn't initialized properly
+                        from lightrag.llm.binding_options import GeminiEmbeddingOptions
+
+                        gemini_options = GeminiEmbeddingOptions.options_dict(args)
+
+                    return await gemini_embed(
+                        texts,
+                        model=model,
+                        base_url=host,
+                        api_key=api_key,
+                        embedding_dim=embedding_dim,
+                        task_type=gemini_options.get("task_type", "RETRIEVAL_DOCUMENT"),
                     )
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
