@@ -71,23 +71,23 @@ def workspace_filter_condition(workspace: str) -> models.FieldCondition:
 class QdrantVectorDBStorage(BaseVectorStorage):
     """
     Qdrant vector database storage implementation.
-    
+
     This class provides a storage backend for vector embeddings using Qdrant.
     It supports multi-tenant isolation through workspace-based filtering and
     optional collection suffixes for different embedding dimensions or other purposes.
-    
+
     Configuration:
         - Standard parameters: namespace, workspace, embedding_func, etc.
         - Qdrant-specific parameters in vector_db_storage_cls_kwargs:
             - cosine_better_than_threshold: Required similarity threshold
             - collection_suffix: Optional suffix for collection names
-    
+
     Note on collection_suffix:
         If specified, this suffix will be appended to all collection names.
         This allows creating separate sets of collections for different purposes.
         To access this data later, you must use the same suffix in all LightRAG
         instances that need to access this data.
-        
+
     Examples of collection_suffix usage:
         - Embedding dimensions: "768d", "1536d", "3072d"
         - Environments: "dev", "staging", "prod"
@@ -96,7 +96,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         - Models: "ada002", "e5large", "bge"
         - Special purposes: "filtered", "augmented", "synthetic"
     """
-    
+
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
     ):
@@ -319,11 +319,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         collection_suffix = kwargs.get("collection_suffix", "")
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
-        
+
         # Get legacy namespace for data migration from old version
         if effective_workspace:
             if collection_suffix:
-                self.legacy_namespace = f"{effective_workspace}_{self.namespace}_{collection_suffix}"
+                self.legacy_namespace = (
+                    f"{effective_workspace}_{self.namespace}_{collection_suffix}"
+                )
             else:
                 self.legacy_namespace = f"{effective_workspace}_{self.namespace}"
         else:
@@ -345,7 +347,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
         else:
             self.final_namespace = f"lightrag_vdb_{self.namespace}"
-            
+
         logger.debug(
             f"Using shared collection '{self.final_namespace}' with workspace '{self.effective_workspace}' for payload-based partitioning"
         )
