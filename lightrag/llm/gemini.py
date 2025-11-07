@@ -33,24 +33,33 @@ LOG = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=8)
-def _get_gemini_client(api_key: str, base_url: str | None) -> genai.Client:
+def _get_gemini_client(
+    api_key: str, base_url: str | None, timeout: int | None = None
+) -> genai.Client:
     """
     Create (or fetch cached) Gemini client.
 
     Args:
         api_key: Google Gemini API key.
         base_url: Optional custom API endpoint.
+        timeout: Optional request timeout in milliseconds.
 
     Returns:
         genai.Client: Configured Gemini client instance.
     """
     client_kwargs: dict[str, Any] = {"api_key": api_key}
 
-    if base_url and base_url != DEFAULT_GEMINI_ENDPOINT:
+    if base_url and base_url != DEFAULT_GEMINI_ENDPOINT or timeout is not None:
         try:
-            client_kwargs["http_options"] = types.HttpOptions(api_endpoint=base_url)
+            http_options_kwargs = {}
+            if base_url and base_url != DEFAULT_GEMINI_ENDPOINT:
+                http_options_kwargs["api_endpoint"] = base_url
+            if timeout is not None:
+                http_options_kwargs["timeout"] = timeout
+
+            client_kwargs["http_options"] = types.HttpOptions(**http_options_kwargs)
         except Exception as exc:  # pragma: no cover - defensive
-            LOG.warning("Failed to apply custom Gemini endpoint %s: %s", base_url, exc)
+            LOG.warning("Failed to apply custom Gemini http_options: %s", exc)
 
     try:
         return genai.Client(**client_kwargs)
@@ -166,6 +175,7 @@ async def gemini_complete_if_cache(
     stream: bool | None = None,
     keyword_extraction: bool = False,
     generation_config: dict[str, Any] | None = None,
+    timeout: int | None = None,
     **_: Any,
 ) -> str | AsyncIterator[str]:
     """
@@ -190,10 +200,10 @@ async def gemini_complete_if_cache(
         generation_config: Optional generation configuration dict.
         keyword_extraction: Whether to use JSON response format.
         token_tracker: Optional token usage tracker for monitoring API usage.
-        hashing_kv: Storage interface (for interface parity with other bindings).
         stream: Whether to stream the response.
+        hashing_kv: Storage interface (for interface parity with other bindings).
         enable_cot: Whether to include Chain of Thought content in the response.
-        timeout: Request timeout (handled by caller if needed).
+        timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
         **_: Additional keyword arguments (ignored).
 
     Returns:
@@ -207,7 +217,9 @@ async def gemini_complete_if_cache(
     loop = asyncio.get_running_loop()
 
     key = _ensure_api_key(api_key)
-    client = _get_gemini_client(key, base_url)
+    # Convert timeout from seconds to milliseconds for Gemini API
+    timeout_ms = timeout * 1000 if timeout else None
+    client = _get_gemini_client(key, base_url, timeout_ms)
 
     history_block = _format_history_messages(history_messages)
     prompt_sections = []
@@ -279,7 +291,9 @@ async def gemini_complete_if_cache(
 
                             # Send thought content if COT is active
                             if cot_active:
-                                loop.call_soon_threadsafe(queue.put_nowait, thought_text)
+                                loop.call_soon_threadsafe(
+                                    queue.put_nowait, thought_text
+                                )
                     else:
                         # COT disabled - only send regular content
                         if regular_text:

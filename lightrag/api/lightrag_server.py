@@ -512,7 +512,9 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
-    def create_optimized_gemini_llm_func(config_cache: LLMConfigCache, args):
+    def create_optimized_gemini_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
         """Create optimized Gemini LLM function with cached configuration"""
 
         async def optimized_gemini_model_complete(
@@ -527,6 +529,8 @@ def create_app(args):
             if history_messages is None:
                 history_messages = []
 
+            # Use pre-processed configuration to avoid repeated parsing
+            kwargs["timeout"] = llm_timeout
             if (
                 config_cache.gemini_llm_options is not None
                 and "generation_config" not in kwargs
@@ -568,7 +572,7 @@ def create_app(args):
                     config_cache, args, llm_timeout
                 )
             elif binding == "gemini":
-                return create_optimized_gemini_llm_func(config_cache, args)
+                return create_optimized_gemini_llm_func(config_cache, args, llm_timeout)
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
