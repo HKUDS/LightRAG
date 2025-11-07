@@ -174,6 +174,7 @@ async def openai_complete_if_cache(
                 explicit parameters (api_key, base_url).
             - hashing_kv: Will be removed from kwargs before passing to OpenAI.
             - keyword_extraction: Will be removed from kwargs before passing to OpenAI.
+            - stream: Whether to stream the response. Default is False.
 
     Returns:
         The completed text (with integrated COT content if available) or an async iterator
