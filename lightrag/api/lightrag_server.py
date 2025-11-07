@@ -15,7 +15,6 @@ import logging.config
 import sys
 import uvicorn
 import pipmaster as pm
-import inspect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -599,14 +598,14 @@ def create_app(args):
         return {}
 
     def create_optimized_embedding_function(
-        config_cache: LLMConfigCache, binding, model, host, api_key, dimensions, args
+        config_cache: LLMConfigCache, binding, model, host, api_key, args
     ):
         """
         Create optimized embedding function with pre-processed configuration for applicable bindings.
         Uses lazy imports for all bindings and avoids repeated configuration parsing.
         """
 
-        async def optimized_embedding_function(texts):
+        async def optimized_embedding_function(texts, embedding_dim=None):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
@@ -645,13 +644,20 @@ def create_app(args):
                     from lightrag.llm.jina import jina_embed
 
                     return await jina_embed(
-                        texts, dimensions=dimensions, base_url=host, api_key=api_key
+                        texts,
+                        embedding_dim=embedding_dim,
+                        base_url=host,
+                        api_key=api_key,
                     )
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
                     return await openai_embed(
-                        texts, model=model, base_url=host, api_key=api_key
+                        texts,
+                        model=model,
+                        base_url=host,
+                        api_key=api_key,
+                        embedding_dim=embedding_dim,
                     )
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
@@ -691,17 +697,52 @@ def create_app(args):
         )
 
     # Create embedding function with optimized configuration
+    import inspect
+
+    # Create the optimized embedding function
+    optimized_embedding_func = create_optimized_embedding_function(
+        config_cache=config_cache,
+        binding=args.embedding_binding,
+        model=args.embedding_model,
+        host=args.embedding_binding_host,
+        api_key=args.embedding_binding_api_key,
+        args=args,  # Pass args object for fallback option generation
+    )
+
+    # Get embedding_send_dim from centralized configuration
+    embedding_send_dim = args.embedding_send_dim
+
+    # Check if the function signature has embedding_dim parameter
+    # Note: Since optimized_embedding_func is an async function, inspect its signature
+    sig = inspect.signature(optimized_embedding_func)
+    has_embedding_dim_param = "embedding_dim" in sig.parameters
+
+    # Determine send_dimensions value based on binding type
+    # Jina REQUIRES dimension parameter (forced to True)
+    # OpenAI and others: controlled by EMBEDDING_SEND_DIM environment variable
+    if args.embedding_binding == "jina":
+        # Jina API requires dimension parameter - always send it
+        send_dimensions = has_embedding_dim_param
+        dimension_control = "forced by Jina API"
+    else:
+        # For OpenAI and other bindings, respect EMBEDDING_SEND_DIM setting
+        send_dimensions = embedding_send_dim and has_embedding_dim_param
+        if send_dimensions or not embedding_send_dim:
+            dimension_control = "by env var"
+        else:
+            dimension_control = "by not hasparam"
+
+    logger.info(
+        f"Send embedding dimension: {send_dimensions} {dimension_control} "
+        f"(dimensions={args.embedding_dim}, has_param={has_embedding_dim_param}, "
+        f"binding={args.embedding_binding})"
+    )
+
+    # Create EmbeddingFunc with send_dimensions attribute
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=create_optimized_embedding_function(
-            config_cache=config_cache,
-            binding=args.embedding_binding,
-            model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-            dimensions=args.embedding_dim,
-            args=args,  # Pass args object for fallback option generation
-        ),
+        func=optimized_embedding_func,
+        send_dimensions=send_dimensions,
     )
 
     # Configure rerank function based on args.rerank_bindingparameter
