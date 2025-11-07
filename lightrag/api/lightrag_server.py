@@ -15,7 +15,6 @@ import logging.config
 import sys
 import uvicorn
 import pipmaster as pm
-import inspect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -595,7 +594,7 @@ def create_app(args):
         return {}
 
     def create_optimized_embedding_function(
-        config_cache: LLMConfigCache, binding, model, host, api_key, dimensions, args
+        config_cache: LLMConfigCache, binding, model, host, api_key, args
     ):
         """
         Create optimized embedding function with pre-processed configuration for applicable bindings.
@@ -641,7 +640,7 @@ def create_app(args):
                     from lightrag.llm.jina import jina_embed
 
                     return await jina_embed(
-                        texts, dimensions=dimensions, base_url=host, api_key=api_key
+                        texts, base_url=host, api_key=api_key
                     )
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
@@ -687,17 +686,43 @@ def create_app(args):
         )
 
     # Create embedding function with optimized configuration
+    import inspect
+    
+    # Create the optimized embedding function
+    optimized_embedding_func = create_optimized_embedding_function(
+        config_cache=config_cache,
+        binding=args.embedding_binding,
+        model=args.embedding_model,
+        host=args.embedding_binding_host,
+        api_key=args.embedding_binding_api_key,
+        args=args,  # Pass args object for fallback option generation
+    )
+    
+    # Check environment variable for sending dimensions
+    embedding_send_dim = os.getenv("EMBEDDING_SEND_DIM", "false").lower() == "true"
+    
+    # Check if the function signature has embedding_dim parameter
+    # Note: Since optimized_embedding_func is an async function, inspect its signature
+    sig = inspect.signature(optimized_embedding_func)
+    has_embedding_dim_param = 'embedding_dim' in sig.parameters
+    
+    # Determine send_dimensions value
+    # Only send dimensions if both conditions are met:
+    # 1. EMBEDDING_SEND_DIM environment variable is true
+    # 2. The function has embedding_dim parameter
+    send_dimensions = embedding_send_dim and has_embedding_dim_param
+    
+    logger.info(
+        f"Embedding configuration: send_dimensions={send_dimensions} "
+        f"(env_var={embedding_send_dim}, has_param={has_embedding_dim_param}, "
+        f"binding={args.embedding_binding})"
+    )
+    
+    # Create EmbeddingFunc with send_dimensions attribute
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        func=create_optimized_embedding_function(
-            config_cache=config_cache,
-            binding=args.embedding_binding,
-            model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-            dimensions=args.embedding_dim,
-            args=args,  # Pass args object for fallback option generation
-        ),
+        func=optimized_embedding_func,
+        send_dimensions=send_dimensions,
     )
 
     # Configure rerank function based on args.rerank_bindingparameter

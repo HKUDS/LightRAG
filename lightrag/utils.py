@@ -353,8 +353,24 @@ class EmbeddingFunc:
     embedding_dim: int
     func: callable
     max_token_size: int | None = None  # deprecated keep it for compatible only
+    send_dimensions: bool = False  # Control whether to send embedding_dim to the function
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
+        # Only inject embedding_dim when send_dimensions is True
+        if self.send_dimensions:
+            # Check if user provided embedding_dim parameter
+            if 'embedding_dim' in kwargs:
+                user_provided_dim = kwargs['embedding_dim']
+                # If user's value differs from class attribute, output warning
+                if user_provided_dim is not None and user_provided_dim != self.embedding_dim:
+                    logger.warning(
+                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
+                        f"using declared embedding_dim={self.embedding_dim} from decorator"
+                    )
+            
+            # Inject embedding_dim from decorator
+            kwargs['embedding_dim'] = self.embedding_dim
+        
         return await self.func(*args, **kwargs)
 
 
