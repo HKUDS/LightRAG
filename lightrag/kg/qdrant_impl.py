@@ -69,6 +69,34 @@ def workspace_filter_condition(workspace: str) -> models.FieldCondition:
 @final
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
+    """
+    Qdrant vector database storage implementation.
+    
+    This class provides a storage backend for vector embeddings using Qdrant.
+    It supports multi-tenant isolation through workspace-based filtering and
+    optional collection suffixes for different embedding dimensions or other purposes.
+    
+    Configuration:
+        - Standard parameters: namespace, workspace, embedding_func, etc.
+        - Qdrant-specific parameters in vector_db_storage_cls_kwargs:
+            - cosine_better_than_threshold: Required similarity threshold
+            - collection_suffix: Optional suffix for collection names
+    
+    Note on collection_suffix:
+        If specified, this suffix will be appended to all collection names.
+        This allows creating separate sets of collections for different purposes.
+        To access this data later, you must use the same suffix in all LightRAG
+        instances that need to access this data.
+        
+    Examples of collection_suffix usage:
+        - Embedding dimensions: "768d", "1536d", "3072d"
+        - Environments: "dev", "staging", "prod"
+        - Testing: "test", "benchmark", "experiment1"
+        - Versions: "v1", "v2", "2023q4"
+        - Models: "ada002", "e5large", "bge"
+        - Special purposes: "filtered", "augmented", "synthetic"
+    """
+    
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
     ):
@@ -287,23 +315,42 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
+        # Extract Qdrant-specific settings
+        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        collection_suffix = kwargs.get("collection_suffix", "")
+        cosine_threshold = kwargs.get("cosine_better_than_threshold")
+        
         # Get legacy namespace for data migration from old version
         if effective_workspace:
-            self.legacy_namespace = f"{effective_workspace}_{self.namespace}"
+            if collection_suffix:
+                self.legacy_namespace = f"{effective_workspace}_{self.namespace}_{collection_suffix}"
+            else:
+                self.legacy_namespace = f"{effective_workspace}_{self.namespace}"
         else:
-            self.legacy_namespace = self.namespace
+            if collection_suffix:
+                self.legacy_namespace = f"{self.namespace}_{collection_suffix}"
+            else:
+                self.legacy_namespace = self.namespace
 
         self.effective_workspace = effective_workspace or DEFAULT_WORKSPACE
 
         # Use a shared collection with payload-based partitioning (Qdrant's recommended approach)
         # Ref: https://qdrant.tech/documentation/guides/multiple-partitions/
-        self.final_namespace = f"lightrag_vdb_{self.namespace}"
+        if collection_suffix:
+            self.final_namespace = f"lightrag_vdb_{self.namespace}_{collection_suffix}"
+            logger.info(
+                f"Using collection suffix '{collection_suffix}' for {self.namespace}. "
+                f"Collection name: '{self.final_namespace}'. "
+                f"Note: To access this data later, you must use the same suffix."
+            )
+        else:
+            self.final_namespace = f"lightrag_vdb_{self.namespace}"
+            
         logger.debug(
             f"Using shared collection '{self.final_namespace}' with workspace '{self.effective_workspace}' for payload-based partitioning"
         )
 
-        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        cosine_threshold = kwargs.get("cosine_better_than_threshold")
+        # Check for required cosine threshold parameter
         if cosine_threshold is None:
             raise ValueError(
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
