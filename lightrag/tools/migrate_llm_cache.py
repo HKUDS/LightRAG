@@ -975,7 +975,7 @@ class MigrationTool:
         # Custom input handling with exit support
         while True:
             choice = input(
-                f"\nSelect {storage_type} storage type ({prompt_range}) (Press Enter or 0 to exit): "
+                f"\nSelect {storage_type} storage type ({prompt_range}) (Press Enter to exit): "
             ).strip()
 
             # Check for exit
