@@ -816,31 +816,6 @@ class MigrationTool:
         for key, value in STORAGE_TYPES.items():
             print(f"[{key}] {value}")
 
-    def get_user_choice(
-        self, prompt: str, valid_choices: list, allow_exit: bool = False
-    ) -> str:
-        """Get user choice with validation
-
-        Args:
-            prompt: Prompt message
-            valid_choices: List of valid choices
-            allow_exit: If True, allow user to press Enter or input '0' to exit
-
-        Returns:
-            User's choice, or None if user chose to exit
-        """
-        exit_hint = " (Press Enter or 0 to exit)" if allow_exit else ""
-        while True:
-            choice = input(f"\n{prompt}{exit_hint}: ").strip()
-
-            # Check for exit
-            if allow_exit and (choice == "" or choice == "0"):
-                return None
-
-            if choice in valid_choices:
-                return choice
-            print(f"✗ Invalid choice, please enter one of: {', '.join(valid_choices)}")
-
     async def setup_storage(
         self,
         storage_type: str,
@@ -860,36 +835,58 @@ class MigrationTool:
         """
         print(f"\n=== {storage_type} Storage Setup ===")
 
-        # Filter available storage types if exclusion is specified
-        available_types = STORAGE_TYPES.copy()
+        # Filter and remap available storage types if exclusion is specified
         if exclude_storage_name:
-            # Remove the excluded storage type from available options
-            available_types = {
-                k: v for k, v in STORAGE_TYPES.items() if v != exclude_storage_name
+            # Get available storage types (excluding source)
+            available_list = [
+                (k, v) for k, v in STORAGE_TYPES.items() if v != exclude_storage_name
+            ]
+
+            # Remap to sequential numbering (1, 2, 3...)
+            remapped_types = {
+                str(i + 1): name for i, (_, name) in enumerate(available_list)
             }
 
-            # Print available types
-            print("\nAvailable Storage Types for Target:")
-            for key, value in available_types.items():
+            # Print available types with new sequential numbers
+            print(
+                f"\nAvailable Storage Types for Target (source: {exclude_storage_name} excluded):"
+            )
+            for key, value in remapped_types.items():
                 print(f"[{key}] {value}")
+
+            available_types = remapped_types
         else:
-            # Print all storage types for source
+            # For source storage, use original numbering
+            available_types = STORAGE_TYPES.copy()
             self.print_storage_types()
 
-        # Get storage type choice - allow exit for source storage
-        allow_exit = storage_type == "Source"
-        choice = self.get_user_choice(
-            f"Select {storage_type} storage type (1-4)",
-            list(available_types.keys()),
-            allow_exit=allow_exit,
-        )
+        # Generate dynamic prompt based on number of options
+        num_options = len(available_types)
+        if num_options == 1:
+            prompt_range = "1"
+        else:
+            prompt_range = f"1-{num_options}"
 
-        # Handle exit
-        if choice is None:
-            print("\n✓ Migration cancelled by user")
-            return None, None, None, 0
+        # Custom input handling with exit support
+        while True:
+            choice = input(
+                f"\nSelect {storage_type} storage type ({prompt_range}) (Press Enter or 0 to exit): "
+            ).strip()
 
-        storage_name = STORAGE_TYPES[choice]
+            # Check for exit
+            if choice == "" or choice == "0":
+                print("\n✓ Migration cancelled by user")
+                return None, None, None, 0
+
+            # Check if choice is valid
+            if choice in available_types:
+                break
+
+            print(
+                f"✗ Invalid choice. Please enter one of: {', '.join(available_types.keys())}"
+            )
+
+        storage_name = available_types[choice]
 
         # Check environment variables
         print("\nChecking environment variables...")
@@ -1174,7 +1171,6 @@ class MigrationTool:
 
             # Print header
             self.print_header()
-            self.print_storage_types()
 
             # Setup source storage with streaming (only count, don't load all data)
             (
