@@ -33,16 +33,25 @@ from lightrag.utils import (
 
 import pipmaster as pm
 
-# Install the Google Gemini client on demand
+# Install the Google Gemini client and its dependencies on demand
 if not pm.is_installed("google-genai"):
     pm.install("google-genai")
+if not pm.is_installed("google-api-core"):
+    pm.install("google-api-core")
 
 from google import genai  # type: ignore
 from google.genai import types  # type: ignore
+from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
 DEFAULT_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com"
 
 LOG = logging.getLogger(__name__)
+
+
+class InvalidResponseError(Exception):
+    """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
+
+    pass
 
 
 @lru_cache(maxsize=8)
@@ -176,6 +185,21 @@ def _extract_response_text(
     return ("\n".join(regular_parts), "\n".join(thought_parts))
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    retry=(
+        retry_if_exception_type(google_api_exceptions.InternalServerError)
+        | retry_if_exception_type(google_api_exceptions.ServiceUnavailable)
+        | retry_if_exception_type(google_api_exceptions.ResourceExhausted)
+        | retry_if_exception_type(google_api_exceptions.GatewayTimeout)
+        | retry_if_exception_type(google_api_exceptions.BadGateway)
+        | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
+        | retry_if_exception_type(google_api_exceptions.Aborted)
+        | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(InvalidResponseError)
+    ),
+)
 async def gemini_complete_if_cache(
     model: str,
     prompt: str,
@@ -382,7 +406,7 @@ async def gemini_complete_if_cache(
         final_text = regular_text or ""
 
     if not final_text:
-        raise RuntimeError("Gemini response did not contain any text content.")
+        raise InvalidResponseError("Gemini response did not contain any text content.")
 
     if "\\u" in final_text:
         final_text = safe_unicode_decode(final_text.encode("utf-8"))
@@ -434,7 +458,14 @@ async def gemini_model_complete(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
     retry=(
-        retry_if_exception_type(Exception)  # Gemini uses generic exceptions
+        retry_if_exception_type(google_api_exceptions.InternalServerError)
+        | retry_if_exception_type(google_api_exceptions.ServiceUnavailable)
+        | retry_if_exception_type(google_api_exceptions.ResourceExhausted)
+        | retry_if_exception_type(google_api_exceptions.GatewayTimeout)
+        | retry_if_exception_type(google_api_exceptions.BadGateway)
+        | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
+        | retry_if_exception_type(google_api_exceptions.Aborted)
+        | retry_if_exception_type(google_api_exceptions.Unknown)
     ),
 )
 async def gemini_embed(
