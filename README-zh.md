@@ -107,7 +107,8 @@ uv pip install "lightrag-hku[api]"
 # 或使用 pip
 # pip install "lightrag-hku[api]"
 
-cp env.example .env
+cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+
 lightrag-server
 ```
 

@@ -107,7 +107,8 @@ uv pip install "lightrag-hku[api]"
 # Or using pip
 # pip install "lightrag-hku[api]"
 
-cp env.example .env
+cp env.example .env  # Update the .env with your LLM and embedding configurations
+
 lightrag-server
 ```
 
