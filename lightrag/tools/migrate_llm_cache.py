@@ -65,6 +65,10 @@ DEFAULT_BATCH_SIZE = 1000
 # Default count batch size for efficient counting
 DEFAULT_COUNT_BATCH_SIZE = 1000
 
+# ANSI color codes for terminal output
+BOLD_CYAN = "\033[1;36m"
+RESET = "\033[0m"
+
 
 @dataclass
 class MigrationStats:
@@ -816,6 +820,31 @@ class MigrationTool:
         for key, value in STORAGE_TYPES.items():
             print(f"[{key}] {value}")
 
+    def format_workspace(self, workspace: str) -> str:
+        """Format workspace name with highlighting
+
+        Args:
+            workspace: Workspace name (may be empty)
+
+        Returns:
+            Formatted workspace string with ANSI color codes
+        """
+        if workspace:
+            return f"{BOLD_CYAN}{workspace}{RESET}"
+        else:
+            return f"{BOLD_CYAN}(default){RESET}"
+
+    def format_storage_name(self, storage_name: str) -> str:
+        """Format storage type name with highlighting
+
+        Args:
+            storage_name: Storage type name
+
+        Returns:
+            Formatted storage name string with ANSI color codes
+        """
+        return f"{BOLD_CYAN}{storage_name}{RESET}"
+
     async def setup_storage(
         self,
         storage_type: str,
@@ -1212,10 +1241,10 @@ class MigrationTool:
             print("Migration Confirmation")
             print("=" * 50)
             print(
-                f"Source: {source_storage_name} (workspace: {self.source_workspace if self.source_workspace else '(default)'}) - {source_count:,} records"
+                f"Source: {self.format_storage_name(source_storage_name)} (workspace: {self.format_workspace(self.source_workspace)}) - {source_count:,} records"
             )
             print(
-                f"Target: {target_storage_name} (workspace: {self.target_workspace if self.target_workspace else '(default)'}) - {target_count:,} records"
+                f"Target: {self.format_storage_name(target_storage_name)} (workspace: {self.format_workspace(self.target_workspace)}) - {target_count:,} records"
             )
             print(f"Batch Size: {self.batch_size:,} records/batch")
             print("Memory Mode: Streaming (memory-optimized)")
