@@ -6,7 +6,9 @@ This tool migrates LLM response cache (default:extract:* and default:summary:*)
 between different KV storage implementations while preserving workspace isolation.
 
 Usage:
-    python tools/migrate_llm_cache.py
+    python -m lightrag.tools.migrate_llm_cache
+    # or
+    python lightrag/tools/migrate_llm_cache.py
 
 Supported KV Storage Types:
     - JsonKVStorage
@@ -23,8 +25,8 @@ from typing import Any, Dict, List
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.namespace import NameSpace
@@ -657,6 +659,10 @@ class MigrationTool:
     async def run(self):
         """Run the migration tool"""
         try:
+            # Initialize shared storage (REQUIRED for storage classes to work)
+            from lightrag.kg.shared_storage import initialize_share_data
+            initialize_share_data(workers=1)
+            
             # Print header
             self.print_header()
             self.print_storage_types()
@@ -751,6 +757,13 @@ class MigrationTool:
                     await self.target_storage.finalize()
                 except Exception:
                     pass
+            
+            # Finalize shared storage
+            try:
+                from lightrag.kg.shared_storage import finalize_share_data
+                finalize_share_data()
+            except Exception:
+                pass
 
 
 async def main():
