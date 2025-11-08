@@ -15,7 +15,11 @@ LightRAG 服务器旨在提供 Web 界面和 API 支持。Web 界面便于文档
 * 从 PyPI 安装
 
 ```bash
-pip install "lightrag-hku[api]"
+# 使用 uv (推荐)
+uv pip install "lightrag-hku[api]"
+
+# 或使用 pip
+# pip install "lightrag-hku[api]"
 ```
 
 * 从源代码安装
@@ -24,12 +28,25 @@ pip install "lightrag-hku[api]"
 # 克隆仓库
 git clone https://github.com/HKUDS/lightrag.git
 
-# 切换到仓库目录
+# 进入仓库目录
 cd lightrag
 
-# 如有必要，创建 Python 虚拟环境
-# 以可编辑模式安装并支持 API
-pip install -e ".[api]"
+# 使用 uv (推荐)
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+uv sync --extra api
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# 或使用 pip 与虚拟环境
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# pip install -e ".[api]"
+
+# 构建前端代码
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
 ```
 
 ### 启动 LightRAG 服务器前的准备
@@ -109,36 +126,10 @@ lightrag-gunicorn --workers 4
 
 ### 使用 Docker 启动 LightRAG 服务器
 
-* 配置 .env 文件：
-    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
-* 创建一个名为 docker-compose.yml 的文件：
-
-```yaml
-services:
-  lightrag:
-    container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-      tags:
-        - ghcr.io/hkuds/lightrag:latest
-    ports:
-      - "${PORT:-9621}:9621"
-    volumes:
-      - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
-      - ./data/tiktoken:/app/data/tiktoken
-      - ./config.ini:/app/config.ini
-      - ./.env:/app/.env
-    env_file:
-      - .env
-    environment:
-      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
+使用 Docker Compose 是部署和运行 LightRAG Server 最便捷的方式。
+- 创建一个项目目录。
+- 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
+- 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
 
 * 通过以下命令启动 LightRAG 服务器：
 
@@ -146,11 +137,11 @@ services:
 docker compose up
 # 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
-> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./../../docs/DockerDeployment.md).
 
 ### 离线部署
 
-对于离线或隔离环境，请参阅[离线部署指南](./../../docs/OfflineDeployment.md)，了解如何预先安装所有依赖项和缓存文件。
+官方的 LightRAG Docker 镜像完全兼容离线或隔离网络环境。如需搭建自己的离线部署环境，请参考 [离线部署指南](./../../docs/OfflineDeployment.md)。
 
 ### 启动多个LightRAG实例
 
@@ -201,24 +192,16 @@ MAX_ASYNC=4
 
 ### 将 Lightrag 安装为 Linux 服务
 
-从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的 WorkingDirectory 和 ExecStart：
+从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
 
 ```text
-Description=LightRAG Ollama Service
-WorkingDirectory=<lightrag 安装目录>
-ExecStart=<lightrag 安装目录>/lightrag/api/lightrag-api
+# Set Enviroment to your Python virtual enviroment
+Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
+WorkingDirectory=/home/netman/lightrag-xyj
+# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
+ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
 ```
-
-修改您的服务启动脚本：`lightrag-api`。根据需要更改 python 虚拟环境激活命令：
-
-```shell
-#!/bin/bash
-
-# 您的 python 虚拟环境激活命令
-source /home/netman/lightrag-xyj/venv/bin/activate
-# 启动 lightrag api 服务器
-lightrag-server
-```
+> ExecStart命令必须是 lightrag-gunicorn 或 lightrag-server 中的一个，不能使用其它脚本包裹它们。因为停止服务必须要求主进程必须是这两个进程。
 
 安装 LightRAG 服务。如果您的系统是 Ubuntu，以下命令将生效：
 
@@ -424,6 +407,10 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
 在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `env.exampl`e文件。
+
+### 在不同存储类型之间迁移LLM缓存
+
+当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
 
 ### LightRag API 服务器命令行选项
 
