@@ -90,6 +90,11 @@
 
 ## 安装
 
+> **💡 使用 uv 进行包管理**: 本项目使用 [uv](https://docs.astral.sh/uv/) 进行快速可靠的 Python 包管理。
+> 首先安装 uv: `curl -LsSf https://astral.sh/uv/install.sh | sh` (Unix/macOS) 或 `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
+>
+> **注意**: 如果您更喜欢使用 pip 也可以，但我们推荐使用 uv 以获得更好的性能和更可靠的依赖管理。
+
 ### 安装LightRAG服务器
 
 LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知识图谱探索和简单的RAG查询界面。LightRAG服务器还提供兼容Ollama的接口，旨在将LightRAG模拟为Ollama聊天模型。这使得AI聊天机器人（如Open WebUI）可以轻松访问LightRAG。
@@ -97,7 +102,11 @@ LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知
 * 从PyPI安装
 
 ```bash
-pip install "lightrag-hku[api]"
+# 使用 uv (推荐)
+uv pip install "lightrag-hku[api]"
+# 或使用 pip
+# pip install "lightrag-hku[api]"
+
 cp env.example .env
 lightrag-server
 ```
@@ -107,9 +116,17 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-# 如有必要，创建Python虚拟环境
-# 以可开发（编辑）模式安装LightRAG服务器
-pip install -e ".[api]"
+
+# 使用 uv (推荐)
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+uv sync --extra api
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# 或使用 pip 和虚拟环境
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# pip install -e ".[api]"
 
 cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
 
@@ -140,13 +157,19 @@ docker compose up
 
 ```bash
 cd LightRAG
-pip install -e .
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+uv sync
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# 或: pip install -e .
 ```
 
 * 从PyPI安装
 
 ```bash
-pip install lightrag-hku
+uv pip install lightrag-hku
+# 或: pip install lightrag-hku
 ```
 
 ## 快速开始

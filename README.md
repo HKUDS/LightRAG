@@ -88,6 +88,11 @@
 
 ## Installation
 
+> **💡 Using uv for Package Management**: This project uses [uv](https://docs.astral.sh/uv/) for fast and reliable Python package management.
+> Install uv first: `curl -LsSf https://astral.sh/uv/install.sh | sh` (Unix/macOS) or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
+>
+> **Note**: You can also use pip if you prefer, but uv is recommended for better performance and more reliable dependency management.
+>
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 ### Install LightRAG Server
@@ -97,7 +102,11 @@ The LightRAG Server is designed to provide Web UI and API support. The Web UI fa
 * Install from PyPI
 
 ```bash
-pip install "lightrag-hku[api]"
+# Using uv (recommended)
+uv pip install "lightrag-hku[api]"
+# Or using pip
+# pip install "lightrag-hku[api]"
+
 cp env.example .env
 lightrag-server
 ```
@@ -107,9 +116,17 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-# Create a Python virtual enviroment if neccesary
-# Install in editable mode with API support
-pip install -e ".[api]"
+
+# Using uv (recommended)
+# Note: uv sync automatically creates a virtual environment in .venv/
+uv sync --extra api
+source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
+# Or on Windows: .venv\Scripts\activate
+
+# Or using pip with virtual environment
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# pip install -e ".[api]"
 
 cp env.example .env  # Update the .env with your LLM and embedding configurations
 
@@ -136,17 +153,23 @@ docker compose up
 
 ### Install  LightRAG Core
 
-* Install from source (Recommend)
+* Install from source (Recommended)
 
 ```bash
 cd LightRAG
-pip install -e .
+# Note: uv sync automatically creates a virtual environment in .venv/
+uv sync
+source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
+# Or on Windows: .venv\Scripts\activate
+
+# Or: pip install -e .
 ```
 
 * Install from PyPI
 
 ```bash
-pip install lightrag-hku
+uv pip install lightrag-hku
+# Or: pip install lightrag-hku
 ```
 
 ## Quick Start

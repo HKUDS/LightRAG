@@ -15,26 +15,34 @@ LightRAG 服务器旨在提供 Web 界面和 API 支持。Web 界面便于文档
 * 从 PyPI 安装
 
 ```bash
-pip install "lightrag-hku[api]"
+# 使用 uv (推荐)
+uv pip install "lightrag-hku[api]"
+
+# 或使用 pip
+# pip install "lightrag-hku[api]"
 ```
 
 * 从源代码安装
 
 ```bash
-# Clone the repository
+# 克隆仓库
 git clone https://github.com/HKUDS/lightrag.git
 
-# Change to the repository directory
+# 进入仓库目录
 cd lightrag
 
-# Create a Python virtual environment
-uv venv --seed --python 3.12
-source .venv/bin/activate
+# 使用 uv (推荐)
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+uv sync --extra api
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
 
-# Install in editable mode with API support
-pip install -e ".[api]"
+# 或使用 pip 与虚拟环境
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# pip install -e ".[api]"
 
-# Build front-end artifacts
+# 构建前端代码
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
