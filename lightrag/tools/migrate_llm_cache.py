@@ -33,6 +33,9 @@ from lightrag.namespace import NameSpace
 from lightrag.utils import setup_logger
 
 # Load environment variables
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
 # Setup logger
@@ -713,7 +716,7 @@ class MigrationTool:
 
             if target_data:
                 print(
-                    f"\n⚠ Warning: Target storage already has {len(target_data):,} records"
+                    f"\n⚠️ Warning: Target storage already has {len(target_data):,} records"
                 )
                 print("Migration will overwrite records with the same keys")
 
