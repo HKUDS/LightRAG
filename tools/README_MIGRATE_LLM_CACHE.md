@@ -261,7 +261,7 @@ The tool implements comprehensive error tracking to ensure transparent and resil
 ### Error Reporting
 After migration completes, a detailed report includes:
 - **Statistics**: Total records, success/failure counts, success rate
-- **Error Summary**: Grouped by error type with occurrence counts  
+- **Error Summary**: Grouped by error type with occurrence counts
 - **Error Details**: Batch number, error type, message, and records lost
 - **Recommendations**: Clear indication of success or need for review
 
