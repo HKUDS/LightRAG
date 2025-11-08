@@ -141,12 +141,6 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setLanguage: (language: Language) => {
         set({ language })
-        // Update i18n after state is updated
-        import('i18next').then(({ default: i18n }) => {
-          if (i18n.language !== language) {
-            i18n.changeLanguage(language)
-          }
-        })
       },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
