@@ -719,7 +719,7 @@ class CleanupTool:
         """
         print(f"\n{title}")
         print("┌" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┐")
-        print(f"│ {'Mode':<10} │ {'Query':<10} │ {'Keywords':<10} │ {'Total':<10} │")
+        print(f"│ {'Mode':<10} │ {'Query':>10} │ {'Keywords':>10} │ {'Total':>10} │")
         print("├" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┤")
 
         total_query = 0
@@ -981,18 +981,36 @@ class CleanupTool:
                     return
                 elif choice == "1":
                     cleanup_type = "all"
-                    break
                 elif choice == "2":
                     cleanup_type = "query"
-                    break
                 elif choice == "3":
                     cleanup_type = "keywords"
-                    break
                 else:
                     print("✗ Invalid choice. Please enter 0, 1, 2, or 3")
+                    continue
 
-            # Calculate total to delete
-            stats.total_to_delete = self.calculate_total_to_delete(counts, cleanup_type)
+                # Calculate total to delete for the selected type
+                stats.total_to_delete = self.calculate_total_to_delete(
+                    counts, cleanup_type
+                )
+
+                # Check if there are any records to delete
+                if stats.total_to_delete == 0:
+                    if cleanup_type == "all":
+                        print(f"\n{BOLD_RED}⚠️  No query caches found to delete!{RESET}")
+                    elif cleanup_type == "query":
+                        print(
+                            f"\n{BOLD_RED}⚠️  No query caches found to delete! (Only keywords exist){RESET}"
+                        )
+                    elif cleanup_type == "keywords":
+                        print(
+                            f"\n{BOLD_RED}⚠️  No keywords caches found to delete! (Only query caches exist){RESET}"
+                        )
+                    print("   Please select a different cleanup option.\n")
+                    continue
+
+                # Valid selection with records to delete
+                break
 
             # Confirm deletion
             print("\n" + "=" * 60)
