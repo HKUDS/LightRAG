@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import iscoroutinefunction
 import traceback
 import asyncio
 import configparser
@@ -1757,14 +1758,8 @@ class LightRAG:
                             content = content_data["content"]
 
                             # Generate chunks from document
-                            chunks: dict[str, Any] = {
-                                compute_mdhash_id(dp["content"], prefix="chunk-"): {
-                                    **dp,
-                                    "full_doc_id": doc_id,
-                                    "file_path": file_path,  # Add file path to each chunk
-                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
-                                }
-                                for dp in self.chunking_func(
+                            if iscoroutinefunction(self.chunking_func):
+                                chunks = await self.chunking_func(
                                     self.tokenizer,
                                     content,
                                     split_by_character,
@@ -1772,6 +1767,23 @@ class LightRAG:
                                     self.chunk_overlap_token_size,
                                     self.chunk_token_size,
                                 )
+                            else:
+                                chunks = self.chunking_func(
+                                    self.tokenizer,
+                                    content,
+                                    split_by_character,
+                                    split_by_character_only,
+                                    self.chunk_overlap_token_size,
+                                    self.chunk_token_size,
+                                )
+                            chunks: dict[str, Any] = {
+                                compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                                    **dp,
+                                    "full_doc_id": doc_id,
+                                    "file_path": file_path,  # Add file path to each chunk
+                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                }
+                                for dp in chunks
                             }
 
                             if not chunks:
