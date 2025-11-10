@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from inspect import iscoroutinefunction
 import traceback
 import asyncio
 import configparser
@@ -1780,24 +1779,17 @@ class LightRAG:
                             content = content_data["content"]
 
                             # Generate chunks from document
-                            if iscoroutinefunction(self.chunking_func):
-                                chunks = await self.chunking_func(
-                                    self.tokenizer,
-                                    content,
-                                    split_by_character,
-                                    split_by_character_only,
-                                    self.chunk_overlap_token_size,
-                                    self.chunk_token_size,
-                                )
-                            else:
-                                chunks = self.chunking_func(
-                                    self.tokenizer,
-                                    content,
-                                    split_by_character,
-                                    split_by_character_only,
-                                    self.chunk_overlap_token_size,
-                                    self.chunk_token_size,
-                                )
+                            chunks = self.chunking_func(
+                                self.tokenizer,
+                                content,
+                                split_by_character,
+                                split_by_character_only,
+                                self.chunk_overlap_token_size,
+                                self.chunk_token_size,
+                            )
+                            # 判断chunks是否是异步异步函数的返回
+                            if asyncio.iscoroutine(chunks):
+                                chunks = await chunks
                             chunks: dict[str, Any] = {
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
