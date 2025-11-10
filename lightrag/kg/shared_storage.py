@@ -88,6 +88,8 @@ _graph_db_lock: Optional[LockType] = None
 _data_init_lock: Optional[LockType] = None
 # Manager for all keyed locks
 _storage_keyed_lock: Optional["KeyedUnifiedLock"] = None
+# Dictionary to store workspace-specific locks, format: {workspace:lock_name -> lock}
+_sync_locks: dict = {}
 
 # async locks for coroutine synchronization in multiprocess mode
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
@@ -1041,52 +1043,107 @@ class _KeyedLockContext:
             raise all_errors[0][2]  # (key, error_type, error)
 
 
-def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:
-    """return unified storage lock for data consistency"""
-    async_lock = _async_locks.get("internal_lock") if _is_multiprocess else None
-    return UnifiedLock(
-        lock=_internal_lock,
-        is_async=not _is_multiprocess,
-        name="internal_lock",
-        enable_logging=enable_logging,
-        async_lock=async_lock,
-    )
+def _get_workspace_lock(
+    lock_type: str,
+    global_lock: LockType,
+    workspace: str = "",
+    enable_logging: bool = False
+) -> UnifiedLock:
+    """Internal common implementation for workspace-aware locks.
+
+    This function handles lazy creation of workspace-specific locks with proper
+    synchronization to avoid race conditions. The creation is protected by
+    _registry_guard in multiprocess mode and is naturally safe in single-process
+    mode due to asyncio's single-threaded nature.
+
+    Args:
+        lock_type: The type of lock (e.g., "storage_lock", "pipeline_status_lock")
+        global_lock: The global lock instance to use when workspace is empty
+        workspace: Optional workspace identifier for namespace isolation
+        enable_logging: Enable lock operation logging
+
+    Returns:
+        UnifiedLock instance for the specified lock type and workspace
+    """
+    # Handle None workspace as empty string
+    if workspace is None:
+        workspace = ""
+
+    lock_name = f"{workspace}:{lock_type}" if workspace else lock_type
+
+    if workspace:
+        # Workspace-specific lock (lazy creation with synchronization)
+        if _is_multiprocess:
+            # Use registry guard to protect lazy creation in multiprocess mode
+            with _registry_guard:
+                if lock_name not in _sync_locks:
+                    _sync_locks[lock_name] = _manager.RLock()
+                    # Create companion async lock for this workspace lock
+                    if _async_locks is not None and lock_name not in _async_locks:
+                        _async_locks[lock_name] = asyncio.Lock()
+        else:
+            # Single-process mode - no synchronization needed due to asyncio nature
+            if lock_name not in _sync_locks:
+                _sync_locks[lock_name] = asyncio.Lock()
+
+        async_lock = _async_locks.get(lock_name) if _is_multiprocess else None
+        return UnifiedLock(
+            lock=_sync_locks[lock_name],
+            is_async=not _is_multiprocess,
+            name=lock_name,
+            enable_logging=enable_logging,
+            async_lock=async_lock,
+        )
+    else:
+        # Global lock (backward compatible)
+        async_lock = _async_locks.get(lock_type) if _is_multiprocess else None
+        return UnifiedLock(
+            lock=global_lock,
+            is_async=not _is_multiprocess,
+            name=lock_type,
+            enable_logging=enable_logging,
+            async_lock=async_lock,
+        )
 
 
-def get_storage_lock(enable_logging: bool = False) -> UnifiedLock:
-    """return unified storage lock for data consistency"""
-    async_lock = _async_locks.get("storage_lock") if _is_multiprocess else None
-    return UnifiedLock(
-        lock=_storage_lock,
-        is_async=not _is_multiprocess,
-        name="storage_lock",
-        enable_logging=enable_logging,
-        async_lock=async_lock,
-    )
+def get_internal_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+    """Return unified internal lock for data consistency.
+
+    Args:
+        workspace: Optional workspace identifier for namespace isolation.
+        enable_logging: Enable lock operation logging.
+    """
+    return _get_workspace_lock("internal_lock", _internal_lock, workspace, enable_logging)
 
 
-def get_pipeline_status_lock(enable_logging: bool = False) -> UnifiedLock:
-    """return unified storage lock for data consistency"""
-    async_lock = _async_locks.get("pipeline_status_lock") if _is_multiprocess else None
-    return UnifiedLock(
-        lock=_pipeline_status_lock,
-        is_async=not _is_multiprocess,
-        name="pipeline_status_lock",
-        enable_logging=enable_logging,
-        async_lock=async_lock,
-    )
+def get_storage_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+    """Return unified storage lock for data consistency.
+
+    Args:
+        workspace: Optional workspace identifier for namespace isolation.
+        enable_logging: Enable lock operation logging.
+    """
+    return _get_workspace_lock("storage_lock", _storage_lock, workspace, enable_logging)
 
 
-def get_graph_db_lock(enable_logging: bool = False) -> UnifiedLock:
-    """return unified graph database lock for ensuring atomic operations"""
-    async_lock = _async_locks.get("graph_db_lock") if _is_multiprocess else None
-    return UnifiedLock(
-        lock=_graph_db_lock,
-        is_async=not _is_multiprocess,
-        name="graph_db_lock",
-        enable_logging=enable_logging,
-        async_lock=async_lock,
-    )
+def get_pipeline_status_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+    """Return unified pipeline status lock for concurrent processing control.
+
+    Args:
+        workspace: Optional workspace identifier for namespace isolation.
+        enable_logging: Enable lock operation logging.
+    """
+    return _get_workspace_lock("pipeline_status_lock", _pipeline_status_lock, workspace, enable_logging)
+
+
+def get_graph_db_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+    """Return unified graph database lock for ensuring atomic operations.
+
+    Args:
+        workspace: Optional workspace identifier for namespace isolation.
+        enable_logging: Enable lock operation logging.
+    """
+    return _get_workspace_lock("graph_db_lock", _graph_db_lock, workspace, enable_logging)
 
 
 def get_storage_keyed_lock(
@@ -1101,16 +1158,14 @@ def get_storage_keyed_lock(
     return _storage_keyed_lock(namespace, keys, enable_logging=enable_logging)
 
 
-def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
-    """return unified data initialization lock for ensuring atomic data initialization"""
-    async_lock = _async_locks.get("data_init_lock") if _is_multiprocess else None
-    return UnifiedLock(
-        lock=_data_init_lock,
-        is_async=not _is_multiprocess,
-        name="data_init_lock",
-        enable_logging=enable_logging,
-        async_lock=async_lock,
-    )
+def get_data_init_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+    """Return unified data initialization lock for ensuring atomic data initialization.
+
+    Args:
+        workspace: Optional workspace identifier for namespace isolation.
+        enable_logging: Enable lock operation logging.
+    """
+    return _get_workspace_lock("data_init_lock", _data_init_lock, workspace, enable_logging)
 
 
 def cleanup_keyed_lock() -> Dict[str, Any]:
@@ -1205,6 +1260,7 @@ def initialize_share_data(workers: int = 1):
         _update_flags, \
         _async_locks, \
         _storage_keyed_lock, \
+        _sync_locks, \
         _earliest_mp_cleanup_time, \
         _last_mp_cleanup_time
 
@@ -1232,6 +1288,7 @@ def initialize_share_data(workers: int = 1):
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
+        _sync_locks = _manager.dict()
 
         _storage_keyed_lock = KeyedUnifiedLock()
 
@@ -1257,6 +1314,7 @@ def initialize_share_data(workers: int = 1):
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
+        _sync_locks = {}
         _async_locks = None  # No need for async locks in single process mode
 
         _storage_keyed_lock = KeyedUnifiedLock()
