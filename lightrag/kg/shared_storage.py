@@ -1051,7 +1051,7 @@ def _get_workspace_lock(
     lock_type: str,
     global_lock: LockType,
     workspace: str = "",
-    enable_logging: bool = False
+    enable_logging: bool = False,
 ) -> UnifiedLock:
     """Internal common implementation for workspace-aware locks.
 
@@ -1126,7 +1126,9 @@ def get_internal_lock(workspace: str = "", enable_logging: bool = False) -> Unif
         workspace: Optional workspace identifier for namespace isolation.
         enable_logging: Enable lock operation logging.
     """
-    return _get_workspace_lock("internal_lock", _internal_lock, workspace, enable_logging)
+    return _get_workspace_lock(
+        "internal_lock", _internal_lock, workspace, enable_logging
+    )
 
 
 def get_storage_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
@@ -1136,12 +1138,12 @@ def get_storage_lock(workspace: str = "", enable_logging: bool = False) -> Unifi
         workspace: Optional workspace identifier for namespace isolation.
         enable_logging: Enable lock operation logging.
     """
-    return _get_workspace_lock(
-        "storage_lock", _storage_lock, workspace, enable_logging
-    )
+    return _get_workspace_lock("storage_lock", _storage_lock, workspace, enable_logging)
 
 
-def get_pipeline_status_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+def get_pipeline_status_lock(
+    workspace: str = "", enable_logging: bool = False
+) -> UnifiedLock:
     """Return unified pipeline status lock for concurrent processing control.
 
     Args:

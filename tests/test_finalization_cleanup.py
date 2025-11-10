@@ -33,8 +33,8 @@ def test_finalization_clears_workspace_locks():
     shared_storage.initialize_share_data(workers=2)
 
     # Create some workspace locks
-    lock1 = shared_storage.get_storage_lock(workspace="tenant1")
-    lock2 = shared_storage.get_pipeline_status_lock(workspace="tenant2")
+    _ = shared_storage.get_storage_lock(workspace="tenant1")
+    _ = shared_storage.get_pipeline_status_lock(workspace="tenant2")
 
     # Verify locks were created
     assert "tenant1:storage_lock" in shared_storage._sync_locks
@@ -63,7 +63,7 @@ def test_reinitialize_after_finalization():
     """
     # First initialization
     shared_storage.initialize_share_data(workers=2)
-    lock1 = shared_storage.get_storage_lock(workspace="tenant1")
+    _ = shared_storage.get_storage_lock(workspace="tenant1")
     assert "tenant1:storage_lock" in shared_storage._sync_locks
 
     # Finalize
@@ -74,7 +74,7 @@ def test_reinitialize_after_finalization():
     shared_storage.initialize_share_data(workers=2)
 
     # Should work without EOFError/BrokenPipeError
-    lock2 = shared_storage.get_storage_lock(workspace="tenant2")
+    _ = shared_storage.get_storage_lock(workspace="tenant2")
     assert "tenant2:storage_lock" in shared_storage._sync_locks
 
     # Clean up
@@ -90,7 +90,7 @@ def test_single_process_finalization():
     shared_storage.initialize_share_data(workers=1)
 
     # Create some workspace locks
-    lock1 = shared_storage.get_storage_lock(workspace="tenant1")
+    _ = shared_storage.get_storage_lock(workspace="tenant1")
     assert "tenant1:storage_lock" in shared_storage._sync_locks
 
     # Finalize
@@ -103,7 +103,7 @@ def test_single_process_finalization():
 
     # Re-initialize should work
     shared_storage.initialize_share_data(workers=1)
-    lock2 = shared_storage.get_storage_lock(workspace="tenant2")
+    _ = shared_storage.get_storage_lock(workspace="tenant2")
     assert "tenant2:storage_lock" in shared_storage._sync_locks
 
     # Clean up
