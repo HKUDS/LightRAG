@@ -2083,7 +2083,7 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'api'" },
     { name = "python-pptx", marker = "extra == 'offline-docs'", specifier = ">=0.6.21,<2.0.0" },
     { name = "pytz", marker = "extra == 'api'" },
-    { name = "qdrant-client", marker = "extra == 'offline-storage'", specifier = ">=1.7.0,<2.0.0" },
+    { name = "qdrant-client", marker = "extra == 'offline-storage'", specifier = ">=1.11.0,<2.0.0" },
     { name = "ragas", marker = "extra == 'evaluation'", specifier = ">=0.3.7" },
     { name = "redis", marker = "extra == 'offline-storage'", specifier = ">=5.0.0,<8.0.0" },
     { name = "setuptools" },
