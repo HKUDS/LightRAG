@@ -195,6 +195,7 @@ def test_all_lock_functions_without_workspace():
 @pytest.mark.asyncio
 async def test_concurrent_workspace_operations():
     """Test that multiple workspaces can operate concurrently without blocking."""
+
     async def simulate_document_upload(workspace: str):
         start_time = time.time()
         lock = get_pipeline_status_lock(workspace=workspace)

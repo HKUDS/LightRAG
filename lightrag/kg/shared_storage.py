@@ -1123,7 +1123,9 @@ def get_storage_lock(workspace: str = "", enable_logging: bool = False) -> Unifi
         workspace: Optional workspace identifier for namespace isolation.
         enable_logging: Enable lock operation logging.
     """
-    return _get_workspace_lock("storage_lock", _storage_lock, workspace, enable_logging)
+    return _get_workspace_lock(
+        "storage_lock", _storage_lock, workspace, enable_logging
+    )
 
 
 def get_pipeline_status_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
@@ -1133,7 +1135,9 @@ def get_pipeline_status_lock(workspace: str = "", enable_logging: bool = False) 
         workspace: Optional workspace identifier for namespace isolation.
         enable_logging: Enable lock operation logging.
     """
-    return _get_workspace_lock("pipeline_status_lock", _pipeline_status_lock, workspace, enable_logging)
+    return _get_workspace_lock(
+        "pipeline_status_lock", _pipeline_status_lock, workspace, enable_logging
+    )
 
 
 def get_graph_db_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
@@ -1143,7 +1147,9 @@ def get_graph_db_lock(workspace: str = "", enable_logging: bool = False) -> Unif
         workspace: Optional workspace identifier for namespace isolation.
         enable_logging: Enable lock operation logging.
     """
-    return _get_workspace_lock("graph_db_lock", _graph_db_lock, workspace, enable_logging)
+    return _get_workspace_lock(
+        "graph_db_lock", _graph_db_lock, workspace, enable_logging
+    )
 
 
 def get_storage_keyed_lock(
@@ -1158,14 +1164,18 @@ def get_storage_keyed_lock(
     return _storage_keyed_lock(namespace, keys, enable_logging=enable_logging)
 
 
-def get_data_init_lock(workspace: str = "", enable_logging: bool = False) -> UnifiedLock:
+def get_data_init_lock(
+    workspace: str = "", enable_logging: bool = False
+) -> UnifiedLock:
     """Return unified data initialization lock for ensuring atomic data initialization.
 
     Args:
         workspace: Optional workspace identifier for namespace isolation.
         enable_logging: Enable lock operation logging.
     """
-    return _get_workspace_lock("data_init_lock", _data_init_lock, workspace, enable_logging)
+    return _get_workspace_lock(
+        "data_init_lock", _data_init_lock, workspace, enable_logging
+    )
 
 
 def cleanup_keyed_lock() -> Dict[str, Any]:
