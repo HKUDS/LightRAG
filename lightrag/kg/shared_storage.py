@@ -94,6 +94,10 @@ _sync_locks: dict = {}
 # async locks for coroutine synchronization in multiprocess mode
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
+# Per-process dictionary to store workspace-specific async locks
+# This MUST be per-process because asyncio.Lock objects cannot be shared across processes
+_workspace_async_locks: Dict[str, asyncio.Lock] = {}
+
 _debug_n_locks_acquired: int = 0
 
 
@@ -1074,19 +1078,28 @@ def _get_workspace_lock(
     if workspace:
         # Workspace-specific lock (lazy creation with synchronization)
         if _is_multiprocess:
+            # Check if shared data is initialized
+            if _registry_guard is None:
+                raise RuntimeError(
+                    "Shared data not initialized. Call initialize_share_data() first."
+                )
+
             # Use registry guard to protect lazy creation in multiprocess mode
             with _registry_guard:
                 if lock_name not in _sync_locks:
                     _sync_locks[lock_name] = _manager.RLock()
-                    # Create companion async lock for this workspace lock
-                    if _async_locks is not None and lock_name not in _async_locks:
-                        _async_locks[lock_name] = asyncio.Lock()
+
+            # Create per-process async lock for workspace (cannot be shared across processes)
+            if lock_name not in _workspace_async_locks:
+                _workspace_async_locks[lock_name] = asyncio.Lock()
+
+            async_lock = _workspace_async_locks[lock_name]
         else:
             # Single-process mode - no synchronization needed due to asyncio nature
             if lock_name not in _sync_locks:
                 _sync_locks[lock_name] = asyncio.Lock()
 
-        async_lock = _async_locks.get(lock_name) if _is_multiprocess else None
+            async_lock = None
         return UnifiedLock(
             lock=_sync_locks[lock_name],
             is_async=not _is_multiprocess,
@@ -1271,6 +1284,7 @@ def initialize_share_data(workers: int = 1):
         _async_locks, \
         _storage_keyed_lock, \
         _sync_locks, \
+        _workspace_async_locks, \
         _earliest_mp_cleanup_time, \
         _last_mp_cleanup_time
 
@@ -1311,6 +1325,9 @@ def initialize_share_data(workers: int = 1):
             "data_init_lock": asyncio.Lock(),
         }
 
+        # Initialize per-process workspace async locks
+        _workspace_async_locks = {}
+
         direct_log(
             f"Process {os.getpid()} Shared-Data created for Multiple Process (workers={workers})"
         )
@@ -1326,6 +1343,7 @@ def initialize_share_data(workers: int = 1):
         _update_flags = {}
         _sync_locks = {}
         _async_locks = None  # No need for async locks in single process mode
+        _workspace_async_locks = {}  # Not used in single process mode, but initialize for consistency
 
         _storage_keyed_lock = KeyedUnifiedLock()
         direct_log(f"Process {os.getpid()} Shared-Data created for Single Process")
