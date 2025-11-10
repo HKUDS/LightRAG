@@ -11,7 +11,15 @@ from unittest.mock import patch
 from lightrag.kg.shared_storage import (
     _get_workspace_lock,
     initialize_share_data,
+    finalize_share_data,
 )
+
+
+@pytest.fixture(autouse=True)
+def cleanup_shared_storage():
+    """Ensure shared storage is cleaned up after each test."""
+    yield
+    finalize_share_data()
 
 
 def test_error_when_not_initialized():

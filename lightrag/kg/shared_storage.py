@@ -1542,8 +1542,13 @@ def finalize_share_data():
     """
     global \
         _manager, \
+        _workers, \
         _is_multiprocess, \
         _storage_lock, \
+        _lock_registry, \
+        _lock_registry_count, \
+        _lock_cleanup_data, \
+        _registry_guard, \
         _internal_lock, \
         _pipeline_status_lock, \
         _graph_db_lock, \
@@ -1552,7 +1557,12 @@ def finalize_share_data():
         _init_flags, \
         _initialized, \
         _update_flags, \
-        _async_locks
+        _async_locks, \
+        _storage_keyed_lock, \
+        _sync_locks, \
+        _workspace_async_locks, \
+        _earliest_mp_cleanup_time, \
+        _last_mp_cleanup_time
 
     # Check if already initialized
     if not _initialized:
@@ -1597,6 +1607,30 @@ def finalize_share_data():
                     pass  # Ignore any errors during update flags cleanup
                 _update_flags.clear()
 
+            # Clear workspace locks (Manager.dict proxy)
+            if _sync_locks is not None:
+                try:
+                    _sync_locks.clear()
+                except Exception:
+                    pass  # Ignore any errors during sync locks cleanup
+
+            # Clear lock registry data
+            if _lock_registry is not None:
+                try:
+                    _lock_registry.clear()
+                except Exception:
+                    pass
+            if _lock_registry_count is not None:
+                try:
+                    _lock_registry_count.clear()
+                except Exception:
+                    pass
+            if _lock_cleanup_data is not None:
+                try:
+                    _lock_cleanup_data.clear()
+                except Exception:
+                    pass
+
             # Shut down the Manager - this will automatically clean up all shared resources
             _manager.shutdown()
             direct_log(f"Process {os.getpid()} Manager shutdown complete")
@@ -1605,8 +1639,16 @@ def finalize_share_data():
                 f"Process {os.getpid()} Error shutting down Manager: {e}", level="ERROR"
             )
 
-    # Reset global variables
+    # Clear per-process workspace async locks (not a Manager object, so clear separately)
+    if _workspace_async_locks is not None:
+        try:
+            _workspace_async_locks.clear()
+        except Exception:
+            pass  # Ignore any errors during workspace async locks cleanup
+
+    # Reset global variables to None
     _manager = None
+    _workers = None
     _initialized = None
     _is_multiprocess = None
     _shared_dicts = None
@@ -1618,5 +1660,14 @@ def finalize_share_data():
     _data_init_lock = None
     _update_flags = None
     _async_locks = None
+    _storage_keyed_lock = None
+    _sync_locks = None
+    _workspace_async_locks = None
+    _lock_registry = None
+    _lock_registry_count = None
+    _lock_cleanup_data = None
+    _registry_guard = None
+    _earliest_mp_cleanup_time = None
+    _last_mp_cleanup_time = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
