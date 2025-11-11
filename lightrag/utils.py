@@ -927,9 +927,30 @@ def load_json(file_name):
         return json.load(f)
 
 
+def _sanitize_json_data(data: Any) -> Any:
+    """Recursively sanitize all string values in data structure for safe UTF-8 encoding
+
+    Args:
+        data: Data to sanitize (dict, list, str, or other types)
+
+    Returns:
+        Sanitized data with all strings cleaned of problematic characters
+    """
+    if isinstance(data, dict):
+        return {k: _sanitize_json_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_sanitize_json_data(item) for item in data]
+    elif isinstance(data, str):
+        return sanitize_text_for_encoding(data, replacement_char="")
+    else:
+        return data
+
+
 def write_json(json_obj, file_name):
+    # Sanitize data before writing to prevent UTF-8 encoding errors
+    sanitized_obj = _sanitize_json_data(json_obj)
     with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        json.dump(sanitized_obj, f, indent=2, ensure_ascii=False)
 
 
 class TokenizerInterface(Protocol):
