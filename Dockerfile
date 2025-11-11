@@ -91,7 +91,8 @@ RUN --mount=type=cache,target=/root/.local/share/uv \
     && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Create persistent data directories AFTER package installation
-RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
+# Note: /app/lightrag/prompts can be overridden via volume mount for easy prompt customization
+RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken /app/lightrag/prompts
 
 # Copy offline cache into the newly created directory
 COPY --from=builder /app/data/tiktoken /app/data/tiktoken

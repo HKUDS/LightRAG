@@ -1,0 +1,16 @@
+# Docker Compose override for development with custom prompts
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prompts-dev.yml up
+
+services:
+  lightrag:
+    volumes:
+      # Mount prompts directory for live editing
+      - ./lightrag/prompts:/app/lightrag/prompts:rw
+      
+      # Optional: Mount a custom prompts directory
+      # - ./custom-prompts:/app/lightrag/prompts:rw
+      
+    environment:
+      # Optional: Enable debug logging for prompt loading
+      - LOG_LEVEL=DEBUG
+

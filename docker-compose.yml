@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
+      - ./lightrag/prompts:/app/lightrag/prompts
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
     env_file:
