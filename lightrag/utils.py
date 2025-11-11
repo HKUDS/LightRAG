@@ -961,19 +961,34 @@ def _sanitize_string_for_json(text: str) -> str:
 def _sanitize_json_data(data: Any) -> Any:
     """Recursively sanitize all string values in data structure for safe UTF-8 encoding
 
+    Handles all JSON-serializable types including:
+    - Dictionary keys and values
+    - Lists and tuples (preserves type)
+    - Nested structures
+    - Strings at any level
+
     Args:
-        data: Data to sanitize (dict, list, str, or other types)
+        data: Data to sanitize (dict, list, tuple, str, or other types)
 
     Returns:
         Sanitized data with all strings cleaned of problematic characters
     """
     if isinstance(data, dict):
-        return {k: _sanitize_json_data(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [_sanitize_json_data(item) for item in data]
+        # Sanitize both keys and values
+        return {
+            _sanitize_string_for_json(k)
+            if isinstance(k, str)
+            else k: _sanitize_json_data(v)
+            for k, v in data.items()
+        }
+    elif isinstance(data, (list, tuple)):
+        # Handle both lists and tuples, preserve original type
+        sanitized = [_sanitize_json_data(item) for item in data]
+        return type(data)(sanitized)
     elif isinstance(data, str):
         return _sanitize_string_for_json(data)
     else:
+        # Numbers, booleans, None, etc. - return as-is
         return data
 
 
