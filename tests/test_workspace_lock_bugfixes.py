@@ -70,7 +70,10 @@ def test_workspace_async_locks_per_process():
     assert lock1._async_lock is lock2._async_lock
 
     # Verify it's the same as the one stored in _workspace_async_locks
-    assert lock1._async_lock is shared_storage._workspace_async_locks["tenant1:storage_lock"]
+    assert (
+        lock1._async_lock
+        is shared_storage._workspace_async_locks["tenant1:storage_lock"]
+    )
 
 
 def test_multiple_workspace_locks_different_async_locks():
