@@ -87,7 +87,20 @@ class JsonKVStorage(BaseKVStorage):
                 logger.debug(
                     f"[{self.workspace}] Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
                 )
-                write_json(data_dict, self._file_name)
+
+                # Write JSON and check if sanitization was applied
+                needs_reload = write_json(data_dict, self._file_name)
+
+                # If data was sanitized, reload cleaned data to update shared memory
+                if needs_reload:
+                    logger.info(
+                        f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                    )
+                    cleaned_data = load_json(self._file_name)
+                    if cleaned_data:
+                        self._data.clear()
+                        self._data.update(cleaned_data)
+
                 await clear_all_update_flags(self.final_namespace)
 
     async def get_all(self) -> dict[str, Any]:

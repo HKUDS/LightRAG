@@ -15,7 +15,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional
+from typing import (
+    Any,
+    Protocol,
+    Callable,
+    TYPE_CHECKING,
+    List,
+    Optional,
+    Iterable,
+    Sequence,
+    Collection,
+)
 import numpy as np
 from dotenv import load_dotenv
 
@@ -25,7 +35,9 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_MAX_FILE_PATH_LENGTH,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    VALID_SOURCE_IDS_LIMIT_METHODS,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
 
 # Initialize logger with basic configuration
@@ -341,8 +353,29 @@ class EmbeddingFunc:
     embedding_dim: int
     func: callable
     max_token_size: int | None = None  # deprecated keep it for compatible only
+    send_dimensions: bool = (
+        False  # Control whether to send embedding_dim to the function
+    )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
+        # Only inject embedding_dim when send_dimensions is True
+        if self.send_dimensions:
+            # Check if user provided embedding_dim parameter
+            if "embedding_dim" in kwargs:
+                user_provided_dim = kwargs["embedding_dim"]
+                # If user's value differs from class attribute, output warning
+                if (
+                    user_provided_dim is not None
+                    and user_provided_dim != self.embedding_dim
+                ):
+                    logger.warning(
+                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
+                        f"using declared embedding_dim={self.embedding_dim} from decorator"
+                    )
+
+            # Inject embedding_dim from decorator
+            kwargs["embedding_dim"] = self.embedding_dim
+
         return await self.func(*args, **kwargs)
 
 
@@ -894,9 +927,169 @@ def load_json(file_name):
         return json.load(f)
 
 
+def _sanitize_string_for_json(text: str) -> str:
+    """Remove characters that cannot be encoded in UTF-8 for JSON serialization.
+
+    This is a simpler sanitizer specifically for JSON that directly removes
+    problematic characters without attempting to encode first.
+
+    Args:
+        text: String to sanitize
+
+    Returns:
+        Sanitized string safe for UTF-8 encoding in JSON
+    """
+    if not text:
+        return text
+
+    # Directly filter out problematic characters without pre-validation
+    sanitized = ""
+    for char in text:
+        code_point = ord(char)
+        # Skip surrogate characters (U+D800 to U+DFFF) - main cause of encoding errors
+        if 0xD800 <= code_point <= 0xDFFF:
+            continue
+        # Skip other non-characters in Unicode
+        elif code_point == 0xFFFE or code_point == 0xFFFF:
+            continue
+        else:
+            sanitized += char
+
+    return sanitized
+
+
+def _sanitize_json_data(data: Any) -> Any:
+    """Recursively sanitize all string values in data structure for safe UTF-8 encoding
+
+    DEPRECATED: This function creates a deep copy of the data which can be memory-intensive.
+    For new code, prefer using write_json with SanitizingJSONEncoder which sanitizes during
+    serialization without creating copies.
+
+    Handles all JSON-serializable types including:
+    - Dictionary keys and values
+    - Lists and tuples (preserves type)
+    - Nested structures
+    - Strings at any level
+
+    Args:
+        data: Data to sanitize (dict, list, tuple, str, or other types)
+
+    Returns:
+        Sanitized data with all strings cleaned of problematic characters
+    """
+    if isinstance(data, dict):
+        # Sanitize both keys and values
+        return {
+            _sanitize_string_for_json(k)
+            if isinstance(k, str)
+            else k: _sanitize_json_data(v)
+            for k, v in data.items()
+        }
+    elif isinstance(data, (list, tuple)):
+        # Handle both lists and tuples, preserve original type
+        sanitized = [_sanitize_json_data(item) for item in data]
+        return type(data)(sanitized)
+    elif isinstance(data, str):
+        return _sanitize_string_for_json(data)
+    else:
+        # Numbers, booleans, None, etc. - return as-is
+        return data
+
+
+class SanitizingJSONEncoder(json.JSONEncoder):
+    """
+    Custom JSON encoder that sanitizes data during serialization.
+
+    This encoder cleans strings during the encoding process without creating
+    a full copy of the data structure, making it memory-efficient for large datasets.
+    """
+
+    def encode(self, o):
+        """Override encode method to handle simple string cases"""
+        if isinstance(o, str):
+            return json.encoder.encode_basestring(_sanitize_string_for_json(o))
+        return super().encode(o)
+
+    def iterencode(self, o, _one_shot=False):
+        """
+        Override iterencode to sanitize strings during serialization.
+        This is the core method that handles complex nested structures.
+        """
+        # Preprocess: sanitize all strings in the object
+        sanitized = self._sanitize_for_encoding(o)
+
+        # Call parent's iterencode with sanitized data
+        for chunk in super().iterencode(sanitized, _one_shot):
+            yield chunk
+
+    def _sanitize_for_encoding(self, obj):
+        """
+        Recursively sanitize strings in an object.
+        Creates new objects only when necessary to avoid deep copies.
+
+        Args:
+            obj: Object to sanitize
+
+        Returns:
+            Sanitized object with cleaned strings
+        """
+        if isinstance(obj, str):
+            return _sanitize_string_for_json(obj)
+
+        elif isinstance(obj, dict):
+            # Create new dict with sanitized keys and values
+            new_dict = {}
+            for k, v in obj.items():
+                clean_k = _sanitize_string_for_json(k) if isinstance(k, str) else k
+                clean_v = self._sanitize_for_encoding(v)
+                new_dict[clean_k] = clean_v
+            return new_dict
+
+        elif isinstance(obj, (list, tuple)):
+            # Sanitize list/tuple elements
+            cleaned = [self._sanitize_for_encoding(item) for item in obj]
+            return type(obj)(cleaned) if isinstance(obj, tuple) else cleaned
+
+        else:
+            # Numbers, booleans, None, etc. remain unchanged
+            return obj
+
+
 def write_json(json_obj, file_name):
+    """
+    Write JSON data to file with optimized sanitization strategy.
+
+    This function uses a two-stage approach:
+    1. Fast path: Try direct serialization (works for clean data ~99% of time)
+    2. Slow path: Use custom encoder that sanitizes during serialization
+
+    The custom encoder approach avoids creating a deep copy of the data,
+    making it memory-efficient. When sanitization occurs, the caller should
+    reload the cleaned data from the file to update shared memory.
+
+    Args:
+        json_obj: Object to serialize (may be a shallow copy from shared memory)
+        file_name: Output file path
+
+    Returns:
+        bool: True if sanitization was applied (caller should reload data),
+              False if direct write succeeded (no reload needed)
+    """
+    try:
+        # Strategy 1: Fast path - try direct serialization
+        with open(file_name, "w", encoding="utf-8") as f:
+            json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        return False  # No sanitization needed, no reload required
+
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
+
+    # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
     with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
+
+    logger.info(f"JSON sanitization applied during write: {file_name}")
+    return True  # Sanitization applied, reload recommended
 
 
 class TokenizerInterface(Protocol):
@@ -1472,8 +1665,7 @@ async def aexport_data(
 
     else:
         raise ValueError(
-            f"Unsupported file format: {file_format}. "
-            f"Choose from: csv, excel, md, txt"
+            f"Unsupported file format: {file_format}. Choose from: csv, excel, md, txt"
         )
     if file_format is not None:
         print(f"Data exported to: {output_path} with format: {file_format}")
@@ -1784,7 +1976,7 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
         remove Chinese quotes
-        remove English queotes in and around chinese
+        remove English quotes in and around chinese
         Convert non-breaking spaces to regular spaces
         Convert narrow non-breaking spaces after non-digits to regular spaces
 
@@ -2466,63 +2658,156 @@ async def process_chunks_unified(
     return final_chunks
 
 
-def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with UTF-8 byte length limit and deduplication
+def normalize_source_ids_limit_method(method: str | None) -> str:
+    """Normalize the source ID limiting strategy and fall back to default when invalid."""
+
+    if not method:
+        return DEFAULT_SOURCE_IDS_LIMIT_METHOD
+
+    normalized = method.upper()
+    if normalized not in VALID_SOURCE_IDS_LIMIT_METHODS:
+        logger.warning(
+            "Unknown SOURCE_IDS_LIMIT_METHOD '%s', falling back to %s",
+            method,
+            DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+        )
+        return DEFAULT_SOURCE_IDS_LIMIT_METHOD
+
+    return normalized
+
+
+def merge_source_ids(
+    existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
+) -> list[str]:
+    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for sequence in (existing_ids, new_ids):
+        if not sequence:
+            continue
+        for source_id in sequence:
+            if not source_id:
+                continue
+            if source_id not in seen:
+                seen.add(source_id)
+                merged.append(source_id)
+
+    return merged
+
+
+def apply_source_ids_limit(
+    source_ids: Sequence[str],
+    limit: int,
+    method: str,
+    *,
+    identifier: str | None = None,
+) -> list[str]:
+    """Apply a limit strategy to a sequence of source IDs."""
+
+    if limit <= 0:
+        return []
+
+    source_ids_list = list(source_ids)
+    if len(source_ids_list) <= limit:
+        return source_ids_list
+
+    normalized_method = normalize_source_ids_limit_method(method)
+
+    if normalized_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+        truncated = source_ids_list[-limit:]
+    else:  # IGNORE_NEW
+        truncated = source_ids_list[:limit]
+
+    if identifier and len(truncated) < len(source_ids_list):
+        logger.debug(
+            "Source_id truncated: %s | %s keeping %s of %s entries",
+            identifier,
+            normalized_method,
+            len(truncated),
+            len(source_ids_list),
+        )
+
+    return truncated
+
+
+def compute_incremental_chunk_ids(
+    existing_full_chunk_ids: list[str],
+    old_chunk_ids: list[str],
+    new_chunk_ids: list[str],
+) -> list[str]:
+    """
+    Compute incrementally updated chunk IDs based on changes.
+
+    This function applies delta changes (additions and removals) to an existing
+    list of chunk IDs while maintaining order and ensuring deduplication.
+    Delta additions from new_chunk_ids are placed at the end.
 
     Args:
-        already_file_paths: List of existing file paths
-        data_list: List of data items containing file_path
-        target: Target name for logging warnings
+        existing_full_chunk_ids: Complete list of existing chunk IDs from storage
+        old_chunk_ids: Previous chunk IDs from source_id (chunks being replaced)
+        new_chunk_ids: New chunk IDs from updated source_id (chunks being added)
 
     Returns:
-        str: Combined file paths separated by GRAPH_FIELD_SEP
+        Updated list of chunk IDs with deduplication
+
+    Example:
+        >>> existing = ['chunk-1', 'chunk-2', 'chunk-3']
+        >>> old = ['chunk-1', 'chunk-2']
+        >>> new = ['chunk-2', 'chunk-4']
+        >>> compute_incremental_chunk_ids(existing, old, new)
+        ['chunk-3', 'chunk-2', 'chunk-4']
     """
-    # set: deduplication
-    file_paths_set = {fp for fp in already_file_paths if fp}
+    # Calculate changes
+    chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
+    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
 
-    # string: filter empty value and keep file order in already_file_paths
-    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+    # Apply changes to full chunk_ids
+    # Step 1: Remove chunks that are no longer needed
+    updated_chunk_ids = [
+        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+    ]
 
-    # Check if initial file_paths already exceeds byte length limit
-    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
-        logger.warning(
-            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"current size: {len(file_paths.encode('utf-8'))} bytes"
-        )
+    # Step 2: Add new chunks (preserving order from new_chunk_ids)
+    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    for cid in new_chunk_ids:
+        if cid in chunks_to_add and cid not in updated_chunk_ids:
+            updated_chunk_ids.append(cid)
 
-    # ignored file_paths
-    file_paths_ignore = ""
-    # add file_paths
-    for dp in data_list:
-        cur_file_path = dp.get("file_path")
-        # empty
-        if not cur_file_path:
-            continue
+    return updated_chunk_ids
 
-        # skip duplicate item
-        if cur_file_path in file_paths_set:
-            continue
-        # add
-        file_paths_set.add(cur_file_path)
 
-        # check the UTF-8 byte length
-        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-        if (
-            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
-            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
-        ):
-            # append
-            file_paths += new_addition
-        else:
-            # ignore
-            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
+def subtract_source_ids(
+    source_ids: Iterable[str],
+    ids_to_remove: Collection[str],
+) -> list[str]:
+    """Remove a collection of IDs from an ordered iterable while preserving order."""
 
-    if file_paths_ignore:
-        logger.warning(
-            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"ignoring file path: {file_paths_ignore}"
-        )
-    return file_paths
+    removal_set = set(ids_to_remove)
+    if not removal_set:
+        return [source_id for source_id in source_ids if source_id]
+
+    return [
+        source_id
+        for source_id in source_ids
+        if source_id and source_id not in removal_set
+    ]
+
+
+def make_relation_chunk_key(src: str, tgt: str) -> str:
+    """Create a deterministic storage key for relation chunk tracking."""
+
+    return GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+
+
+def parse_relation_chunk_key(key: str) -> tuple[str, str]:
+    """Parse a relation chunk storage key back into its entity pair."""
+
+    parts = key.split(GRAPH_FIELD_SEP)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid relation chunk key: {key}")
+    return parts[0], parts[1]
 
 
 def generate_track_id(prefix: str = "upload") -> str:
@@ -2612,9 +2897,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|>, <||#> -> <|#|> (one extra characters outside pipes)
+    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|> (one extra characters outside pipes)
     record = re.sub(
-        rf"<.?\|{escaped_delimiter_core}\|*?>",
+        rf"<.?\|{escaped_delimiter_core}\|.?>",
         tuple_delimiter,
         record,
     )
@@ -2634,7 +2919,6 @@ def fix_tuple_delimiter_corruption(
     )
 
     # Fix: <|#| -> <|#|>, <|#|| -> <|#|> (missing closing >)
-
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|+(?!>)",
         tuple_delimiter,
@@ -2644,6 +2928,13 @@ def fix_tuple_delimiter_corruption(
     # Fix <|#: -> <|#|> (missing closing >)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}:(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <||#> -> <|#|> (double pipe at start, missing pipe at end)
+    record = re.sub(
+        rf"<\|+{escaped_delimiter_core}>",
         tuple_delimiter,
         record,
     )
