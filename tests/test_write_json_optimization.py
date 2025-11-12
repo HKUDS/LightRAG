@@ -290,6 +290,55 @@ class TestWriteJsonOptimization:
         finally:
             os.unlink(temp_file)
 
+    def test_empty_values_after_sanitization(self):
+        """Test that data with empty values after sanitization is properly handled
+
+        Critical edge case: When sanitization results in data with empty string values,
+        we must use 'if cleaned_data is not None' instead of 'if cleaned_data' to ensure
+        proper reload, since truthy check on dict depends on content, not just existence.
+        """
+        # Create data where ALL values are only surrogate characters
+        all_dirty_data = {
+            "key1": "\ud800\udc00\ud801",
+            "key2": "\ud802\ud803",
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+            temp_file = f.name
+
+        try:
+            # Write dirty data - should trigger sanitization
+            needs_reload = write_json(all_dirty_data, temp_file)
+            assert needs_reload, "All-dirty data should trigger sanitization"
+
+            # Load the sanitized data
+            cleaned_data = load_json(temp_file)
+
+            # Critical assertions for the edge case
+            assert cleaned_data is not None, "Cleaned data should not be None"
+            # Sanitization removes surrogates but preserves keys with empty values
+            assert cleaned_data == {
+                "key1": "",
+                "key2": "",
+            }, "Surrogates should be removed, keys preserved"
+            # This dict is truthy because it has keys (even with empty values)
+            assert cleaned_data, "Dict with keys is truthy"
+
+            # Test the actual edge case: empty dict
+            empty_data = {}
+            needs_reload2 = write_json(empty_data, temp_file)
+            assert not needs_reload2, "Empty dict is clean"
+
+            reloaded_empty = load_json(temp_file)
+            assert reloaded_empty is not None, "Empty dict should not be None"
+            assert reloaded_empty == {}, "Empty dict should remain empty"
+            assert (
+                not reloaded_empty
+            ), "Empty dict evaluates to False (the critical check)"
+
+        finally:
+            os.unlink(temp_file)
+
 
 if __name__ == "__main__":
     # Run tests
@@ -329,6 +378,10 @@ if __name__ == "__main__":
 
     print("Running test_migration_with_surrogate_sanitization...")
     test.test_migration_with_surrogate_sanitization()
+    print("✓ Passed")
+
+    print("Running test_empty_values_after_sanitization...")
+    test.test_empty_values_after_sanitization()
     print("✓ Passed")
 
     print("\n✅ All tests passed!")

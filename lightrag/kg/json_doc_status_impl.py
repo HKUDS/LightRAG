@@ -171,7 +171,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                         f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
                     )
                     cleaned_data = load_json(self._file_name)
-                    if cleaned_data:
+                    if cleaned_data is not None:
                         self._data.clear()
                         self._data.update(cleaned_data)
 
