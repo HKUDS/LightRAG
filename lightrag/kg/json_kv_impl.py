@@ -237,7 +237,7 @@ class JsonKVStorage(BaseKVStorage):
             data: Original data dictionary that may contain legacy structure
 
         Returns:
-            Migrated data dictionary with flattened cache keys
+            Migrated data dictionary with flattened cache keys (sanitized if needed)
         """
         from lightrag.utils import generate_cache_key
 
@@ -274,8 +274,17 @@ class JsonKVStorage(BaseKVStorage):
             logger.info(
                 f"[{self.workspace}] Migrated {migration_count} legacy cache entries to flattened structure"
             )
-            # Persist migrated data immediately
-            write_json(migrated_data, self._file_name)
+            # Persist migrated data immediately and check if sanitization was applied
+            needs_reload = write_json(migrated_data, self._file_name)
+
+            # If data was sanitized during write, reload cleaned data
+            if needs_reload:
+                logger.info(
+                    f"[{self.workspace}] Reloading sanitized migration data for {self.namespace}"
+                )
+                cleaned_data = load_json(self._file_name)
+                if cleaned_data:
+                    return cleaned_data  # Return cleaned data to update shared memory
 
         return migrated_data
 
