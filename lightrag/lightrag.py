@@ -61,9 +61,10 @@ from lightrag.kg import (
 
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_pipeline_status_lock,
     get_graph_db_lock,
     get_data_init_lock,
+    get_storage_keyed_lock,
+    initialize_pipeline_status,
 )
 
 from lightrag.base import (
@@ -1573,8 +1574,22 @@ class LightRAG:
         """
 
         # Get pipeline status shared data and lock
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_pipeline_status_lock()
+        # Step 1: Get workspace
+        workspace = self.workspace
+
+        # Step 2: Construct namespace (following GraphDB pattern)
+        namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
+
+        # Step 3: Ensure initialization (on first access)
+        await initialize_pipeline_status(workspace)
+
+        # Step 4: Get lock
+        pipeline_status_lock = get_storage_keyed_lock(
+            keys="status", namespace=namespace, enable_logging=False
+        )
+
+        # Step 5: Get data
+        pipeline_status = await get_namespace_data(namespace)
 
         # Check if another process is already processing the queue
         async with pipeline_status_lock:
@@ -2902,8 +2917,22 @@ class LightRAG:
         doc_llm_cache_ids: list[str] = []
 
         # Get pipeline status shared data and lock for status updates
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_pipeline_status_lock()
+        # Step 1: Get workspace
+        workspace = self.workspace
+
+        # Step 2: Construct namespace (following GraphDB pattern)
+        namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
+
+        # Step 3: Ensure initialization (on first access)
+        await initialize_pipeline_status(workspace)
+
+        # Step 4: Get lock
+        pipeline_status_lock = get_storage_keyed_lock(
+            keys="status", namespace=namespace, enable_logging=False
+        )
+
+        # Step 5: Get data
+        pipeline_status = await get_namespace_data(namespace)
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"

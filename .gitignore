@@ -72,3 +72,5 @@ download_models_hf.py
 
 # Cline files
 memory-bank
+.claude/CLAUDE.md
+.claude/
