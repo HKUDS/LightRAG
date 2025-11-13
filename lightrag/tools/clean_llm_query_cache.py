@@ -873,6 +873,31 @@ class CleanupTool:
 
         storage_name = STORAGE_TYPES[choice]
 
+        # Special warning for JsonKVStorage about concurrent access
+        if storage_name == "JsonKVStorage":
+            print("\n" + "=" * 60)
+            print(f"{BOLD_RED}⚠️  IMPORTANT WARNING - JsonKVStorage Concurrency{RESET}")
+            print("=" * 60)
+            print("\nJsonKVStorage is an in-memory database that does NOT support")
+            print("concurrent access to the same file by multiple programs.")
+            print("\nBefore proceeding, please ensure that:")
+            print("  • LightRAG Server is completely shut down")
+            print("  • No other programs are accessing the storage files")
+            print("\n" + "=" * 60)
+
+            confirm = (
+                input("\nHas LightRAG Server been shut down? (yes/no): ")
+                .strip()
+                .lower()
+            )
+            if confirm != "yes":
+                print(
+                    "\n✓ Operation cancelled - Please shut down LightRAG Server first"
+                )
+                return None, None, None
+
+            print("✓ Proceeding with JsonKVStorage cleanup...")
+
         # Check configuration (warnings only, doesn't block)
         print("\nChecking configuration...")
         self.check_env_vars(storage_name)

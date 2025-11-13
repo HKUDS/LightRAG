@@ -86,7 +86,7 @@ offline-docs = [
     # Document processing dependencies
     "openpyxl>=3.0.0,<4.0.0",
     "pycryptodome>=3.0.0,<4.0.0",
-    "pypdf2>=3.0.0",
+    "pypdf>=6.1.0",
     "python-docx>=0.8.11,<2.0.0",
     "python-pptx>=0.6.21,<2.0.0",
 ]
@@ -98,7 +98,7 @@ offline-storage = [
     "pymilvus>=2.6.2,<3.0.0",
     "pymongo>=4.0.0,<5.0.0",
     "asyncpg>=0.29.0,<1.0.0",
-    "qdrant-client>=1.7.0,<2.0.0",
+    "qdrant-client>=1.11.0,<2.0.0",
 ]
 
 offline-llm = [

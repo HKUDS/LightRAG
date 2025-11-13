@@ -81,7 +81,20 @@ class JsonKVStorage(BaseKVStorage):
                 logger.debug(
                     f"[{self.workspace}] Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
                 )
-                write_json(data_dict, self._file_name)
+
+                # Write JSON and check if sanitization was applied
+                needs_reload = write_json(data_dict, self._file_name)
+
+                # If data was sanitized, reload cleaned data to update shared memory
+                if needs_reload:
+                    logger.info(
+                        f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                    )
+                    cleaned_data = load_json(self._file_name)
+                    if cleaned_data is not None:
+                        self._data.clear()
+                        self._data.update(cleaned_data)
+
                 await clear_all_update_flags(self.final_namespace)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -224,7 +237,7 @@ class JsonKVStorage(BaseKVStorage):
             data: Original data dictionary that may contain legacy structure
 
         Returns:
-            Migrated data dictionary with flattened cache keys
+            Migrated data dictionary with flattened cache keys (sanitized if needed)
         """
         from lightrag.utils import generate_cache_key
 
@@ -261,8 +274,17 @@ class JsonKVStorage(BaseKVStorage):
             logger.info(
                 f"[{self.workspace}] Migrated {migration_count} legacy cache entries to flattened structure"
             )
-            # Persist migrated data immediately
-            write_json(migrated_data, self._file_name)
+            # Persist migrated data immediately and check if sanitization was applied
+            needs_reload = write_json(migrated_data, self._file_name)
+
+            # If data was sanitized during write, reload cleaned data
+            if needs_reload:
+                logger.info(
+                    f"[{self.workspace}] Reloading sanitized migration data for {self.namespace}"
+                )
+                cleaned_data = load_json(self._file_name)
+                if cleaned_data is not None:
+                    return cleaned_data  # Return cleaned data to update shared memory
 
         return migrated_data
 
