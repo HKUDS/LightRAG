@@ -258,6 +258,14 @@ def parse_args() -> argparse.Namespace:
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
     )
 
+    # Document loading engine configuration
+    parser.add_argument(
+        "--docling",
+        action="store_true",
+        default=False,
+        help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
+    )
+
     # Conditionally add binding options defined in binding_options module
     # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
     # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
@@ -371,8 +379,13 @@ def parse_args() -> argparse.Namespace:
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
-    # Select Document loading tool (DOCLING, DEFAULT)
-    args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
+    # Set document_loading_engine from --docling flag
+    if args.docling:
+        args.document_loading_engine = "DOCLING"
+    else:
+        args.document_loading_engine = get_env_value(
+            "DOCUMENT_LOADING_ENGINE", "DEFAULT"
+        )
 
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
