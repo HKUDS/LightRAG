@@ -472,6 +472,9 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     _binding_name: ClassVar[str] = "ollama_llm"
 
 
+# =============================================================================
+# Binding Options for Gemini
+# =============================================================================
 @dataclass
 class GeminiLLMOptions(BindingOptions):
     """Options for Google Gemini models."""
@@ -502,6 +505,19 @@ class GeminiLLMOptions(BindingOptions):
         "seed": "Random seed for reproducible generation (leave empty for random)",
         "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
         "safety_settings": "JSON object with Gemini safety settings overrides",
+    }
+
+
+@dataclass
+class GeminiEmbeddingOptions(BindingOptions):
+    """Options for Google Gemini embedding models."""
+
+    _binding_name: ClassVar[str] = "gemini_embedding"
+
+    task_type: str = "RETRIEVAL_DOCUMENT"
+
+    _help: ClassVar[dict[str, str]] = {
+        "task_type": "Task type for embedding optimization (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION)",
     }
 
 

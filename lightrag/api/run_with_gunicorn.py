@@ -5,6 +5,7 @@ Start LightRAG server with Gunicorn
 
 import os
 import sys
+import platform
 import pipmaster as pm
 from lightrag.api.utils_api import display_splash_screen, check_env_file
 from lightrag.api.config import global_args
@@ -34,11 +35,45 @@ def check_and_install_dependencies():
 
 
 def main():
+    # Explicitly initialize configuration for Gunicorn mode
+    from lightrag.api.config import initialize_config
+
+    initialize_config()
+
     # Set Gunicorn mode flag for lifespan cleanup detection
     os.environ["LIGHTRAG_GUNICORN_MODE"] = "1"
 
     # Check .env file
     if not check_env_file():
+        sys.exit(1)
+
+    # Check DOCLING compatibility with Gunicorn multi-worker mode on macOS
+    if (
+        platform.system() == "Darwin"
+        and global_args.document_loading_engine == "DOCLING"
+        and global_args.workers > 1
+    ):
+        print("\n" + "=" * 80)
+        print("❌ ERROR: Incompatible configuration detected!")
+        print("=" * 80)
+        print(
+            "\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS"
+        )
+        print("\nReason:")
+        print("  PyTorch (required by DOCLING) has known compatibility issues with")
+        print("  fork-based multiprocessing on macOS, which can cause crashes or")
+        print("  unexpected behavior when using Gunicorn with multiple workers.")
+        print("\nCurrent configuration:")
+        print("  - Operating System: macOS (Darwin)")
+        print(f"  - Document Engine: {global_args.document_loading_engine}")
+        print(f"  - Workers: {global_args.workers}")
+        print("\nPossible solutions:")
+        print("  1. Use single worker mode:")
+        print("     --workers 1")
+        print("\n  2. Change document loading engine in .env:")
+        print("     DOCUMENT_LOADING_ENGINE=DEFAULT")
+        print("\n  3. Deploy on Linux where multi-worker mode is fully supported")
+        print("=" * 80 + "\n")
         sys.exit(1)
 
     # Check and install dependencies

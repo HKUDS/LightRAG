@@ -3,14 +3,15 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+from functools import lru_cache
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
-import pipmaster as pm
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
+from io import BytesIO
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -26,6 +27,24 @@ from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import generate_track_id
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+
+
+@lru_cache(maxsize=1)
+def _is_docling_available() -> bool:
+    """Check if docling is available (cached check).
+
+    This function uses lru_cache to avoid repeated import attempts.
+    The result is cached after the first call.
+
+    Returns:
+        bool: True if docling is available, False otherwise
+    """
+    try:
+        import docling  # noqa: F401  # type: ignore[import-not-found]
+
+        return True
+    except ImportError:
+        return False
 
 
 # Function to format datetime to ISO format string with timezone information
@@ -879,7 +898,6 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     Returns:
         str: Unique filename (may have numeric suffix added)
     """
-    from pathlib import Path
     import time
 
     original_path = Path(original_name)
@@ -900,6 +918,122 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     # Fallback with timestamp if all 999 slots are taken
     timestamp = int(time.time())
     return f"{base_name}_{timestamp}{extension}"
+
+
+# Document processing helper functions (synchronous)
+# These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
+
+
+def _convert_with_docling(file_path: Path) -> str:
+    """Convert document using docling (synchronous).
+
+    Args:
+        file_path: Path to the document file
+
+    Returns:
+        str: Extracted markdown content
+    """
+    from docling.document_converter import DocumentConverter  # type: ignore
+
+    converter = DocumentConverter()
+    result = converter.convert(file_path)
+    return result.document.export_to_markdown()
+
+
+def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
+    """Extract PDF content using pypdf (synchronous).
+
+    Args:
+        file_bytes: PDF file content as bytes
+        password: Optional password for encrypted PDFs
+
+    Returns:
+        str: Extracted text content
+
+    Raises:
+        Exception: If PDF is encrypted and password is incorrect or missing
+    """
+    from pypdf import PdfReader  # type: ignore
+
+    pdf_file = BytesIO(file_bytes)
+    reader = PdfReader(pdf_file)
+
+    # Check if PDF is encrypted
+    if reader.is_encrypted:
+        if not password:
+            raise Exception("PDF is encrypted but no password provided")
+
+        decrypt_result = reader.decrypt(password)
+        if decrypt_result == 0:
+            raise Exception("Incorrect PDF password")
+
+    # Extract text from all pages
+    content = ""
+    for page in reader.pages:
+        content += page.extract_text() + "\n"
+
+    return content
+
+
+def _extract_docx(file_bytes: bytes) -> str:
+    """Extract DOCX content (synchronous).
+
+    Args:
+        file_bytes: DOCX file content as bytes
+
+    Returns:
+        str: Extracted text content
+    """
+    from docx import Document  # type: ignore
+
+    docx_file = BytesIO(file_bytes)
+    doc = Document(docx_file)
+    return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+
+
+def _extract_pptx(file_bytes: bytes) -> str:
+    """Extract PPTX content (synchronous).
+
+    Args:
+        file_bytes: PPTX file content as bytes
+
+    Returns:
+        str: Extracted text content
+    """
+    from pptx import Presentation  # type: ignore
+
+    pptx_file = BytesIO(file_bytes)
+    prs = Presentation(pptx_file)
+    content = ""
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                content += shape.text + "\n"
+    return content
+
+
+def _extract_xlsx(file_bytes: bytes) -> str:
+    """Extract XLSX content (synchronous).
+
+    Args:
+        file_bytes: XLSX file content as bytes
+
+    Returns:
+        str: Extracted text content
+    """
+    from openpyxl import load_workbook  # type: ignore
+
+    xlsx_file = BytesIO(file_bytes)
+    wb = load_workbook(xlsx_file)
+    content = ""
+    for sheet in wb:
+        content += f"Sheet: {sheet.title}\n"
+        for row in sheet.iter_rows(values_only=True):
+            content += (
+                "\t".join(str(cell) if cell is not None else "" for cell in row) + "\n"
+            )
+        content += "\n"
+    return content
 
 
 async def pipeline_enqueue_file(
@@ -1072,87 +1206,28 @@ async def pipeline_enqueue_file(
 
                 case ".pdf":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
                         else:
-                            if not pm.is_installed("pypdf2"):  # type: ignore
-                                pm.install("pypdf2")
-                            if not pm.is_installed("pycryptodome"):  # type: ignore
-                                pm.install("pycryptodome")
-                            from PyPDF2 import PdfReader  # type: ignore
-                            from io import BytesIO
-
-                            pdf_file = BytesIO(file)
-                            reader = PdfReader(pdf_file)
-
-                            # Check if PDF is encrypted
-                            if reader.is_encrypted:
-                                pdf_password = global_args.pdf_decrypt_password
-                                if not pdf_password:
-                                    # PDF is encrypted but no password provided
-                                    error_files = [
-                                        {
-                                            "file_path": str(file_path.name),
-                                            "error_description": "[File Extraction]PDF is encrypted but no password provided",
-                                            "original_error": "Please set PDF_DECRYPT_PASSWORD environment variable to decrypt this PDF file",
-                                            "file_size": file_size,
-                                        }
-                                    ]
-                                    await rag.apipeline_enqueue_error_documents(
-                                        error_files, track_id
-                                    )
-                                    logger.error(
-                                        f"[File Extraction]PDF is encrypted but no password provided: {file_path.name}"
-                                    )
-                                    return False, track_id
-
-                                # Try to decrypt with password
-                                try:
-                                    decrypt_result = reader.decrypt(pdf_password)
-                                    if decrypt_result == 0:
-                                        # Password is incorrect
-                                        error_files = [
-                                            {
-                                                "file_path": str(file_path.name),
-                                                "error_description": "[File Extraction]Failed to decrypt PDF - incorrect password",
-                                                "original_error": "The provided PDF_DECRYPT_PASSWORD is incorrect for this file",
-                                                "file_size": file_size,
-                                            }
-                                        ]
-                                        await rag.apipeline_enqueue_error_documents(
-                                            error_files, track_id
-                                        )
-                                        logger.error(
-                                            f"[File Extraction]Incorrect PDF password: {file_path.name}"
-                                        )
-                                        return False, track_id
-                                except Exception as decrypt_error:
-                                    # Decryption process error
-                                    error_files = [
-                                        {
-                                            "file_path": str(file_path.name),
-                                            "error_description": "[File Extraction]PDF decryption failed",
-                                            "original_error": f"Error during PDF decryption: {str(decrypt_error)}",
-                                            "file_size": file_size,
-                                        }
-                                    ]
-                                    await rag.apipeline_enqueue_error_documents(
-                                        error_files, track_id
-                                    )
-                                    logger.error(
-                                        f"[File Extraction]PDF decryption error for {file_path.name}: {str(decrypt_error)}"
-                                    )
-                                    return False, track_id
-
-                            # Extract text from PDF (encrypted PDFs are now decrypted, unencrypted PDFs proceed directly)
-                            for page in reader.pages:
-                                content += page.extract_text() + "\n"
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to pypdf."
+                                )
+                            # Use pypdf (non-blocking via to_thread)
+                            content = await asyncio.to_thread(
+                                _extract_pdf_pypdf,
+                                file,
+                                global_args.pdf_decrypt_password,
+                            )
                     except Exception as e:
                         error_files = [
                             {
@@ -1172,28 +1247,24 @@ async def pipeline_enqueue_file(
 
                 case ".docx":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
-                        else:
-                            if not pm.is_installed("python-docx"):  # type: ignore
-                                try:
-                                    pm.install("python-docx")
-                                except Exception:
-                                    pm.install("docx")
-                            from docx import Document  # type: ignore
-                            from io import BytesIO
-
-                            docx_file = BytesIO(file)
-                            doc = Document(docx_file)
-                            content = "\n".join(
-                                [paragraph.text for paragraph in doc.paragraphs]
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
                             )
+                        else:
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
+                                )
+                            # Use python-docx (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_docx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1213,26 +1284,24 @@ async def pipeline_enqueue_file(
 
                 case ".pptx":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
                         else:
-                            if not pm.is_installed("python-pptx"):  # type: ignore
-                                pm.install("pptx")
-                            from pptx import Presentation  # type: ignore
-                            from io import BytesIO
-
-                            pptx_file = BytesIO(file)
-                            prs = Presentation(pptx_file)
-                            for slide in prs.slides:
-                                for shape in slide.shapes:
-                                    if hasattr(shape, "text"):
-                                        content += shape.text + "\n"
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-pptx."
+                                )
+                            # Use python-pptx (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_pptx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1252,33 +1321,24 @@ async def pipeline_enqueue_file(
 
                 case ".xlsx":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
                         else:
-                            if not pm.is_installed("openpyxl"):  # type: ignore
-                                pm.install("openpyxl")
-                            from openpyxl import load_workbook  # type: ignore
-                            from io import BytesIO
-
-                            xlsx_file = BytesIO(file)
-                            wb = load_workbook(xlsx_file)
-                            for sheet in wb:
-                                content += f"Sheet: {sheet.title}\n"
-                                for row in sheet.iter_rows(values_only=True):
-                                    content += (
-                                        "\t".join(
-                                            str(cell) if cell is not None else ""
-                                            for cell in row
-                                        )
-                                        + "\n"
-                                    )
-                                content += "\n"
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to openpyxl."
+                                )
+                            # Use openpyxl (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_xlsx, file)
                     except Exception as e:
                         error_files = [
                             {

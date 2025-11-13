@@ -776,7 +776,8 @@ class TigerGraphStorage(BaseGraphStorage):
                     )
                 if matching_vertices:
                     node_data = matching_vertices[0]["attributes"].copy()
-                    # Convert labels to list if needed, and filter out workspace label
+                    # Convert labels to list if needed, and filter out workspace label, entity_type, and "UNKNOWN"
+                    # Labels should only be used for workspace filtering, not for storing entity_type
                     if "labels" in node_data:
                         labels = node_data["labels"]
                         if isinstance(labels, (set, tuple)):
@@ -785,9 +786,15 @@ class TigerGraphStorage(BaseGraphStorage):
                             labels_list = (
                                 labels.copy() if isinstance(labels, list) else []
                             )
-                        # Remove workspace label from labels list (similar to Memgraph)
+                        # Remove workspace label, entity_type, and "UNKNOWN" from labels list
+                        # Only workspace should be in labels for filtering - everything else should be filtered out
+                        entity_type = node_data.get("entity_type")
                         labels_list = [
-                            label for label in labels_list if label != workspace_label
+                            label
+                            for label in labels_list
+                            if label != workspace_label
+                            and label != entity_type
+                            and label != "UNKNOWN"
                         ]
                         node_data["labels"] = labels_list
                     # Keep entity_id in the dict
@@ -874,16 +881,20 @@ class TigerGraphStorage(BaseGraphStorage):
                                     # Check if workspace label is in labels
                                     if workspace_label in labels:
                                         node_data = attrs.copy()
-                                        # Convert labels to list and filter out workspace label
+                                        # Convert labels to list and filter out workspace label, entity_type, and "UNKNOWN"
+                                        # Labels should only be used for workspace filtering, not for storing entity_type
                                         if isinstance(labels, (set, tuple)):
                                             labels_list = list(labels)
                                         else:
                                             labels_list = labels.copy()
 
+                                        entity_type = node_data.get("entity_type")
                                         labels_list = [
                                             label
                                             for label in labels_list
                                             if label != workspace_label
+                                            and label != entity_type
+                                            and label != "UNKNOWN"
                                         ]
                                         node_data["labels"] = labels_list
                                         # Ensure entity_id is in the dict
@@ -1217,7 +1228,19 @@ class TigerGraphStorage(BaseGraphStorage):
                 # entity_type should NOT be in labels - it's stored in entity_type property
                 # Always set labels to contain only workspace, regardless of what's in node_data
                 # This ensures entity_type never seeps into labels, even if it was there before
-                node_data_copy["labels"] = [workspace_label]
+                # Explicitly remove labels key first, then set it fresh to avoid any merge behavior
+                if "labels" in node_data_copy:
+                    del node_data_copy["labels"]
+
+                # Set labels to only contain workspace_label, explicitly filtering out "UNKNOWN"
+                # Even though workspace_label should never be "UNKNOWN", we filter to be safe
+                # and to prevent any accidental inclusion of "UNKNOWN" from old data
+                labels_to_set = (
+                    [workspace_label]
+                    if workspace_label and workspace_label != "UNKNOWN"
+                    else []
+                )
+                node_data_copy["labels"] = labels_to_set
 
                 # Upsert vertex
                 self._conn.upsertVertex(
@@ -1240,74 +1263,42 @@ class TigerGraphStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         """Upsert an edge and its properties between two nodes."""
-        workspace_label = self._get_workspace_label()
 
+        # Ensure both nodes exist first - use upsert_node to ensure clean labels
+        # This ensures all node creation goes through the same label-cleaning logic
+        source_exists = await self.has_node(source_node_id)
+        if not source_exists:
+            # Create source node with minimal data - upsert_node will ensure clean labels
+            await self.upsert_node(
+                source_node_id,
+                {
+                    "entity_id": source_node_id,
+                    "entity_type": "UNKNOWN",
+                    "description": "",
+                    "source_id": "",
+                    "file_path": "",
+                    "created_at": 0,
+                },
+            )
+
+        target_exists = await self.has_node(target_node_id)
+        if not target_exists:
+            # Create target node with minimal data - upsert_node will ensure clean labels
+            await self.upsert_node(
+                target_node_id,
+                {
+                    "entity_id": target_node_id,
+                    "entity_type": "UNKNOWN",
+                    "description": "",
+                    "source_id": "",
+                    "file_path": "",
+                    "created_at": 0,
+                },
+            )
+
+        # Upsert edge (undirected, so direction doesn't matter)
         def _upsert_edge():
             try:
-                # Ensure both nodes exist first
-                # Check if source node exists using getVerticesById
-                source_exists = False
-                try:
-                    source_result = self._conn.getVerticesById(
-                        VertexType.ENTITY.value, source_node_id
-                    )
-                    if (
-                        isinstance(source_result, dict)
-                        and source_node_id in source_result
-                    ):
-                        attrs = source_result[source_node_id].get("attributes", {})
-                        labels = attrs.get("labels", set())
-                        if isinstance(labels, set) and workspace_label in labels:
-                            source_exists = True
-                except Exception:
-                    pass  # Node doesn't exist
-
-                if not source_exists:
-                    # Create source node with minimal data and labels
-                    self._conn.upsertVertex(
-                        VertexType.ENTITY.value,
-                        source_node_id,
-                        {
-                            "entity_id": source_node_id,
-                            "labels": list(
-                                {workspace_label}
-                            ),  # Only workspace in labels
-                            "entity_type": "UNKNOWN",
-                        },
-                    )
-
-                # Check if target node exists using getVerticesById
-                target_exists = False
-                try:
-                    target_result = self._conn.getVerticesById(
-                        VertexType.ENTITY.value, target_node_id
-                    )
-                    if (
-                        isinstance(target_result, dict)
-                        and target_node_id in target_result
-                    ):
-                        attrs = target_result[target_node_id].get("attributes", {})
-                        labels = attrs.get("labels", set())
-                        if isinstance(labels, set) and workspace_label in labels:
-                            target_exists = True
-                except Exception:
-                    pass  # Node doesn't exist
-
-                if not target_exists:
-                    # Create target node with minimal data and labels
-                    self._conn.upsertVertex(
-                        VertexType.ENTITY.value,
-                        target_node_id,
-                        {
-                            "entity_id": target_node_id,
-                            "labels": list(
-                                {workspace_label}
-                            ),  # Only workspace in labels
-                            "entity_type": "UNKNOWN",
-                        },
-                    )
-
-                # Upsert edge (undirected, so direction doesn't matter)
                 self._conn.upsertEdge(
                     VertexType.ENTITY.value,
                     source_node_id,
@@ -1663,12 +1654,16 @@ class TigerGraphStorage(BaseGraphStorage):
                 for vertex in vertices:
                     attrs = vertex.get("attributes", {})
                     attrs["id"] = attrs.get("entity_id")
-                    # Convert labels SET to list and filter out workspace label
+                    # Convert labels SET to list and filter out workspace label, entity_type, and "UNKNOWN"
+                    # Labels should only be used for workspace filtering, not for storing entity_type
                     if "labels" in attrs and isinstance(attrs["labels"], set):
+                        entity_type = attrs.get("entity_type")
                         attrs["labels"] = [
                             label
                             for label in attrs["labels"]
                             if label != workspace_label
+                            and label != entity_type
+                            and label != "UNKNOWN"
                         ]
                     nodes.append(attrs)
                 return nodes

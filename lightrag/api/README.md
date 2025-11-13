@@ -15,7 +15,11 @@ The LightRAG Server is designed to provide a Web UI and API support. The Web UI 
 * Install from PyPI
 
 ```bash
-pip install "lightrag-hku[api]"
+# Using uv (recommended)
+uv pip install "lightrag-hku[api]"
+
+# Or using pip
+# pip install "lightrag-hku[api]"
 ```
 
 * Installation from Source
@@ -27,12 +31,16 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
-# Create a Python virtual environment
-uv venv --seed --python 3.12
-source .venv/bin/activate
+# Using uv (recommended)
+# Note: uv sync automatically creates a virtual environment in .venv/
+uv sync --extra api
+source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
+# Or on Windows: .venv\Scripts\activate
 
-# Install in editable mode with API support
-pip install -e ".[api]"
+# Or using pip with virtual environment
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# pip install -e ".[api]"
 
 # Build front-end artifacts
 cd lightrag_webui
@@ -409,6 +417,10 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample env file or config.ini file.
+
+### LLM Cache Migration Between Storage Types
+
+When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
 
 ### LightRAG API Server Command Line Options
 
