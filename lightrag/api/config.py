@@ -8,6 +8,8 @@ import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
+    GeminiEmbeddingOptions,
+    GeminiLLMOptions,
     OllamaEmbeddingOptions,
     OllamaLLMOptions,
     OpenAILLMOptions,
@@ -41,14 +43,6 @@ from lightrag.constants import (
     DEFAULT_ENTITY_TYPES,
 )
 
-# Multi-tenant security configuration
-# When True, enforces tenant context on all data endpoints (SEC-001 fix)
-MULTI_TENANT_STRICT_MODE = get_env_value("LIGHTRAG_MULTI_TENANT_STRICT", True, bool)
-# When True, requires user authentication for tenant access (SEC-003 fix)
-REQUIRE_USER_AUTH = get_env_value("LIGHTRAG_REQUIRE_USER_AUTH", True, bool)
-# Comma-separated list of super-admin usernames (SEC-002 fix)
-SUPER_ADMIN_USERS = get_env_value("LIGHTRAG_SUPER_ADMIN_USERS", "admin")
-
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
@@ -71,21 +65,13 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "gemini": os.getenv(
+            "LLM_BINDING_HOST", "https://generativelanguage.googleapis.com"
+        ),
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
     )  # fallback to ollama if unknown
-
-
-def _is_running_under_test() -> bool:
-    """Check if we're running under pytest or other test framework."""
-    return (
-        "pytest" in sys.modules or
-        "py.test" in sys.modules or
-        "_pytest" in sys.modules or
-        os.getenv("PYTEST_CURRENT_TEST") is not None or
-        any("pytest" in arg for arg in sys.argv)
-    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,8 +84,6 @@ def parse_args() -> argparse.Namespace:
     Returns:
         argparse.Namespace: Parsed arguments
     """
-    # When running under pytest, use parse_known_args to avoid conflicts
-    use_known_args = _is_running_under_test()
 
     parser = argparse.ArgumentParser(description="LightRAG API Server")
 
@@ -239,7 +223,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm-binding",
         type=str,
-        default=get_env_value("LLM_BINDING", "openai"),
+        default=get_env_value("LLM_BINDING", "ollama"),
         choices=[
             "lollms",
             "ollama",
@@ -247,15 +231,24 @@ def parse_args() -> argparse.Namespace:
             "openai-ollama",
             "azure_openai",
             "aws_bedrock",
+            "gemini",
         ],
-        help="LLM binding type (default: from env or openai)",
+        help="LLM binding type (default: from env or ollama)",
     )
     parser.add_argument(
         "--embedding-binding",
         type=str,
-        default=get_env_value("EMBEDDING_BINDING", "openai"),
-        choices=["lollms", "ollama", "openai", "azure_openai", "aws_bedrock", "jina"],
-        help="Embedding binding type (default: from env or openai)",
+        default=get_env_value("EMBEDDING_BINDING", "ollama"),
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "azure_openai",
+            "aws_bedrock",
+            "jina",
+            "gemini",
+        ],
+        help="Embedding binding type (default: from env or ollama)",
     )
     parser.add_argument(
         "--rerank-binding",
@@ -289,12 +282,19 @@ def parse_args() -> argparse.Namespace:
     if "--embedding-binding" in sys.argv:
         try:
             idx = sys.argv.index("--embedding-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
-                OllamaEmbeddingOptions.add_args(parser)
+            if idx + 1 < len(sys.argv):
+                if sys.argv[idx + 1] == "ollama":
+                    OllamaEmbeddingOptions.add_args(parser)
+                elif sys.argv[idx + 1] == "gemini":
+                    GeminiEmbeddingOptions.add_args(parser)
         except IndexError:
             pass
-    elif os.environ.get("EMBEDDING_BINDING") == "ollama":
-        OllamaEmbeddingOptions.add_args(parser)
+    else:
+        env_embedding_binding = os.environ.get("EMBEDDING_BINDING")
+        if env_embedding_binding == "ollama":
+            OllamaEmbeddingOptions.add_args(parser)
+        elif env_embedding_binding == "gemini":
+            GeminiEmbeddingOptions.add_args(parser)
 
     # Add OpenAI LLM options when llm-binding is openai or azure_openai
     if "--llm-binding" in sys.argv:
@@ -310,11 +310,17 @@ def parse_args() -> argparse.Namespace:
     elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
         OpenAILLMOptions.add_args(parser)
 
-    # Use parse_known_args under test frameworks to avoid argument conflicts
-    if use_known_args:
-        args, _ = parser.parse_known_args()
-    else:
-        args = parser.parse_args()
+    if "--llm-binding" in sys.argv:
+        try:
+            idx = sys.argv.index("--llm-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "gemini":
+                GeminiLLMOptions.add_args(parser)
+        except IndexError:
+            pass
+    elif os.environ.get("LLM_BINDING") == "gemini":
+        GeminiLLMOptions.add_args(parser)
+
+    args = parser.parse_args()
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
@@ -361,6 +367,7 @@ def parse_args() -> argparse.Namespace:
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
     args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
     args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
+    args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
@@ -380,6 +387,9 @@ def parse_args() -> argparse.Namespace:
             "DOCUMENT_LOADING_ENGINE", "DEFAULT"
         )
 
+    # PDF decryption password
+    args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
+
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
@@ -388,11 +398,6 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
-    if not args.auth_accounts:
-        auth_user = get_env_value("AUTH_USER", "")
-        auth_pass = get_env_value("AUTH_PASS", "")
-        if auth_user and auth_pass:
-            args.auth_accounts = f"{auth_user}:{auth_pass}"
     args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
@@ -457,4 +462,83 @@ def update_uvicorn_mode_config():
         )
 
 
-global_args = parse_args()
+# Global configuration with lazy initialization
+_global_args = None
+_initialized = False
+
+
+def initialize_config(args=None, force=False):
+    """Initialize global configuration
+
+    This function allows explicit initialization of the configuration,
+    which is useful for programmatic usage, testing, or embedding LightRAG
+    in other applications.
+
+    Args:
+        args: Pre-parsed argparse.Namespace or None to parse from sys.argv
+        force: Force re-initialization even if already initialized
+
+    Returns:
+        argparse.Namespace: The configured arguments
+
+    Example:
+        # Use parsed command line arguments (default)
+        initialize_config()
+
+        # Use custom configuration programmatically
+        custom_args = argparse.Namespace(
+            host='localhost',
+            port=8080,
+            working_dir='./custom_rag',
+            # ... other config
+        )
+        initialize_config(custom_args)
+    """
+    global _global_args, _initialized
+
+    if _initialized and not force:
+        return _global_args
+
+    _global_args = args if args is not None else parse_args()
+    _initialized = True
+    return _global_args
+
+
+def get_config():
+    """Get global configuration, auto-initializing if needed
+
+    Returns:
+        argparse.Namespace: The configured arguments
+    """
+    if not _initialized:
+        initialize_config()
+    return _global_args
+
+
+class _GlobalArgsProxy:
+    """Proxy object that auto-initializes configuration on first access
+
+    This maintains backward compatibility with existing code while
+    allowing programmatic control over initialization timing.
+    """
+
+    def __getattr__(self, name):
+        if not _initialized:
+            initialize_config()
+        return getattr(_global_args, name)
+
+    def __setattr__(self, name, value):
+        if not _initialized:
+            initialize_config()
+        setattr(_global_args, name, value)
+
+    def __repr__(self):
+        if not _initialized:
+            return "<GlobalArgsProxy: Not initialized>"
+        return repr(_global_args)
+
+
+# Create proxy instance for backward compatibility
+# Existing code like `from config import global_args` continues to work
+# The proxy will auto-initialize on first attribute access
+global_args = _GlobalArgsProxy()
