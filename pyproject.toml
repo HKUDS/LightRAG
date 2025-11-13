@@ -29,7 +29,7 @@ dependencies = [
     "json_repair",
     "nano-vectordb",
     "networkx",
-    "numpy",
+    "numpy>=1.24.0,<2.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
@@ -50,7 +50,7 @@ api = [
     "json_repair",
     "nano-vectordb",
     "networkx",
-    "numpy",
+    "numpy>=1.24.0,<2.0.0",
     "openai>=1.0.0,<3.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
@@ -90,7 +90,9 @@ api = [
 
 # Advanced document processing engine (optional)
 docling = [
-    "docling>=2.0.0,<3.0.0",
+    # On macOS, pytorch and frameworks use Objective-C are not fork-safe,
+    # and not compatible to gunicorn multi-worker mode
+    "docling>=2.0.0,<3.0.0; sys_platform != 'darwin'",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
