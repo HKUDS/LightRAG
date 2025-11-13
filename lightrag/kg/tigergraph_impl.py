@@ -1213,25 +1213,11 @@ class TigerGraphStorage(BaseGraphStorage):
                 if "entity_id" not in node_data_copy:
                     node_data_copy["entity_id"] = node_id
 
-                # Ensure labels SET includes workspace and entity_type
-                entity_type = node_data_copy.get("entity_type", "UNKNOWN")
-                if "labels" not in node_data_copy:
-                    # Create labels set with workspace and entity_type
-                    labels_set = {workspace_label, entity_type}
-                else:
-                    # Ensure labels is a set and includes workspace and entity_type
-                    if isinstance(node_data_copy["labels"], (list, tuple)):
-                        labels_set = set(node_data_copy["labels"])
-                    elif isinstance(node_data_copy["labels"], set):
-                        labels_set = node_data_copy["labels"].copy()
-                    else:
-                        labels_set = {str(node_data_copy["labels"])}
-                    # Add workspace and entity_type to labels
-                    labels_set.add(workspace_label)
-                    labels_set.add(entity_type)
-
-                # Convert set to list for JSON serialization (TigerGraph REST API expects list for SET<STRING>)
-                node_data_copy["labels"] = list(labels_set)
+                # Ensure labels SET includes ONLY workspace (for filtering/isolation)
+                # entity_type should NOT be in labels - it's stored in entity_type property
+                # Always set labels to contain only workspace, regardless of what's in node_data
+                # This ensures entity_type never seeps into labels, even if it was there before
+                node_data_copy["labels"] = [workspace_label]
 
                 # Upsert vertex
                 self._conn.upsertVertex(
@@ -1284,8 +1270,8 @@ class TigerGraphStorage(BaseGraphStorage):
                         {
                             "entity_id": source_node_id,
                             "labels": list(
-                                {workspace_label, "UNKNOWN"}
-                            ),  # Convert to list for JSON
+                                {workspace_label}
+                            ),  # Only workspace in labels
                             "entity_type": "UNKNOWN",
                         },
                     )
@@ -1315,8 +1301,8 @@ class TigerGraphStorage(BaseGraphStorage):
                         {
                             "entity_id": target_node_id,
                             "labels": list(
-                                {workspace_label, "UNKNOWN"}
-                            ),  # Convert to list for JSON
+                                {workspace_label}
+                            ),  # Only workspace in labels
                             "entity_type": "UNKNOWN",
                         },
                     )

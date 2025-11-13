@@ -10,7 +10,7 @@ from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import logger, set_verbose_debug
 
-WORKING_DIR = "./tigergraph_test_dir"
+WORKING_DIR = "./dickens"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
@@ -159,32 +159,35 @@ async def test_ingestion(json_file=None):
         print(f"  ✓ Document inserted with track_id: {track_id}")
 
     # Test JSON ingestion if JSON file is provided or exists
-    json_test_file = Path(json_file) if json_file else Path("test_data.json")
-    if json_test_file.exists():
-        print("\n" + "=" * 60)
-        print("Ingesting JSON file...")
-        print("=" * 60)
+    if json_file:
+        json_test_file = Path(json_file)
+        if json_test_file.exists():
+            print("\n" + "=" * 60)
+            print("Ingesting JSON file...")
+            print("=" * 60)
 
-        try:
-            texts = load_json_texts(json_test_file)
-            print(f"✓ Loaded {len(texts)} texts from {json_test_file}")
+            try:
+                texts = load_json_texts(json_test_file)
+                print(f"✓ Loaded {len(texts)} texts from {json_test_file}")
 
-            for i, text in enumerate(texts, 1):
-                print(f"\n[{i}/{len(texts)}] Inserting from JSON...")
-                track_id = await rag.ainsert(input=text, file_paths=str(json_test_file))
-                print(f"  ✓ Text inserted with track_id: {track_id}")
-        except Exception as e:
-            print(f"✗ Error loading JSON file: {e}")
-            import traceback
+                for i, text in enumerate(texts, 1):
+                    print(f"\n[{i}/{len(texts)}] Inserting from JSON...")
+                    track_id = await rag.ainsert(
+                        input=text, file_paths=str(json_test_file)
+                    )
+                    print(f"  ✓ Text inserted with track_id: {track_id}")
+            except Exception as e:
+                print(f"✗ Error loading JSON file: {e}")
+                import traceback
 
-            traceback.print_exc()
-    else:
-        print(
-            f"\nℹ No JSON file found at {json_test_file} (skipping JSON ingestion test)"
-        )
-        print("  Create a test_data.json file with format:")
-        print('  [{"text": "Your text here"}, {"text": "Another text"}]')
-        print("  Or use --json-file parameter to specify a JSON file")
+                traceback.print_exc()
+        else:
+            print(
+                f"\nℹ No JSON file found at {json_test_file} (skipping JSON ingestion test)"
+            )
+            print("  Create a test_data.json file with format:")
+            print('  [{"text": "Your text here"}, {"text": "Another text"}]')
+            print("  Or use --json-file parameter to specify a JSON file")
 
     print("\n" + "=" * 60)
     print("Verifying ingestion...")
