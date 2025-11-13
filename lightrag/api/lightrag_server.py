@@ -1245,6 +1245,12 @@ def check_and_install_dependencies():
 
 
 def main():
+    # Explicitly initialize configuration for clarity
+    # (The proxy will auto-initialize anyway, but this makes intent clear)
+    from .config import initialize_config
+
+    initialize_config()
+
     # Check if running under Gunicorn
     if "GUNICORN_CMD_ARGS" in os.environ:
         # If started with Gunicorn, return directly as Gunicorn will call get_application

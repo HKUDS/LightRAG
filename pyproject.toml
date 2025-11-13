@@ -79,6 +79,7 @@ api = [
     "python-multipart",
     "pytz",
     "uvicorn",
+    "gunicorn",
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
     "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
