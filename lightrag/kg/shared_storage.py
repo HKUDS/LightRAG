@@ -1270,12 +1270,23 @@ def initialize_share_data(workers: int = 1):
     _initialized = True
 
 
-async def initialize_pipeline_status():
+async def initialize_pipeline_status(workspace: str = ""):
     """
     Initialize pipeline namespace with default values.
+
+    Args:
+        workspace: Optional workspace identifier for multi-tenant isolation.
+                   Empty string (default) uses global "pipeline_status" namespace.
+
     This function is called during FASTAPI lifespan for each worker.
     """
-    pipeline_namespace = await get_namespace_data("pipeline_status", first_init=True)
+    # Construct namespace (following GraphDB pattern)
+    if workspace:
+        namespace = f"{workspace}:pipeline"
+    else:
+        namespace = "pipeline_status"  # Backward compatibility
+
+    pipeline_namespace = await get_namespace_data(namespace, first_init=True)
 
     async with get_internal_lock():
         # Check if already initialized by checking for required fields
@@ -1298,7 +1309,9 @@ async def initialize_pipeline_status():
                 "history_messages": history_messages,  # 使用共享列表对象
             }
         )
-        direct_log(f"Process {os.getpid()} Pipeline namespace initialized")
+        direct_log(
+            f"Process {os.getpid()} Pipeline namespace '{namespace}' initialized"
+        )
 
 
 async def get_update_flag(namespace: str):
@@ -1430,7 +1443,12 @@ async def get_namespace_data(
     async with get_internal_lock():
         if namespace not in _shared_dicts:
             # Special handling for pipeline_status namespace
-            if namespace == "pipeline_status" and not first_init:
+            # Supports both global "pipeline_status" and workspace-specific "{workspace}:pipeline"
+            is_pipeline = namespace == "pipeline_status" or namespace.endswith(
+                ":pipeline"
+            )
+
+            if is_pipeline and not first_init:
                 # Check if pipeline_status should have been initialized but wasn't
                 # This helps users understand they need to call initialize_pipeline_status()
                 raise PipelineNotInitializedError(namespace)
