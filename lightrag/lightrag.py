@@ -3,6 +3,7 @@ from __future__ import annotations
 import traceback
 import asyncio
 import configparser
+import inspect
 import os
 import time
 import warnings
@@ -1793,8 +1794,8 @@ class LightRAG:
                                 self.chunk_token_size,
                             )
 
-                            # If result is a coroutine, await to get actual result
-                            if asyncio.iscoroutine(chunking_result):
+                            # If result is awaitable, await to get actual result
+                            if inspect.isawaitable(chunking_result):
                                 chunking_result = await chunking_result
 
                             # Validate return type
