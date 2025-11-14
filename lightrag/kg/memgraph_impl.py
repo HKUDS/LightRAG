@@ -1050,12 +1050,12 @@ class MemgraphStorage(BaseGraphStorage):
                 "Memgraph driver is not initialized. Call 'await initialize()' first."
             )
 
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            result = None
-            try:
+        result = None
+        try:
+            workspace_label = self._get_workspace_label()
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
                 query = f"""
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
@@ -1075,13 +1075,11 @@ class MemgraphStorage(BaseGraphStorage):
                     f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
                 )
                 return labels
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error getting popular labels: {str(e)}"
-                )
-                if result is not None:
-                    await result.consume()
-                return []
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
+            if result is not None:
+                await result.consume()
+            return []
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """Search labels with fuzzy matching
@@ -1103,12 +1101,12 @@ class MemgraphStorage(BaseGraphStorage):
         if not query_lower:
             return []
 
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            result = None
-            try:
+        result = None
+        try:
+            workspace_label = self._get_workspace_label()
+            async with self._driver.session(
+                database=self._DATABASE, default_access_mode="READ"
+            ) as session:
                 cypher_query = f"""
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
@@ -1135,8 +1133,8 @@ class MemgraphStorage(BaseGraphStorage):
                     f"[{self.workspace}] Search query '{query}' returned {len(labels)} results (limit: {limit})"
                 )
                 return labels
-            except Exception as e:
-                logger.error(f"[{self.workspace}] Error searching labels: {str(e)}")
-                if result is not None:
-                    await result.consume()
-                return []
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error searching labels: {str(e)}")
+            if result is not None:
+                await result.consume()
+            return []
