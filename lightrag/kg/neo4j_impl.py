@@ -371,6 +371,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            result = None
             try:
                 query = f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN count(n) > 0 AS node_exists"
                 result = await session.run(query, entity_id=node_id)
@@ -381,7 +382,8 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error checking node existence for {node_id}: {str(e)}"
                 )
-                await result.consume()  # Ensure results are consumed even on error
+                if result is not None:
+                    await result.consume()  # Ensure results are consumed even on error
                 raise
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
@@ -403,6 +405,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            result = None
             try:
                 query = (
                     f"MATCH (a:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(b:`{workspace_label}` {{entity_id: $target_entity_id}}) "
@@ -420,7 +423,8 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
                 )
-                await result.consume()  # Ensure results are consumed even on error
+                if result is not None:
+                    await result.consume()  # Ensure results are consumed even on error
                 raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
@@ -799,6 +803,7 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
+                results = None
                 try:
                     workspace_label = self._get_workspace_label()
                     query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
@@ -836,7 +841,10 @@ class Neo4JStorage(BaseGraphStorage):
                     logger.error(
                         f"[{self.workspace}] Error getting edges for node {source_node_id}: {str(e)}"
                     )
-                    await results.consume()  # Ensure results are consumed even on error
+                    if results is not None:
+                        await (
+                            results.consume()
+                        )  # Ensure results are consumed even on error
                     raise
         except Exception as e:
             logger.error(
@@ -1592,6 +1600,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            result = None
             try:
                 query = f"""
                 MATCH (n:`{workspace_label}`)
@@ -1616,7 +1625,8 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error getting popular labels: {str(e)}"
                 )
-                await result.consume()
+                if result is not None:
+                    await result.consume()
                 raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
