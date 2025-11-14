@@ -277,12 +277,8 @@ class LightRAG:
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
 
-    @property
-    def embedding_token_limit(self) -> int | None:
-        """Get the token limit for embedding model from embedding_func."""
-        if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
-            return self.embedding_func.max_token_size
-        return None
+    embedding_token_limit: int | None = field(default=None, init=False)
+    """Token limit for embedding model. Set automatically from embedding_func.max_token_size in __post_init__."""
 
     embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 10)))
     """Batch size for embedding computations."""
@@ -532,6 +528,12 @@ class LightRAG:
             llm_timeout=self.default_embedding_timeout,
             queue_name="Embedding func",
         )(self.embedding_func)
+
+        # Initialize embedding_token_limit from embedding_func
+        if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
+            self.embedding_token_limit = self.embedding_func.max_token_size
+        else:
+            self.embedding_token_limit = None
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (
