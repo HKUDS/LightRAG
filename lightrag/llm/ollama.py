@@ -25,7 +25,10 @@ from lightrag.api import __api_version__
 
 import numpy as np
 from typing import Optional, Union
-from lightrag.utils import logger
+from lightrag.utils import (
+    wrap_embedding_func_with_attrs,
+    logger,
+)
 
 
 _OLLAMA_CLOUD_HOST = "https://ollama.com"
@@ -169,6 +172,7 @@ async def ollama_model_complete(
     )
 
 
+@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
 async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     api_key = kwargs.pop("api_key", None)
     if not api_key:

@@ -16,6 +16,7 @@ from tenacity import (
 )
 
 import sys
+from lightrag.utils import wrap_embedding_func_with_attrs
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
@@ -253,7 +254,7 @@ async def bedrock_complete(
     return result
 
 
-# @wrap_embedding_func_with_attrs(embedding_dim=1024)
+@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
 # @retry(
 #     stop=stop_after_attempt(3),
 #     wait=wait_exponential(multiplier=1, min=4, max=10),

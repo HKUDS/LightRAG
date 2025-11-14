@@ -355,7 +355,7 @@ class TaskState:
 class EmbeddingFunc:
     embedding_dim: int
     func: callable
-    max_token_size: int | None = None  # deprecated keep it for compatible only
+    max_token_size: int | None = None  # Token limit for the embedding model
     send_dimensions: bool = (
         False  # Control whether to send embedding_dim to the function
     )
