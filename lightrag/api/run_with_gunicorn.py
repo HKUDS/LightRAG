@@ -76,6 +76,39 @@ def main():
         print("=" * 80 + "\n")
         sys.exit(1)
 
+    # Check macOS fork safety environment variable for multi-worker mode
+    if (
+        platform.system() == "Darwin"
+        and global_args.workers > 1
+        and os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY") != "YES"
+    ):
+        print("\n" + "=" * 80)
+        print("❌ ERROR: Missing required environment variable on macOS!")
+        print("=" * 80)
+        print("\nmacOS with Gunicorn multi-worker mode requires:")
+        print("  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
+        print("\nReason:")
+        print("  NumPy uses macOS's Accelerate framework (Objective-C based) for")
+        print("  vector computations. The Objective-C runtime has fork safety checks")
+        print("  that will crash worker processes when embedding functions are called.")
+        print("\nCurrent configuration:")
+        print("  - Operating System: macOS (Darwin)")
+        print(f"  - Workers: {global_args.workers}")
+        print(
+            f"  - Environment Variable: {os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'NOT SET')}"
+        )
+        print("\nHow to fix:")
+        print("  Option 1 - Set environment variable before starting (recommended):")
+        print("     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
+        print("     lightrag-server")
+        print("\n  Option 2 - Add to your shell profile (~/.zshrc or ~/.bash_profile):")
+        print("     echo 'export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES' >> ~/.zshrc")
+        print("     source ~/.zshrc")
+        print("\n  Option 3 - Use single worker mode (no multiprocessing):")
+        print("     lightrag-server --workers 1")
+        print("=" * 80 + "\n")
+        sys.exit(1)
+
     # Check and install dependencies
     check_and_install_dependencies()
 
