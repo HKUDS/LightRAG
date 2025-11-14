@@ -258,6 +258,14 @@ def parse_args() -> argparse.Namespace:
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
     )
 
+    # Document loading engine configuration
+    parser.add_argument(
+        "--docling",
+        action="store_true",
+        default=False,
+        help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
+    )
+
     # Conditionally add binding options defined in binding_options module
     # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
     # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
@@ -371,8 +379,13 @@ def parse_args() -> argparse.Namespace:
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
-    # Select Document loading tool (DOCLING, DEFAULT)
-    args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
+    # Set document_loading_engine from --docling flag
+    if args.docling:
+        args.document_loading_engine = "DOCLING"
+    else:
+        args.document_loading_engine = get_env_value(
+            "DOCUMENT_LOADING_ENGINE", "DEFAULT"
+        )
 
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
@@ -449,4 +462,83 @@ def update_uvicorn_mode_config():
         )
 
 
-global_args = parse_args()
+# Global configuration with lazy initialization
+_global_args = None
+_initialized = False
+
+
+def initialize_config(args=None, force=False):
+    """Initialize global configuration
+
+    This function allows explicit initialization of the configuration,
+    which is useful for programmatic usage, testing, or embedding LightRAG
+    in other applications.
+
+    Args:
+        args: Pre-parsed argparse.Namespace or None to parse from sys.argv
+        force: Force re-initialization even if already initialized
+
+    Returns:
+        argparse.Namespace: The configured arguments
+
+    Example:
+        # Use parsed command line arguments (default)
+        initialize_config()
+
+        # Use custom configuration programmatically
+        custom_args = argparse.Namespace(
+            host='localhost',
+            port=8080,
+            working_dir='./custom_rag',
+            # ... other config
+        )
+        initialize_config(custom_args)
+    """
+    global _global_args, _initialized
+
+    if _initialized and not force:
+        return _global_args
+
+    _global_args = args if args is not None else parse_args()
+    _initialized = True
+    return _global_args
+
+
+def get_config():
+    """Get global configuration, auto-initializing if needed
+
+    Returns:
+        argparse.Namespace: The configured arguments
+    """
+    if not _initialized:
+        initialize_config()
+    return _global_args
+
+
+class _GlobalArgsProxy:
+    """Proxy object that auto-initializes configuration on first access
+
+    This maintains backward compatibility with existing code while
+    allowing programmatic control over initialization timing.
+    """
+
+    def __getattr__(self, name):
+        if not _initialized:
+            initialize_config()
+        return getattr(_global_args, name)
+
+    def __setattr__(self, name, value):
+        if not _initialized:
+            initialize_config()
+        setattr(_global_args, name, value)
+
+    def __repr__(self):
+        if not _initialized:
+            return "<GlobalArgsProxy: Not initialized>"
+        return repr(_global_args)
+
+
+# Create proxy instance for backward compatibility
+# Existing code like `from config import global_args` continues to work
+# The proxy will auto-initialize on first attribute access
+global_args = _GlobalArgsProxy()
