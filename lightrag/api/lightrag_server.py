@@ -632,8 +632,8 @@ def create_app(args):
 
         # Step 1: Import provider function and extract default attributes
         provider_func = None
-        default_max_token_size = None
-        default_embedding_dim = args.embedding_dim  # Use config as default
+        provider_max_token_size = None
+        provider_embedding_dim = None
 
         try:
             if binding == "openai":
@@ -667,18 +667,24 @@ def create_app(args):
 
             # Extract attributes if provider is an EmbeddingFunc
             if provider_func and isinstance(provider_func, EmbeddingFunc):
-                default_max_token_size = provider_func.max_token_size
-                default_embedding_dim = provider_func.embedding_dim
+                provider_max_token_size = provider_func.max_token_size
+                provider_embedding_dim = provider_func.embedding_dim
                 logger.debug(
                     f"Extracted from {binding} provider: "
-                    f"max_token_size={default_max_token_size}, "
-                    f"embedding_dim={default_embedding_dim}"
+                    f"max_token_size={provider_max_token_size}, "
+                    f"embedding_dim={provider_embedding_dim}"
                 )
         except ImportError as e:
             logger.warning(f"Could not import provider function for {binding}: {e}")
 
-        # Step 2: Apply priority (environment variable > provider default)
-        final_max_token_size = args.embedding_token_limit or default_max_token_size
+        # Step 2: Apply priority (user config > provider default)
+        # For max_token_size: explicit env var > provider default > None
+        final_max_token_size = args.embedding_token_limit or provider_max_token_size
+        # For embedding_dim: user config (always has value) takes priority
+        # Only use provider default if user config is explicitly None (which shouldn't happen)
+        final_embedding_dim = (
+            args.embedding_dim if args.embedding_dim else provider_embedding_dim
+        )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
         async def optimized_embedding_function(texts, embedding_dim=None):
@@ -797,10 +803,16 @@ def create_app(args):
 
         # Step 4: Wrap in EmbeddingFunc and return
         embedding_func_instance = EmbeddingFunc(
-            embedding_dim=default_embedding_dim,
+            embedding_dim=final_embedding_dim,
             func=optimized_embedding_function,
             max_token_size=final_max_token_size,
             send_dimensions=False,  # Will be set later based on binding requirements
+        )
+
+        # Log final embedding configuration
+        logger.info(
+            f"Embedding config: binding={binding} model={model} "
+            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}"
         )
 
         return embedding_func_instance
