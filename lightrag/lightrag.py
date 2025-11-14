@@ -276,6 +276,13 @@ class LightRAG:
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
 
+    @property
+    def embedding_token_limit(self) -> int | None:
+        """Get the token limit for embedding model from embedding_func."""
+        if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
+            return self.embedding_func.max_token_size
+        return None
+
     embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 10)))
     """Batch size for embedding computations."""
 
