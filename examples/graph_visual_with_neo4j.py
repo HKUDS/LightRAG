@@ -53,8 +53,8 @@ def xml_to_json(xml_file):
                 "description": edge.find("./data[@key='d6']", namespace).text
                 if edge.find("./data[@key='d6']", namespace) is not None
                 else "",
-                "keywords": edge.find("./data[@key='d7']", namespace).text
-                if edge.find("./data[@key='d7']", namespace) is not None
+                "keywords": edge.find("./data[@key='d9']", namespace).text
+                if edge.find("./data[@key='d9']", namespace) is not None
                 else "",
                 "source_id": edge.find("./data[@key='d8']", namespace).text
                 if edge.find("./data[@key='d8']", namespace) is not None
