@@ -33,7 +33,7 @@ from lightrag.utils import (
 import numpy as np
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=2048)
+@wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=8192)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
