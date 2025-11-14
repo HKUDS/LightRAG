@@ -276,6 +276,9 @@ class LightRAG:
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
 
+    embedding_token_limit: int | None = field(default=None, init=False)
+    """Token limit for embedding model. Set automatically from embedding_func.max_token_size in __post_init__."""
+
     embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 10)))
     """Batch size for embedding computations."""
 
@@ -519,6 +522,16 @@ class LightRAG:
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # Init Embedding
+        # Step 1: Capture max_token_size before applying decorator (decorator strips dataclass attributes)
+        embedding_max_token_size = None
+        if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
+            embedding_max_token_size = self.embedding_func.max_token_size
+            logger.debug(
+                f"Captured embedding max_token_size: {embedding_max_token_size}"
+            )
+        self.embedding_token_limit = embedding_max_token_size
+
+        # Step 2: Apply priority wrapper decorator
         self.embedding_func = priority_limit_async_func_call(
             self.embedding_func_max_async,
             llm_timeout=self.default_embedding_timeout,

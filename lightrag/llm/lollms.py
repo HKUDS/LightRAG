@@ -26,6 +26,10 @@ from lightrag.exceptions import (
 from typing import Union, List
 import numpy as np
 
+from lightrag.utils import (
+    wrap_embedding_func_with_attrs,
+)
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -134,6 +138,7 @@ async def lollms_model_complete(
     )
 
 
+@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
 async def lollms_embed(
     texts: List[str], embed_model=None, base_url="http://localhost:9600", **kwargs
 ) -> np.ndarray:
