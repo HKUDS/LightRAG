@@ -75,6 +75,9 @@ _last_mp_cleanup_time: Optional[float] = None
 
 _initialized = None
 
+# Default workspace for backward compatibility
+_default_workspace: Optional[str] = None
+
 # shared data for storage across processes
 _shared_dicts: Optional[Dict[str, Any]] = None
 _init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
@@ -1276,15 +1279,21 @@ async def initialize_pipeline_status(workspace: str = ""):
 
     Args:
         workspace: Optional workspace identifier for multi-tenant isolation.
-                   Empty string (default) uses global "pipeline_status" namespace.
+                   If empty string, uses the default workspace set by
+                   set_default_workspace(). If no default is set, uses
+                   global "pipeline_status" namespace.
 
     This function is called during FASTAPI lifespan for each worker.
     """
+    # Backward compatibility: use default workspace if not provided
+    if not workspace:
+        workspace = get_default_workspace()
+
     # Construct namespace (following GraphDB pattern)
     if workspace:
         namespace = f"{workspace}:pipeline"
     else:
-        namespace = "pipeline_status"  # Backward compatibility
+        namespace = "pipeline_status"  # Global namespace for backward compatibility
 
     pipeline_namespace = await get_namespace_data(namespace, first_init=True)
 
@@ -1552,3 +1561,33 @@ def finalize_share_data():
     _async_locks = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
+
+
+def set_default_workspace(workspace: str):
+    """
+    Set default workspace for backward compatibility.
+
+    This allows initialize_pipeline_status() to automatically use the correct
+    workspace when called without parameters, maintaining compatibility with
+    legacy code that doesn't pass workspace explicitly.
+
+    Args:
+        workspace: Workspace identifier (may be empty string for global namespace)
+    """
+    global _default_workspace
+    _default_workspace = workspace
+    direct_log(
+        f"Default workspace set to: '{workspace}' (empty means global)",
+        level="DEBUG",
+    )
+
+
+def get_default_workspace() -> str:
+    """
+    Get default workspace for backward compatibility.
+
+    Returns:
+        The default workspace string. Empty string means global namespace.
+    """
+    global _default_workspace
+    return _default_workspace if _default_workspace is not None else ""
