@@ -452,6 +452,29 @@ def create_app(args):
     # Create combined auth dependency for all endpoints
     combined_auth = get_combined_auth_dependency(api_key)
 
+    def get_workspace_from_request(request: Request) -> str:
+        """
+        Extract workspace from HTTP request header or use default.
+
+        This enables multi-workspace API support by checking the custom
+        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
+        server's default workspace configuration.
+
+        Args:
+            request: FastAPI Request object
+
+        Returns:
+            Workspace identifier (may be empty string for global namespace)
+        """
+        # Check custom header first
+        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+
+        # Fall back to server default if header not provided
+        if not workspace:
+            workspace = args.workspace
+
+        return workspace
+
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
@@ -991,10 +1014,17 @@ def create_app(args):
         }
 
     @app.get("/health", dependencies=[Depends(combined_auth)])
-    async def get_status():
+    async def get_status(request: Request):
         """Get current system status"""
         try:
-            pipeline_status = await get_namespace_data("pipeline_status")
+            # Extract workspace from request header or use default
+            workspace = get_workspace_from_request(request)
+
+            # Construct namespace (following GraphDB pattern)
+            namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
+
+            # Get workspace-specific pipeline status
+            pipeline_status = await get_namespace_data(namespace)
 
             if not auth_configured:
                 auth_mode = "disabled"
@@ -1025,7 +1055,8 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": args.workspace,
+                    "workspace": workspace,
+                    "default_workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
