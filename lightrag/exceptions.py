@@ -112,3 +112,60 @@ class QdrantMigrationError(Exception):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
+
+
+#  Database-related exceptions for improved error handling
+
+class DatabaseConnectionError(APIConnectionError):
+        """Raised when database connection fails with recovery suggestions."""
+
+            def __init__(self, message: str, database_type: str = "", recovery_hint: str = ""):
+                        self.database_type = database_type
+                                self.recovery_hint = recovery_hint
+                                        detailed_msg = f"Database connection error
+                                                if database_type:
+                                                                detailed_msg += f" [{database_type}]"
+                                                                        detailed_msg += f": {message}"
+                                                                                if recovery_hint:
+                                                                                                detailed_msg += f"\nRecovery: {recovery_hint}"
+                                                                                                        super().__init__(detailed_msg)
+
+
+                                                                                                        class DatabaseTimeoutError(APITimeoutError):
+                                                                                                                """Raised when database operations timeout."""
+
+                                                                                                                    def __init__(self, message: str, operation: str = "", timeout_seconds: float = 0):
+                                                                                                                                self.operation = operation
+                                                                                                                                        self.timeout_seconds = timeout_seconds
+                                                                                                                                                detailed_msg = f"Database timeout: {message}"
+                                                                                                                                                        if operation:
+                                                                                                                                                                        detailed_msg += f" during '{operation}'"
+                                                                                                                                                                                if timeout_seconds > 0:
+                                                                                                                                                                                                detailed_msg += f" (timeout: {timeout_seconds}s)"
+                                                                                                                                                                                                        super().__init__(detailed_msg)
+
+
+                                                                                                                                                                                                        class EncodingError(Exception):
+                                                                                                                                                                                                                """Raised when character encoding issues occur (UTF-8, etc.)."""
+
+                                                                                                                                                                                                                    def __init__(self, message: str, encoding: str = "UTF-8", field_name: str = ""):
+                                                                                                                                                                                                                                self.encoding = encoding
+                                                                                                                                                                                                                                        self.field_name = field_name
+                                                                                                                                                                                                                                                detailed_msg = f"Encoding error [{encoding}]: {message}"
+                                                                                                                                                                                                                                                        if field_name:
+                                                                                                                                                                                                                                                                        detailed_msg += f" in field '{field_name}'"
+                                                                                                                                                                                                                                                                                super().__init__(detailed_msg)
+
+
+                                                                                                                                                                                                                                                                                class DataValidationError(Exception):
+                                                                                                                                                                                                                                                                                        """Raised when data validation fails in RAG processing."""
+
+                                                                                                                                                                                                                                                                                            def __init__(self, message: str, data_type: str = "", expected_format: str = ""):
+                                                                                                                                                                                                                                                                                                        self.data_type = data_type
+                                                                                                                                                                                                                                                                                                                self.expected_format = expected_format
+                                                                                                                                                                                                                                                                                                                        detailed_msg = f"Data validation error: {message}"
+                                                                                                                                                                                                                                                                                                                                if data_type:
+                                                                                                                                                                                                                                                                                                                                                detailed_msg += f" for data type '{data_type}'"
+                                                                                                                                                                                                                                                                                                                                                        if expected_format:
+                                                                                                                                                                                                                                                                                                                                                                        detailed_msg += f". Expected format: {expected_format}"
+                                                                                                                                                                                                                                                                                                                                                                                super().__init__(detailed_msg)
