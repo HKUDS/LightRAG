@@ -640,6 +640,13 @@ class LightRAG:
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
         if self._storages_status == StoragesStatus.CREATED:
+            # Set default workspace for backward compatibility
+            # This allows initialize_pipeline_status() called without parameters
+            # to use the correct workspace
+            from lightrag.kg.shared_storage import set_default_workspace
+
+            set_default_workspace(self.workspace)
+
             for storage in (
                 self.full_docs,
                 self.text_chunks,
