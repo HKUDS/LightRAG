@@ -35,7 +35,7 @@ class JsonKVStorage(BaseKVStorage):
             # Default behavior when workspace is empty
             workspace_dir = working_dir
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")

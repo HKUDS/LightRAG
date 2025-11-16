@@ -153,7 +153,7 @@ class RedisKVStorage(BaseKVStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._redis_url = os.environ.get(

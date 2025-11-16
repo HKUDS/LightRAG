@@ -47,8 +47,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
-            self.workspace = "_"
             workspace_dir = working_dir
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._faiss_index_file = os.path.join(

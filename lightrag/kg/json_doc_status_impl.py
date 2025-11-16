@@ -38,9 +38,9 @@ class JsonDocStatusStorage(DocStatusStorage):
             self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
-            self.workspace = "_"
             workspace_dir = working_dir
+            self.final_namespace = self.namespace
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
