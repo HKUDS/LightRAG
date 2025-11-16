@@ -1,20 +1,16 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
-import sys
 import os
 import logging
 
-if sys.version_info < (3, 9):
-    from typing import AsyncIterator
-else:
-    from collections.abc import AsyncIterator
-import pipmaster as pm  # Pipmaster for dynamic library install
+from collections.abc import AsyncIterator
+
+import pipmaster as pm
 
 # install specific modules
 if not pm.is_installed("openai"):
     pm.install("openai")
 
 from openai import (
-    AsyncOpenAI,
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
@@ -30,6 +26,7 @@ from lightrag.utils import (
     safe_unicode_decode,
     logger,
 )
+
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 
@@ -38,6 +35,32 @@ import base64
 from typing import Any, Union
 
 from dotenv import load_dotenv
+
+# Try to import Langfuse for LLM observability (optional)
+# Falls back to standard OpenAI client if not available
+# Langfuse requires proper configuration to work correctly
+LANGFUSE_ENABLED = False
+try:
+    # Check if required Langfuse environment variables are set
+    langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+
+    # Only enable Langfuse if both keys are configured
+    if langfuse_public_key and langfuse_secret_key:
+        from langfuse.openai import AsyncOpenAI  # type: ignore[import-untyped]
+
+        LANGFUSE_ENABLED = True
+        logger.info("Langfuse observability enabled for OpenAI client")
+    else:
+        from openai import AsyncOpenAI
+
+        logger.debug(
+            "Langfuse environment variables not configured, using standard OpenAI client"
+        )
+except ImportError:
+    from openai import AsyncOpenAI
+
+    logger.debug("Langfuse not available, using standard OpenAI client")
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -54,7 +77,7 @@ class InvalidResponseError(Exception):
 def create_openai_async_client(
     api_key: str | None = None,
     base_url: str | None = None,
-    client_configs: dict[str, Any] = None,
+    client_configs: dict[str, Any] | None = None,
 ) -> AsyncOpenAI:
     """Create an AsyncOpenAI client with the given configuration.
 
@@ -115,11 +138,14 @@ async def openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     token_tracker: Any | None = None,
+    stream: bool | None = None,
+    timeout: int | None = None,
+    keyword_extraction: bool = False,
     **kwargs: Any,
 ) -> str:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
 
-    This function supports automatic integration of reasoning content (思维链) from models that provide
+    This function supports automatic integration of reasoning content from models that provide
     Chain of Thought capabilities. The reasoning content is seamlessly integrated into the response
     using <think>...</think> tags.
 
@@ -144,13 +170,15 @@ async def openai_complete_if_cache(
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
         token_tracker: Optional token usage tracker for monitoring API usage.
         enable_cot: Whether to enable Chain of Thought (COT) processing. Default is False.
+        stream: Whether to stream the response. Default is False.
+        timeout: Request timeout in seconds. Default is None.
+        keyword_extraction: Whether to enable keyword extraction mode. When True, triggers
+            special response formatting for keyword extraction. Default is False.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url).
-            - hashing_kv: Will be removed from kwargs before passing to OpenAI.
-            - keyword_extraction: Will be removed from kwargs before passing to OpenAI.
 
     Returns:
         The completed text (with integrated COT content if available) or an async iterator
@@ -171,7 +199,6 @@ async def openai_complete_if_cache(
 
     # Remove special kwargs that shouldn't be passed to OpenAI
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
 
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
@@ -200,6 +227,12 @@ async def openai_complete_if_cache(
     logger.debug("===== Sending Query to LLM =====")
 
     messages = kwargs.pop("messages", messages)
+
+    # Add explicit parameters back to kwargs so they're passed to OpenAI API
+    if stream is not None:
+        kwargs["stream"] = stream
+    if timeout is not None:
+        kwargs["timeout"] = timeout
 
     try:
         # Don't use async with context manager, use client directly
@@ -264,19 +297,16 @@ async def openai_complete_if_cache(
 
                     delta = chunk.choices[0].delta
                     content = getattr(delta, "content", None)
-                    reasoning_content = getattr(delta, "reasoning_content", None)
+                    reasoning_content = getattr(delta, "reasoning_content", "")
 
                     # Handle COT logic for streaming (only if enabled)
                     if enable_cot:
-                        if content is not None and content != "":
+                        if content:
                             # Regular content is present
                             if not initial_content_seen:
                                 initial_content_seen = True
                                 # If both content and reasoning_content are present initially, don't start COT
-                                if (
-                                    reasoning_content is not None
-                                    and reasoning_content != ""
-                                ):
+                                if reasoning_content:
                                     cot_active = False
                                     cot_started = False
 
@@ -290,7 +320,7 @@ async def openai_complete_if_cache(
                                 content = safe_unicode_decode(content.encode("utf-8"))
                             yield content
 
-                        elif reasoning_content is not None and reasoning_content != "":
+                        elif reasoning_content:
                             # Only reasoning content is present
                             if not initial_content_seen and not cot_started:
                                 # Start COT if we haven't seen initial content yet
@@ -308,7 +338,7 @@ async def openai_complete_if_cache(
                                 yield reasoning_content
                     else:
                         # COT disabled, only process regular content
-                        if content is not None and content != "":
+                        if content:
                             if r"\u" in content:
                                 content = safe_unicode_decode(content.encode("utf-8"))
                             yield content
@@ -376,18 +406,23 @@ async def openai_complete_if_cache(
                         )
 
                 # Ensure resources are released even if no exception occurs
-                if (
-                    iteration_started
-                    and hasattr(response, "aclose")
-                    and callable(getattr(response, "aclose", None))
-                ):
-                    try:
-                        await response.aclose()
-                        logger.debug("Successfully closed stream response")
-                    except Exception as close_error:
-                        logger.warning(
-                            f"Failed to close stream response in finally block: {close_error}"
-                        )
+                # Note: Some wrapped clients (e.g., Langfuse) may not implement aclose() properly
+                if iteration_started and hasattr(response, "aclose"):
+                    aclose_method = getattr(response, "aclose", None)
+                    if callable(aclose_method):
+                        try:
+                            await response.aclose()
+                            logger.debug("Successfully closed stream response")
+                        except (AttributeError, TypeError) as close_error:
+                            # Some wrapper objects may report hasattr(aclose) but fail when called
+                            # This is expected behavior for certain client wrappers
+                            logger.debug(
+                                f"Stream response cleanup not supported by client wrapper: {close_error}"
+                            )
+                        except Exception as close_error:
+                            logger.warning(
+                                f"Unexpected error during stream response cleanup: {close_error}"
+                            )
 
                 # This prevents resource leaks since the caller doesn't handle closing
                 try:
@@ -415,7 +450,7 @@ async def openai_complete_if_cache(
 
             message = response.choices[0].message
             content = getattr(message, "content", None)
-            reasoning_content = getattr(message, "reasoning_content", None)
+            reasoning_content = getattr(message, "reasoning_content", "")
 
             # Handle COT logic for non-streaming responses (only if enabled)
             final_content = ""
@@ -487,7 +522,6 @@ async def openai_complete(
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
         kwargs["response_format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
@@ -496,6 +530,7 @@ async def openai_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
 
@@ -510,7 +545,6 @@ async def gpt_4o_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
         kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
@@ -519,6 +553,7 @@ async def gpt_4o_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
 
@@ -533,7 +568,6 @@ async def gpt_4o_mini_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
         kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
@@ -542,6 +576,7 @@ async def gpt_4o_mini_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
 
@@ -556,20 +591,20 @@ async def nvidia_openai_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    kwargs.pop("keyword_extraction", None)
     result = await openai_complete_if_cache(
         "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        keyword_extraction=keyword_extraction,
         base_url="https://integrate.api.nvidia.com/v1",
         **kwargs,
     )
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536)
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -582,9 +617,11 @@ async def nvidia_openai_complete(
 async def openai_embed(
     texts: list[str],
     model: str = "text-embedding-3-small",
-    base_url: str = None,
-    api_key: str = None,
-    client_configs: dict[str, Any] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    embedding_dim: int | None = None,
+    client_configs: dict[str, Any] | None = None,
+    token_tracker: Any | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API.
 
@@ -593,9 +630,16 @@ async def openai_embed(
         model: The OpenAI embedding model to use.
         base_url: Optional base URL for the OpenAI API.
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
+        embedding_dim: Optional embedding dimension for dynamic dimension reduction.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper.
+            Do NOT manually pass this parameter when calling the function directly.
+            The dimension is controlled by the @wrap_embedding_func_with_attrs decorator.
+            Manually passing a different value will trigger a warning and be ignored.
+            When provided (by EmbeddingFunc), it will be passed to the OpenAI API for dimension reduction.
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
+        token_tracker: Optional token usage tracker for monitoring API usage.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -611,9 +655,27 @@ async def openai_embed(
     )
 
     async with openai_async_client:
-        response = await openai_async_client.embeddings.create(
-            model=model, input=texts, encoding_format="base64"
-        )
+        # Prepare API call parameters
+        api_params = {
+            "model": model,
+            "input": texts,
+            "encoding_format": "base64",
+        }
+
+        # Add dimensions parameter only if embedding_dim is provided
+        if embedding_dim is not None:
+            api_params["dimensions"] = embedding_dim
+
+        # Make API call
+        response = await openai_async_client.embeddings.create(**api_params)
+
+        if token_tracker and hasattr(response, "usage"):
+            token_counts = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+            token_tracker.add_usage(token_counts)
+
         return np.array(
             [
                 np.array(dp.embedding, dtype=np.float32)

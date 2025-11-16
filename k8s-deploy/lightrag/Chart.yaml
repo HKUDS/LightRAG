@@ -2,7 +2,7 @@ apiVersion: v2
 name: lightrag
 description: A Helm chart for LightRAG, an efficient and lightweight RAG system
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "1.0.0"
 maintainers:
   - name: LightRAG Team

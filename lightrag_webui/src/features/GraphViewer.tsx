@@ -226,13 +226,13 @@ const GraphViewer = () => {
         </div>
 
         {showPropertyPanel && (
-          <div className="absolute top-2 right-2">
+          <div className="absolute top-2 right-2 z-10">
             <PropertiesView />
           </div>
         )}
 
         {showLegend && (
-          <div className="absolute bottom-10 right-2">
+          <div className="absolute bottom-10 right-2 z-0">
             <Legend className="bg-background/60 backdrop-blur-lg" />
           </div>
         )}

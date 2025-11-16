@@ -81,28 +81,21 @@ class JsonKVStorage(BaseKVStorage):
                 logger.debug(
                     f"[{self.workspace}] Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
                 )
-                write_json(data_dict, self._file_name)
+
+                # Write JSON and check if sanitization was applied
+                needs_reload = write_json(data_dict, self._file_name)
+
+                # If data was sanitized, reload cleaned data to update shared memory
+                if needs_reload:
+                    logger.info(
+                        f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                    )
+                    cleaned_data = load_json(self._file_name)
+                    if cleaned_data is not None:
+                        self._data.clear()
+                        self._data.update(cleaned_data)
+
                 await clear_all_update_flags(self.final_namespace)
-
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        async with self._storage_lock:
-            result = {}
-            for key, value in self._data.items():
-                if value:
-                    # Create a copy to avoid modifying the original data
-                    data = dict(value)
-                    # Ensure time fields are present, provide default values for old data
-                    data.setdefault("create_time", 0)
-                    data.setdefault("update_time", 0)
-                    result[key] = data
-                else:
-                    result[key] = value
-            return result
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
@@ -200,6 +193,15 @@ class JsonKVStorage(BaseKVStorage):
             if any_deleted:
                 await set_all_update_flags(self.final_namespace)
 
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
+        """
+        async with self._storage_lock:
+            return len(self._data) == 0
+
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
            This action will persistent the data to disk immediately.
@@ -235,7 +237,7 @@ class JsonKVStorage(BaseKVStorage):
             data: Original data dictionary that may contain legacy structure
 
         Returns:
-            Migrated data dictionary with flattened cache keys
+            Migrated data dictionary with flattened cache keys (sanitized if needed)
         """
         from lightrag.utils import generate_cache_key
 
@@ -272,8 +274,17 @@ class JsonKVStorage(BaseKVStorage):
             logger.info(
                 f"[{self.workspace}] Migrated {migration_count} legacy cache entries to flattened structure"
             )
-            # Persist migrated data immediately
-            write_json(migrated_data, self._file_name)
+            # Persist migrated data immediately and check if sanitization was applied
+            needs_reload = write_json(migrated_data, self._file_name)
+
+            # If data was sanitized during write, reload cleaned data
+            if needs_reload:
+                logger.info(
+                    f"[{self.workspace}] Reloading sanitized migration data for {self.namespace}"
+                )
+                cleaned_data = load_json(self._file_name)
+                if cleaned_data is not None:
+                    return cleaned_data  # Return cleaned data to update shared memory
 
         return migrated_data
 

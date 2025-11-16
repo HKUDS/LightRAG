@@ -184,9 +184,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             client = await self._get_client()
+            # Record count before deletion
+            before_count = len(client)
+
             client.delete(ids)
+
+            # Calculate actual deleted count
+            after_count = len(client)
+            deleted_count = before_count - after_count
+
             logger.debug(
-                f"[{self.workspace}] Successfully deleted {len(ids)} vectors from {self.namespace}"
+                f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
             )
         except Exception as e:
             logger.error(
@@ -326,14 +334,25 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         client = await self._get_client()
         results = client.get(ids)
-        return [
-            {
+        result_map: dict[str, dict[str, Any]] = {}
+
+        for dp in results:
+            if not dp:
+                continue
+            record = {
                 **{k: v for k, v in dp.items() if k != "vector"},
                 "id": dp.get("__id__"),
                 "created_at": dp.get("__created_at__"),
             }
-            for dp in results
-        ]
+            key = record.get("id")
+            if key is not None:
+                result_map[str(key)] = record
+
+        ordered_results: list[dict[str, Any] | None] = []
+        for requested_id in ids:
+            ordered_results.append(result_map.get(str(requested_id)))
+
+        return ordered_results
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs, returning only ID and vector data for efficiency

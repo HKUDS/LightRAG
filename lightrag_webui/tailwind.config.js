@@ -1,3 +1,6 @@
+import tailwindcssAnimate from 'tailwindcss-animate'
+import typography from '@tailwindcss/typography'
+
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: ['class'],
@@ -58,12 +61,12 @@ export default {
       },
       keyframes: {
         'accordion-down': {
-          from: { height: 0 },
-          to: { height: 'var(--radix-accordion-content-height)' },
+          from: { height: '0' },
+          to: { height: 'var(--radix-accordion-content-height, auto)' },
         },
         'accordion-up': {
-          from: { height: 'var(--radix-accordion-content-height)' },
-          to: { height: 0 },
+          from: { height: 'var(--radix-accordion-content-height, auto)' },
+          to: { height: '0' },
         },
       },
       animation: {
@@ -262,11 +265,5 @@ export default {
       },
     },
   },
-  plugins: [
-    // Using ES module imports
-    // Note: This assumes these packages support ES module imports
-    // If issues occur, may need to fallback to require() and disable ESLint rules
-    import('tailwindcss-animate').then(module => module.default),
-    import('@tailwindcss/typography').then(module => module.default),
-  ],
+  plugins: [tailwindcssAnimate, typography],
 }

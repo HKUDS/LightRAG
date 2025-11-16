@@ -2,7 +2,7 @@ import { useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
 import { AbstractGraph } from 'graphology-types'
 // import { useLayoutCircular } from '@react-sigma/layout-circular'
 import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 // import useRandomGraph, { EdgeType, NodeType } from '@/hooks/useRandomGraph'
 import { EdgeType, NodeType } from '@/hooks/useLightragGraph'
@@ -43,6 +43,20 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
+
+  // Track system theme changes when theme is set to 'system'
+  const [systemThemeIsDark, setSystemThemeIsDark] = useState(() =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
+
+  useEffect(() => {
+    if (theme === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const handler = (e: MediaQueryListEvent) => setSystemThemeIsDark(e.matches)
+      mediaQuery.addEventListener('change', handler)
+      return () => mediaQuery.removeEventListener('change', handler)
+    }
+  }, [theme])
 
   /**
    * When component mount or maxIterations changes
@@ -204,7 +218,9 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
    * => Setting the sigma reducers
    */
   useEffect(() => {
-    const isDarkTheme = theme === 'dark'
+    // Check if dark mode is actually applied (handles both 'dark' theme and 'system' theme when OS is dark)
+    const isDarkTheme = theme === 'dark' ||
+      (theme === 'system' && window.document.documentElement.classList.contains('dark'))
     const labelColor = isDarkTheme ? Constants.labelColorDarkTheme : undefined
     const edgeColor = isDarkTheme ? Constants.edgeColorDarkTheme : undefined
 
@@ -286,6 +302,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
+          // Choose edge highlight color based on theme
+          const edgeHighlightColor = isDarkTheme
+            ? Constants.edgeColorHighlightedDarkTheme
+            : Constants.edgeColorHighlightedLightTheme
 
           if (_focusedNode && graph.hasNode(_focusedNode)) {
             try {
@@ -295,7 +315,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
                 }
               } else {
                 if (graph.extremities(edge).includes(_focusedNode)) {
-                  newData.color = Constants.edgeColorHighlighted
+                  newData.color = edgeHighlightColor
                 }
               }
             } catch (error) {
@@ -310,7 +330,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
               if (edge === _selectedEdge) {
                 newData.color = Constants.edgeColorSelected
               } else if (edge === _focusedEdge) {
-                newData.color = Constants.edgeColorHighlighted
+                newData.color = edgeHighlightColor
               } else if (hideUnselectedEdges) {
                 newData.hidden = true
               }
@@ -329,6 +349,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     sigma,
     disableHoverEffect,
     theme,
+    systemThemeIsDark,
     hideUnselectedEdges,
     enableEdgeEvents,
     renderEdgeLabels,

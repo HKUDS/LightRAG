@@ -72,15 +72,17 @@ class JsonDocStatusStorage(DocStatusStorage):
             return set(keys) - set(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
+        ordered_results: list[dict[str, Any] | None] = []
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    result.append(data)
-        return result
+                    ordered_results.append(data.copy())
+                else:
+                    ordered_results.append(None)
+        return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -159,7 +161,20 @@ class JsonDocStatusStorage(DocStatusStorage):
                 logger.debug(
                     f"[{self.workspace}] Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
                 )
-                write_json(data_dict, self._file_name)
+
+                # Write JSON and check if sanitization was applied
+                needs_reload = write_json(data_dict, self._file_name)
+
+                # If data was sanitized, reload cleaned data to update shared memory
+                if needs_reload:
+                    logger.info(
+                        f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                    )
+                    cleaned_data = load_json(self._file_name)
+                    if cleaned_data is not None:
+                        self._data.clear()
+                        self._data.update(cleaned_data)
+
                 await clear_all_update_flags(self.final_namespace)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -184,6 +199,20 @@ class JsonDocStatusStorage(DocStatusStorage):
             await set_all_update_flags(self.final_namespace)
 
         await self.index_done_callback()
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+
+        Raises:
+            StorageNotInitializedError: If storage is not initialized
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            return len(self._data) == 0
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:

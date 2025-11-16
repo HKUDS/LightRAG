@@ -78,6 +78,10 @@ interface SettingsState {
 
   currentTab: Tab
   setCurrentTab: (tab: Tab) => void
+
+  // Search label dropdown refresh trigger (non-persistent, runtime only)
+  searchLabelDropdownRefreshTrigger: number
+  triggerSearchLabelDropdownRefresh: () => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -119,7 +123,6 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       querySettings: {
         mode: 'global',
-        response_type: 'Multiple Paragraphs',
         top_k: 40,
         chunk_top_k: 20,
         max_entity_tokens: 6000,
@@ -137,12 +140,6 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setLanguage: (language: Language) => {
         set({ language })
-        // Update i18n after state is updated
-        import('i18next').then(({ default: i18n }) => {
-          if (i18n.language !== language) {
-            i18n.changeLanguage(language)
-          }
-        })
       },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
@@ -229,12 +226,19 @@ const useSettingsStoreBase = create<SettingsState>()(
         })
       },
 
-      setUserPromptHistory: (history: string[]) => set({ userPromptHistory: history })
+      setUserPromptHistory: (history: string[]) => set({ userPromptHistory: history }),
+
+      // Search label dropdown refresh trigger (not persisted)
+      searchLabelDropdownRefreshTrigger: 0,
+      triggerSearchLabelDropdownRefresh: () =>
+        set((state) => ({
+          searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1
+        }))
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 18,
+      version: 19,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -330,6 +334,12 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 18) {
           // Add userPromptHistory field for older versions
           state.userPromptHistory = []
+        }
+        if (version < 19) {
+          // Remove deprecated response_type parameter
+          if (state.querySettings) {
+            delete state.querySettings.response_type
+          }
         }
         return state
       }

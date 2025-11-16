@@ -12,13 +12,10 @@ services:
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
-      - ./data/tiktoken:/app/data/tiktoken
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
     env_file:
       - .env
-    environment:
-      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

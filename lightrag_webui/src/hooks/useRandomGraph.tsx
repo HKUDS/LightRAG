@@ -56,6 +56,16 @@ const useRandomGraph = () => {
         image: faker.image.urlLoremFlickr()
       })
     })
+
+    // Add edge attributes
+    graph.edges().forEach((edge: string) => {
+      graph.mergeEdgeAttributes(edge, {
+        label: faker.lorem.words(faker.number.int({ min: 1, max: 3 })),
+        size: faker.number.float({ min: 1, max: 5 }),
+        color: randomColor()
+      })
+    })
+
     return graph as Graph<NodeType, EdgeType>
   }, [faker])
 

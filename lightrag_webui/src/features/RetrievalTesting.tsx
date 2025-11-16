@@ -103,6 +103,10 @@ const parseCOTContent = (content: string) => {
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
+  // Get current tab to determine if this tab is active (for performance optimization)
+  const currentTab = useSettingsStore.use.currentTab()
+  const isRetrievalTabActive = currentTab === 'retrieval'
+
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
     try {
       const history = useSettingsStore.getState().retrievalHistory || []
@@ -353,6 +357,7 @@ export default function RetrievalTesting() {
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
+        response_type: 'Multiple Paragraphs',
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
@@ -716,7 +721,7 @@ export default function RetrievalTesting() {
                           <CopyIcon className="size-4" />
                         </Button>
                       )}
-                      <ChatMessage message={message} />
+                      <ChatMessage message={message} isTabActive={isRetrievalTabActive} />
                       {message.role === 'assistant' && (
                         <Button
                           onClick={() => handleCopyMessage(message)}

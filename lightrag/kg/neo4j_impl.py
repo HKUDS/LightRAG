@@ -16,7 +16,6 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
@@ -372,6 +371,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            result = None
             try:
                 query = f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN count(n) > 0 AS node_exists"
                 result = await session.run(query, entity_id=node_id)
@@ -382,7 +382,8 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error checking node existence for {node_id}: {str(e)}"
                 )
-                await result.consume()  # Ensure results are consumed even on error
+                if result is not None:
+                    await result.consume()  # Ensure results are consumed even on error
                 raise
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
@@ -404,6 +405,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            result = None
             try:
                 query = (
                     f"MATCH (a:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(b:`{workspace_label}` {{entity_id: $target_entity_id}}) "
@@ -421,7 +423,8 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
                 )
-                await result.consume()  # Ensure results are consumed even on error
+                if result is not None:
+                    await result.consume()  # Ensure results are consumed even on error
                 raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
@@ -800,6 +803,7 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
+                results = None
                 try:
                     workspace_label = self._get_workspace_label()
                     query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
@@ -837,7 +841,10 @@ class Neo4JStorage(BaseGraphStorage):
                     logger.error(
                         f"[{self.workspace}] Error getting edges for node {source_node_id}: {str(e)}"
                     )
-                    await results.consume()  # Ensure results are consumed even on error
+                    if results is not None:
+                        await (
+                            results.consume()
+                        )  # Ensure results are consumed even on error
                     raise
         except Exception as e:
             logger.error(
@@ -903,49 +910,6 @@ class Neo4JStorage(BaseGraphStorage):
 
             await result.consume()  # Ensure results are fully consumed
             return edges_dict
-
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            query = f"""
-            UNWIND $chunk_ids AS chunk_id
-            MATCH (n:`{workspace_label}`)
-            WHERE n.source_id IS NOT NULL AND chunk_id IN split(n.source_id, $sep)
-            RETURN DISTINCT n
-            """
-            result = await session.run(query, chunk_ids=chunk_ids, sep=GRAPH_FIELD_SEP)
-            nodes = []
-            async for record in result:
-                node = record["n"]
-                node_dict = dict(node)
-                # Add node id (entity_id) to the dictionary for easier access
-                node_dict["id"] = node_dict.get("entity_id")
-                nodes.append(node_dict)
-            await result.consume()
-            return nodes
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            query = f"""
-            UNWIND $chunk_ids AS chunk_id
-            MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
-            WHERE r.source_id IS NOT NULL AND chunk_id IN split(r.source_id, $sep)
-            RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
-            """
-            result = await session.run(query, chunk_ids=chunk_ids, sep=GRAPH_FIELD_SEP)
-            edges = []
-            async for record in result:
-                edge_properties = record["properties"]
-                edge_properties["source"] = record["source"]
-                edge_properties["target"] = record["target"]
-                edges.append(edge_properties)
-            await result.consume()
-            return edges
 
     @retry(
         stop=stop_after_attempt(3),
@@ -1636,6 +1600,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            result = None
             try:
                 query = f"""
                 MATCH (n:`{workspace_label}`)
@@ -1660,7 +1625,8 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Error getting popular labels: {str(e)}"
                 )
-                await result.consume()
+                if result is not None:
+                    await result.consume()
                 raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:

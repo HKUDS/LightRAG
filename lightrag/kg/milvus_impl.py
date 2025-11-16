@@ -10,7 +10,7 @@ from ..kg.shared_storage import get_data_init_lock, get_storage_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
-    pm.install("pymilvus==2.5.2")
+    pm.install("pymilvus>=2.6.2")
 
 import configparser
 from pymilvus import MilvusClient, DataType, CollectionSchema, FieldSchema  # type: ignore
@@ -462,14 +462,37 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 if type_name in ["FloatVector", "FLOAT_VECTOR"]:
                     existing_dimension = field.get("params", {}).get("dim")
 
-                    if existing_dimension != current_dimension:
+                    # Convert both to int for comparison to handle type mismatches
+                    # (Milvus API may return string "1024" vs int 1024)
+                    try:
+                        existing_dim_int = (
+                            int(existing_dimension)
+                            if existing_dimension is not None
+                            else None
+                        )
+                        current_dim_int = (
+                            int(current_dimension)
+                            if current_dimension is not None
+                            else None
+                        )
+                    except (TypeError, ValueError) as e:
+                        logger.error(
+                            f"[{self.workspace}] Failed to parse dimensions: existing={existing_dimension} (type={type(existing_dimension)}), "
+                            f"current={current_dimension} (type={type(current_dimension)}), error={e}"
+                        )
+                        raise ValueError(
+                            f"Invalid dimension values for collection '{self.final_namespace}': "
+                            f"existing={existing_dimension}, current={current_dimension}"
+                        ) from e
+
+                    if existing_dim_int != current_dim_int:
                         raise ValueError(
                             f"Vector dimension mismatch for collection '{self.final_namespace}': "
-                            f"existing={existing_dimension}, current={current_dimension}"
+                            f"existing={existing_dim_int}, current={current_dim_int}"
                         )
 
                     logger.debug(
-                        f"[{self.workspace}] Vector dimension check passed: {current_dimension}"
+                        f"[{self.workspace}] Vector dimension check passed: {current_dim_int}"
                     )
                     return
 
@@ -960,7 +983,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         """Initialize Milvus collection"""
-        async with get_data_init_lock(enable_logging=True):
+        async with get_data_init_lock():
             if self._initialized:
                 return
 
@@ -1252,7 +1275,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 output_fields=output_fields,
             )
 
-            return result or []
+            if not result:
+                return []
+
+            result_map: dict[str, dict[str, Any]] = {}
+            for row in result:
+                if not row:
+                    continue
+                row_id = row.get("id")
+                if row_id is not None:
+                    result_map[str(row_id)] = row
+
+            ordered_results: list[dict[str, Any] | None] = []
+            for requested_id in ids:
+                ordered_results.append(result_map.get(str(requested_id)))
+
+            return ordered_results
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"

@@ -1,63 +1,107 @@
-# Build stage
-FROM python:3.12-slim AS builder
+# syntax=docker/dockerfile:1
+
+# Frontend build stage
+FROM oven/bun:1 AS frontend-builder
 
 WORKDIR /app
 
-# Upgrade pip、setuptools and wheel to the latest version
-RUN pip install --upgrade pip setuptools wheel
+# Copy frontend source code
+COPY lightrag_webui/ ./lightrag_webui/
 
-# Install Rust and required build dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
-    pkg-config \
+# Build frontend assets for inclusion in the API package
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    cd lightrag_webui \
+    && bun install --frozen-lockfile \
+    && bun run build
+
+# Python build stage - using uv for faster package installation
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_COMPILE_BYTECODE=1
+
+WORKDIR /app
+
+# Install system deps (Rust is required by some wheels)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    && . $HOME/.cargo/env
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
-# Copy pyproject.toml and source code for dependency installation
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+
+# Ensure shared data directory exists for uv caches
+RUN mkdir -p /root/.local/share/uv
+
+# Copy project metadata and sources
 COPY pyproject.toml .
 COPY setup.py .
+COPY uv.lock .
+
+# Install base, API, and offline extras without the project to improve caching
+RUN --mount=type=cache,target=/root/.local/share/uv \
+    uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
+
+# Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
 
-# Install dependencies
-ENV PATH="/root/.cargo/bin:${PATH}"
-RUN pip install --user --no-cache-dir --use-pep517 .
-RUN pip install --user --no-cache-dir --use-pep517 .[api]
+# Include pre-built frontend assets from the previous stage
+COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install depndencies for default storage
-RUN pip install --user --no-cache-dir nano-vectordb networkx
-# Install depndencies for default LLM
-RUN pip install --user --no-cache-dir openai ollama tiktoken
-# Install depndencies for default document loader
-RUN pip install --user --no-cache-dir pypdf2 python-docx python-pptx openpyxl
+# Sync project in non-editable mode and ensure pip is available for runtime installs
+RUN --mount=type=cache,target=/root/.local/share/uv \
+    uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
+
+# Prepare offline cache directory and pre-populate tiktoken data
+# Use uv run to execute commands from the virtual environment
+RUN mkdir -p /app/data/tiktoken \
+    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
+    if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Upgrade pip and setuptools
-RUN pip install --upgrade pip setuptools wheel
+# Install uv for package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy only necessary files from builder
+ENV UV_SYSTEM_PYTHON=1
+
+# Copy installed packages and application code
 COPY --from=builder /root/.local /root/.local
-COPY ./lightrag ./lightrag
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/lightrag ./lightrag
+COPY pyproject.toml .
 COPY setup.py .
+COPY uv.lock .
 
-RUN pip install --use-pep517 ".[api]"
-# Make sure scripts in .local are usable
-ENV PATH=/root/.local/bin:$PATH
+# Ensure the installed scripts are on PATH
+ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
-# Create necessary directories
-RUN mkdir -p /app/data/rag_storage /app/data/inputs
+# Install dependencies with uv sync (uses locked versions from uv.lock)
+# And ensure pip is available for runtime installs
+RUN --mount=type=cache,target=/root/.local/share/uv \
+    uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
-# Docker data directories
+# Create persistent data directories AFTER package installation
+RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
+
+# Copy offline cache into the newly created directory
+COPY --from=builder /app/data/tiktoken /app/data/tiktoken
+
+# Point to the prepared cache
+ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken
 ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 
-# Expose the default port
+# Expose API port
 EXPOSE 9621
 
-# Set entrypoint
 ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]

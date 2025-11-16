@@ -9,14 +9,16 @@ import {
   DialogDescription
 } from '@/components/ui/Dialog'
 import Button from '@/components/ui/Button'
+import Checkbox from '@/components/ui/Checkbox'
 
 interface PropertyEditDialogProps {
   isOpen: boolean
   onClose: () => void
-  onSave: (value: string) => void
+  onSave: (value: string, options?: { allowMerge?: boolean }) => void
   propertyName: string
   initialValue: string
   isSubmitting?: boolean
+  errorMessage?: string | null
 }
 
 /**
@@ -29,17 +31,18 @@ const PropertyEditDialog = ({
   onSave,
   propertyName,
   initialValue,
-  isSubmitting = false
+  isSubmitting = false,
+  errorMessage = null
 }: PropertyEditDialogProps) => {
   const { t } = useTranslation()
   const [value, setValue] = useState('')
-  // Add error state to display save failure messages
-  const [error, setError] = useState<string | null>(null)
+  const [allowMerge, setAllowMerge] = useState(false)
 
   // Initialize value when dialog opens
   useEffect(() => {
     if (isOpen) {
       setValue(initialValue)
+      setAllowMerge(false)
     }
   }, [isOpen, initialValue])
 
@@ -85,19 +88,10 @@ const PropertyEditDialog = ({
   };
 
   const handleSave = async () => {
-    if (value.trim() !== '') {
-      // Clear previous error messages
-      setError(null)
-      try {
-        await onSave(value)
-        onClose()
-      } catch (error) {
-        console.error('Save error:', error)
-        // Set error message to state for UI display
-        setError(typeof error === 'object' && error !== null
-          ? (error as Error).message || t('common.saveFailed')
-          : t('common.saveFailed'))
-      }
+    const trimmedValue = value.trim()
+    if (trimmedValue !== '') {
+      const options = propertyName === 'entity_id' ? { allowMerge } : undefined
+      await onSave(trimmedValue, options)
     }
   }
 
@@ -116,9 +110,9 @@ const PropertyEditDialog = ({
         </DialogHeader>
 
         {/* Display error message if save fails */}
-        {error && (
-          <div className="bg-destructive/15 text-destructive px-4 py-2 rounded-md text-sm mt-2">
-            {error}
+        {errorMessage && (
+          <div className="bg-destructive/15 text-destructive px-4 py-2 rounded-md text-sm">
+            {errorMessage}
           </div>
         )}
 
@@ -145,6 +139,25 @@ const PropertyEditDialog = ({
             );
           })()}
         </div>
+
+        {propertyName === 'entity_id' && (
+          <div className="rounded-md border border-border bg-muted/20 p-3">
+            <label className="flex items-start gap-2 text-sm font-medium">
+              <Checkbox
+                id="allow-merge"
+                checked={allowMerge}
+                disabled={isSubmitting}
+                onCheckedChange={(checked) => setAllowMerge(checked === true)}
+              />
+              <div>
+                <span>{t('graphPanel.propertiesView.mergeOptionLabel')}</span>
+                <p className="text-xs font-normal text-muted-foreground">
+                  {t('graphPanel.propertiesView.mergeOptionDescription')}
+                </p>
+              </div>
+            </label>
+          </div>
+        )}
 
         <DialogFooter>
           <Button

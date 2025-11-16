@@ -155,33 +155,25 @@ class MongoKVStorage(BaseKVStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
-        docs = await cursor.to_list()
-        # Ensure time fields are present for all documents
+        docs = await cursor.to_list(length=None)
+
+        doc_map: dict[str, dict[str, Any]] = {}
         for doc in docs:
+            if not doc:
+                continue
             doc.setdefault("create_time", 0)
             doc.setdefault("update_time", 0)
-        return docs
+            doc_map[str(doc.get("_id"))] = doc
+
+        ordered_results: list[dict[str, Any] | None] = []
+        for id_value in ids:
+            ordered_results.append(doc_map.get(str(id_value)))
+        return ordered_results
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(keys)}}, {"_id": 1})
         existing_ids = {str(x["_id"]) async for x in cursor}
         return keys - existing_ids
-
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        cursor = self._data.find({})
-        result = {}
-        async for doc in cursor:
-            doc_id = doc.pop("_id")
-            # Ensure time fields are present for all documents
-            doc.setdefault("create_time", 0)
-            doc.setdefault("update_time", 0)
-            result[doc_id] = doc
-        return result
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
@@ -227,6 +219,20 @@ class MongoKVStorage(BaseKVStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        try:
+            # Use count_documents with limit 1 for efficiency
+            count = await self._data.count_documents({}, limit=1)
+            return count == 0
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     async def delete(self, ids: list[str]) -> None:
         """Delete documents with specified IDs
@@ -375,7 +381,18 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
-        return await cursor.to_list()
+        docs = await cursor.to_list(length=None)
+
+        doc_map: dict[str, dict[str, Any]] = {}
+        for doc in docs:
+            if not doc:
+                continue
+            doc_map[str(doc.get("_id"))] = doc
+
+        ordered_results: list[dict[str, Any] | None] = []
+        for id_value in ids:
+            ordered_results.append(doc_map.get(str(id_value)))
+        return ordered_results
 
     async def filter_keys(self, data: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(data)}}, {"_id": 1})
@@ -446,6 +463,20 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty for the current workspace and namespace
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+        """
+        try:
+            # Use count_documents with limit 1 for efficiency
+            count = await self._data.count_documents({}, limit=1)
+            return count == 0
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
+            return True
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
@@ -1004,45 +1035,6 @@ class MongoGraphStorage(BaseGraphStorage):
             result[target].append((source, target))
 
         return result
-
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all nodes that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated nodes for.
-
-        Returns:
-            list[dict]: A list of nodes, where each node is a dictionary of its properties.
-                        An empty list if no matching nodes are found.
-        """
-        if not chunk_ids:
-            return []
-
-        cursor = self.collection.find({"source_ids": {"$in": chunk_ids}})
-        return [doc async for doc in cursor]
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all edges that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated edges for.
-
-        Returns:
-            list[dict]: A list of edges, where each edge is a dictionary of its properties.
-                        An empty list if no matching edges are found.
-        """
-        if not chunk_ids:
-            return []
-
-        cursor = self.edge_collection.find({"source_ids": {"$in": chunk_ids}})
-
-        edges = []
-        async for edge in cursor:
-            edge["source"] = edge["source_node_id"]
-            edge["target"] = edge["target_node_id"]
-            edges.append(edge)
-
-        return edges
 
     #
     # -------------------------------------------------------------------------
@@ -2403,15 +2395,20 @@ class MongoVectorDBStorage(BaseVectorStorage):
             cursor = self._data.find({"_id": {"$in": ids}})
             results = await cursor.to_list(length=None)
 
-            # Format results to include id field expected by API
-            formatted_results = []
+            # Format results to include id field expected by API and preserve ordering
+            formatted_map: dict[str, dict[str, Any]] = {}
             for result in results:
                 result_dict = dict(result)
                 if "_id" in result_dict and "id" not in result_dict:
                     result_dict["id"] = result_dict["_id"]
-                formatted_results.append(result_dict)
+                key = str(result_dict.get("id", result_dict.get("_id")))
+                formatted_map[key] = result_dict
 
-            return formatted_results
+            ordered_results: list[dict[str, Any] | None] = []
+            for id_value in ids:
+                ordered_results.append(formatted_map.get(str(id_value)))
+
+            return ordered_results
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"

@@ -5,12 +5,12 @@ Start LightRAG server with Gunicorn
 
 import os
 import sys
-import signal
+import platform
 import pipmaster as pm
 from lightrag.api.utils_api import display_splash_screen, check_env_file
 from lightrag.api.config import global_args
 from lightrag.utils import get_env_value
-from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
+from lightrag.kg.shared_storage import initialize_share_data
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -34,31 +34,86 @@ def check_and_install_dependencies():
             print(f"{package} installed successfully")
 
 
-# Signal handler for graceful shutdown
-def signal_handler(sig, frame):
-    print("\n\n" + "=" * 80)
-    print("RECEIVED TERMINATION SIGNAL")
-    print(f"Process ID: {os.getpid()}")
-    print("=" * 80 + "\n")
-
-    # Release shared resources
-    finalize_share_data()
-
-    # Exit with success status
-    sys.exit(0)
-
-
 def main():
+    # Explicitly initialize configuration for Gunicorn mode
+    from lightrag.api.config import initialize_config
+
+    initialize_config()
+
+    # Set Gunicorn mode flag for lifespan cleanup detection
+    os.environ["LIGHTRAG_GUNICORN_MODE"] = "1"
+
     # Check .env file
     if not check_env_file():
+        sys.exit(1)
+
+    # Check DOCLING compatibility with Gunicorn multi-worker mode on macOS
+    if (
+        platform.system() == "Darwin"
+        and global_args.document_loading_engine == "DOCLING"
+        and global_args.workers > 1
+    ):
+        print("\n" + "=" * 80)
+        print("❌ ERROR: Incompatible configuration detected!")
+        print("=" * 80)
+        print(
+            "\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS"
+        )
+        print("\nReason:")
+        print("  PyTorch (required by DOCLING) has known compatibility issues with")
+        print("  fork-based multiprocessing on macOS, which can cause crashes or")
+        print("  unexpected behavior when using Gunicorn with multiple workers.")
+        print("\nCurrent configuration:")
+        print("  - Operating System: macOS (Darwin)")
+        print(f"  - Document Engine: {global_args.document_loading_engine}")
+        print(f"  - Workers: {global_args.workers}")
+        print("\nPossible solutions:")
+        print("  1. Use single worker mode:")
+        print("     --workers 1")
+        print("\n  2. Change document loading engine in .env:")
+        print("     DOCUMENT_LOADING_ENGINE=DEFAULT")
+        print("\n  3. Deploy on Linux where multi-worker mode is fully supported")
+        print("=" * 80 + "\n")
+        sys.exit(1)
+
+    # Check macOS fork safety environment variable for multi-worker mode
+    if (
+        platform.system() == "Darwin"
+        and global_args.workers > 1
+        and os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY") != "YES"
+    ):
+        print("\n" + "=" * 80)
+        print("❌ ERROR: Missing required environment variable on macOS!")
+        print("=" * 80)
+        print("\nmacOS with Gunicorn multi-worker mode requires:")
+        print("  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
+        print("\nReason:")
+        print("  NumPy uses macOS's Accelerate framework (Objective-C based) for")
+        print("  vector computations. The Objective-C runtime has fork safety checks")
+        print("  that will crash worker processes when embedding functions are called.")
+        print("\nCurrent configuration:")
+        print("  - Operating System: macOS (Darwin)")
+        print(f"  - Workers: {global_args.workers}")
+        print(
+            f"  - Environment Variable: {os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'NOT SET')}"
+        )
+        print("\nHow to fix:")
+        print("  Option 1 - Set environment variable before starting (recommended):")
+        print("     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
+        print("     lightrag-server")
+        print("\n  Option 2 - Add to your shell profile (~/.zshrc or ~/.bash_profile):")
+        print("     echo 'export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES' >> ~/.zshrc")
+        print("     source ~/.zshrc")
+        print("\n  Option 3 - Use single worker mode (no multiprocessing):")
+        print("     lightrag-server --workers 1")
+        print("=" * 80 + "\n")
         sys.exit(1)
 
     # Check and install dependencies
     check_and_install_dependencies()
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
+    # Note: Signal handlers are NOT registered here because:
+    # - Master cleanup already handled by gunicorn_config.on_exit()
 
     # Display startup information
     display_splash_screen(global_args)

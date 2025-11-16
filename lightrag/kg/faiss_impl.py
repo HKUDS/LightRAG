@@ -450,23 +450,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        results = []
+        results: list[dict[str, Any] | None] = []
         for id in ids:
+            record = None
             fid = self._find_faiss_id_by_custom_id(id)
             if fid is not None:
-                metadata = self._id_to_meta.get(fid, {})
+                metadata = self._id_to_meta.get(fid)
                 if metadata:
                     # Filter out __vector__ from metadata to avoid returning large vector data
                     filtered_metadata = {
                         k: v for k, v in metadata.items() if k != "__vector__"
                     }
-                    results.append(
-                        {
-                            **filtered_metadata,
-                            "id": metadata.get("__id__"),
-                            "created_at": metadata.get("__created_at__"),
-                        }
-                    )
+                    record = {
+                        **filtered_metadata,
+                        "id": metadata.get("__id__"),
+                        "created_at": metadata.get("__created_at__"),
+                    }
+            results.append(record)
 
         return results
 
