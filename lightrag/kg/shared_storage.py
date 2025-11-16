@@ -1438,7 +1438,10 @@ async def get_namespace_data(
     async with get_internal_lock():
         if final_namespace not in _shared_dicts:
             # Special handling for pipeline_status namespace
-            if final_namespace.endswith(":pipeline_status") and not first_init:
+            if (
+                final_namespace.endswith(":pipeline_status")
+                or final_namespace == "pipeline_status"
+            ) and not first_init:
                 # Check if pipeline_status should have been initialized but wasn't
                 # This helps users to call initialize_pipeline_status() before get_namespace_data()
                 raise PipelineNotInitializedError(final_namespace)
