@@ -1365,7 +1365,7 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
         return {}
 
     if workspace is None:
-        workspace = get_default_workspace
+        workspace = get_default_workspace()
 
     result = {}
     async with get_internal_lock():
