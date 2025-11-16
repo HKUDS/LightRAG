@@ -1514,9 +1514,12 @@ class NamespaceLock:
             enable_logging=self._enable_logging,
         )
 
-        # Store context in this coroutine's ContextVar
+        # Acquire the lock first, then store context only after successful acquisition
+        # This prevents the ContextVar from being set if acquisition fails (e.g., due to cancellation),
+        # which would permanently brick the lock
+        result = await ctx.__aenter__()
         self._ctx_var.set(ctx)
-        return await ctx.__aenter__()
+        return result
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the current context and clean up"""
