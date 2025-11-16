@@ -1441,15 +1441,15 @@ async def get_namespace_data(
             if final_namespace.endswith(":pipeline_status") and not first_init:
                 # Check if pipeline_status should have been initialized but wasn't
                 # This helps users to call initialize_pipeline_status() before get_namespace_data()
-                raise PipelineNotInitializedError(namespace)
+                raise PipelineNotInitializedError(final_namespace)
 
             # For other namespaces or when allow_create=True, create them dynamically
             if _is_multiprocess and _manager is not None:
-                _shared_dicts[namespace] = _manager.dict()
+                _shared_dicts[final_namespace] = _manager.dict()
             else:
-                _shared_dicts[namespace] = {}
+                _shared_dicts[final_namespace] = {}
 
-    return _shared_dicts[namespace]
+    return _shared_dicts[final_namespace]
 
 
 def get_namespace_lock(

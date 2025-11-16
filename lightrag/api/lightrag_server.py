@@ -455,7 +455,7 @@ def create_app(args):
     # Create combined auth dependency for all endpoints
     combined_auth = get_combined_auth_dependency(api_key)
 
-    def get_workspace_from_request(request: Request) -> str:
+    def get_workspace_from_request(request: Request) -> str | None:
         """
         Extract workspace from HTTP request header or use default.
 
@@ -472,9 +472,8 @@ def create_app(args):
         # Check custom header first
         workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
 
-        # Fall back to server default if header not provided
         if not workspace:
-            workspace = args.workspace
+            workspace = None
 
         return workspace
 
@@ -1142,8 +1141,13 @@ def create_app(args):
     async def get_status(request: Request):
         """Get current system status"""
         try:
+            workspace = get_workspace_from_request(request)
             default_workspace = get_default_workspace()
-            pipeline_status = await get_namespace_data("pipeline_status")
+            if workspace is None:
+                workspace = default_workspace
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
 
             if not auth_configured:
                 auth_mode = "disabled"
