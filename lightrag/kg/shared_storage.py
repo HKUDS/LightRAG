@@ -1371,11 +1371,19 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
     result = {}
     async with get_internal_lock():
         for namespace, flags in _update_flags.items():
-            namespace_split = namespace.split(":")
-            if workspace and not namespace_split[0] == workspace:
-                continue
-            if not workspace and namespace_split[0]:
-                continue
+            # Check if namespace has a workspace prefix (contains ':')
+            if ":" in namespace:
+                # Namespace has workspace prefix like "space1:pipeline_status"
+                # Only include if workspace matches the prefix
+                namespace_split = namespace.split(":", 1)
+                if not workspace or namespace_split[0] != workspace:
+                    continue
+            else:
+                # Namespace has no workspace prefix like "pipeline_status"
+                # Only include if we're querying the default (empty) workspace
+                if workspace:
+                    continue
+
             worker_statuses = []
             for flag in flags:
                 if _is_multiprocess:
