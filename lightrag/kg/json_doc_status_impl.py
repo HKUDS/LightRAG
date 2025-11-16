@@ -38,9 +38,9 @@ class JsonDocStatusStorage(DocStatusStorage):
             self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            workspace_dir = working_dir
             self.final_namespace = self.namespace
-            self.workspace = ""
+            self.workspace = "_"
+            workspace_dir = working_dir
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
@@ -51,18 +51,18 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         """Initialize storage data"""
         self._storage_lock = get_namespace_lock(
-            self.namespace, workspace=self.workspace
+            self.final_namespace, workspace=self.workspace
         )
         self.storage_updated = await get_update_flag(
-            self.namespace, workspace=self.workspace
+            self.final_namespace, workspace=self.workspace
         )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
             need_init = await try_initialize_namespace(
-                self.namespace, workspace=self.workspace
+                self.final_namespace, workspace=self.workspace
             )
             self._data = await get_namespace_data(
-                self.namespace, workspace=self.workspace
+                self.final_namespace, workspace=self.workspace
             )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
@@ -183,7 +183,9 @@ class JsonDocStatusStorage(DocStatusStorage):
                         self._data.clear()
                         self._data.update(cleaned_data)
 
-                await clear_all_update_flags(self.namespace, workspace=self.workspace)
+                await clear_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
@@ -204,7 +206,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 if "chunks_list" not in doc_data:
                     doc_data["chunks_list"] = []
             self._data.update(data)
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
+            await set_all_update_flags(self.final_namespace, workspace=self.workspace)
 
         await self.index_done_callback()
 
@@ -358,7 +360,9 @@ class JsonDocStatusStorage(DocStatusStorage):
                     any_deleted = True
 
             if any_deleted:
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
 
     async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
         """Get document by file path
@@ -397,7 +401,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         try:
             async with self._storage_lock:
                 self._data.clear()
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
 
             await self.index_done_callback()
             logger.info(

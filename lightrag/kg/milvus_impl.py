@@ -6,7 +6,7 @@ import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
-from ..kg.shared_storage import get_data_init_lock, get_storage_lock
+from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -1357,21 +1357,20 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_storage_lock():
-            try:
-                # Drop the collection and recreate it
-                if self._client.has_collection(self.final_namespace):
-                    self._client.drop_collection(self.final_namespace)
+        try:
+            # Drop the collection and recreate it
+            if self._client.has_collection(self.final_namespace):
+                self._client.drop_collection(self.final_namespace)
 
-                # Recreate the collection
-                self._create_collection_if_not_exist()
+            # Recreate the collection
+            self._create_collection_if_not_exist()
 
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
-                )
-                return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
+            )
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}

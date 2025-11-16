@@ -463,7 +463,7 @@ class CleanupTool:
 
                 # CRITICAL: Set update flag so changes persist to disk
                 # Without this, deletions remain in-memory only and are lost on exit
-                await set_all_update_flags(storage.final_namespace)
+                await set_all_update_flags(storage.final_namespace, storage.workspace)
 
                 # Success
                 stats.successful_batches += 1

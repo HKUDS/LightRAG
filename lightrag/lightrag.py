@@ -1599,12 +1599,8 @@ class LightRAG:
         """
 
         # Get pipeline status shared data and lock
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=self.workspace
-        )
-        pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=self.workspace
-        )
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_namespace_lock("pipeline_status")
 
         # Check if another process is already processing the queue
         async with pipeline_status_lock:
@@ -2956,12 +2952,8 @@ class LightRAG:
         doc_llm_cache_ids: list[str] = []
 
         # Get pipeline status shared data and lock for status updates
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=self.workspace
-        )
-        pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=self.workspace
-        )
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_namespace_lock("pipeline_status")
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"

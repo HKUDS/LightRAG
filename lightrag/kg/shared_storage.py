@@ -1370,19 +1370,11 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
     result = {}
     async with get_internal_lock():
         for namespace, flags in _update_flags.items():
-            # Check if namespace has a workspace prefix (contains ':')
-            if ":" in namespace:
-                # Namespace has workspace prefix like "space1:pipeline_status"
-                # Only include if workspace matches the prefix
-                namespace_split = namespace.split(":", 1)
-                if not workspace or namespace_split[0] != workspace:
-                    continue
-            else:
-                # Namespace has no workspace prefix like "pipeline_status"
-                # Only include if we're querying the default (empty) workspace
-                if workspace:
-                    continue
-
+            namespace_split = namespace.split(":")
+            if workspace and not namespace_split[0] == workspace:
+                continue
+            if not workspace and namespace_split[0]:
+                continue
             worker_statuses = []
             for flag in flags:
                 if _is_multiprocess:
@@ -1446,21 +1438,18 @@ async def get_namespace_data(
     async with get_internal_lock():
         if final_namespace not in _shared_dicts:
             # Special handling for pipeline_status namespace
-            if (
-                final_namespace.endswith(":pipeline_status")
-                or final_namespace == "pipeline_status"
-            ) and not first_init:
+            if final_namespace.endswith(":pipeline_status") and not first_init:
                 # Check if pipeline_status should have been initialized but wasn't
                 # This helps users to call initialize_pipeline_status() before get_namespace_data()
-                raise PipelineNotInitializedError(final_namespace)
+                raise PipelineNotInitializedError(namespace)
 
             # For other namespaces or when allow_create=True, create them dynamically
             if _is_multiprocess and _manager is not None:
-                _shared_dicts[final_namespace] = _manager.dict()
+                _shared_dicts[namespace] = _manager.dict()
             else:
-                _shared_dicts[final_namespace] = {}
+                _shared_dicts[namespace] = {}
 
-    return _shared_dicts[final_namespace]
+    return _shared_dicts[namespace]
 
 
 def get_namespace_lock(
