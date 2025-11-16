@@ -58,7 +58,6 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
     # set_default_workspace,
-    initialize_pipeline_status,
     cleanup_keyed_lock,
     finalize_share_data,
 )
@@ -352,9 +351,8 @@ def create_app(args):
 
         try:
             # Initialize database connections
-            # set_default_workspace(rag.workspace)  # comment this line to test auto default workspace setting in initialize_storages
+            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
             await rag.initialize_storages()
-            await initialize_pipeline_status()  # with default workspace
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()

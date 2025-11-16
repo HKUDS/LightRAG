@@ -664,6 +664,16 @@ class LightRAG:
             default_workspace = get_default_workspace()
             if default_workspace is None:
                 set_default_workspace(self.workspace)
+            elif default_workspace != self.workspace:
+                logger.warning(
+                    f"Creating LightRAG instance with workspace='{self.workspace}' "
+                    f"but default workspace is already set to '{default_workspace}'."
+                )
+
+            # Auto-initialize pipeline_status for this workspace
+            from lightrag.kg.shared_storage import initialize_pipeline_status
+
+            await initialize_pipeline_status(workspace=self.workspace)
 
             for storage in (
                 self.full_docs,
