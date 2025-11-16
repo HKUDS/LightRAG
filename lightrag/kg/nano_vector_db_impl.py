@@ -15,7 +15,7 @@ from lightrag.utils import (
 from lightrag.base import BaseVectorStorage
 from nano_vectordb import NanoVectorDB
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -40,20 +40,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
         working_dir = self.global_config["working_dir"]
-        
-        # Get composite workspace (supports multi-tenant isolation)
-        composite_workspace = self._get_composite_workspace()
-        
-        if composite_workspace and composite_workspace != "_":
-            # Include composite workspace in the file path for data isolation
-            # For multi-tenant: tenant_id:kb_id:workspace
-            # For single-tenant: just workspace
-            workspace_dir = os.path.join(working_dir, composite_workspace)
-            self.final_namespace = f"{composite_workspace}_{self.namespace}"
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
-            self.workspace = ""
+            self.workspace = "_"
             workspace_dir = working_dir
 
         os.makedirs(workspace_dir, exist_ok=True)
@@ -71,9 +65,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock(enable_logging=False)
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
 
     async def _get_client(self):
         """Check if the storage should be reloaded"""
@@ -190,9 +188,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             client = await self._get_client()
+            # Record count before deletion
+            before_count = len(client)
+
             client.delete(ids)
+
+            # Calculate actual deleted count
+            after_count = len(client)
+            deleted_count = before_count - after_count
+
             logger.debug(
-                f"[{self.workspace}] Successfully deleted {len(ids)} vectors from {self.namespace}"
+                f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
             )
         except Exception as e:
             logger.error(
@@ -286,7 +292,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._client.save()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
@@ -408,7 +414,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 )
 
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
 
