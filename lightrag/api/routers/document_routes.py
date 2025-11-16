@@ -1641,26 +1641,15 @@ async def background_delete_documents(
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
         get_namespace_data,
-        get_storage_keyed_lock,
-        initialize_pipeline_status,
+        get_namespace_lock,
     )
 
-    # Step 1: Get workspace
-    workspace = rag.workspace
-
-    # Step 2: Construct namespace
-    namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-
-    # Step 3: Ensure initialization
-    await initialize_pipeline_status(workspace)
-
-    # Step 4: Get lock
-    pipeline_status_lock = get_storage_keyed_lock(
-        keys="status", namespace=namespace, enable_logging=False
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
     )
-
-    # Step 5: Get data
-    pipeline_status = await get_namespace_data(namespace)
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
 
     total_docs = len(doc_ids)
     successful_deletions = []
@@ -2149,27 +2138,16 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import (
             get_namespace_data,
-            get_storage_keyed_lock,
-            initialize_pipeline_status,
+            get_namespace_lock,
         )
 
         # Get pipeline status and lock
-        # Step 1: Get workspace
-        workspace = rag.workspace
-
-        # Step 2: Construct namespace
-        namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-
-        # Step 3: Ensure initialization
-        await initialize_pipeline_status(workspace)
-
-        # Step 4: Get lock
-        pipeline_status_lock = get_storage_keyed_lock(
-            keys="status", namespace=namespace, enable_logging=False
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
         )
-
-        # Step 5: Get data
-        pipeline_status = await get_namespace_data(namespace)
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
 
         # Check and set status with lock
         async with pipeline_status_lock:
@@ -2360,15 +2338,16 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
+                get_namespace_lock,
                 get_all_update_flags_status,
-                initialize_pipeline_status,
             )
 
-            # Get workspace-specific pipeline status
-            workspace = rag.workspace
-            namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-            await initialize_pipeline_status(workspace)
-            pipeline_status = await get_namespace_data(namespace)
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Get update flags status for all namespaces
             update_status = await get_all_update_flags_status()
@@ -2385,8 +2364,9 @@ def create_document_routes(
                         processed_flags.append(bool(flag))
                 processed_update_status[namespace] = processed_flags
 
-            # Convert to regular dict if it's a Manager.dict
-            status_dict = dict(pipeline_status)
+            async with pipeline_status_lock:
+                # Convert to regular dict if it's a Manager.dict
+                status_dict = dict(pipeline_status)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
@@ -2575,20 +2555,15 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
-                get_storage_keyed_lock,
-                initialize_pipeline_status,
+                get_namespace_lock,
             )
 
-            # Get workspace-specific pipeline status
-            workspace = rag.workspace
-            namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-            await initialize_pipeline_status(workspace)
-
-            # Use workspace-aware lock to check busy flag
-            pipeline_status_lock = get_storage_keyed_lock(
-                keys="status", namespace=namespace, enable_logging=False
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
             )
-            pipeline_status = await get_namespace_data(namespace)
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Check if pipeline is busy with proper lock
             async with pipeline_status_lock:
@@ -2993,26 +2968,15 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
-                get_storage_keyed_lock,
-                initialize_pipeline_status,
+                get_namespace_lock,
             )
 
-            # Step 1: Get workspace
-            workspace = rag.workspace
-
-            # Step 2: Construct namespace
-            namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-
-            # Step 3: Ensure initialization
-            await initialize_pipeline_status(workspace)
-
-            # Step 4: Get lock
-            pipeline_status_lock = get_storage_keyed_lock(
-                keys="status", namespace=namespace, enable_logging=False
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
             )
-
-            # Step 5: Get data
-            pipeline_status = await get_namespace_data(namespace)
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             async with pipeline_status_lock:
                 if not pipeline_status.get("busy", False):
