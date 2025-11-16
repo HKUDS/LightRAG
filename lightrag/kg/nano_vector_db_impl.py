@@ -47,7 +47,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             workspace_dir = working_dir
 
         os.makedirs(workspace_dir, exist_ok=True)
