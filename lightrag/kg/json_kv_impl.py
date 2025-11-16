@@ -13,7 +13,7 @@ from lightrag.utils import (
 from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
-    get_storage_lock,
+    get_namespace_lock,
     get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
@@ -27,21 +27,15 @@ from .shared_storage import (
 class JsonKVStorage(BaseKVStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
-        
-        # Get composite workspace (supports multi-tenant isolation)
-        composite_workspace = self._get_composite_workspace()
-        
-        if composite_workspace and composite_workspace != "_":
-            # Include composite workspace in the file path for data isolation
-            # For multi-tenant: tenant_id:kb_id:workspace
-            # For single-tenant: just workspace
-            workspace_dir = os.path.join(working_dir, composite_workspace)
-            self.final_namespace = f"{composite_workspace}_{self.namespace}"
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
             workspace_dir = working_dir
             self.final_namespace = self.namespace
-            composite_workspace = "_"
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
@@ -52,12 +46,20 @@ class JsonKVStorage(BaseKVStorage):
 
     async def initialize(self):
         """Initialize storage data"""
-        self._storage_lock = get_storage_lock()
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(self.final_namespace)
-            self._data = await get_namespace_data(self.final_namespace)
+            need_init = await try_initialize_namespace(
+                self.namespace, workspace=self.workspace
+            )
+            self._data = await get_namespace_data(
+                self.namespace, workspace=self.workspace
+            )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
                 async with self._storage_lock:
@@ -97,31 +99,11 @@ class JsonKVStorage(BaseKVStorage):
                         f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
                     )
                     cleaned_data = load_json(self._file_name)
-                    if cleaned_data:
+                    if cleaned_data is not None:
                         self._data.clear()
                         self._data.update(cleaned_data)
 
-                await clear_all_update_flags(self.final_namespace)
-
-    async def get_all(self) -> dict[str, Any]:
-        """Get all data from storage
-
-        Returns:
-            Dictionary containing all stored data
-        """
-        async with self._storage_lock:
-            result = {}
-            for key, value in self._data.items():
-                if value:
-                    # Create a copy to avoid modifying the original data
-                    data = dict(value)
-                    # Ensure time fields are present, provide default values for old data
-                    data.setdefault("create_time", 0)
-                    data.setdefault("update_time", 0)
-                    result[key] = data
-                else:
-                    result[key] = value
-            return result
+                await clear_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
@@ -194,7 +176,7 @@ class JsonKVStorage(BaseKVStorage):
                 v["_id"] = k
 
             self._data.update(data)
-            await set_all_update_flags(self.final_namespace)
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
@@ -217,7 +199,16 @@ class JsonKVStorage(BaseKVStorage):
                     any_deleted = True
 
             if any_deleted:
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
+        """
+        async with self._storage_lock:
+            return len(self._data) == 0
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
@@ -236,7 +227,7 @@ class JsonKVStorage(BaseKVStorage):
         try:
             async with self._storage_lock:
                 self._data.clear()
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
 
             await self.index_done_callback()
             logger.info(
@@ -254,7 +245,7 @@ class JsonKVStorage(BaseKVStorage):
             data: Original data dictionary that may contain legacy structure
 
         Returns:
-            Migrated data dictionary with flattened cache keys
+            Migrated data dictionary with flattened cache keys (sanitized if needed)
         """
         from lightrag.utils import generate_cache_key
 
@@ -291,8 +282,17 @@ class JsonKVStorage(BaseKVStorage):
             logger.info(
                 f"[{self.workspace}] Migrated {migration_count} legacy cache entries to flattened structure"
             )
-            # Persist migrated data immediately
-            write_json(migrated_data, self._file_name)
+            # Persist migrated data immediately and check if sanitization was applied
+            needs_reload = write_json(migrated_data, self._file_name)
+
+            # If data was sanitized during write, reload cleaned data
+            if needs_reload:
+                logger.info(
+                    f"[{self.workspace}] Reloading sanitized migration data for {self.namespace}"
+                )
+                cleaned_data = load_json(self._file_name)
+                if cleaned_data is not None:
+                    return cleaned_data  # Return cleaned data to update shared memory
 
         return migrated_data
 

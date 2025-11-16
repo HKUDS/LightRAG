@@ -53,7 +53,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
             workspace_dir = working_dir
-            self.workspace = "_"
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._graphml_xml_file = os.path.join(

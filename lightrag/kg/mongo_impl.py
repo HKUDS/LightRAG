@@ -120,7 +120,7 @@ class MongoKVStorage(BaseKVStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(
                 f"[{self.workspace}] Final namespace (no workspace): '{self.namespace}'"
             )
@@ -352,7 +352,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._collection_name = self.final_namespace
@@ -505,7 +505,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             collation_config = {"locale": "zh", "numericOrdering": True}
 
             # Use workspace-specific index names to avoid cross-workspace conflicts
-            workspace_prefix = f"{self.workspace}_" if self.workspace != "_" else ""
+            workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
 
             # 1. Define all indexes needed with workspace-specific names
             all_indexes = [
@@ -763,7 +763,7 @@ class MongoGraphStorage(BaseGraphStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._collection_name = self.final_namespace
@@ -2116,7 +2116,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         # Set index name based on workspace for backward compatibility

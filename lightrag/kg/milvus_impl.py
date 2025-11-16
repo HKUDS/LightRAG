@@ -944,8 +944,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
-            self.workspace = "_"
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")

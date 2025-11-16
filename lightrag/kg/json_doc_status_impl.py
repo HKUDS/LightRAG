@@ -16,7 +16,7 @@ from lightrag.utils import (
 from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
-    get_storage_lock,
+    get_namespace_lock,
     get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
@@ -32,21 +32,15 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
-        
-        # Get composite workspace (supports multi-tenant isolation)
-        composite_workspace = self._get_composite_workspace()
-        
-        if composite_workspace and composite_workspace != "_":
-            # Include composite workspace in the file path for data isolation
-            # For multi-tenant: tenant_id:kb_id:workspace
-            # For single-tenant: just workspace
-            workspace_dir = os.path.join(working_dir, composite_workspace)
-            self.final_namespace = f"{composite_workspace}_{self.namespace}"
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
             workspace_dir = working_dir
             self.final_namespace = self.namespace
-            composite_workspace = "_"
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
@@ -56,12 +50,20 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         """Initialize storage data"""
-        self._storage_lock = get_storage_lock()
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(self.final_namespace)
-            self._data = await get_namespace_data(self.final_namespace)
+            need_init = await try_initialize_namespace(
+                self.namespace, workspace=self.workspace
+            )
+            self._data = await get_namespace_data(
+                self.namespace, workspace=self.workspace
+            )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
                 async with self._storage_lock:
@@ -96,21 +98,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
-            for doc_id, doc in self._data.items():
-                try:
-                    status = doc.get("status")
-                    if status in counts:
-                        counts[status] += 1
-                    else:
-                        # Log warning for unknown status but don't fail
-                        logger.warning(
-                            f"[{self.workspace}] Unknown status '{status}' for document {doc_id}"
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"[{self.workspace}] Error counting status for document {doc_id}: {e}"
-                    )
-                    continue
+            for doc in self._data.values():
+                counts[doc["status"]] += 1
         return counts
 
     async def get_docs_by_status(
@@ -190,11 +179,11 @@ class JsonDocStatusStorage(DocStatusStorage):
                         f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
                     )
                     cleaned_data = load_json(self._file_name)
-                    if cleaned_data:
+                    if cleaned_data is not None:
                         self._data.clear()
                         self._data.update(cleaned_data)
 
-                await clear_all_update_flags(self.final_namespace)
+                await clear_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
@@ -215,9 +204,23 @@ class JsonDocStatusStorage(DocStatusStorage):
                 if "chunks_list" not in doc_data:
                     doc_data["chunks_list"] = []
             self._data.update(data)
-            await set_all_update_flags(self.final_namespace)
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
 
         await self.index_done_callback()
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+
+        Raises:
+            StorageNotInitializedError: If storage is not initialized
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            return len(self._data) == 0
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:
@@ -260,9 +263,6 @@ class JsonDocStatusStorage(DocStatusStorage):
         # For JSON storage, we load all data and sort/filter in memory
         all_docs = []
 
-        if self._storage_lock is None:
-            raise StorageNotInitializedError("JsonDocStatusStorage")
-
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
                 # Apply status filter
@@ -283,12 +283,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     if "error_msg" not in data:
                         data["error_msg"] = None
 
-                    # Filter data to only include valid fields for DocProcessingStatus
-                    # This prevents TypeError if extra fields are present in the JSON
-                    valid_fields = DocProcessingStatus.__dataclass_fields__.keys()
-                    filtered_data = {k: v for k, v in data.items() if k in valid_fields}
-                    
-                    doc_status = DocProcessingStatus(**filtered_data)
+                    doc_status = DocProcessingStatus(**data)
 
                     # Add sort key for sorting
                     if sort_field == "id":
@@ -302,14 +297,9 @@ class JsonDocStatusStorage(DocStatusStorage):
 
                     all_docs.append((doc_id, doc_status))
 
-                except (KeyError, TypeError, ValueError) as e:
+                except KeyError as e:
                     logger.error(
                         f"[{self.workspace}] Error processing document {doc_id}: {e}"
-                    )
-                    continue
-                except Exception as e:
-                    logger.error(
-                        f"[{self.workspace}] Unexpected error processing document {doc_id}: {e}"
                     )
                     continue
 
@@ -368,7 +358,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     any_deleted = True
 
             if any_deleted:
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
         """Get document by file path
@@ -391,28 +381,6 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         return None
 
-    async def get_doc_by_external_id(
-        self, external_id: str
-    ) -> Union[dict[str, Any], None]:
-        """Get document by external ID for idempotency checks.
-
-        Args:
-            external_id: The external ID to search for (client-provided unique identifier)
-
-        Returns:
-            Union[dict[str, Any], None]: Document data if found, None otherwise
-            Returns the same format as get_by_id method
-        """
-        if self._storage_lock is None:
-            raise StorageNotInitializedError("JsonDocStatusStorage")
-
-        async with self._storage_lock:
-            for doc_id, doc_data in self._data.items():
-                if doc_data.get("external_id") == external_id:
-                    return doc_data
-
-        return None
-
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources
 
@@ -429,7 +397,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         try:
             async with self._storage_lock:
                 self._data.clear()
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
 
             await self.index_done_callback()
             logger.info(

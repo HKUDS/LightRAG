@@ -10,7 +10,7 @@ from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -39,21 +39,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         # Where to save index file if you want persistent storage
         working_dir = self.global_config["working_dir"]
-        
-        # Get composite workspace (supports multi-tenant isolation)
-        composite_workspace = self._get_composite_workspace()
-        
-        if composite_workspace and composite_workspace != "_":
-            # Include composite workspace in the file path for data isolation
-            # For multi-tenant: tenant_id:kb_id:workspace
-            # For single-tenant: just workspace
-            workspace_dir = os.path.join(working_dir, composite_workspace)
-            self.final_namespace = f"{composite_workspace}_{self.namespace}"
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            self.final_namespace = f"{self.workspace}_{self.namespace}"
+
         else:
             # Default behavior when workspace is empty
-            workspace_dir = working_dir
             self.final_namespace = self.namespace
-            composite_workspace = "_"
+            workspace_dir = working_dir
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._faiss_index_file = os.path.join(
@@ -78,9 +73,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.final_namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_namespace_lock(
+            self.final_namespace, workspace=self.workspace
+        )
 
     async def _get_index(self):
         """Check if the shtorage should be reloaded"""
@@ -405,7 +404,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._save_faiss_index()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
             except Exception as e:
@@ -455,23 +456,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        results = []
+        results: list[dict[str, Any] | None] = []
         for id in ids:
+            record = None
             fid = self._find_faiss_id_by_custom_id(id)
             if fid is not None:
-                metadata = self._id_to_meta.get(fid, {})
+                metadata = self._id_to_meta.get(fid)
                 if metadata:
                     # Filter out __vector__ from metadata to avoid returning large vector data
                     filtered_metadata = {
                         k: v for k, v in metadata.items() if k != "__vector__"
                     }
-                    results.append(
-                        {
-                            **filtered_metadata,
-                            "id": metadata.get("__id__"),
-                            "created_at": metadata.get("__created_at__"),
-                        }
-                    )
+                    record = {
+                        **filtered_metadata,
+                        "id": metadata.get("__id__"),
+                        "created_at": metadata.get("__created_at__"),
+                    }
+            results.append(record)
 
         return results
 
@@ -532,7 +533,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._load_faiss_index()
 
                 # Notify other processes
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
                 self.storage_updated.value = False
 
                 logger.info(
