@@ -6,7 +6,6 @@ import numpy as np
 from dotenv import load_dotenv
 import logging
 from openai import AzureOpenAI
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 logging.basicConfig(level=logging.INFO)
 
@@ -93,9 +92,7 @@ async def initialize_rag():
         ),
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

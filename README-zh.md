@@ -221,6 +221,10 @@ python examples/lightrag_openai_demo.py
 
 > ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
 
+### ⚠️ 重要：初始化要求
+
+LightRAG 在使用前需要显式初始化。 创建 LightRAG 实例后，您必须调用 await rag.initialize_storages()，否则将出现错误。
+
 ### 一个简单程序
 
 以下Python代码片段演示了如何初始化LightRAG、插入文本并进行查询：
@@ -230,7 +234,6 @@ import os
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
-from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
@@ -245,9 +248,7 @@ async def initialize_rag():
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
     )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-    return rag
+    await rag.initialize_storages()    return rag
 
 async def main():
     try:
@@ -441,8 +442,6 @@ async def initialize_rag():
     )
 
     await rag.initialize_storages()
-    await initialize_pipeline_status()
-
     return rag
 ```
 
@@ -571,7 +570,6 @@ from lightrag import LightRAG
 from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
-from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import setup_logger
 
 # 为LightRAG设置日志处理程序
@@ -588,8 +586,6 @@ async def initialize_rag():
     )
 
     await rag.initialize_storages()
-    await initialize_pipeline_status()
-
     return rag
 
 def main():
@@ -839,8 +835,6 @@ async def initialize_rag():
     # 初始化数据库连接
     await rag.initialize_storages()
     # 初始化文档处理的管道状态
-    await initialize_pipeline_status()
-
     return rag
 ```
 

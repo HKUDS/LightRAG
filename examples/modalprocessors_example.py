@@ -7,7 +7,6 @@ This example demonstrates how to use LightRAG's modal processors directly withou
 import asyncio
 import argparse
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 from raganything.modalprocessors import (
@@ -190,9 +189,7 @@ async def initialize_rag(api_key: str, base_url: str = None):
         ),
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

@@ -4,7 +4,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
@@ -61,9 +60,7 @@ async def initialize_rag():
         log_level="DEBUG",
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 
