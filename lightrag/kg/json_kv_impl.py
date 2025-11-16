@@ -30,11 +30,9 @@ class JsonKVStorage(BaseKVStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
             workspace_dir = working_dir
-            self.final_namespace = self.namespace
             self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
