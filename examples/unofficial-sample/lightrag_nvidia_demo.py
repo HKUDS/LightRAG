@@ -9,7 +9,6 @@ from lightrag.llm import (
 )
 from lightrag.utils import EmbeddingFunc
 import numpy as np
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # for custom llm_model_func
 from lightrag.utils import locate_json_string_body_from_string
@@ -115,9 +114,7 @@ async def initialize_rag():
         ),
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

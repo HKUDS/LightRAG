@@ -102,7 +102,6 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
         print("\n📝 To fix, run this initialization sequence:\n")
         print("  await rag.initialize_storages()")
         print("  from lightrag.kg.shared_storage import initialize_pipeline_status")
-        print("  await initialize_pipeline_status()")
         print(
             "\n📚 Documentation: https://github.com/HKUDS/LightRAG#important-initialization-requirements"
         )
@@ -127,7 +126,6 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
 async def demo():
     """Demonstrate the diagnostic tool with a test instance."""
     from lightrag.llm.openai import openai_embed, gpt_4o_mini_complete
-    from lightrag.kg.shared_storage import initialize_pipeline_status
 
     print("=" * 50)
     print("LightRAG Initialization Diagnostic Tool")
@@ -145,9 +143,7 @@ async def demo():
 
     print("\n" + "=" * 50)
     print("\n🔄 Initializing...\n")
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     print("\n🟢 AFTER initialization:\n")
     await check_lightrag_setup(rag, verbose=True)
 

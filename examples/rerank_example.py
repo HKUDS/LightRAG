@@ -29,7 +29,6 @@ import numpy as np
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, setup_logger
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from functools import partial
 from lightrag.rerank import cohere_rerank
@@ -94,9 +93,7 @@ async def create_rag_with_rerank():
         rerank_model_func=rerank_model_func,
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 
