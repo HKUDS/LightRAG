@@ -1644,8 +1644,12 @@ async def background_delete_documents(
         get_namespace_lock,
     )
 
-    pipeline_status = await get_namespace_data("pipeline_status")
-    pipeline_status_lock = get_namespace_lock("pipeline_status")
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
 
     total_docs = len(doc_ids)
     successful_deletions = []
@@ -2138,8 +2142,12 @@ def create_document_routes(
         )
 
         # Get pipeline status and lock
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_namespace_lock("pipeline_status")
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
 
         # Check and set status with lock
         async with pipeline_status_lock:
@@ -2334,8 +2342,12 @@ def create_document_routes(
                 get_all_update_flags_status,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-            pipeline_status_lock = get_namespace_lock("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Get update flags status for all namespaces
             update_status = await get_all_update_flags_status()
@@ -2546,8 +2558,12 @@ def create_document_routes(
                 get_namespace_lock,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-            pipeline_status_lock = get_namespace_lock("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Check if pipeline is busy with proper lock
             async with pipeline_status_lock:
@@ -2955,8 +2971,12 @@ def create_document_routes(
                 get_namespace_lock,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-            pipeline_status_lock = get_namespace_lock("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             async with pipeline_status_lock:
                 if not pipeline_status.get("busy", False):
