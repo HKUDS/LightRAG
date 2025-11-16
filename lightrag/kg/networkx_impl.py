@@ -72,11 +72,11 @@ class NetworkXStorage(BaseGraphStorage):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(
-            self.final_namespace, workspace=self.workspace
+            self.namespace, workspace=self.workspace
         )
         # Get the storage lock for use in other methods
         self._storage_lock = get_namespace_lock(
-            self.final_namespace, workspace=self.workspace
+            self.namespace, workspace=self.workspace
         )
 
     async def _get_graph(self):
@@ -526,9 +526,7 @@ class NetworkXStorage(BaseGraphStorage):
                     self._graph, self._graphml_xml_file, self.workspace
                 )
                 # Notify other processes that data has been updated
-                await set_all_update_flags(
-                    self.final_namespace, workspace=self.workspace
-                )
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
@@ -559,9 +557,7 @@ class NetworkXStorage(BaseGraphStorage):
                     os.remove(self._graphml_xml_file)
                 self._graph = nx.Graph()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(
-                    self.final_namespace, workspace=self.workspace
-                )
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 logger.info(
