@@ -64,10 +64,10 @@ from lightrag.kg import (
 
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_graph_db_lock,
     get_data_init_lock,
-    get_storage_keyed_lock,
-    initialize_pipeline_status,
+    get_default_workspace,
+    set_default_workspace,
+    get_namespace_lock,
 )
 
 from lightrag.base import (
@@ -659,12 +659,11 @@ class LightRAG:
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
         if self._storages_status == StoragesStatus.CREATED:
-            # Set default workspace for backward compatibility
-            # This allows initialize_pipeline_status() called without parameters
-            # to use the correct workspace
-            from lightrag.kg.shared_storage import set_default_workspace
-
-            set_default_workspace(self.workspace)
+            # Set the first initialized workspace will set the default workspace
+            # Allows namespace operation without specifying workspace for backward compatibility
+            default_workspace = get_default_workspace()
+            if default_workspace is None:
+                set_default_workspace(self.workspace)
 
             for storage in (
                 self.full_docs,
@@ -1600,22 +1599,8 @@ class LightRAG:
         """
 
         # Get pipeline status shared data and lock
-        # Step 1: Get workspace
-        workspace = self.workspace
-
-        # Step 2: Construct namespace (following GraphDB pattern)
-        namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-
-        # Step 3: Ensure initialization (on first access)
-        await initialize_pipeline_status(workspace)
-
-        # Step 4: Get lock
-        pipeline_status_lock = get_storage_keyed_lock(
-            keys="status", namespace=namespace, enable_logging=False
-        )
-
-        # Step 5: Get data
-        pipeline_status = await get_namespace_data(namespace)
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_namespace_lock("pipeline_status")
 
         # Check if another process is already processing the queue
         async with pipeline_status_lock:
@@ -2967,22 +2952,8 @@ class LightRAG:
         doc_llm_cache_ids: list[str] = []
 
         # Get pipeline status shared data and lock for status updates
-        # Step 1: Get workspace
-        workspace = self.workspace
-
-        # Step 2: Construct namespace (following GraphDB pattern)
-        namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-
-        # Step 3: Ensure initialization (on first access)
-        await initialize_pipeline_status(workspace)
-
-        # Step 4: Get lock
-        pipeline_status_lock = get_storage_keyed_lock(
-            keys="status", namespace=namespace, enable_logging=False
-        )
-
-        # Step 5: Get data
-        pipeline_status = await get_namespace_data(namespace)
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_namespace_lock("pipeline_status")
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
@@ -3336,31 +3307,111 @@ class LightRAG:
                 logger.error(f"Failed to process graph analysis results: {e}")
                 raise Exception(f"Failed to process graph dependencies: {e}") from e
 
-            # Use graph database lock to prevent dirty read
-            graph_db_lock = get_graph_db_lock(enable_logging=False)
-            async with graph_db_lock:
-                # 5. Delete chunks from storage
-                if chunk_ids:
-                    try:
-                        await self.chunks_vdb.delete(chunk_ids)
-                        await self.text_chunks.delete(chunk_ids)
+            # Data integrity is ensured by allowing only one process to hold pipeline at a time（no graph db lock is needed anymore)
 
-                        async with pipeline_status_lock:
-                            log_message = f"Successfully deleted {len(chunk_ids)} chunks from storage"
-                            logger.info(log_message)
-                            pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+            # 5. Delete chunks from storage
+            if chunk_ids:
+                try:
+                    await self.chunks_vdb.delete(chunk_ids)
+                    await self.text_chunks.delete(chunk_ids)
 
-                    except Exception as e:
-                        logger.error(f"Failed to delete chunks: {e}")
-                        raise Exception(f"Failed to delete document chunks: {e}") from e
+                    async with pipeline_status_lock:
+                        log_message = (
+                            f"Successfully deleted {len(chunk_ids)} chunks from storage"
+                        )
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
-                # 6. Delete relationships that have no remaining sources
-                if relationships_to_delete:
-                    try:
-                        # Delete from relation vdb
+                except Exception as e:
+                    logger.error(f"Failed to delete chunks: {e}")
+                    raise Exception(f"Failed to delete document chunks: {e}") from e
+
+            # 6. Delete relationships that have no remaining sources
+            if relationships_to_delete:
+                try:
+                    # Delete from relation vdb
+                    rel_ids_to_delete = []
+                    for src, tgt in relationships_to_delete:
+                        rel_ids_to_delete.extend(
+                            [
+                                compute_mdhash_id(src + tgt, prefix="rel-"),
+                                compute_mdhash_id(tgt + src, prefix="rel-"),
+                            ]
+                        )
+                    await self.relationships_vdb.delete(rel_ids_to_delete)
+
+                    # Delete from graph
+                    await self.chunk_entity_relation_graph.remove_edges(
+                        list(relationships_to_delete)
+                    )
+
+                    # Delete from relation_chunks storage
+                    if self.relation_chunks:
+                        relation_storage_keys = [
+                            make_relation_chunk_key(src, tgt)
+                            for src, tgt in relationships_to_delete
+                        ]
+                        await self.relation_chunks.delete(relation_storage_keys)
+
+                    async with pipeline_status_lock:
+                        log_message = f"Successfully deleted {len(relationships_to_delete)} relations"
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+
+                except Exception as e:
+                    logger.error(f"Failed to delete relationships: {e}")
+                    raise Exception(f"Failed to delete relationships: {e}") from e
+
+            # 7. Delete entities that have no remaining sources
+            if entities_to_delete:
+                try:
+                    # Batch get all edges for entities to avoid N+1 query problem
+                    nodes_edges_dict = (
+                        await self.chunk_entity_relation_graph.get_nodes_edges_batch(
+                            list(entities_to_delete)
+                        )
+                    )
+
+                    # Debug: Check and log all edges before deleting nodes
+                    edges_to_delete = set()
+                    edges_still_exist = 0
+
+                    for entity, edges in nodes_edges_dict.items():
+                        if edges:
+                            for src, tgt in edges:
+                                # Normalize edge representation (sorted for consistency)
+                                edge_tuple = tuple(sorted((src, tgt)))
+                                edges_to_delete.add(edge_tuple)
+
+                                if (
+                                    src in entities_to_delete
+                                    and tgt in entities_to_delete
+                                ):
+                                    logger.warning(
+                                        f"Edge still exists: {src} <-> {tgt}"
+                                    )
+                                elif src in entities_to_delete:
+                                    logger.warning(
+                                        f"Edge still exists: {src} --> {tgt}"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Edge still exists: {src} <-- {tgt}"
+                                    )
+                            edges_still_exist += 1
+
+                    if edges_still_exist:
+                        logger.warning(
+                            f"⚠️ {edges_still_exist} entities still has edges before deletion"
+                        )
+
+                    # Clean residual edges from VDB and storage before deleting nodes
+                    if edges_to_delete:
+                        # Delete from relationships_vdb
                         rel_ids_to_delete = []
-                        for src, tgt in relationships_to_delete:
+                        for src, tgt in edges_to_delete:
                             rel_ids_to_delete.extend(
                                 [
                                     compute_mdhash_id(src + tgt, prefix="rel-"),
@@ -3369,123 +3420,48 @@ class LightRAG:
                             )
                         await self.relationships_vdb.delete(rel_ids_to_delete)
 
-                        # Delete from graph
-                        await self.chunk_entity_relation_graph.remove_edges(
-                            list(relationships_to_delete)
-                        )
-
                         # Delete from relation_chunks storage
                         if self.relation_chunks:
                             relation_storage_keys = [
                                 make_relation_chunk_key(src, tgt)
-                                for src, tgt in relationships_to_delete
+                                for src, tgt in edges_to_delete
                             ]
                             await self.relation_chunks.delete(relation_storage_keys)
 
-                        async with pipeline_status_lock:
-                            log_message = f"Successfully deleted {len(relationships_to_delete)} relations"
-                            logger.info(log_message)
-                            pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
-
-                    except Exception as e:
-                        logger.error(f"Failed to delete relationships: {e}")
-                        raise Exception(f"Failed to delete relationships: {e}") from e
-
-                # 7. Delete entities that have no remaining sources
-                if entities_to_delete:
-                    try:
-                        # Batch get all edges for entities to avoid N+1 query problem
-                        nodes_edges_dict = await self.chunk_entity_relation_graph.get_nodes_edges_batch(
-                            list(entities_to_delete)
+                        logger.info(
+                            f"Cleaned {len(edges_to_delete)} residual edges from VDB and chunk-tracking storage"
                         )
 
-                        # Debug: Check and log all edges before deleting nodes
-                        edges_to_delete = set()
-                        edges_still_exist = 0
+                    # Delete from graph (edges will be auto-deleted with nodes)
+                    await self.chunk_entity_relation_graph.remove_nodes(
+                        list(entities_to_delete)
+                    )
 
-                        for entity, edges in nodes_edges_dict.items():
-                            if edges:
-                                for src, tgt in edges:
-                                    # Normalize edge representation (sorted for consistency)
-                                    edge_tuple = tuple(sorted((src, tgt)))
-                                    edges_to_delete.add(edge_tuple)
+                    # Delete from vector vdb
+                    entity_vdb_ids = [
+                        compute_mdhash_id(entity, prefix="ent-")
+                        for entity in entities_to_delete
+                    ]
+                    await self.entities_vdb.delete(entity_vdb_ids)
 
-                                    if (
-                                        src in entities_to_delete
-                                        and tgt in entities_to_delete
-                                    ):
-                                        logger.warning(
-                                            f"Edge still exists: {src} <-> {tgt}"
-                                        )
-                                    elif src in entities_to_delete:
-                                        logger.warning(
-                                            f"Edge still exists: {src} --> {tgt}"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"Edge still exists: {src} <-- {tgt}"
-                                        )
-                                edges_still_exist += 1
+                    # Delete from entity_chunks storage
+                    if self.entity_chunks:
+                        await self.entity_chunks.delete(list(entities_to_delete))
 
-                        if edges_still_exist:
-                            logger.warning(
-                                f"⚠️ {edges_still_exist} entities still has edges before deletion"
-                            )
-
-                        # Clean residual edges from VDB and storage before deleting nodes
-                        if edges_to_delete:
-                            # Delete from relationships_vdb
-                            rel_ids_to_delete = []
-                            for src, tgt in edges_to_delete:
-                                rel_ids_to_delete.extend(
-                                    [
-                                        compute_mdhash_id(src + tgt, prefix="rel-"),
-                                        compute_mdhash_id(tgt + src, prefix="rel-"),
-                                    ]
-                                )
-                            await self.relationships_vdb.delete(rel_ids_to_delete)
-
-                            # Delete from relation_chunks storage
-                            if self.relation_chunks:
-                                relation_storage_keys = [
-                                    make_relation_chunk_key(src, tgt)
-                                    for src, tgt in edges_to_delete
-                                ]
-                                await self.relation_chunks.delete(relation_storage_keys)
-
-                            logger.info(
-                                f"Cleaned {len(edges_to_delete)} residual edges from VDB and chunk-tracking storage"
-                            )
-
-                        # Delete from graph (edges will be auto-deleted with nodes)
-                        await self.chunk_entity_relation_graph.remove_nodes(
-                            list(entities_to_delete)
+                    async with pipeline_status_lock:
+                        log_message = (
+                            f"Successfully deleted {len(entities_to_delete)} entities"
                         )
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
-                        # Delete from vector vdb
-                        entity_vdb_ids = [
-                            compute_mdhash_id(entity, prefix="ent-")
-                            for entity in entities_to_delete
-                        ]
-                        await self.entities_vdb.delete(entity_vdb_ids)
+                except Exception as e:
+                    logger.error(f"Failed to delete entities: {e}")
+                    raise Exception(f"Failed to delete entities: {e}") from e
 
-                        # Delete from entity_chunks storage
-                        if self.entity_chunks:
-                            await self.entity_chunks.delete(list(entities_to_delete))
-
-                        async with pipeline_status_lock:
-                            log_message = f"Successfully deleted {len(entities_to_delete)} entities"
-                            logger.info(log_message)
-                            pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
-
-                    except Exception as e:
-                        logger.error(f"Failed to delete entities: {e}")
-                        raise Exception(f"Failed to delete entities: {e}") from e
-
-                # Persist changes to graph database before releasing graph database lock
-                await self._insert_done()
+            # Persist changes to graph database before entity and relationship rebuild
+            await self._insert_done()
 
             # 8. Rebuild entities and relationships from remaining chunks
             if entities_to_rebuild or relationships_to_rebuild:

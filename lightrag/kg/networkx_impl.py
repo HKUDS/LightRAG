@@ -7,7 +7,7 @@ from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
 import networkx as nx
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -71,9 +71,13 @@ class NetworkXStorage(BaseGraphStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.final_namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_namespace_lock(
+            self.final_namespace, workspace=self.workspace
+        )
 
     async def _get_graph(self):
         """Check if the storage should be reloaded"""
@@ -522,7 +526,9 @@ class NetworkXStorage(BaseGraphStorage):
                     self._graph, self._graphml_xml_file, self.workspace
                 )
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
@@ -553,7 +559,9 @@ class NetworkXStorage(BaseGraphStorage):
                     os.remove(self._graphml_xml_file)
                 self._graph = nx.Graph()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 logger.info(

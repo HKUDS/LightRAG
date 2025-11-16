@@ -56,6 +56,8 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
+    get_default_workspace,
+    # set_default_workspace,
     initialize_pipeline_status,
     cleanup_keyed_lock,
     finalize_share_data,
@@ -350,8 +352,9 @@ def create_app(args):
 
         try:
             # Initialize database connections
+            # set_default_workspace(rag.workspace)  # comment this line to test auto default workspace setting in initialize_storages
             await rag.initialize_storages()
-            await initialize_pipeline_status()
+            await initialize_pipeline_status()  # with default workspace
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
@@ -1139,14 +1142,8 @@ def create_app(args):
     async def get_status(request: Request):
         """Get current system status"""
         try:
-            # Extract workspace from request header or use default
-            workspace = get_workspace_from_request(request)
-
-            # Construct namespace (following GraphDB pattern)
-            namespace = f"{workspace}:pipeline" if workspace else "pipeline_status"
-
-            # Get workspace-specific pipeline status
-            pipeline_status = await get_namespace_data(namespace)
+            default_workspace = get_default_workspace()
+            pipeline_status = await get_namespace_data("pipeline_status")
 
             if not auth_configured:
                 auth_mode = "disabled"
@@ -1177,8 +1174,7 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": workspace,
-                    "default_workspace": args.workspace,
+                    "workspace": default_workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,

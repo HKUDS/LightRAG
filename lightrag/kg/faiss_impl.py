@@ -10,7 +10,7 @@ from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -73,9 +73,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.final_namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_namespace_lock(
+            self.final_namespace, workspace=self.workspace
+        )
 
     async def _get_index(self):
         """Check if the shtorage should be reloaded"""
@@ -400,7 +404,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._save_faiss_index()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
             except Exception as e:
@@ -527,7 +533,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._load_faiss_index()
 
                 # Notify other processes
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(
+                    self.final_namespace, workspace=self.workspace
+                )
                 self.storage_updated.value = False
 
                 logger.info(
