@@ -16,7 +16,7 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
+from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -340,10 +340,9 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def finalize(self):
         """Close the Neo4j driver and release all resources"""
-        async with get_graph_db_lock():
-            if self._driver:
-                await self._driver.close()
-                self._driver = None
+        if self._driver:
+            await self._driver.close()
+            self._driver = None
 
     async def __aexit__(self, exc_type, exc, tb):
         """Ensure driver is closed when context manager exits"""
@@ -1773,24 +1772,23 @@ class Neo4JStorage(BaseGraphStorage):
             - On success: {"status": "success", "message": "workspace data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_graph_db_lock():
-            workspace_label = self._get_workspace_label()
-            try:
-                async with self._driver.session(database=self._DATABASE) as session:
-                    # Delete all nodes and relationships in current workspace only
-                    query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
-                    result = await session.run(query)
-                    await result.consume()  # Ensure result is fully consumed
+        workspace_label = self._get_workspace_label()
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                # Delete all nodes and relationships in current workspace only
+                query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
+                result = await session.run(query)
+                await result.consume()  # Ensure result is fully consumed
 
-                    # logger.debug(
-                    #     f"[{self.workspace}] Process {os.getpid()} drop Neo4j workspace '{workspace_label}' in database {self._DATABASE}"
-                    # )
-                    return {
-                        "status": "success",
-                        "message": f"workspace '{workspace_label}' data dropped",
-                    }
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+                # logger.debug(
+                #     f"[{self.workspace}] Process {os.getpid()} drop Neo4j workspace '{workspace_label}' in database {self._DATABASE}"
+                # )
+                return {
+                    "status": "success",
+                    "message": f"workspace '{workspace_label}' data dropped",
+                }
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
