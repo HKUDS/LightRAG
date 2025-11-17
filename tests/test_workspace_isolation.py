@@ -2,11 +2,20 @@
 """
 Test script for PR #2366: Workspace Isolation Feature
 
-Tests the 4 key scenarios mentioned in PR description:
-1. Multi-Workspace Concurrency Test
-2. Pipeline Status Isolation Test
-3. Backward Compatibility Test
-4. Lock Mechanism Test
+Comprehensive test suite covering workspace isolation in LightRAG:
+1. Pipeline Status Isolation - Data isolation between workspaces
+2. Lock Mechanism - Parallel execution for different workspaces, serial for same workspace
+3. Backward Compatibility - Legacy code without workspace parameters
+4. Multi-Workspace Concurrency - Concurrent operations on different workspaces
+5. NamespaceLock Re-entrance Protection - Prevents deadlocks
+6. Different Namespace Lock Isolation - Locks isolated by namespace
+7. Error Handling - Invalid workspace configurations
+8. Update Flags Workspace Isolation - Update flags properly isolated
+9. Empty Workspace Standardization - Empty workspace handling
+10. JsonKVStorage Workspace Isolation - Integration test for KV storage
+11. LightRAG End-to-End Workspace Isolation - Complete E2E test with two instances
+
+Total: 11 test scenarios
 """
 
 import asyncio
