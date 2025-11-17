@@ -26,6 +26,7 @@ from lightrag.exceptions import (
 )
 import torch
 import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -141,6 +142,7 @@ async def hf_model_complete(
     return result
 
 
+@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
 async def hf_embed(texts: list[str], tokenizer, embed_model) -> np.ndarray:
     # Detect the appropriate device
     if torch.cuda.is_available():

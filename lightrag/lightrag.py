@@ -3,6 +3,7 @@ from __future__ import annotations
 import traceback
 import asyncio
 import configparser
+import inspect
 import os
 import time
 import warnings
@@ -12,6 +13,7 @@ from functools import partial
 from typing import (
     Any,
     AsyncIterator,
+    Awaitable,
     Callable,
     Iterator,
     cast,
@@ -20,6 +22,7 @@ from typing import (
     Optional,
     List,
     Dict,
+    Union,
 )
 from lightrag.prompt import PROMPTS
 from lightrag.exceptions import PipelineCancelledException
@@ -243,10 +246,12 @@ class LightRAG:
             int,
             int,
         ],
-        List[Dict[str, Any]],
+        Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]],
     ] = field(default_factory=lambda: chunking_by_token_size)
     """
     Custom chunking function for splitting text into chunks before processing.
+
+    The function can be either synchronous or asynchronous.
 
     The function should take the following parameters:
 
@@ -257,7 +262,8 @@ class LightRAG:
         - `chunk_token_size`: The maximum number of tokens per chunk.
         - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
 
-    The function should return a list of dictionaries, where each dictionary contains the following keys:
+    The function should return a list of dictionaries (or an awaitable that resolves to a list),
+    where each dictionary contains the following keys:
         - `tokens`: The number of tokens in the chunk.
         - `content`: The text content of the chunk.
 
@@ -269,6 +275,9 @@ class LightRAG:
 
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
+
+    embedding_token_limit: int | None = field(default=None, init=False)
+    """Token limit for embedding model. Set automatically from embedding_func.max_token_size in __post_init__."""
 
     embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 10)))
     """Batch size for embedding computations."""
@@ -513,6 +522,16 @@ class LightRAG:
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # Init Embedding
+        # Step 1: Capture max_token_size before applying decorator (decorator strips dataclass attributes)
+        embedding_max_token_size = None
+        if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
+            embedding_max_token_size = self.embedding_func.max_token_size
+            logger.debug(
+                f"Captured embedding max_token_size: {embedding_max_token_size}"
+            )
+        self.embedding_token_limit = embedding_max_token_size
+
+        # Step 2: Apply priority wrapper decorator
         self.embedding_func = priority_limit_async_func_call(
             self.embedding_func_max_async,
             llm_timeout=self.default_embedding_timeout,
@@ -1756,7 +1775,28 @@ class LightRAG:
                                 )
                             content = content_data["content"]
 
-                            # Generate chunks from document
+                            # Call chunking function, supporting both sync and async implementations
+                            chunking_result = self.chunking_func(
+                                self.tokenizer,
+                                content,
+                                split_by_character,
+                                split_by_character_only,
+                                self.chunk_overlap_token_size,
+                                self.chunk_token_size,
+                            )
+
+                            # If result is awaitable, await to get actual result
+                            if inspect.isawaitable(chunking_result):
+                                chunking_result = await chunking_result
+
+                            # Validate return type
+                            if not isinstance(chunking_result, (list, tuple)):
+                                raise TypeError(
+                                    f"chunking_func must return a list or tuple of dicts, "
+                                    f"got {type(chunking_result)}"
+                                )
+
+                            # Build chunks dictionary
                             chunks: dict[str, Any] = {
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
@@ -1764,14 +1804,7 @@ class LightRAG:
                                     "file_path": file_path,  # Add file path to each chunk
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
                                 }
-                                for dp in self.chunking_func(
-                                    self.tokenizer,
-                                    content,
-                                    split_by_character,
-                                    split_by_character_only,
-                                    self.chunk_overlap_token_size,
-                                    self.chunk_token_size,
-                                )
+                                for dp in chunking_result
                             }
 
                             if not chunks:
