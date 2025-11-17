@@ -46,6 +46,7 @@ dependencies = [
 pytest = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pre-commit",
 ]
 
 api = [

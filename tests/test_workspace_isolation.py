@@ -824,6 +824,7 @@ async def test_lightrag_end_to_end_workspace_isolation():
         # Factory function to create different mock LLM functions for each workspace
         def create_mock_llm_func(workspace_name):
             """Create a mock LLM function that returns different content based on workspace"""
+
             async def mock_llm_func(
                 prompt, system_prompt=None, history_messages=[], **kwargs
             ) -> str:
@@ -840,6 +841,7 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
 entity<|#|>Neural Networks<|#|>concept<|#|>Neural Networks are computing systems inspired by biological neural networks.
 relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Learning uses multiple layers of Neural Networks to learn representations.
 <|COMPLETE|>"""
+
             return mock_llm_func
 
         # Mock embedding function
