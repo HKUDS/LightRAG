@@ -702,9 +702,6 @@ async def test_update_flags_workspace_isolation():
         flag1_obj = await get_update_flag(test_namespace, workspace=workspace1)
         flag2_obj = await get_update_flag(test_namespace, workspace=workspace2)
 
-        # Initial state should be False
-        initial_ok = flag1_obj.value is False and flag2_obj.value is False
-
         # Set all flags for workspace1
         await set_all_update_flags(test_namespace, workspace=workspace1)
 
@@ -730,9 +727,6 @@ async def test_update_flags_workspace_isolation():
         # Set flags for both workspaces
         await set_all_update_flags(test_namespace, workspace=workspace1)
         await set_all_update_flags(test_namespace, workspace=workspace2)
-
-        # Verify both are set
-        both_set = flag1_obj.value is True and flag2_obj.value is True
 
         # Clear only workspace1
         await clear_all_update_flags(test_namespace, workspace=workspace1)
