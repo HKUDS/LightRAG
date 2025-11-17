@@ -813,21 +813,34 @@ async def test_lightrag_end_to_end_workspace_isolation():
     print("=" * 60)
 
     # Create temporary test directory
-    test_dir = tempfile.mkdtemp(prefix="lightrag_test_e2e_")
+    # test_dir = tempfile.mkdtemp(prefix="lightrag_test_e2e_")
+    test_dir = str(Path(__file__).parent.parent / "temp/e2e_workspace_isolation")
+    if os.path.exists(test_dir):
+        shutil.rmtree(test_dir)
+    os.makedirs(test_dir, exist_ok=True)
     print(f"\n   Using test directory: {test_dir}")
 
     try:
-        # Mock LLM function
-        async def mock_llm_func(
-            prompt, system_prompt=None, history_messages=[], **kwargs
-        ) -> str:
-            # Return a mock response that simulates entity extraction in the correct format
-            # Format: entity<|#|>entity_name<|#|>entity_type<|#|>entity_description
-            # Format: relation<|#|>source_entity<|#|>target_entity<|#|>keywords<|#|>description
-            return """entity<|#|>Artificial Intelligence<|#|>concept<|#|>AI is a field of computer science focused on creating intelligent machines.
+        # Factory function to create different mock LLM functions for each workspace
+        def create_mock_llm_func(workspace_name):
+            """Create a mock LLM function that returns different content based on workspace"""
+            async def mock_llm_func(
+                prompt, system_prompt=None, history_messages=[], **kwargs
+            ) -> str:
+                # Return different responses based on workspace
+                # Format: entity<|#|>entity_name<|#|>entity_type<|#|>entity_description
+                # Format: relation<|#|>source_entity<|#|>target_entity<|#|>keywords<|#|>description
+                if workspace_name == "project_a":
+                    return """entity<|#|>Artificial Intelligence<|#|>concept<|#|>AI is a field of computer science focused on creating intelligent machines.
 entity<|#|>Machine Learning<|#|>concept<|#|>Machine Learning is a subset of AI that enables systems to learn from data.
 relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related field<|#|>Machine Learning is a key component and subset of Artificial Intelligence.
 <|COMPLETE|>"""
+                else:  # project_b
+                    return """entity<|#|>Deep Learning<|#|>concept<|#|>Deep Learning is a subset of machine learning using neural networks with multiple layers.
+entity<|#|>Neural Networks<|#|>concept<|#|>Neural Networks are computing systems inspired by biological neural networks.
+relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Learning uses multiple layers of Neural Networks to learn representations.
+<|COMPLETE|>"""
+            return mock_llm_func
 
         # Mock embedding function
         async def mock_embedding_func(texts: list[str]) -> np.ndarray:
@@ -839,10 +852,14 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
         from lightrag import LightRAG
         from lightrag.utils import EmbeddingFunc
 
+        # Create different mock LLM functions for each workspace
+        mock_llm_func_a = create_mock_llm_func("project_a")
+        mock_llm_func_b = create_mock_llm_func("project_b")
+
         rag1 = LightRAG(
             working_dir=test_dir,
             workspace="project_a",
-            llm_model_func=mock_llm_func,
+            llm_model_func=mock_llm_func_a,
             embedding_func=EmbeddingFunc(
                 embedding_dim=384,
                 max_token_size=8192,
@@ -853,7 +870,7 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
         rag2 = LightRAG(
             working_dir=test_dir,
             workspace="project_b",
-            llm_model_func=mock_llm_func,
+            llm_model_func=mock_llm_func_b,
             embedding_func=EmbeddingFunc(
                 embedding_dim=384,
                 max_token_size=8192,
@@ -982,6 +999,8 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
 
     finally:
         # Cleanup test directory
-        if os.path.exists(test_dir):
-            shutil.rmtree(test_dir)
-            print(f"\n   Cleaned up test directory: {test_dir}")
+        # if os.path.exists(test_dir):
+        #     shutil.rmtree(test_dir)
+        #     print(f"\n   Cleaned up test directory: {test_dir}")
+        print("Keep test directory for manual inspection:")
+        print(f"   {test_dir}")
