@@ -2611,6 +2611,7 @@ docling = [
 evaluation = [
     { name = "datasets" },
     { name = "httpx" },
+    { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ragas" },
@@ -2696,6 +2697,7 @@ offline-storage = [
     { name = "redis" },
 ]
 pytest = [
+    { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -2751,6 +2753,7 @@ requires-dist = [
     { name = "passlib", extras = ["bcrypt"], marker = "extra == 'api'" },
     { name = "pipmaster" },
     { name = "pipmaster", marker = "extra == 'api'" },
+    { name = "pre-commit", marker = "extra == 'pytest'" },
     { name = "psutil", marker = "extra == 'api'" },
     { name = "pycryptodome", marker = "extra == 'api'", specifier = ">=3.0.0,<4.0.0" },
     { name = "pydantic" },
