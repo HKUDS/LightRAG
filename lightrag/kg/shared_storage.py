@@ -1583,7 +1583,8 @@ def finalize_share_data():
         _init_flags, \
         _initialized, \
         _update_flags, \
-        _async_locks
+        _async_locks, \
+        _default_workspace
 
     # Check if already initialized
     if not _initialized:
@@ -1646,6 +1647,7 @@ def finalize_share_data():
     _data_init_lock = None
     _update_flags = None
     _async_locks = None
+    _default_workspace = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
