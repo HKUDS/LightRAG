@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Test script for PR #2366: Workspace Isolation Feature
+Test script for Workspace Isolation Feature
 
 Comprehensive test suite covering workspace isolation in LightRAG:
 1. Pipeline Status Isolation - Data isolation between workspaces
@@ -39,7 +39,6 @@ from lightrag.kg.shared_storage import (
     get_all_update_flags_status,
     get_update_flag,
 )
-from lightrag.kg.json_kv_impl import JsonKVStorage
 
 
 # =============================================================================
@@ -84,7 +83,9 @@ async def test_pipeline_status_isolation():
     data2 = await get_namespace_data("pipeline_status", workspace=workspace2)
 
     # Verify they are independent objects
-    assert data1 is not data2, "Pipeline status data objects are the same (should be different)"
+    assert (
+        data1 is not data2
+    ), "Pipeline status data objects are the same (should be different)"
 
     # Modify workspace1's data and verify workspace2 is not affected
     data1["test_key"] = "workspace1_value"
@@ -94,8 +95,12 @@ async def test_pipeline_status_isolation():
     data2_check = await get_namespace_data("pipeline_status", workspace=workspace2)
 
     assert "test_key" in data1_check, "test_key not found in workspace1"
-    assert data1_check["test_key"] == "workspace1_value", f"workspace1 test_key value incorrect: {data1_check.get('test_key')}"
-    assert "test_key" not in data2_check, f"test_key leaked to workspace2: {data2_check.get('test_key')}"
+    assert (
+        data1_check["test_key"] == "workspace1_value"
+    ), f"workspace1 test_key value incorrect: {data1_check.get('test_key')}"
+    assert (
+        "test_key" not in data2_check
+    ), f"test_key leaked to workspace2: {data2_check.get('test_key')}"
 
     print("✅ PASSED: Pipeline Status Isolation")
     print("   Different workspaces have isolated pipeline status")
@@ -125,13 +130,9 @@ async def test_lock_mechanism():
         lock = get_namespace_lock(namespace, workspace)
         start = time.time()
         async with lock:
-            print(
-                f"   [{workspace}] acquired lock at {time.time() - start:.2f}s"
-            )
+            print(f"   [{workspace}] acquired lock at {time.time() - start:.2f}s")
             await asyncio.sleep(hold_time)
-            print(
-                f"   [{workspace}] releasing lock at {time.time() - start:.2f}s"
-            )
+            print(f"   [{workspace}] releasing lock at {time.time() - start:.2f}s")
 
     start = time.time()
     await asyncio.gather(
@@ -145,7 +146,7 @@ async def test_lock_mechanism():
     # If they block each other, it would take ~1.5s (serial)
     assert elapsed < 1.0, f"Locks blocked each other: {elapsed:.2f}s (expected < 1.0s)"
 
-    print(f"✅ PASSED: Lock Mechanism - Parallel (Different Workspaces)")
+    print("✅ PASSED: Lock Mechanism - Parallel (Different Workspaces)")
     print(f"   Locks ran in parallel: {elapsed:.2f}s")
 
     # Test 2.2: Same workspace should serialize
@@ -161,7 +162,7 @@ async def test_lock_mechanism():
     # Same workspace should serialize, taking ~0.6s
     assert elapsed >= 0.5, f"Locks didn't serialize: {elapsed:.2f}s (expected >= 0.5s)"
 
-    print(f"✅ PASSED: Lock Mechanism - Serial (Same Workspace)")
+    print("✅ PASSED: Lock Mechanism - Serial (Same Workspace)")
     print(f"   Locks serialized correctly: {elapsed:.2f}s")
 
 
@@ -188,7 +189,7 @@ async def test_backward_compatibility():
 
     assert final_ns == expected, f"Expected {expected}, got {final_ns}"
 
-    print(f"✅ PASSED: Backward Compatibility - get_final_namespace")
+    print("✅ PASSED: Backward Compatibility - get_final_namespace")
     print(f"   Correctly uses default workspace: {final_ns}")
 
     # Test 3.2: get_default_workspace
@@ -199,7 +200,7 @@ async def test_backward_compatibility():
 
     assert retrieved == "test_default", f"Expected 'test_default', got {retrieved}"
 
-    print(f"✅ PASSED: Backward Compatibility - default workspace")
+    print("✅ PASSED: Backward Compatibility - default workspace")
     print(f"   Default workspace set/get correctly: {retrieved}")
 
     # Test 3.3: Empty workspace handling
@@ -209,9 +210,11 @@ async def test_backward_compatibility():
     final_ns_empty = get_final_namespace("pipeline_status", workspace=None)
     expected_empty = "pipeline_status"  # Should be just the namespace without ':'
 
-    assert final_ns_empty == expected_empty, f"Expected '{expected_empty}', got '{final_ns_empty}'"
+    assert (
+        final_ns_empty == expected_empty
+    ), f"Expected '{expected_empty}', got '{final_ns_empty}'"
 
-    print(f"✅ PASSED: Backward Compatibility - empty workspace")
+    print("✅ PASSED: Backward Compatibility - empty workspace")
     print(f"   Empty workspace handled correctly: '{final_ns_empty}'")
 
     # Test 3.4: None workspace with default set
@@ -225,10 +228,12 @@ async def test_backward_compatibility():
         "pipeline_status", workspace="compat_test_workspace"
     )
 
-    assert data is not None, "Failed to initialize pipeline status with default workspace"
+    assert (
+        data is not None
+    ), "Failed to initialize pipeline status with default workspace"
 
-    print(f"✅ PASSED: Backward Compatibility - pipeline init with None")
-    print(f"   Pipeline status initialized with default workspace")
+    print("✅ PASSED: Backward Compatibility - pipeline init with None")
+    print("   Pipeline status initialized with default workspace")
 
 
 # =============================================================================
@@ -286,8 +291,10 @@ async def test_multi_workspace_concurrency():
     # Verify all workspaces completed
     assert set(results_list) == set(workspaces), "Not all workspaces completed"
 
-    print(f"✅ PASSED: Multi-Workspace Concurrency - Execution")
-    print(f"   All {len(workspaces)} workspaces completed successfully in {elapsed:.2f}s")
+    print("✅ PASSED: Multi-Workspace Concurrency - Execution")
+    print(
+        f"   All {len(workspaces)} workspaces completed successfully in {elapsed:.2f}s"
+    )
 
     # Verify data isolation - each workspace should have its own data
     print("\n   Verifying data isolation...")
@@ -297,12 +304,16 @@ async def test_multi_workspace_concurrency():
         expected_key = f"{ws}_key"
         expected_value = f"{ws}_value"
 
-        assert expected_key in data, f"Data not properly isolated for {ws}: missing {expected_key}"
-        assert data[expected_key] == expected_value, f"Data not properly isolated for {ws}: {expected_key}={data[expected_key]} (expected {expected_value})"
+        assert (
+            expected_key in data
+        ), f"Data not properly isolated for {ws}: missing {expected_key}"
+        assert (
+            data[expected_key] == expected_value
+        ), f"Data not properly isolated for {ws}: {expected_key}={data[expected_key]} (expected {expected_value})"
         print(f"   [{ws}] Data correctly isolated: {expected_key}={data[expected_key]}")
 
-    print(f"✅ PASSED: Multi-Workspace Concurrency - Data Isolation")
-    print(f"   All workspaces have properly isolated data")
+    print("✅ PASSED: Multi-Workspace Concurrency - Data Isolation")
+    print("   All workspaces have properly isolated data")
 
 
 # =============================================================================
@@ -341,8 +352,8 @@ async def test_namespace_lock_reentrance():
 
     assert reentrance_failed_correctly, "Re-entrance protection not working"
 
-    print(f"✅ PASSED: NamespaceLock Re-entrance Protection")
-    print(f"   Re-entrance correctly raises RuntimeError")
+    print("✅ PASSED: NamespaceLock Re-entrance Protection")
+    print("   Re-entrance correctly raises RuntimeError")
 
     # Test 5.2: Same NamespaceLock instance in different coroutines should succeed
     print("\nTest 5.2: Same NamespaceLock instance in different coroutines")
@@ -365,10 +376,14 @@ async def test_namespace_lock_reentrance():
 
     # Both coroutines should have completed
     expected_entries = 4  # 2 starts + 2 ends
-    assert len(concurrent_results) == expected_entries, f"Expected {expected_entries} entries, got {len(concurrent_results)}"
+    assert (
+        len(concurrent_results) == expected_entries
+    ), f"Expected {expected_entries} entries, got {len(concurrent_results)}"
 
-    print(f"✅ PASSED: NamespaceLock Concurrent Reuse")
-    print(f"   Same NamespaceLock instance used successfully in {expected_entries//2} concurrent coroutines")
+    print("✅ PASSED: NamespaceLock Concurrent Reuse")
+    print(
+        f"   Same NamespaceLock instance used successfully in {expected_entries//2} concurrent coroutines"
+    )
 
 
 # =============================================================================
@@ -406,9 +421,11 @@ async def test_different_namespace_lock_isolation():
     elapsed = time.time() - start
 
     # If locks are properly isolated by namespace, this should take ~0.5s (parallel)
-    assert elapsed < 1.0, f"Different namespace locks blocked each other: {elapsed:.2f}s (expected < 1.0s)"
+    assert (
+        elapsed < 1.0
+    ), f"Different namespace locks blocked each other: {elapsed:.2f}s (expected < 1.0s)"
 
-    print(f"✅ PASSED: Different Namespace Lock Isolation")
+    print("✅ PASSED: Different Namespace Lock Isolation")
     print(f"   Different namespace locks ran in parallel: {elapsed:.2f}s")
 
 
@@ -435,8 +452,10 @@ async def test_error_handling():
     # Should convert None to "" automatically
     assert default_ws == "", f"Expected empty string, got: '{default_ws}'"
 
-    print(f"✅ PASSED: Error Handling - None to Empty String")
-    print(f"   set_default_workspace(None) correctly converts to empty string: '{default_ws}'")
+    print("✅ PASSED: Error Handling - None to Empty String")
+    print(
+        f"   set_default_workspace(None) correctly converts to empty string: '{default_ws}'"
+    )
 
     # Test 7.2: Empty string workspace behavior
     print("\nTest 7.2: Empty string workspace creates valid namespace")
@@ -445,7 +464,7 @@ async def test_error_handling():
     final_ns = get_final_namespace("test_namespace", workspace="")
     assert final_ns == "test_namespace", f"Unexpected namespace: '{final_ns}'"
 
-    print(f"✅ PASSED: Error Handling - Empty Workspace Namespace")
+    print("✅ PASSED: Error Handling - Empty Workspace Namespace")
     print(f"   Empty workspace creates valid namespace: '{final_ns}'")
 
     # Restore default workspace for other tests
@@ -491,11 +510,17 @@ async def test_update_flags_workspace_isolation():
     await set_all_update_flags(test_namespace, workspace=workspace1)
 
     # Check that only workspace1's flags are set
-    assert flag1_obj.value is True, f"Flag1 should be True after set_all_update_flags, got {flag1_obj.value}"
-    assert flag2_obj.value is False, f"Flag2 should still be False, got {flag2_obj.value}"
+    assert (
+        flag1_obj.value is True
+    ), f"Flag1 should be True after set_all_update_flags, got {flag1_obj.value}"
+    assert (
+        flag2_obj.value is False
+    ), f"Flag2 should still be False, got {flag2_obj.value}"
 
-    print(f"✅ PASSED: Update Flags - set_all_update_flags Isolation")
-    print(f"   set_all_update_flags isolated: ws1={flag1_obj.value}, ws2={flag2_obj.value}")
+    print("✅ PASSED: Update Flags - set_all_update_flags Isolation")
+    print(
+        f"   set_all_update_flags isolated: ws1={flag1_obj.value}, ws2={flag2_obj.value}"
+    )
 
     # Test 8.2: clear_all_update_flags isolation
     print("\nTest 8.2: clear_all_update_flags workspace isolation")
@@ -512,11 +537,15 @@ async def test_update_flags_workspace_isolation():
     await clear_all_update_flags(test_namespace, workspace=workspace1)
 
     # Check that only workspace1's flags are cleared
-    assert flag1_obj.value is False, f"Flag1 should be False after clear, got {flag1_obj.value}"
+    assert (
+        flag1_obj.value is False
+    ), f"Flag1 should be False after clear, got {flag1_obj.value}"
     assert flag2_obj.value is True, f"Flag2 should still be True, got {flag2_obj.value}"
 
-    print(f"✅ PASSED: Update Flags - clear_all_update_flags Isolation")
-    print(f"   clear_all_update_flags isolated: ws1={flag1_obj.value}, ws2={flag2_obj.value}")
+    print("✅ PASSED: Update Flags - clear_all_update_flags Isolation")
+    print(
+        f"   clear_all_update_flags isolated: ws1={flag1_obj.value}, ws2={flag2_obj.value}"
+    )
 
     # Test 8.3: get_all_update_flags_status workspace filtering
     print("\nTest 8.3: get_all_update_flags_status workspace filtering")
@@ -541,11 +570,17 @@ async def test_update_flags_workspace_isolation():
     workspace1_keys = [k for k in status1.keys() if workspace1 in k]
     workspace2_keys = [k for k in status1.keys() if workspace2 in k]
 
-    assert len(workspace1_keys) > 0, f"workspace1 keys should be present, got {len(workspace1_keys)}"
-    assert len(workspace2_keys) == 0, f"workspace2 keys should not be present, got {len(workspace2_keys)}"
+    assert (
+        len(workspace1_keys) > 0
+    ), f"workspace1 keys should be present, got {len(workspace1_keys)}"
+    assert (
+        len(workspace2_keys) == 0
+    ), f"workspace2 keys should not be present, got {len(workspace2_keys)}"
 
-    print(f"✅ PASSED: Update Flags - get_all_update_flags_status Filtering")
-    print(f"   Status correctly filtered: ws1 keys={len(workspace1_keys)}, ws2 keys={len(workspace2_keys)}")
+    print("✅ PASSED: Update Flags - get_all_update_flags_status Filtering")
+    print(
+        f"   Status correctly filtered: ws1 keys={len(workspace1_keys)}, ws2 keys={len(workspace2_keys)}"
+    )
 
 
 # =============================================================================
@@ -569,9 +604,11 @@ async def test_empty_workspace_standardization():
     final_ns = get_final_namespace("test_namespace", workspace=None)
 
     # Should be just "test_namespace" without colon prefix
-    assert final_ns == "test_namespace", f"Unexpected namespace format: '{final_ns}' (expected 'test_namespace')"
+    assert (
+        final_ns == "test_namespace"
+    ), f"Unexpected namespace format: '{final_ns}' (expected 'test_namespace')"
 
-    print(f"✅ PASSED: Empty Workspace Standardization - Format")
+    print("✅ PASSED: Empty Workspace Standardization - Format")
     print(f"   Empty workspace creates correct namespace: '{final_ns}'")
 
     # Test 9.2: Empty workspace vs non-empty workspace behavior
@@ -588,10 +625,12 @@ async def test_empty_workspace_standardization():
     data_nonempty = await get_namespace_data("pipeline_status", workspace="test_ws")
 
     # They should be different objects
-    assert data_empty is not data_nonempty, "Empty and non-empty workspaces share data (should be independent)"
+    assert (
+        data_empty is not data_nonempty
+    ), "Empty and non-empty workspaces share data (should be independent)"
 
-    print(f"✅ PASSED: Empty Workspace Standardization - Behavior")
-    print(f"   Empty and non-empty workspaces have independent data")
+    print("✅ PASSED: Empty Workspace Standardization - Behavior")
+    print("   Empty and non-empty workspaces have independent data")
 
 
 # =============================================================================
@@ -628,7 +667,9 @@ async def test_json_kv_storage_workspace_isolation():
         }
 
         # Test 10.1: Create two JsonKVStorage instances with different workspaces
-        print("\nTest 10.1: Create two JsonKVStorage instances with different workspaces")
+        print(
+            "\nTest 10.1: Create two JsonKVStorage instances with different workspaces"
+        )
 
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
@@ -650,25 +691,41 @@ async def test_json_kv_storage_workspace_isolation():
         await storage1.initialize()
         await storage2.initialize()
 
-        print(f"   Storage1 created: workspace=workspace1, namespace=entities")
-        print(f"   Storage2 created: workspace=workspace2, namespace=entities")
+        print("   Storage1 created: workspace=workspace1, namespace=entities")
+        print("   Storage2 created: workspace=workspace2, namespace=entities")
 
         # Test 10.2: Write different data to each storage
         print("\nTest 10.2: Write different data to each storage")
 
         # Write to storage1 (upsert expects dict[str, dict])
-        await storage1.upsert({
-            "entity1": {"content": "Data from workspace1 - AI Research", "type": "entity"},
-            "entity2": {"content": "Data from workspace1 - Machine Learning", "type": "entity"}
-        })
-        print(f"   Written to storage1: entity1, entity2")
+        await storage1.upsert(
+            {
+                "entity1": {
+                    "content": "Data from workspace1 - AI Research",
+                    "type": "entity",
+                },
+                "entity2": {
+                    "content": "Data from workspace1 - Machine Learning",
+                    "type": "entity",
+                },
+            }
+        )
+        print("   Written to storage1: entity1, entity2")
 
         # Write to storage2
-        await storage2.upsert({
-            "entity1": {"content": "Data from workspace2 - Deep Learning", "type": "entity"},
-            "entity2": {"content": "Data from workspace2 - Neural Networks", "type": "entity"}
-        })
-        print(f"   Written to storage2: entity1, entity2")
+        await storage2.upsert(
+            {
+                "entity1": {
+                    "content": "Data from workspace2 - Deep Learning",
+                    "type": "entity",
+                },
+                "entity2": {
+                    "content": "Data from workspace2 - Neural Networks",
+                    "type": "entity",
+                },
+            }
+        )
+        print("   Written to storage2: entity1, entity2")
 
         # Test 10.3: Read data from each storage and verify isolation
         print("\nTest 10.3: Read data and verify isolation")
@@ -691,15 +748,29 @@ async def test_json_kv_storage_workspace_isolation():
         assert result1_entity2 is not None, "Storage1 entity2 should not be None"
         assert result2_entity1 is not None, "Storage2 entity1 should not be None"
         assert result2_entity2 is not None, "Storage2 entity2 should not be None"
-        assert result1_entity1.get("content") == "Data from workspace1 - AI Research", f"Storage1 entity1 content mismatch"
-        assert result1_entity2.get("content") == "Data from workspace1 - Machine Learning", f"Storage1 entity2 content mismatch"
-        assert result2_entity1.get("content") == "Data from workspace2 - Deep Learning", f"Storage2 entity1 content mismatch"
-        assert result2_entity2.get("content") == "Data from workspace2 - Neural Networks", f"Storage2 entity2 content mismatch"
-        assert result1_entity1.get("content") != result2_entity1.get("content"), "Storage1 and Storage2 entity1 should have different content"
-        assert result1_entity2.get("content") != result2_entity2.get("content"), "Storage1 and Storage2 entity2 should have different content"
+        assert (
+            result1_entity1.get("content") == "Data from workspace1 - AI Research"
+        ), "Storage1 entity1 content mismatch"
+        assert (
+            result1_entity2.get("content") == "Data from workspace1 - Machine Learning"
+        ), "Storage1 entity2 content mismatch"
+        assert (
+            result2_entity1.get("content") == "Data from workspace2 - Deep Learning"
+        ), "Storage2 entity1 content mismatch"
+        assert (
+            result2_entity2.get("content") == "Data from workspace2 - Neural Networks"
+        ), "Storage2 entity2 content mismatch"
+        assert result1_entity1.get("content") != result2_entity1.get(
+            "content"
+        ), "Storage1 and Storage2 entity1 should have different content"
+        assert result1_entity2.get("content") != result2_entity2.get(
+            "content"
+        ), "Storage1 and Storage2 entity2 should have different content"
 
-        print(f"✅ PASSED: JsonKVStorage - Data Isolation")
-        print(f"   Two storage instances correctly isolated: ws1 and ws2 have different data")
+        print("✅ PASSED: JsonKVStorage - Data Isolation")
+        print(
+            "   Two storage instances correctly isolated: ws1 and ws2 have different data"
+        )
 
         # Test 10.4: Verify file structure
         print("\nTest 10.4: Verify file structure")
@@ -715,7 +786,7 @@ async def test_json_kv_storage_workspace_isolation():
         assert ws1_exists, "workspace1 directory should exist"
         assert ws2_exists, "workspace2 directory should exist"
 
-        print(f"✅ PASSED: JsonKVStorage - File Structure")
+        print("✅ PASSED: JsonKVStorage - File Structure")
         print(f"   Workspace directories correctly created: {ws1_dir} and {ws2_dir}")
 
     finally:
@@ -794,8 +865,8 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
         await rag1.initialize_storages()
         await rag2.initialize_storages()
 
-        print(f"   RAG1 created: workspace=project_a")
-        print(f"   RAG2 created: workspace=project_b")
+        print("   RAG1 created: workspace=project_a")
+        print("   RAG2 created: workspace=project_b")
 
         # Test 11.2: Insert different data to each RAG instance
         print("\nTest 11.2: Insert different data to each RAG instance")
@@ -829,20 +900,20 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
         assert project_b_exists, "project_b directory should exist"
 
         # List files in each directory
-        print(f"\n   Files in project_a/:")
+        print("\n   Files in project_a/:")
         for file in sorted(project_a_dir.glob("*")):
             if file.is_file():
                 size = file.stat().st_size
                 print(f"     - {file.name} ({size} bytes)")
 
-        print(f"\n   Files in project_b/:")
+        print("\n   Files in project_b/:")
         for file in sorted(project_b_dir.glob("*")):
             if file.is_file():
                 size = file.stat().st_size
                 print(f"     - {file.name} ({size} bytes)")
 
-        print(f"✅ PASSED: LightRAG E2E - File Structure")
-        print(f"   Workspace directories correctly created and separated")
+        print("✅ PASSED: LightRAG E2E - File Structure")
+        print("   Workspace directories correctly created and separated")
 
         # Test 11.4: Verify data isolation by checking file contents
         print("\nTest 11.4: Verify data isolation (check file contents)")
@@ -864,34 +935,50 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
             print(f"   project_b doc count: {len(docs_b_content)}")
 
             # Verify they contain different data
-            assert docs_a_content != docs_b_content, "Document storage not properly isolated"
+            assert (
+                docs_a_content != docs_b_content
+            ), "Document storage not properly isolated"
 
             # Verify each workspace contains its own text content
             docs_a_str = json.dumps(docs_a_content)
             docs_b_str = json.dumps(docs_b_content)
 
             # Check project_a contains its text and NOT project_b's text
-            assert "Artificial Intelligence" in docs_a_str, "project_a should contain 'Artificial Intelligence'"
-            assert "Machine Learning" in docs_a_str, "project_a should contain 'Machine Learning'"
-            assert "Deep Learning" not in docs_a_str, "project_a should NOT contain 'Deep Learning' from project_b"
-            assert "Neural Networks" not in docs_a_str, "project_a should NOT contain 'Neural Networks' from project_b"
+            assert (
+                "Artificial Intelligence" in docs_a_str
+            ), "project_a should contain 'Artificial Intelligence'"
+            assert (
+                "Machine Learning" in docs_a_str
+            ), "project_a should contain 'Machine Learning'"
+            assert (
+                "Deep Learning" not in docs_a_str
+            ), "project_a should NOT contain 'Deep Learning' from project_b"
+            assert (
+                "Neural Networks" not in docs_a_str
+            ), "project_a should NOT contain 'Neural Networks' from project_b"
 
             # Check project_b contains its text and NOT project_a's text
-            assert "Deep Learning" in docs_b_str, "project_b should contain 'Deep Learning'"
-            assert "Neural Networks" in docs_b_str, "project_b should contain 'Neural Networks'"
-            assert "Artificial Intelligence" not in docs_b_str, "project_b should NOT contain 'Artificial Intelligence' from project_a"
+            assert (
+                "Deep Learning" in docs_b_str
+            ), "project_b should contain 'Deep Learning'"
+            assert (
+                "Neural Networks" in docs_b_str
+            ), "project_b should contain 'Neural Networks'"
+            assert (
+                "Artificial Intelligence" not in docs_b_str
+            ), "project_b should NOT contain 'Artificial Intelligence' from project_a"
             # Note: "Machine Learning" might appear in project_b's text, so we skip that check
 
-            print(f"✅ PASSED: LightRAG E2E - Data Isolation")
-            print(f"   Document storage correctly isolated between workspaces")
-            print(f"   project_a contains only its own data")
-            print(f"   project_b contains only its own data")
+            print("✅ PASSED: LightRAG E2E - Data Isolation")
+            print("   Document storage correctly isolated between workspaces")
+            print("   project_a contains only its own data")
+            print("   project_b contains only its own data")
         else:
-            print(f"   Document storage files not found (may not be created yet)")
-            print(f"✅ PASSED: LightRAG E2E - Data Isolation")
-            print(f"   Skipped file content check (files not created)")
+            print("   Document storage files not found (may not be created yet)")
+            print("✅ PASSED: LightRAG E2E - Data Isolation")
+            print("   Skipped file content check (files not created)")
 
-        print(f"\n   ✓ Test complete - workspace isolation verified at E2E level")
+        print("\n   ✓ Test complete - workspace isolation verified at E2E level")
 
     finally:
         # Cleanup test directory
