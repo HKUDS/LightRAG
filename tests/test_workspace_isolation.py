@@ -29,7 +29,6 @@ from lightrag.kg.shared_storage import (
     get_all_update_flags_status,
     get_update_flag,
 )
-from lightrag.kg.json_kv_impl import JsonKVStorage
 
 
 class TestResults:
@@ -160,13 +159,9 @@ async def test_lock_mechanism():
             lock = get_namespace_lock(namespace, workspace)
             start = time.time()
             async with lock:
-                print(
-                    f"   [{workspace}] acquired lock at {time.time() - start:.2f}s"
-                )
+                print(f"   [{workspace}] acquired lock at {time.time() - start:.2f}s")
                 await asyncio.sleep(hold_time)
-                print(
-                    f"   [{workspace}] releasing lock at {time.time() - start:.2f}s"
-                )
+                print(f"   [{workspace}] releasing lock at {time.time() - start:.2f}s")
 
         start = time.time()
         await asyncio.gather(
@@ -372,7 +367,9 @@ async def test_multi_workspace_concurrency():
             lock = get_namespace_lock("test_operations", workspace_id)
             async with lock:
                 # Get workspace data
-                data = await get_namespace_data("pipeline_status", workspace=workspace_id)
+                data = await get_namespace_data(
+                    "pipeline_status", workspace=workspace_id
+                )
 
                 # Modify data
                 data[f"{workspace_id}_key"] = f"{workspace_id}_value"
@@ -408,7 +405,7 @@ async def test_multi_workspace_concurrency():
             results.add(
                 "Multi-Workspace Concurrency - Execution",
                 False,
-                f"Not all workspaces completed",
+                "Not all workspaces completed",
             )
             exec_ok = False
 
@@ -429,7 +426,9 @@ async def test_multi_workspace_concurrency():
                 )
                 isolation_ok = False
             else:
-                print(f"   [{ws}] Data correctly isolated: {expected_key}={data[expected_key]}")
+                print(
+                    f"   [{ws}] Data correctly isolated: {expected_key}={data[expected_key]}"
+                )
 
         if isolation_ok:
             results.add(
@@ -534,8 +533,11 @@ async def test_namespace_lock_reentrance():
         return reentrance_failed_correctly and concurrent_ok
 
     except Exception as e:
-        results.add("NamespaceLock Re-entrance Protection", False, f"Exception: {str(e)}")
+        results.add(
+            "NamespaceLock Re-entrance Protection", False, f"Exception: {str(e)}"
+        )
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -595,6 +597,7 @@ async def test_different_namespace_lock_isolation():
     except Exception as e:
         results.add("Different Namespace Lock Isolation", False, f"Exception: {str(e)}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -663,6 +666,7 @@ async def test_error_handling():
     except Exception as e:
         results.add("Error Handling", False, f"Exception: {str(e)}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -792,6 +796,7 @@ async def test_update_flags_workspace_isolation():
     except Exception as e:
         results.add("Update Flags Workspace Isolation", False, f"Exception: {str(e)}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -866,6 +871,7 @@ async def test_empty_workspace_standardization():
     except Exception as e:
         results.add("Empty Workspace Standardization", False, f"Exception: {str(e)}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -903,7 +909,9 @@ async def test_json_kv_storage_workspace_isolation():
         }
 
         # Test 10.1: Create two JsonKVStorage instances with different workspaces
-        print("\nTest 10.1: Create two JsonKVStorage instances with different workspaces")
+        print(
+            "\nTest 10.1: Create two JsonKVStorage instances with different workspaces"
+        )
 
         from lightrag.kg.json_kv_impl import JsonKVStorage
 
@@ -925,25 +933,41 @@ async def test_json_kv_storage_workspace_isolation():
         await storage1.initialize()
         await storage2.initialize()
 
-        print(f"   Storage1 created: workspace=workspace1, namespace=entities")
-        print(f"   Storage2 created: workspace=workspace2, namespace=entities")
+        print("   Storage1 created: workspace=workspace1, namespace=entities")
+        print("   Storage2 created: workspace=workspace2, namespace=entities")
 
         # Test 10.2: Write different data to each storage
         print("\nTest 10.2: Write different data to each storage")
 
         # Write to storage1 (upsert expects dict[str, dict])
-        await storage1.upsert({
-            "entity1": {"content": "Data from workspace1 - AI Research", "type": "entity"},
-            "entity2": {"content": "Data from workspace1 - Machine Learning", "type": "entity"}
-        })
-        print(f"   Written to storage1: entity1, entity2")
+        await storage1.upsert(
+            {
+                "entity1": {
+                    "content": "Data from workspace1 - AI Research",
+                    "type": "entity",
+                },
+                "entity2": {
+                    "content": "Data from workspace1 - Machine Learning",
+                    "type": "entity",
+                },
+            }
+        )
+        print("   Written to storage1: entity1, entity2")
 
         # Write to storage2
-        await storage2.upsert({
-            "entity1": {"content": "Data from workspace2 - Deep Learning", "type": "entity"},
-            "entity2": {"content": "Data from workspace2 - Neural Networks", "type": "entity"}
-        })
-        print(f"   Written to storage2: entity1, entity2")
+        await storage2.upsert(
+            {
+                "entity1": {
+                    "content": "Data from workspace2 - Deep Learning",
+                    "type": "entity",
+                },
+                "entity2": {
+                    "content": "Data from workspace2 - Neural Networks",
+                    "type": "entity",
+                },
+            }
+        )
+        print("   Written to storage2: entity1, entity2")
 
         # Test 10.3: Read data from each storage and verify isolation
         print("\nTest 10.3: Read data and verify isolation")
@@ -968,9 +992,11 @@ async def test_json_kv_storage_workspace_isolation():
             and result2_entity1 is not None
             and result2_entity2 is not None
             and result1_entity1.get("content") == "Data from workspace1 - AI Research"
-            and result1_entity2.get("content") == "Data from workspace1 - Machine Learning"
+            and result1_entity2.get("content")
+            == "Data from workspace1 - Machine Learning"
             and result2_entity1.get("content") == "Data from workspace2 - Deep Learning"
-            and result2_entity2.get("content") == "Data from workspace2 - Neural Networks"
+            and result2_entity2.get("content")
+            == "Data from workspace2 - Neural Networks"
             and result1_entity1.get("content") != result2_entity1.get("content")
             and result1_entity2.get("content") != result2_entity2.get("content")
         )
@@ -979,13 +1005,13 @@ async def test_json_kv_storage_workspace_isolation():
             results.add(
                 "JsonKVStorage - Data Isolation",
                 True,
-                f"Two storage instances correctly isolated: ws1 and ws2 have different data",
+                "Two storage instances correctly isolated: ws1 and ws2 have different data",
             )
         else:
             results.add(
                 "JsonKVStorage - Data Isolation",
                 False,
-                f"Data not properly isolated between workspaces",
+                "Data not properly isolated between workspaces",
             )
 
         # Test 10.4: Verify file structure
@@ -1010,7 +1036,7 @@ async def test_json_kv_storage_workspace_isolation():
             results.add(
                 "JsonKVStorage - File Structure",
                 False,
-                f"Workspace directories not created properly",
+                "Workspace directories not created properly",
             )
             file_structure_ok = False
 
@@ -1019,6 +1045,7 @@ async def test_json_kv_storage_workspace_isolation():
     except Exception as e:
         results.add("JsonKVStorage Workspace Isolation", False, f"Exception: {str(e)}")
         import traceback
+
         traceback.print_exc()
         return False
     finally:
@@ -1091,8 +1118,8 @@ async def test_lightrag_end_to_end_workspace_isolation():
         await rag1.initialize_storages()
         await rag2.initialize_storages()
 
-        print(f"   RAG1 created: workspace=project_a")
-        print(f"   RAG2 created: workspace=project_b")
+        print("   RAG1 created: workspace=project_a")
+        print("   RAG2 created: workspace=project_b")
 
         # Test 11.2: Insert different data to each RAG instance
         print("\nTest 11.2: Insert different data to each RAG instance")
@@ -1124,13 +1151,13 @@ async def test_lightrag_end_to_end_workspace_isolation():
 
         if project_a_exists and project_b_exists:
             # List files in each directory
-            print(f"\n   Files in project_a/:")
+            print("\n   Files in project_a/:")
             for file in sorted(project_a_dir.glob("*")):
                 if file.is_file():
                     size = file.stat().st_size
                     print(f"     - {file.name} ({size} bytes)")
 
-            print(f"\n   Files in project_b/:")
+            print("\n   Files in project_b/:")
             for file in sorted(project_b_dir.glob("*")):
                 if file.is_file():
                     size = file.stat().st_size
@@ -1139,14 +1166,14 @@ async def test_lightrag_end_to_end_workspace_isolation():
             results.add(
                 "LightRAG E2E - File Structure",
                 True,
-                f"Workspace directories correctly created and separated",
+                "Workspace directories correctly created and separated",
             )
             structure_ok = True
         else:
             results.add(
                 "LightRAG E2E - File Structure",
                 False,
-                f"Workspace directories not created properly",
+                "Workspace directories not created properly",
             )
             structure_ok = False
 
@@ -1187,7 +1214,7 @@ async def test_lightrag_end_to_end_workspace_isolation():
 
             data_ok = docs_isolated
         else:
-            print(f"   Document storage files not found (may not be created yet)")
+            print("   Document storage files not found (may not be created yet)")
             results.add(
                 "LightRAG E2E - Data Isolation",
                 True,
@@ -1195,13 +1222,14 @@ async def test_lightrag_end_to_end_workspace_isolation():
             )
             data_ok = True
 
-        print(f"\n   ✓ Test complete - workspace isolation verified at E2E level")
+        print("\n   ✓ Test complete - workspace isolation verified at E2E level")
 
         return structure_ok and data_ok
 
     except Exception as e:
         results.add("LightRAG E2E Workspace Isolation", False, f"Exception: {str(e)}")
         import traceback
+
         traceback.print_exc()
         return False
     finally:
@@ -1249,7 +1277,9 @@ async def main():
     all_passed = results.summary()
 
     if all_passed:
-        print("\n🎉 All tests passed! The workspace isolation feature is working correctly.")
+        print(
+            "\n🎉 All tests passed! The workspace isolation feature is working correctly."
+        )
         print("   Coverage: 100% - Unit, Integration, and E2E validated")
         return 0
     else:
