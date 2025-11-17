@@ -741,8 +741,13 @@ async def test_lightrag_end_to_end_workspace_isolation():
         async def mock_llm_func(
             prompt, system_prompt=None, history_messages=[], **kwargs
         ) -> str:
-            # Return a mock response that simulates entity extraction
-            return """{"entities": [{"name": "Test Entity", "type": "Concept"}], "relationships": []}"""
+            # Return a mock response that simulates entity extraction in the correct format
+            # Format: entity<|#|>entity_name<|#|>entity_type<|#|>entity_description
+            # Format: relation<|#|>source_entity<|#|>target_entity<|#|>keywords<|#|>description
+            return """entity<|#|>Artificial Intelligence<|#|>concept<|#|>AI is a field of computer science focused on creating intelligent machines.
+entity<|#|>Machine Learning<|#|>concept<|#|>Machine Learning is a subset of AI that enables systems to learn from data.
+relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related field<|#|>Machine Learning is a key component and subset of Artificial Intelligence.
+<|COMPLETE|>"""
 
         # Mock embedding function
         async def mock_embedding_func(texts: list[str]) -> np.ndarray:
