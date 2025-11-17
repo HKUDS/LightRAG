@@ -363,6 +363,7 @@ class EmbeddingFunc:
         max_token_size: Optional token limit for the embedding model
         send_dimensions: Whether to inject embedding_dim as a keyword argument
     """
+
     embedding_dim: int
     func: callable
     max_token_size: int | None = None  # Token limit for the embedding model
