@@ -3,10 +3,17 @@
 Diagnostic tool to check LightRAG initialization status.
 
 This tool helps developers verify that their LightRAG instance is properly
-initialized before use, preventing common initialization errors.
+initialized and ready to use. It should be called AFTER initialize_storages()
+to validate that all components are correctly set up.
 
 Usage:
-    python -m lightrag.tools.check_initialization
+    # Basic usage in your code:
+    rag = LightRAG(...)
+    await rag.initialize_storages()
+    await check_lightrag_setup(rag, verbose=True)
+
+    # Run demo from command line:
+    python -m lightrag.tools.check_initialization --demo
 """
 
 import asyncio
@@ -82,7 +89,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
     try:
         from lightrag.kg.shared_storage import get_namespace_data
 
-        get_namespace_data("pipeline_status")
+        get_namespace_data("pipeline_status", workspace=rag_instance.workspace)
         print("✅ Pipeline status: INITIALIZED")
     except KeyError:
         issues.append(
@@ -137,13 +144,10 @@ async def demo():
         llm_model_func=gpt_4o_mini_complete,
     )
 
-    print("\n🔴 BEFORE initialization:\n")
-    await check_lightrag_setup(rag, verbose=True)
-
-    print("\n" + "=" * 50)
-    print("\n🔄 Initializing...\n")
+    print("\n🔄 Initializing storages...\n")
     await rag.initialize_storages()  # Auto-initializes pipeline_status
-    print("\n🟢 AFTER initialization:\n")
+
+    print("\n🔍 Checking initialization status:\n")
     await check_lightrag_setup(rag, verbose=True)
 
     # Cleanup
