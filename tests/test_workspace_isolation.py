@@ -857,8 +857,26 @@ relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset, related fi
             # Verify they contain different data
             assert docs_a_content != docs_b_content, "Document storage not properly isolated"
 
+            # Verify each workspace contains its own text content
+            docs_a_str = json.dumps(docs_a_content)
+            docs_b_str = json.dumps(docs_b_content)
+
+            # Check project_a contains its text and NOT project_b's text
+            assert "Artificial Intelligence" in docs_a_str, "project_a should contain 'Artificial Intelligence'"
+            assert "Machine Learning" in docs_a_str, "project_a should contain 'Machine Learning'"
+            assert "Deep Learning" not in docs_a_str, "project_a should NOT contain 'Deep Learning' from project_b"
+            assert "Neural Networks" not in docs_a_str, "project_a should NOT contain 'Neural Networks' from project_b"
+
+            # Check project_b contains its text and NOT project_a's text
+            assert "Deep Learning" in docs_b_str, "project_b should contain 'Deep Learning'"
+            assert "Neural Networks" in docs_b_str, "project_b should contain 'Neural Networks'"
+            assert "Artificial Intelligence" not in docs_b_str, "project_b should NOT contain 'Artificial Intelligence' from project_a"
+            # Note: "Machine Learning" might appear in project_b's text, so we skip that check
+
             print(f"✅ PASSED: LightRAG E2E - Data Isolation")
             print(f"   Document storage correctly isolated between workspaces")
+            print(f"   project_a contains only its own data")
+            print(f"   project_b contains only its own data")
         else:
             print(f"   Document storage files not found (may not be created yet)")
             print(f"✅ PASSED: LightRAG E2E - Data Isolation")
