@@ -2961,17 +2961,38 @@ class LightRAG:
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 500).
                 - `file_path` (str | None): The file path of the deleted document, if available.
         """
-        deletion_operations_started = False
-        original_exception = None
-        doc_llm_cache_ids: list[str] = []
-
-        # Get pipeline status shared data and lock for status updates
+        # Get pipeline status shared data and lock for validation
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
         pipeline_status_lock = get_namespace_lock(
             "pipeline_status", workspace=self.workspace
         )
+
+        # Validate pipeline status before proceeding with deletion
+        async with pipeline_status_lock:
+            if not pipeline_status.get("busy", False):
+                return DeletionResult(
+                    status="not_allowed",
+                    doc_id=doc_id,
+                    message="Deletion not allowed: pipeline is not busy",
+                    status_code=403,
+                    file_path=None,
+                )
+
+            job_name = pipeline_status.get("job_name", "").lower()
+            if "deleting" not in job_name or "document" not in job_name:
+                return DeletionResult(
+                    status="not_allowed",
+                    doc_id=doc_id,
+                    message=f"Deletion not allowed: current job '{pipeline_status.get('job_name')}' is not a document deletion job",
+                    status_code=403,
+                    file_path=None,
+                )
+
+        deletion_operations_started = False
+        original_exception = None
+        doc_llm_cache_ids: list[str] = []
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
