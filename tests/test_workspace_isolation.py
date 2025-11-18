@@ -22,7 +22,6 @@ import asyncio
 import time
 import os
 import shutil
-import tempfile
 import numpy as np
 import pytest
 from pathlib import Path
@@ -796,8 +795,13 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
     print("TEST 10: JsonKVStorage Workspace Isolation (Integration)")
     print("=" * 60)
 
-    # Create temporary test directory
-    test_dir = tempfile.mkdtemp(prefix="lightrag_test_kv_")
+    # Create temporary test directory under project temp/
+    test_dir = str(
+        Path(__file__).parent.parent / "temp/test_json_kv_storage_workspace_isolation"
+    )
+    if os.path.exists(test_dir):
+        shutil.rmtree(test_dir)
+    os.makedirs(test_dir, exist_ok=True)
     print(f"\n   Using test directory: {test_dir}")
 
     try:
@@ -971,9 +975,11 @@ async def test_lightrag_end_to_end_workspace_isolation(keep_test_artifacts):
     print("TEST 11: LightRAG End-to-End Workspace Isolation")
     print("=" * 60)
 
-    # Create temporary test directory
-    # test_dir = tempfile.mkdtemp(prefix="lightrag_test_e2e_")
-    test_dir = str(Path(__file__).parent.parent / "temp/e2e_workspace_isolation")
+    # Create temporary test directory under project temp/
+    test_dir = str(
+        Path(__file__).parent.parent
+        / "temp/test_lightrag_end_to_end_workspace_isolation"
+    )
     if os.path.exists(test_dir):
         shutil.rmtree(test_dir)
     os.makedirs(test_dir, exist_ok=True)
