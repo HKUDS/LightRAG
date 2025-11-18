@@ -384,7 +384,7 @@ if __name__ == "__main__":
                 print(f"Document: {docs[item['index']]}")
         except Exception as e:
             print(f"Aliyun Error: {e}")
-        
+
         # Test Sentence Transformers rerank
         try:
             print("\n=== Sentence Transformers Rerank ===")

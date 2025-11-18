@@ -13,7 +13,9 @@ from sentence_transformers import SentenceTransformer
 async def sentence_transformers_embed(
     texts: list[str], model: SentenceTransformer
 ) -> np.ndarray:
-    async def inner_encode(texts: list[str], model: SentenceTransformer, embedding_dim: int = 1024):
+    async def inner_encode(
+        texts: list[str], model: SentenceTransformer, embedding_dim: int = 1024
+    ):
         return model.encode(
             texts,
             truncate_dim=embedding_dim,
@@ -21,6 +23,10 @@ async def sentence_transformers_embed(
             convert_to_tensor=False,
             show_progress_bar=False,
         )
-    
-    embedding_func = EmbeddingFunc(embedding_dim=model.get_sentence_embedding_dimension(), func=inner_encode, max_token_size=model.get_max_seq_length())
+
+    embedding_func = EmbeddingFunc(
+        embedding_dim=model.get_sentence_embedding_dimension(),
+        func=inner_encode,
+        max_token_size=model.get_max_seq_length(),
+    )
     return await embedding_func(texts, model=model)
