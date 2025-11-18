@@ -417,8 +417,8 @@ class PostgreSQLDB:
         try:
             await connection.execute(f"SET vchordrq.probes TO '{self.vchordrq_probes}'")
             await connection.execute(f"SET vchordrq.epsilon TO {self.vchordrq_epsilon}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to set vchordrq.probes or vchordrq.epsilon: {e}")
 
     async def _migrate_llm_cache_schema(self):
         """Migrate LLM cache schema: add new columns and remove deprecated mode field"""
@@ -1388,12 +1388,14 @@ class PostgreSQLDB:
                 CREATE INDEX {{vector_index_name}}
                 ON {{k}} USING vchordrq (content_vector vector_cosine_ops)
                 {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
-            """
+            """,
         }
 
         embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
         for k in vdb_tables:
-            vector_index_name = f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+            vector_index_name = (
+                f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+            )
             check_vector_index_sql = f"""
                     SELECT 1 FROM pg_indexes
                     WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
@@ -1405,8 +1407,14 @@ class PostgreSQLDB:
                     alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
                     await self.execute(alter_sql)
                     logger.debug(f"Ensured vector dimension for {k}")
-                    logger.info(f"Creating {self.vector_index_type} index {vector_index_name} on table {k}")
-                    await self.execute(create_sql[self.vector_index_type].format(vector_index_name=vector_index_name, k=k))
+                    logger.info(
+                        f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
+                    )
+                    await self.execute(
+                        create_sql[self.vector_index_type].format(
+                            vector_index_name=vector_index_name, k=k
+                        )
+                    )
                     logger.info(
                         f"Successfully created vector index {vector_index_name} on table {k}"
                     )
