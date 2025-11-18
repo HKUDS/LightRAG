@@ -21,7 +21,7 @@ from lightrag.base import (
     DocStatus,
     DocProcessingStatus,
 )
-from ..kg.shared_storage import get_data_init_lock, get_storage_lock
+from ..kg.shared_storage import get_data_init_lock
 import json
 
 # Import tenacity for retry logic
@@ -153,7 +153,7 @@ class RedisKVStorage(BaseKVStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._redis_url = os.environ.get(
@@ -401,42 +401,39 @@ class RedisKVStorage(BaseKVStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock():
-            async with self._get_redis_connection() as redis:
-                try:
-                    # Use SCAN to find all keys with the namespace prefix
-                    pattern = f"{self.final_namespace}:*"
-                    cursor = 0
-                    deleted_count = 0
+        async with self._get_redis_connection() as redis:
+            try:
+                # Use SCAN to find all keys with the namespace prefix
+                pattern = f"{self.final_namespace}:*"
+                cursor = 0
+                deleted_count = 0
 
-                    while True:
-                        cursor, keys = await redis.scan(
-                            cursor, match=pattern, count=1000
-                        )
-                        if keys:
-                            # Delete keys in batches
-                            pipe = redis.pipeline()
-                            for key in keys:
-                                pipe.delete(key)
-                            results = await pipe.execute()
-                            deleted_count += sum(results)
+                while True:
+                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
+                    if keys:
+                        # Delete keys in batches
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.delete(key)
+                        results = await pipe.execute()
+                        deleted_count += sum(results)
 
-                        if cursor == 0:
-                            break
+                    if cursor == 0:
+                        break
 
-                    logger.info(
-                        f"[{self.workspace}] Dropped {deleted_count} keys from {self.namespace}"
-                    )
-                    return {
-                        "status": "success",
-                        "message": f"{deleted_count} keys dropped",
-                    }
+                logger.info(
+                    f"[{self.workspace}] Dropped {deleted_count} keys from {self.namespace}"
+                )
+                return {
+                    "status": "success",
+                    "message": f"{deleted_count} keys dropped",
+                }
 
-                except Exception as e:
-                    logger.error(
-                        f"[{self.workspace}] Error dropping keys from {self.namespace}: {e}"
-                    )
-                    return {"status": "error", "message": str(e)}
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error dropping keys from {self.namespace}: {e}"
+                )
+                return {"status": "error", "message": str(e)}
 
     async def _migrate_legacy_cache_structure(self):
         """Migrate legacy nested cache structure to flattened structure for Redis
@@ -1091,35 +1088,32 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
-        async with get_storage_lock():
-            try:
-                async with self._get_redis_connection() as redis:
-                    # Use SCAN to find all keys with the namespace prefix
-                    pattern = f"{self.final_namespace}:*"
-                    cursor = 0
-                    deleted_count = 0
+        try:
+            async with self._get_redis_connection() as redis:
+                # Use SCAN to find all keys with the namespace prefix
+                pattern = f"{self.final_namespace}:*"
+                cursor = 0
+                deleted_count = 0
 
-                    while True:
-                        cursor, keys = await redis.scan(
-                            cursor, match=pattern, count=1000
-                        )
-                        if keys:
-                            # Delete keys in batches
-                            pipe = redis.pipeline()
-                            for key in keys:
-                                pipe.delete(key)
-                            results = await pipe.execute()
-                            deleted_count += sum(results)
+                while True:
+                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
+                    if keys:
+                        # Delete keys in batches
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.delete(key)
+                        results = await pipe.execute()
+                        deleted_count += sum(results)
 
-                        if cursor == 0:
-                            break
+                    if cursor == 0:
+                        break
 
-                    logger.info(
-                        f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"
-                    )
-                    return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping doc status {self.namespace}: {e}"
+                logger.info(
+                    f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"
                 )
-                return {"status": "error", "message": str(e)}
+                return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping doc status {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}

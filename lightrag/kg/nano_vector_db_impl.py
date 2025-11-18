@@ -15,7 +15,7 @@ from lightrag.utils import (
 from lightrag.base import BaseVectorStorage
 from nano_vectordb import NanoVectorDB
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -47,7 +47,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             workspace_dir = working_dir
 
         os.makedirs(workspace_dir, exist_ok=True)
@@ -65,9 +65,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock(enable_logging=False)
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
 
     async def _get_client(self):
         """Check if the storage should be reloaded"""
@@ -288,7 +292,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._client.save()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
@@ -410,7 +414,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 )
 
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
 

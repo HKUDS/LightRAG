@@ -18,6 +18,7 @@ import os
 import sys
 import importlib
 import numpy as np
+import pytest
 from dotenv import load_dotenv
 from ascii_colors import ASCIIColors
 
@@ -111,7 +112,6 @@ async def initialize_graph_storage():
     }
 
     # Initialize shared_storage for all storage types (required for locks)
-    # All graph storage implementations use locks like get_data_init_lock() and get_graph_db_lock()
     initialize_share_data()  # Use single-process mode (workers=1)
 
     try:
@@ -130,6 +130,8 @@ async def initialize_graph_storage():
         return None
 
 
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_basic(storage):
     """
     Test basic graph database operations:
@@ -255,6 +257,8 @@ async def test_graph_basic(storage):
         return False
 
 
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_advanced(storage):
     """
     Test advanced graph database operations:
@@ -475,6 +479,8 @@ async def test_graph_advanced(storage):
         return False
 
 
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_batch_operations(storage):
     """
     Test batch operations of the graph database:
@@ -828,6 +834,8 @@ async def test_graph_batch_operations(storage):
         return False
 
 
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_special_characters(storage):
     """
     Test the graph database's handling of special characters:
@@ -982,6 +990,8 @@ async def test_graph_special_characters(storage):
         return False
 
 
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_undirected_property(storage):
     """
     Specifically test the undirected graph property of the storage:

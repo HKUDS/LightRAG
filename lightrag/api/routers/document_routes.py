@@ -1641,11 +1641,15 @@ async def background_delete_documents(
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
         get_namespace_data,
-        get_pipeline_status_lock,
+        get_namespace_lock,
     )
 
-    pipeline_status = await get_namespace_data("pipeline_status")
-    pipeline_status_lock = get_pipeline_status_lock()
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
 
     total_docs = len(doc_ids)
     successful_deletions = []
@@ -1661,6 +1665,7 @@ async def background_delete_documents(
         pipeline_status.update(
             {
                 "busy": True,
+                # Job name can not be changed, it's verified in adelete_by_doc_id()
                 "job_name": f"Deleting {total_docs} Documents",
                 "job_start": datetime.now().isoformat(),
                 "docs": total_docs,
@@ -2134,12 +2139,16 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import (
             get_namespace_data,
-            get_pipeline_status_lock,
+            get_namespace_lock,
         )
 
         # Get pipeline status and lock
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_pipeline_status_lock()
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
 
         # Check and set status with lock
         async with pipeline_status_lock:
@@ -2330,13 +2339,19 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
+                get_namespace_lock,
                 get_all_update_flags_status,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status()
+            update_status = await get_all_update_flags_status(workspace=rag.workspace)
 
             # Convert MutableBoolean objects to regular boolean values
             processed_update_status = {}
@@ -2350,8 +2365,9 @@ def create_document_routes(
                         processed_flags.append(bool(flag))
                 processed_update_status[namespace] = processed_flags
 
-            # Convert to regular dict if it's a Manager.dict
-            status_dict = dict(pipeline_status)
+            async with pipeline_status_lock:
+                # Convert to regular dict if it's a Manager.dict
+                status_dict = dict(pipeline_status)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
@@ -2538,17 +2554,26 @@ def create_document_routes(
         doc_ids = delete_request.doc_ids
 
         try:
-            from lightrag.kg.shared_storage import get_namespace_data
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_namespace_lock,
+            )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
-            # Check if pipeline is busy
-            if pipeline_status.get("busy", False):
-                return DeleteDocByIdResponse(
-                    status="busy",
-                    message="Cannot delete documents while pipeline is busy",
-                    doc_id=", ".join(doc_ids),
-                )
+            # Check if pipeline is busy with proper lock
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy", False):
+                    return DeleteDocByIdResponse(
+                        status="busy",
+                        message="Cannot delete documents while pipeline is busy",
+                        doc_id=", ".join(doc_ids),
+                    )
 
             # Add deletion task to background tasks
             background_tasks.add_task(
@@ -2944,11 +2969,15 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
-                get_pipeline_status_lock,
+                get_namespace_lock,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-            pipeline_status_lock = get_pipeline_status_lock()
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             async with pipeline_status_lock:
                 if not pipeline_status.get("busy", False):

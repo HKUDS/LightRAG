@@ -56,7 +56,8 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    initialize_pipeline_status,
+    get_default_workspace,
+    # set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
 )
@@ -350,8 +351,8 @@ def create_app(args):
 
         try:
             # Initialize database connections
+            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
             await rag.initialize_storages()
-            await initialize_pipeline_status()
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
@@ -451,6 +452,28 @@ def create_app(args):
 
     # Create combined auth dependency for all endpoints
     combined_auth = get_combined_auth_dependency(api_key)
+
+    def get_workspace_from_request(request: Request) -> str | None:
+        """
+        Extract workspace from HTTP request header or use default.
+
+        This enables multi-workspace API support by checking the custom
+        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
+        server's default workspace configuration.
+
+        Args:
+            request: FastAPI Request object
+
+        Returns:
+            Workspace identifier (may be empty string for global namespace)
+        """
+        # Check custom header first
+        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+
+        if not workspace:
+            workspace = None
+
+        return workspace
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
@@ -1113,10 +1136,16 @@ def create_app(args):
         }
 
     @app.get("/health", dependencies=[Depends(combined_auth)])
-    async def get_status():
+    async def get_status(request: Request):
         """Get current system status"""
         try:
-            pipeline_status = await get_namespace_data("pipeline_status")
+            workspace = get_workspace_from_request(request)
+            default_workspace = get_default_workspace()
+            if workspace is None:
+                workspace = default_workspace
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
 
             if not auth_configured:
                 auth_mode = "disabled"
@@ -1147,7 +1176,7 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": args.workspace,
+                    "workspace": default_workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
