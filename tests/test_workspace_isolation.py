@@ -290,7 +290,7 @@ async def test_backward_compatibility():
     print("\nTest 3.1: get_final_namespace with workspace=None")
 
     set_default_workspace("my_default_workspace")
-    final_ns = get_final_namespace("pipeline_status", workspace=None)
+    final_ns = get_final_namespace("pipeline_status")
     expected = "my_default_workspace:pipeline_status"
 
     assert final_ns == expected, f"Expected {expected}, got {final_ns}"
