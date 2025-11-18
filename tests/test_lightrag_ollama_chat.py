@@ -9,6 +9,7 @@ This script tests the LightRAG's Ollama compatibility interface, including:
 All responses use the JSON Lines format, complying with the Ollama API specification.
 """
 
+import pytest
 import requests
 import json
 import argparse
@@ -293,6 +294,8 @@ def run_test(func: Callable, name: str) -> None:
         raise
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
@@ -317,6 +320,8 @@ def test_non_stream_chat() -> None:
     )
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_stream_chat() -> None:
     """Test streaming call to /api/chat endpoint
 
@@ -377,6 +382,8 @@ def test_stream_chat() -> None:
     print()
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_query_modes() -> None:
     """Test different query mode prefixes
 
@@ -436,6 +443,8 @@ def create_error_test_data(error_type: str) -> Dict[str, Any]:
     return error_data.get(error_type, error_data["empty_messages"])
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_stream_error_handling() -> None:
     """Test error handling for streaming responses
 
@@ -482,6 +491,8 @@ def test_stream_error_handling() -> None:
     response.close()
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_error_handling() -> None:
     """Test error handling for non-streaming responses
 
@@ -529,6 +540,8 @@ def test_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_non_stream_generate() -> None:
     """Test non-streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -548,6 +561,8 @@ def test_non_stream_generate() -> None:
     print(json.dumps(response_json, ensure_ascii=False, indent=2))
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_stream_generate() -> None:
     """Test streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -588,6 +603,8 @@ def test_stream_generate() -> None:
     print()
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_generate_with_system() -> None:
     """Test generate with system prompt"""
     url = get_base_url("generate")
@@ -616,6 +633,8 @@ def test_generate_with_system() -> None:
     )
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_generate_error_handling() -> None:
     """Test error handling for generate endpoint"""
     url = get_base_url("generate")
@@ -641,6 +660,8 @@ def test_generate_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_generate_concurrent() -> None:
     """Test concurrent generate requests"""
     import asyncio

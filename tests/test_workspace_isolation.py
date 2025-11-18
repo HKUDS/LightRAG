@@ -148,6 +148,7 @@ def _assert_no_timeline_overlap(timeline: List[Tuple[str, str]]) -> None:
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_pipeline_status_isolation():
     """
@@ -202,6 +203,7 @@ async def test_pipeline_status_isolation():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_lock_mechanism(stress_test_mode, parallel_workers):
     """
@@ -271,6 +273,7 @@ async def test_lock_mechanism(stress_test_mode, parallel_workers):
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_backward_compatibility():
     """
@@ -344,6 +347,7 @@ async def test_backward_compatibility():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_multi_workspace_concurrency():
     """
@@ -427,6 +431,7 @@ async def test_multi_workspace_concurrency():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_namespace_lock_reentrance():
     """
@@ -500,6 +505,7 @@ async def test_namespace_lock_reentrance():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_different_namespace_lock_isolation():
     """
@@ -539,6 +545,7 @@ async def test_different_namespace_lock_isolation():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_error_handling():
     """
@@ -589,6 +596,7 @@ async def test_error_handling():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_update_flags_workspace_isolation():
     """
@@ -718,6 +726,7 @@ async def test_update_flags_workspace_isolation():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_empty_workspace_standardization():
     """
@@ -771,6 +780,7 @@ async def test_empty_workspace_standardization():
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
     """
@@ -852,6 +862,9 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
             }
         )
         print("   Written to storage1: entity1, entity2")
+        # Persist data to disk
+        await storage1.index_done_callback()
+        print("   Persisted storage1 data to disk")
 
         # Write to storage2
         await storage2.upsert(
@@ -867,6 +880,9 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
             }
         )
         print("   Written to storage2: entity1, entity2")
+        # Persist data to disk
+        await storage2.index_done_callback()
+        print("   Persisted storage2 data to disk")
 
         # Test 10.3: Read data from each storage and verify isolation
         print("\nTest 10.3: Read data and verify isolation")
@@ -944,6 +960,7 @@ async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
 # =============================================================================
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_lightrag_end_to_end_workspace_isolation(keep_test_artifacts):
     """

@@ -7,6 +7,21 @@ This file provides command-line options and fixtures for test configuration.
 import pytest
 
 
+def pytest_configure(config):
+    """Register custom markers for LightRAG tests."""
+    config.addinivalue_line(
+        "markers", "offline: marks tests as offline (no external dependencies)"
+    )
+    config.addinivalue_line(
+        "markers",
+        "integration: marks tests requiring external services (skipped by default)",
+    )
+    config.addinivalue_line("markers", "requires_db: marks tests requiring database")
+    config.addinivalue_line(
+        "markers", "requires_api: marks tests requiring LightRAG API server"
+    )
+
+
 def pytest_addoption(parser):
     """Add custom command-line options for LightRAG tests."""
 
@@ -31,6 +46,32 @@ def pytest_addoption(parser):
         type=int,
         help="Number of parallel workers for stress tests (default: 3)",
     )
+
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Run integration tests that require external services (database, API server, etc.)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Modify test collection to skip integration tests by default.
+
+    Integration tests are skipped unless --run-integration flag is provided.
+    This allows running offline tests quickly without needing external services.
+    """
+    if config.getoption("--run-integration"):
+        # If --run-integration is specified, run all tests
+        return
+
+    skip_integration = pytest.mark.skip(
+        reason="Requires external services(DB/API), use --run-integration to run"
+    )
+
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)
 
 
 @pytest.fixture(scope="session")
@@ -83,3 +124,20 @@ def parallel_workers(request):
 
     # Fall back to environment variable
     return int(os.getenv("LIGHTRAG_TEST_WORKERS", "3"))
+
+
+@pytest.fixture(scope="session")
+def run_integration_tests(request):
+    """
+    Fixture to determine whether to run integration tests.
+
+    Priority: CLI option > Environment variable > Default (False)
+    """
+    import os
+
+    # Check CLI option first
+    if request.config.getoption("--run-integration"):
+        return True
+
+    # Fall back to environment variable
+    return os.getenv("LIGHTRAG_RUN_INTEGRATION", "false").lower() == "true"
