@@ -98,8 +98,8 @@ def chunking_by_token_size(
     content: str,
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
-    chunk_overlap_token_size: int = 128,
-    chunk_token_size: int = 1024,
+    chunk_overlap_token_size: int = 100,
+    chunk_token_size: int = 1200,
 ) -> list[dict[str, Any]]:
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
