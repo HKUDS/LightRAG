@@ -28,10 +28,13 @@ password = your_password
 database = your_database
 # workspace = default
 max_connections = 12
-vector_index_type = HNSW        # HNSW or IVFFLAT
+vector_index_type = HNSW        # HNSW, IVFFLAT or VCHORDRQ
 hnsw_m = 16
 hnsw_ef = 64
 ivfflat_lists = 100
+vchordrq_build_options =
+vchordrq_probes =
+vchordrq_epsilon = 1.9
 
 [memgraph]
 uri = bolt://localhost:7687
