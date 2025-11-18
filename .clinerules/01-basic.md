@@ -127,6 +127,31 @@ for key, value in matching_items:
 4. **Implement caching strategically** - Cache expensive operations
 5. **Monitor memory usage** - Prevent memory leaks
 
+### 5. Testing Workflow (CRITICAL)
+**Pattern**: All tests must use pytest markers for proper CI/CD execution
+**Test Categories**:
+- **Offline Tests**: Use `@pytest.mark.offline` - No external dependencies (runs in CI)
+- **Integration Tests**: Use `@pytest.mark.integration` - Requires databases/APIs (skipped by default)
+
+**Commands**:
+- `pytest tests/ -m offline -v` - CI default (~3 seconds for 21 tests)
+- `pytest tests/ --run-integration -v` - Full test suite (all 46 tests)
+
+**Best Practices**:
+1. **Prefer offline tests** - Use mocks for LLM, embeddings, databases
+2. **Mock external dependencies** - AsyncMock for async functions
+3. **Test isolation** - Each test should be independent
+4. **Documentation** - Add docstrings explaining purpose and scope
+
+**Configuration**:
+- `tests/pytest.ini` - Marker definitions and test discovery
+- `tests/conftest.py` - Fixtures and custom options
+- `.github/workflows/tests.yml` - CI/CD workflow (Python 3.10/3.11/3.12)
+
+**Documentation**: See `memory-bank/testing-guidelines.md` for complete testing guidelines
+
+**Impact**: Ensures all tests run reliably in CI without external services while maintaining comprehensive integration test coverage for local development
+
 ## Technology Stack Intelligence
 
 ### 1. LLM Integration
