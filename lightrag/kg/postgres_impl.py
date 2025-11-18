@@ -413,27 +413,12 @@ class PostgreSQLDB:
             pass
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
-        """Configure VCHORDRQ extension for vector similarity search.
-
-        Raises:
-            asyncpg.exceptions.UndefinedObjectError: If VCHORDRQ extension is not installed
-            asyncpg.exceptions.InvalidParameterValueError: If parameter value is invalid
-
-        Note:
-            This method does not catch exceptions. Configuration errors will fail-fast,
-            while transient connection errors will be retried by _run_with_retry.
-        """
-        # Handle probes parameter - only set if non-empty value is provided
-        if self.vchordrq_probes and str(self.vchordrq_probes).strip():
+        """Configure VCHORDRQ extension for vector similarity search."""
+        try:
             await connection.execute(f"SET vchordrq.probes TO '{self.vchordrq_probes}'")
-            logger.debug(f"PostgreSQL, VCHORDRQ probes set to: {self.vchordrq_probes}")
-
-        # Handle epsilon parameter independently - check for None to allow 0.0 as valid value
-        if self.vchordrq_epsilon is not None:
             await connection.execute(f"SET vchordrq.epsilon TO {self.vchordrq_epsilon}")
-            logger.debug(
-                f"PostgreSQL, VCHORDRQ epsilon set to: {self.vchordrq_epsilon}"
-            )
+        except Exception:
+            pass
 
     async def _migrate_llm_cache_schema(self):
         """Migrate LLM cache schema: add new columns and remove deprecated mode field"""
@@ -1403,14 +1388,12 @@ class PostgreSQLDB:
                 CREATE INDEX {{vector_index_name}}
                 ON {{k}} USING vchordrq (content_vector vector_cosine_ops)
                 {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
-            """,
+            """
         }
 
         embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
         for k in vdb_tables:
-            vector_index_name = (
-                f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
-            )
+            vector_index_name = f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
             check_vector_index_sql = f"""
                     SELECT 1 FROM pg_indexes
                     WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
@@ -1422,14 +1405,8 @@ class PostgreSQLDB:
                     alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
                     await self.execute(alter_sql)
                     logger.debug(f"Ensured vector dimension for {k}")
-                    logger.info(
-                        f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
-                    )
-                    await self.execute(
-                        create_sql[self.vector_index_type].format(
-                            vector_index_name=vector_index_name, k=k
-                        )
-                    )
+                    logger.info(f"Creating {self.vector_index_type} index {vector_index_name} on table {k}")
+                    await self.execute(create_sql[self.vector_index_type].format(vector_index_name=vector_index_name, k=k))
                     logger.info(
                         f"Successfully created vector index {vector_index_name} on table {k}"
                     )
