@@ -970,6 +970,9 @@ async def test_lightrag_end_to_end_workspace_isolation():
             async def mock_llm_func(
                 prompt, system_prompt=None, history_messages=[], **kwargs
             ) -> str:
+                # Add coroutine switching to simulate async I/O and allow concurrent execution
+                await asyncio.sleep(0)
+                
                 # Return different responses based on workspace
                 # Format: entity<|#|>entity_name<|#|>entity_type<|#|>entity_description
                 # Format: relation<|#|>source_entity<|#|>target_entity<|#|>keywords<|#|>description
@@ -988,6 +991,8 @@ relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Le
 
         # Mock embedding function
         async def mock_embedding_func(texts: list[str]) -> np.ndarray:
+            # Add coroutine switching to simulate async I/O and allow concurrent execution
+            await asyncio.sleep(0)
             return np.random.rand(len(texts), 384)  # 384-dimensional vectors
 
         # Test 11.1: Create two LightRAG instances with different workspaces
@@ -1040,19 +1045,24 @@ relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Le
         print("   RAG1 created: workspace=project_a")
         print("   RAG2 created: workspace=project_b")
 
-        # Test 11.2: Insert different data to each RAG instance
-        print("\nTest 11.2: Insert different data to each RAG instance")
+        # Test 11.2: Insert different data to each RAG instance (CONCURRENTLY)
+        print("\nTest 11.2: Insert different data to each RAG instance (concurrently)")
 
         text_for_project_a = "This document is about Artificial Intelligence and Machine Learning. AI is transforming the world."
         text_for_project_b = "This document is about Deep Learning and Neural Networks. Deep learning uses multiple layers."
 
-        # Insert to project_a
-        await rag1.ainsert(text_for_project_a)
-        print(f"   Inserted to project_a: {len(text_for_project_a)} chars")
-
-        # Insert to project_b
-        await rag2.ainsert(text_for_project_b)
-        print(f"   Inserted to project_b: {len(text_for_project_b)} chars")
+        # Insert to both projects concurrently to test workspace isolation under concurrent load
+        print("   Starting concurrent insert operations...")
+        start_time = time.time()
+        await asyncio.gather(
+            rag1.ainsert(text_for_project_a),
+            rag2.ainsert(text_for_project_b)
+        )
+        elapsed_time = time.time() - start_time
+        
+        print(f"   Inserted to project_a: {len(text_for_project_a)} chars (concurrent)")
+        print(f"   Inserted to project_b: {len(text_for_project_b)} chars (concurrent)")
+        print(f"   Total concurrent execution time: {elapsed_time:.3f}s")
 
         # Test 11.3: Verify file structure
         print("\nTest 11.3: Verify workspace directory structure")
