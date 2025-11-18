@@ -1021,9 +1021,10 @@ def _extract_docx(file_bytes: bytes) -> str:
                 row_text = []
                 for cell in row.cells:
                     cell_text = cell.text.strip()
-                    if cell_text:
-                        row_text.append(cell_text)
-                if row_text:
+                    # Always append cell text to preserve column structure
+                    row_text.append(cell_text)
+                # Only add row if at least one cell has content
+                if any(cell for cell in row_text):
                     content_parts.append("\t".join(row_text))
 
     return "\n".join(content_parts)
