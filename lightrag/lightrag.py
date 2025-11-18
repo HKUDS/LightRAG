@@ -665,9 +665,9 @@ class LightRAG:
             if default_workspace is None:
                 set_default_workspace(self.workspace)
             elif default_workspace != self.workspace:
-                logger.warning(
+                logger.info(
                     f"Creating LightRAG instance with workspace='{self.workspace}' "
-                    f"but default workspace is already set to '{default_workspace}'."
+                    f"while default workspace is set to '{default_workspace}'"
                 )
 
             # Auto-initialize pipeline_status for this workspace
