@@ -1375,7 +1375,8 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
             if ":" in namespace:
                 # Namespace has workspace prefix like "space1:pipeline_status"
                 # Only include if workspace matches the prefix
-                namespace_split = namespace.split(":", 1)
+                # Use rsplit to split from the right since workspace can contain colons
+                namespace_split = namespace.rsplit(":", 1)
                 if not workspace or namespace_split[0] != workspace:
                     continue
             else:
