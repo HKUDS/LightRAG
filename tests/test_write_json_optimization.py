@@ -11,9 +11,11 @@ This test verifies:
 import os
 import json
 import tempfile
+import pytest
 from lightrag.utils import write_json, load_json, SanitizingJSONEncoder
 
 
+@pytest.mark.offline
 class TestWriteJsonOptimization:
     """Test write_json optimization with two-stage approach"""
 

@@ -9,6 +9,7 @@ Updated to handle the new data format where:
 - Includes backward compatibility with legacy format
 """
 
+import pytest
 import requests
 import time
 import json
@@ -84,6 +85,8 @@ def parse_streaming_response(
     return references, response_chunks, errors
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_query_endpoint_references():
     """Test /query endpoint references functionality"""
 
@@ -187,6 +190,8 @@ def test_query_endpoint_references():
     return True
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_query_stream_endpoint_references():
     """Test /query/stream endpoint references functionality"""
 
@@ -322,6 +327,8 @@ def test_query_stream_endpoint_references():
     return True
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_references_consistency():
     """Test references consistency across all endpoints"""
 
@@ -472,6 +479,8 @@ def test_references_consistency():
     return consistency_passed
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_aquery_data_endpoint():
     """Test the /query/data endpoint"""
 
@@ -654,6 +663,8 @@ def print_query_results(data: Dict[str, Any]):
     print("=" * 60)
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def compare_with_regular_query():
     """Compare results between regular query and data query"""
 
@@ -690,6 +701,8 @@ def compare_with_regular_query():
         print(f"   Regular query error: {str(e)}")
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def run_all_reference_tests():
     """Run all reference-related tests"""
 

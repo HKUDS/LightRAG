@@ -1,4 +1,4 @@
-name: Offline Unit Tests
+name: Tests
 
 on:
   push:

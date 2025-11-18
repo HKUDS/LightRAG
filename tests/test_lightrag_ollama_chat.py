@@ -9,49 +9,16 @@ This script tests the LightRAG's Ollama compatibility interface, including:
 All responses use the JSON Lines format, complying with the Ollama API specification.
 """
 
+import pytest
 import requests
 import json
 import argparse
 import time
-import pytest
-import os
 from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from enum import Enum, auto
-
-
-def _check_ollama_server_available(host: str = "localhost", port: int = 9621) -> bool:
-    """Check if the Ollama-compatible LightRAG server is available and working.
-    
-    We test by making a simple API call to ensure the server is actually functioning,
-    not just that some process is listening on the port.
-    """
-    try:
-        # First check if something is listening
-        response = requests.get(f"http://{host}:{port}/", timeout=2)
-        if response.status_code != 200:
-            return False
-        # Try a simple API call to ensure the server is actually working
-        test_data = {
-            "model": "lightrag:latest",
-            "messages": [{"role": "user", "content": "test"}],
-            "stream": False
-        }
-        response = requests.post(f"http://{host}:{port}/api/chat", json=test_data, timeout=5)
-        return response.status_code == 200
-    except (requests.ConnectionError, requests.Timeout, Exception):
-        return False
-
-
-# Allow override via environment variable for CI/CD
-_OLLAMA_SERVER_HOST = os.getenv("OLLAMA_TEST_HOST", "localhost")
-_OLLAMA_SERVER_PORT = int(os.getenv("OLLAMA_TEST_PORT", "9621"))
-_SKIP_OLLAMA_TESTS = os.getenv("SKIP_OLLAMA_TESTS", "").lower() in ("1", "true", "yes")
-
-# Check server availability once at module level
-_SERVER_AVAILABLE = not _SKIP_OLLAMA_TESTS and _check_ollama_server_available(_OLLAMA_SERVER_HOST, _OLLAMA_SERVER_PORT)
 
 
 class ErrorCode(Enum):
@@ -109,7 +76,7 @@ class OutputControl:
 
 
 @dataclass
-class OllamaTestResult:
+class TestResult:
     """Test result data class"""
 
     name: str
@@ -123,14 +90,14 @@ class OllamaTestResult:
             self.timestamp = datetime.now().isoformat()
 
 
-class OllamaTestStats:
+class TestStats:
     """Test statistics"""
 
     def __init__(self):
-        self.results: List[OllamaTestResult] = []
+        self.results: List[TestResult] = []
         self.start_time = datetime.now()
 
-    def add_result(self, result: OllamaTestResult):
+    def add_result(self, result: TestResult):
         self.results.append(result)
 
     def export_results(self, path: str = "test_results.json"):
@@ -307,7 +274,7 @@ def create_generate_request_data(
 
 
 # Global test statistics
-STATS = OllamaTestStats()
+STATS = TestStats()
 
 
 def run_test(func: Callable, name: str) -> None:
@@ -320,14 +287,15 @@ def run_test(func: Callable, name: str) -> None:
     try:
         func()
         duration = time.time() - start_time
-        STATS.add_result(OllamaTestResult(name, True, duration))
+        STATS.add_result(TestResult(name, True, duration))
     except Exception as e:
         duration = time.time() - start_time
-        STATS.add_result(OllamaTestResult(name, False, duration, str(e)))
+        STATS.add_result(TestResult(name, False, duration, str(e)))
         raise
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
@@ -352,7 +320,8 @@ def test_non_stream_chat() -> None:
     )
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_stream_chat() -> None:
     """Test streaming call to /api/chat endpoint
 
@@ -413,7 +382,8 @@ def test_stream_chat() -> None:
     print()
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_query_modes() -> None:
     """Test different query mode prefixes
 
@@ -473,7 +443,8 @@ def create_error_test_data(error_type: str) -> Dict[str, Any]:
     return error_data.get(error_type, error_data["empty_messages"])
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_stream_error_handling() -> None:
     """Test error handling for streaming responses
 
@@ -520,7 +491,8 @@ def test_stream_error_handling() -> None:
     response.close()
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_error_handling() -> None:
     """Test error handling for non-streaming responses
 
@@ -568,7 +540,8 @@ def test_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_non_stream_generate() -> None:
     """Test non-streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -588,7 +561,8 @@ def test_non_stream_generate() -> None:
     print(json.dumps(response_json, ensure_ascii=False, indent=2))
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_stream_generate() -> None:
     """Test streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
@@ -629,7 +603,8 @@ def test_stream_generate() -> None:
     print()
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_generate_with_system() -> None:
     """Test generate with system prompt"""
     url = get_base_url("generate")
@@ -658,7 +633,8 @@ def test_generate_with_system() -> None:
     )
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_generate_error_handling() -> None:
     """Test error handling for generate endpoint"""
     url = get_base_url("generate")
@@ -684,7 +660,8 @@ def test_generate_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
-@pytest.mark.skipif(not _SERVER_AVAILABLE, reason="Ollama server not available at localhost:9621")
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_generate_concurrent() -> None:
     """Test concurrent generate requests"""
     import asyncio

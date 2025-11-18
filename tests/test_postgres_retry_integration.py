@@ -23,6 +23,8 @@ from lightrag.kg.postgres_impl import PostgreSQLDB
 load_dotenv(dotenv_path=".env", override=False)
 
 
+@pytest.mark.integration
+@pytest.mark.requires_db
 class TestPostgresRetryIntegration:
     """Integration tests for PostgreSQL retry mechanism with real database."""
 
