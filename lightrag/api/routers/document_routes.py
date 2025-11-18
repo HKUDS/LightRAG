@@ -1063,7 +1063,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     - Special characters (tabs, newlines, backslashes) are escaped to prevent structure corruption
     - Column alignment is preserved across all rows to maintain tabular structure
     - Empty rows are preserved as blank lines to maintain row structure
-    - Two-pass processing: determines max column width, then extracts with consistent alignment
+    - Uses sheet.max_column to determine column width efficiently
 
     Args:
         file_bytes: XLSX file content as bytes
