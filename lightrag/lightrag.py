@@ -2969,26 +2969,43 @@ class LightRAG:
             "pipeline_status", workspace=self.workspace
         )
 
-        # Validate pipeline status before proceeding with deletion
+        # Track whether WE acquired the pipeline
+        we_acquired_pipeline = False
+
+        # Check and acquire pipeline if needed
         async with pipeline_status_lock:
             if not pipeline_status.get("busy", False):
-                return DeletionResult(
-                    status="not_allowed",
-                    doc_id=doc_id,
-                    message="Deletion not allowed: pipeline is not busy",
-                    status_code=403,
-                    file_path=None,
+                # Pipeline is idle - WE acquire it for this deletion
+                we_acquired_pipeline = True
+                pipeline_status.update(
+                    {
+                        "busy": True,
+                        "job_name": "Deleting 1 document",
+                        "job_start": datetime.now(timezone.utc).isoformat(),
+                        "docs": 1,
+                        "batchs": 1,
+                        "cur_batch": 0,
+                        "request_pending": False,
+                        "cancellation_requested": False,
+                        "latest_message": f"Starting deletion for document: {doc_id}",
+                    }
                 )
-
-            job_name = pipeline_status.get("job_name", "").lower()
-            if "deleting" not in job_name or "document" not in job_name:
-                return DeletionResult(
-                    status="not_allowed",
-                    doc_id=doc_id,
-                    message=f"Deletion not allowed: current job '{pipeline_status.get('job_name')}' is not a document deletion job",
-                    status_code=403,
-                    file_path=None,
-                )
+                # Initialize history messages
+                pipeline_status["history_messages"][:] = [
+                    f"Starting deletion for document: {doc_id}"
+                ]
+            else:
+                # Pipeline already busy - verify it's a deletion job
+                job_name = pipeline_status.get("job_name", "").lower()
+                if "deleting" not in job_name or "document" not in job_name:
+                    return DeletionResult(
+                        status="not_allowed",
+                        doc_id=doc_id,
+                        message=f"Deletion not allowed: current job '{pipeline_status.get('job_name')}' is not a document deletion job",
+                        status_code=403,
+                        file_path=None,
+                    )
+                # Pipeline is busy with deletion - proceed without acquiring
 
         deletion_operations_started = False
         original_exception = None
@@ -3605,6 +3622,18 @@ class LightRAG:
                 logger.debug(
                     f"No deletion operations were started for document {doc_id}, skipping persistence"
                 )
+
+            # Release pipeline only if WE acquired it
+            if we_acquired_pipeline:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["cancellation_requested"] = False
+                    completion_msg = (
+                        f"Deletion process completed for document: {doc_id}"
+                    )
+                    pipeline_status["latest_message"] = completion_msg
+                    pipeline_status["history_messages"].append(completion_msg)
+                    logger.info(completion_msg)
 
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
