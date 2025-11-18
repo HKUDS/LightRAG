@@ -1006,8 +1006,8 @@ def _extract_docx(file_bytes: bytes) -> str:
 
             paragraph = Paragraph(element, doc)
             text = paragraph.text.strip()
-            if text:
-                content_parts.append(text)
+            # Always append to preserve document spacing (including blank paragraphs)
+            content_parts.append(text)
 
         # Check if element is a table
         elif element.tag.endswith("tbl"):
