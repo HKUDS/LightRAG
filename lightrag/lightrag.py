@@ -262,14 +262,14 @@ class LightRAG:
         - `split_by_character_only`: If True, the text is split only on the specified character.
         - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
         - `chunk_token_size`: The maximum number of tokens per chunk.
-        
+
 
     The function should return a list of dictionaries (or an awaitable that resolves to a list),
     where each dictionary contains the following keys:
         - `tokens` (int): The number of tokens in the chunk.
         - `content` (str): The text content of the chunk.
         - `chunk_order_index` (int): Zero-based index indicating the chunk's order in the document.
-          
+
     Defaults to `chunking_by_token_size` if not specified.
     """
 
