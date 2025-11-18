@@ -220,6 +220,25 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
+    def _generate_collection_suffix(self) -> str:
+        """Generates collection/table suffix from embedding_func.
+
+        Returns:
+            str: Suffix string, e.g. "text_embedding_3_large_3072d"
+        """
+        return self.embedding_func.get_model_identifier()
+
+    def _get_legacy_collection_name(self) -> str:
+        """Get legacy collection/table name (without suffix).
+
+        Used for data migration detection.
+        """
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def _get_new_collection_name(self) -> str:
+        """Get new collection/table name (with suffix)."""
+        raise NotImplementedError("Subclasses must implement this method")
+
     @abstractmethod
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
