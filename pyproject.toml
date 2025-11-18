@@ -131,8 +131,10 @@ offline = [
 ]
 
 evaluation = [
-    # Test framework (reference pytest group)
-    "lightrag-hku[pytest]",
+    # Test framework dependencies (for evaluation)
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pre-commit",
     # RAG evaluation dependencies (RAGAS framework)
     "ragas>=0.3.7",
     "datasets>=4.3.0",
