@@ -2338,7 +2338,7 @@ def create_document_routes(
             pipeline_status_lock = get_namespace_lock("pipeline_status")
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status()
+            update_status = await get_all_update_flags_status(workspace=rag.workspace)
 
             # Convert MutableBoolean objects to regular boolean values
             processed_update_status = {}
