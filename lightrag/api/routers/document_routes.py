@@ -976,19 +976,57 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
 
 
 def _extract_docx(file_bytes: bytes) -> str:
-    """Extract DOCX content (synchronous).
+    """Extract DOCX content including tables in document order (synchronous).
 
     Args:
         file_bytes: DOCX file content as bytes
 
     Returns:
-        str: Extracted text content
+        str: Extracted text content with tables in their original positions.
+             Tables are separated from paragraphs with blank lines for clarity.
     """
     from docx import Document  # type: ignore
+    from docx.table import Table  # type: ignore
+    from docx.text.paragraph import Paragraph  # type: ignore
 
     docx_file = BytesIO(file_bytes)
     doc = Document(docx_file)
-    return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+
+    content_parts = []
+    in_table = False  # Track if we're currently processing a table
+
+    # Iterate through all body elements in document order
+    for element in doc.element.body:
+        # Check if element is a paragraph
+        if element.tag.endswith("p"):
+            # If coming out of a table, add blank line after table
+            if in_table:
+                content_parts.append("")  # Blank line after table
+                in_table = False
+
+            paragraph = Paragraph(element, doc)
+            text = paragraph.text.strip()
+            if text:
+                content_parts.append(text)
+
+        # Check if element is a table
+        elif element.tag.endswith("tbl"):
+            # Add blank line before table (if content exists)
+            if content_parts and not in_table:
+                content_parts.append("")  # Blank line before table
+
+            in_table = True
+            table = Table(element, doc)
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    cell_text = cell.text.strip()
+                    if cell_text:
+                        row_text.append(cell_text)
+                if row_text:
+                    content_parts.append("\t".join(row_text))
+
+    return "\n".join(content_parts)
 
 
 def _extract_pptx(file_bytes: bytes) -> str:
