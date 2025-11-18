@@ -70,11 +70,11 @@ async def _measure_lock_parallelism(
     workload: List[Tuple[str, str, str]], hold_time: float = 0.05
 ) -> Tuple[int, List[Tuple[str, str]], Dict[str, float]]:
     """Run lock acquisition workload and capture peak concurrency and timeline.
-    
+
     Args:
         workload: List of (name, workspace, namespace) tuples
         hold_time: How long each worker holds the lock (seconds)
-        
+
     Returns:
         Tuple of (max_parallel, timeline, metrics) where:
         - max_parallel: Peak number of concurrent lock holders
@@ -99,28 +99,28 @@ async def _measure_lock_parallelism(
             running -= 1
 
     await asyncio.gather(*(worker(*args) for args in workload))
-    
+
     metrics = {
         "total_duration": time.time() - start_time,
         "max_concurrency": max_parallel,
         "avg_hold_time": hold_time,
         "num_workers": len(workload),
     }
-    
+
     return max_parallel, timeline, metrics
 
 
 def _assert_no_timeline_overlap(timeline: List[Tuple[str, str]]) -> None:
     """Ensure that timeline events never overlap for sequential execution.
-    
+
     This function implements a finite state machine that validates:
     - No overlapping lock acquisitions (only one task active at a time)
     - Proper lock release order (task releases its own lock)
     - All locks are properly released
-    
+
     Args:
         timeline: List of (name, event) tuples where event is "start" or "end"
-        
+
     Raises:
         AssertionError: If timeline shows overlapping execution or improper locking
     """
@@ -219,14 +219,14 @@ async def test_lock_mechanism():
 
     # Test 2.1: Different workspaces should run in parallel
     print("\nTest 2.1: Different workspaces locks should be parallel")
-    
+
     # Support stress testing with configurable number of workers
     num_workers = PARALLEL_WORKERS if STRESS_TEST_MODE else 3
     parallel_workload = [
         (f"ws_{chr(97+i)}", f"ws_{chr(97+i)}", "test_namespace")
         for i in range(num_workers)
     ]
-    
+
     max_parallel, timeline_parallel, metrics = await _measure_lock_parallelism(
         parallel_workload
     )
@@ -236,8 +236,12 @@ async def test_lock_mechanism():
     )
 
     print("✅ PASSED: Lock Mechanism - Parallel (Different Workspaces)")
-    print(f"   Locks overlapped for different workspaces (max concurrency={max_parallel})")
-    print(f"   Performance: {metrics['total_duration']:.3f}s for {metrics['num_workers']} workers")
+    print(
+        f"   Locks overlapped for different workspaces (max concurrency={max_parallel})"
+    )
+    print(
+        f"   Performance: {metrics['total_duration']:.3f}s for {metrics['num_workers']} workers"
+    )
 
     # Test 2.2: Same workspace should serialize
     print("\nTest 2.2: Same workspace locks should serialize")
@@ -245,9 +249,11 @@ async def test_lock_mechanism():
         ("serial_run_1", "ws_same", "test_namespace"),
         ("serial_run_2", "ws_same", "test_namespace"),
     ]
-    max_parallel_serial, timeline_serial, metrics_serial = await _measure_lock_parallelism(
-        serial_workload
-    )
+    (
+        max_parallel_serial,
+        timeline_serial,
+        metrics_serial,
+    ) = await _measure_lock_parallelism(serial_workload)
     assert max_parallel_serial == 1, (
         "Same workspace locks should not overlap; "
         f"observed {max_parallel_serial} with timeline {timeline_serial}"
@@ -256,7 +262,9 @@ async def test_lock_mechanism():
 
     print("✅ PASSED: Lock Mechanism - Serial (Same Workspace)")
     print("   Same workspace operations executed sequentially with no overlap")
-    print(f"   Performance: {metrics_serial['total_duration']:.3f}s for {metrics_serial['num_workers']} tasks")
+    print(
+        f"   Performance: {metrics_serial['total_duration']:.3f}s for {metrics_serial['num_workers']} tasks"
+    )
 
 
 # =============================================================================
@@ -519,8 +527,12 @@ async def test_different_namespace_lock_isolation():
     )
 
     print("✅ PASSED: Different Namespace Lock Isolation")
-    print(f"   Different namespace locks ran in parallel (max concurrency={max_parallel})")
-    print(f"   Performance: {metrics['total_duration']:.3f}s for {metrics['num_workers']} namespaces")
+    print(
+        f"   Different namespace locks ran in parallel (max concurrency={max_parallel})"
+    )
+    print(
+        f"   Performance: {metrics['total_duration']:.3f}s for {metrics['num_workers']} namespaces"
+    )
 
 
 # =============================================================================

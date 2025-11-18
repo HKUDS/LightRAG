@@ -14,7 +14,7 @@ Comprehensive test coverage for LightRAG's workspace isolation feature, ensuring
 ## Test Categories
 
 ### 1. Data Isolation Tests
-**Tests:** 1, 4, 8, 9, 10  
+**Tests:** 1, 4, 8, 9, 10
 **Purpose:** Verify that data in one workspace doesn't leak into another
 
 - **Test 1: Pipeline Status Isolation** - Core shared data structures remain separate
@@ -24,7 +24,7 @@ Comprehensive test coverage for LightRAG's workspace isolation feature, ensuring
 - **Test 10: JsonKVStorage Integration** - Storage layer properly isolates data
 
 ### 2. Lock Mechanism Tests
-**Tests:** 2, 5, 6  
+**Tests:** 2, 5, 6
 **Purpose:** Validate that locking mechanisms allow parallelism across workspaces while enforcing serialization within workspaces
 
 - **Test 2: Lock Mechanism** - Different workspaces run in parallel, same workspace serializes
@@ -32,7 +32,7 @@ Comprehensive test coverage for LightRAG's workspace isolation feature, ensuring
 - **Test 6: Namespace Lock Isolation** - Different namespaces within same workspace are independent
 
 ### 3. Backward Compatibility Tests
-**Test:** 3  
+**Test:** 3
 **Purpose:** Ensure legacy code without workspace parameters still functions correctly
 
 - Default workspace fallback behavior
@@ -40,7 +40,7 @@ Comprehensive test coverage for LightRAG's workspace isolation feature, ensuring
 - None vs empty string normalization
 
 ### 4. Error Handling Tests
-**Test:** 7  
+**Test:** 7
 **Purpose:** Validate guardrails for invalid configurations
 
 - Missing workspace validation
@@ -48,7 +48,7 @@ Comprehensive test coverage for LightRAG's workspace isolation feature, ensuring
 - Edge case handling
 
 ### 5. End-to-End Integration Tests
-**Test:** 11  
+**Test:** 11
 **Purpose:** Validate complete LightRAG workflows maintain isolation
 
 - Full document insertion pipeline
@@ -233,10 +233,10 @@ async def test_new_feature():
     print("\n" + "=" * 60)
     print("TEST N: Feature Name")
     print("=" * 60)
-    
+
     # Test implementation
     # ...
-    
+
     print("✅ PASSED: Feature Name")
     print(f"   Validation details")
 ```
