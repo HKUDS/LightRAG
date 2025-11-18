@@ -76,8 +76,8 @@ class OutputControl:
 
 
 @dataclass
-class TestResult:
-    """Test result data class"""
+class ExecutionResult:
+    """Test execution result data class"""
 
     name: str
     success: bool
@@ -90,14 +90,14 @@ class TestResult:
             self.timestamp = datetime.now().isoformat()
 
 
-class TestStats:
-    """Test statistics"""
+class ExecutionStats:
+    """Test execution statistics"""
 
     def __init__(self):
-        self.results: List[TestResult] = []
+        self.results: List[ExecutionResult] = []
         self.start_time = datetime.now()
 
-    def add_result(self, result: TestResult):
+    def add_result(self, result: ExecutionResult):
         self.results.append(result)
 
     def export_results(self, path: str = "test_results.json"):
@@ -274,7 +274,7 @@ def create_generate_request_data(
 
 
 # Global test statistics
-STATS = TestStats()
+STATS = ExecutionStats()
 
 
 def run_test(func: Callable, name: str) -> None:
@@ -287,10 +287,10 @@ def run_test(func: Callable, name: str) -> None:
     try:
         func()
         duration = time.time() - start_time
-        STATS.add_result(TestResult(name, True, duration))
+        STATS.add_result(ExecutionResult(name, True, duration))
     except Exception as e:
         duration = time.time() - start_time
-        STATS.add_result(TestResult(name, False, duration, str(e)))
+        STATS.add_result(ExecutionResult(name, False, duration, str(e)))
         raise
 
 
