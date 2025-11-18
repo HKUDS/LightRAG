@@ -449,7 +449,7 @@ async def initialize_rag():
 
 * If you want to use Hugging Face models, you only need to set LightRAG as follows:
 
-See `lightrag_hf_demo.py`
+See `lightrag_hf_demo.py` & `lightrag_sentence_transformers_demo.py` for complete examples.
 
 ```python
 # Initialize LightRAG with Hugging Face model
@@ -457,13 +457,12 @@ rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=hf_model_complete,  # Use Hugging Face model for text generation
     llm_model_name='meta-llama/Llama-3.1-8B-Instruct',  # Model name from Hugging Face
-    # Use Hugging Face embedding function
+    # Use Hugging Face Sentence Transformers embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        func=lambda texts: hf_embed(
+        func=lambda texts: sentence_transformers_embed(
             texts,
-            tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
-            embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+            model=SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         )
     ),
 )
@@ -633,6 +632,7 @@ To enhance retrieval quality, documents can be re-ranked based on a more effecti
 * **Cohere / vLLM**: `cohere_rerank`
 * **Jina AI**: `jina_rerank`
 * **Aliyun**: `ali_rerank`
+* **Sentence Transformers**: `sentence_transformers_rerank`
 
 You can inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. This will enable LightRAG's query function to re-order retrieved text blocks using the injected function. For detailed usage, please refer to the `examples/rerank_example.py` file.
 

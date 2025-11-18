@@ -290,6 +290,40 @@ async def ali_rerank(
     )
 
 
+async def sentence_transformers_rerank(
+    query: str,
+    documents: List[str],
+    top_n: Optional[int] = None,
+    api_key: Optional[str] = None,
+    model: str = "BAAI/bge-reranker-v2-m3",
+    base_url: Optional[str] = None,
+    extra_body: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using CrossEncoder from Sentence Transformers.
+
+    Args:
+        query: The search query
+        documents: List of strings to rerank
+        top_n: Number of top results to return
+        api_key: Unused
+        model: rerank model name
+        base_url: Unused
+        extra_body: Unused
+
+    Returns:
+        List of dictionary of ["index": int, "relevance_score": float]
+    """
+    from sentence_transformers import CrossEncoder
+
+    cross_encoder = CrossEncoder(model)
+    rankings = cross_encoder.rank(query=query, documents=documents, top_k=top_n)
+    return [
+        {"index": result["corpus_id"], "relevance_score": result["score"]}
+        for result in rankings
+    ]
+
+
 """Please run this test as a module:
 python -m lightrag.rerank
 """
@@ -350,5 +384,20 @@ if __name__ == "__main__":
                 print(f"Document: {docs[item['index']]}")
         except Exception as e:
             print(f"Aliyun Error: {e}")
+        
+        # Test Sentence Transformers rerank
+        try:
+            print("\n=== Sentence Transformers Rerank ===")
+            result = await sentence_transformers_rerank(
+                query=query,
+                documents=docs,
+                top_n=2,
+            )
+            print("Results:")
+            for item in result:
+                print(f"Index: {item['index']}, Score: {item['relevance_score']:.4f}")
+                print(f"Document: {docs[item['index']]}")
+        except Exception as e:
+            print(f"Sentence Transformers Error: {e}")
 
     asyncio.run(main())
