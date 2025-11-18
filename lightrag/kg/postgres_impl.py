@@ -33,7 +33,7 @@ from ..base import (
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
-from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock, get_storage_lock
+from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
 
@@ -1714,10 +1714,9 @@ class PGKVStorage(BaseKVStorage):
                 self.workspace = "default"
 
     async def finalize(self):
-        async with get_storage_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     ################ QUERY METHODS ################
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -2159,22 +2158,21 @@ class PGKVStorage(BaseKVStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        async with get_storage_lock():
-            try:
-                table_name = namespace_to_table_name(self.namespace)
-                if not table_name:
-                    return {
-                        "status": "error",
-                        "message": f"Unknown namespace: {self.namespace}",
-                    }
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
 
-                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                    table_name=table_name
-                )
-                await self.db.execute(drop_sql, {"workspace": self.workspace})
-                return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2209,10 +2207,9 @@ class PGVectorStorage(BaseVectorStorage):
                 self.workspace = "default"
 
     async def finalize(self):
-        async with get_storage_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     def _upsert_chunks(
         self, item: dict[str, Any], current_time: datetime.datetime
@@ -2548,22 +2545,21 @@ class PGVectorStorage(BaseVectorStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        async with get_storage_lock():
-            try:
-                table_name = namespace_to_table_name(self.namespace)
-                if not table_name:
-                    return {
-                        "status": "error",
-                        "message": f"Unknown namespace: {self.namespace}",
-                    }
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
 
-                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                    table_name=table_name
-                )
-                await self.db.execute(drop_sql, {"workspace": self.workspace})
-                return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2598,10 +2594,9 @@ class PGDocStatusStorage(DocStatusStorage):
                 self.workspace = "default"
 
     async def finalize(self):
-        async with get_storage_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
@@ -3176,22 +3171,21 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        async with get_storage_lock():
-            try:
-                table_name = namespace_to_table_name(self.namespace)
-                if not table_name:
-                    return {
-                        "status": "error",
-                        "message": f"Unknown namespace: {self.namespace}",
-                    }
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
 
-                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                    table_name=table_name
-                )
-                await self.db.execute(drop_sql, {"workspace": self.workspace})
-                return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 class PGGraphQueryException(Exception):
@@ -3323,10 +3317,9 @@ class PGGraphStorage(BaseGraphStorage):
                 )
 
     async def finalize(self):
-        async with get_graph_db_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -4726,21 +4719,20 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        async with get_graph_db_lock():
-            try:
-                drop_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                                MATCH (n)
-                                DETACH DELETE n
-                                $$) AS (result agtype)"""
+        try:
+            drop_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                            MATCH (n)
+                            DETACH DELETE n
+                            $$) AS (result agtype)"""
 
-                await self._query(drop_query, readonly=False)
-                return {
-                    "status": "success",
-                    "message": f"workspace '{self.workspace}' graph data dropped",
-                }
-            except Exception as e:
-                logger.error(f"[{self.workspace}] Error dropping graph: {e}")
-                return {"status": "error", "message": str(e)}
+            await self._query(drop_query, readonly=False)
+            return {
+                "status": "success",
+                "message": f"workspace '{self.workspace}' graph data dropped",
+            }
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error dropping graph: {e}")
+            return {"status": "error", "message": str(e)}
 
 
 # Note: Order matters! More specific namespaces (e.g., "full_entities") must come before
