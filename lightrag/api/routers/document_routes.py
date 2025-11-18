@@ -1133,20 +1133,10 @@ def _extract_xlsx(file_bytes: bytes) -> str:
         safe_title = escape_sheet_title(sheet.title)
         content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
 
-        # Two-pass approach to preserve column alignment without storing rows in memory:
-        # Pass 1: Scan to determine the maximum column width (memory-efficient)
-        max_columns = 0
-        for row in sheet.iter_rows(values_only=True):
-            last_nonempty_idx = -1
-            for idx, cell in enumerate(row):
-                # Check if cell has meaningful content (not None or empty string)
-                if cell is not None and str(cell).strip():
-                    last_nonempty_idx = idx
+        # Use sheet.max_column to get the maximum column width directly
+        max_columns = sheet.max_column if sheet.max_column else 0
 
-            if last_nonempty_idx >= 0:
-                max_columns = max(max_columns, last_nonempty_idx + 1)
-
-        # Pass 2: Extract rows with consistent width to preserve column alignment
+        # Extract rows with consistent width to preserve column alignment
         for row in sheet.iter_rows(values_only=True):
             row_parts = []
 
