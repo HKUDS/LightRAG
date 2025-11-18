@@ -47,10 +47,10 @@ from lightrag.kg.shared_storage import (
 # Test Configuration
 # =============================================================================
 
-# Stress test configuration (enable via environment variable)
-STRESS_TEST_MODE = os.getenv("LIGHTRAG_STRESS_TEST", "false").lower() == "true"
-PARALLEL_WORKERS = int(os.getenv("LIGHTRAG_TEST_WORKERS", "3"))
-KEEP_TEST_ARTIFACTS = os.getenv("LIGHTRAG_KEEP_ARTIFACTS", "false").lower() == "true"
+# Test configuration is handled via pytest fixtures in conftest.py
+# - Use CLI options: --keep-artifacts, --stress-test, --test-workers=N
+# - Or environment variables: LIGHTRAG_KEEP_ARTIFACTS, LIGHTRAG_STRESS_TEST, LIGHTRAG_TEST_WORKERS
+# Priority: CLI options > Environment variables > Default values
 
 
 # =============================================================================
@@ -204,7 +204,7 @@ async def test_pipeline_status_isolation():
 
 
 @pytest.mark.asyncio
-async def test_lock_mechanism():
+async def test_lock_mechanism(stress_test_mode, parallel_workers):
     """
     Test that the new keyed lock mechanism works correctly without deadlocks.
     Tests both parallel execution for different workspaces and serialization
@@ -221,7 +221,7 @@ async def test_lock_mechanism():
     print("\nTest 2.1: Different workspaces locks should be parallel")
 
     # Support stress testing with configurable number of workers
-    num_workers = PARALLEL_WORKERS if STRESS_TEST_MODE else 3
+    num_workers = parallel_workers if stress_test_mode else 3
     parallel_workload = [
         (f"ws_{chr(97+i)}", f"ws_{chr(97+i)}", "test_namespace")
         for i in range(num_workers)
@@ -773,7 +773,7 @@ async def test_empty_workspace_standardization():
 
 
 @pytest.mark.asyncio
-async def test_json_kv_storage_workspace_isolation():
+async def test_json_kv_storage_workspace_isolation(keep_test_artifacts):
     """
     Integration test: Verify JsonKVStorage properly isolates data between workspaces.
     Creates two JsonKVStorage instances with different workspaces, writes different data,
@@ -927,11 +927,11 @@ async def test_json_kv_storage_workspace_isolation():
         print(f"   Workspace directories correctly created: {ws1_dir} and {ws2_dir}")
 
     finally:
-        # Cleanup test directory (unless KEEP_TEST_ARTIFACTS is set)
-        if os.path.exists(test_dir) and not KEEP_TEST_ARTIFACTS:
+        # Cleanup test directory (unless keep_test_artifacts is set)
+        if os.path.exists(test_dir) and not keep_test_artifacts:
             shutil.rmtree(test_dir)
             print(f"\n   Cleaned up test directory: {test_dir}")
-        elif KEEP_TEST_ARTIFACTS:
+        elif keep_test_artifacts:
             print(f"\n   Kept test directory for inspection: {test_dir}")
 
 
@@ -941,7 +941,7 @@ async def test_json_kv_storage_workspace_isolation():
 
 
 @pytest.mark.asyncio
-async def test_lightrag_end_to_end_workspace_isolation():
+async def test_lightrag_end_to_end_workspace_isolation(keep_test_artifacts):
     """
     End-to-end test: Create two LightRAG instances with different workspaces,
     insert different data, and verify file separation.
@@ -972,7 +972,7 @@ async def test_lightrag_end_to_end_workspace_isolation():
             ) -> str:
                 # Add coroutine switching to simulate async I/O and allow concurrent execution
                 await asyncio.sleep(0)
-                
+
                 # Return different responses based on workspace
                 # Format: entity<|#|>entity_name<|#|>entity_type<|#|>entity_description
                 # Format: relation<|#|>source_entity<|#|>target_entity<|#|>keywords<|#|>description
@@ -1055,11 +1055,10 @@ relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Le
         print("   Starting concurrent insert operations...")
         start_time = time.time()
         await asyncio.gather(
-            rag1.ainsert(text_for_project_a),
-            rag2.ainsert(text_for_project_b)
+            rag1.ainsert(text_for_project_a), rag2.ainsert(text_for_project_b)
         )
         elapsed_time = time.time() - start_time
-        
+
         print(f"   Inserted to project_a: {len(text_for_project_a)} chars (concurrent)")
         print(f"   Inserted to project_b: {len(text_for_project_b)} chars (concurrent)")
         print(f"   Total concurrent execution time: {elapsed_time:.3f}s")
@@ -1163,9 +1162,9 @@ relation<|#|>Deep Learning<|#|>Neural Networks<|#|>uses, composed of<|#|>Deep Le
         print("\n   ✓ Test complete - workspace isolation verified at E2E level")
 
     finally:
-        # Cleanup test directory (unless KEEP_TEST_ARTIFACTS is set)
-        if os.path.exists(test_dir) and not KEEP_TEST_ARTIFACTS:
+        # Cleanup test directory (unless keep_test_artifacts is set)
+        if os.path.exists(test_dir) and not keep_test_artifacts:
             shutil.rmtree(test_dir)
             print(f"\n   Cleaned up test directory: {test_dir}")
-        elif KEEP_TEST_ARTIFACTS:
+        elif keep_test_artifacts:
             print(f"\n   Kept test directory for inspection: {test_dir}")
