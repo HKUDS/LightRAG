@@ -1005,7 +1005,7 @@ def _extract_docx(file_bytes: bytes) -> str:
                 in_table = False
 
             paragraph = Paragraph(element, doc)
-            text = paragraph.text.strip()
+            text = paragraph.text
             # Always append to preserve document spacing (including blank paragraphs)
             content_parts.append(text)
 
@@ -1020,7 +1020,7 @@ def _extract_docx(file_bytes: bytes) -> str:
             for row in table.rows:
                 row_text = []
                 for cell in row.cells:
-                    cell_text = cell.text.strip()
+                    cell_text = cell.text
                     # Always append cell text to preserve column structure
                     row_text.append(cell_text)
                 # Only add row if at least one cell has content
