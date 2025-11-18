@@ -370,6 +370,19 @@ class EmbeddingFunc:
     send_dimensions: bool = (
         False  # Control whether to send embedding_dim to the function
     )
+    model_name: str | None = None
+
+    def get_model_identifier(self) -> str:
+        """Generates model identifier for collection/table suffix.
+
+        Returns:
+            str: Format "{model_name}_{dim}d", e.g. "text_embedding_3_large_3072d"
+                 If model_name is not specified, returns "unknown_{dim}d"
+        """
+        model_part = self.model_name if self.model_name else "unknown"
+        # Clean model name: remove special chars, convert to lower, replace - with _
+        safe_model_name = re.sub(r'[^a-zA-Z0-9_]', '_', model_part.lower())
+        return f"{safe_model_name}_{self.embedding_dim}d"
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
