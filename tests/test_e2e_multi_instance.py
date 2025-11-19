@@ -265,9 +265,6 @@ async def test_legacy_migration_postgres(
                 **pg_config,
                 "cosine_better_than_threshold": 0.8
             },
-            kv_storage_cls_kwargs=pg_config,
-            graph_storage_cls_kwargs=pg_config,
-            doc_status_storage_cls_kwargs=pg_config,
         )
 
         print("🔄 Initializing LightRAG (triggers migration)...")
@@ -496,9 +493,6 @@ async def test_multi_instance_postgres(
             **pg_config,
             "cosine_better_than_threshold": 0.8
         },
-        kv_storage_cls_kwargs=pg_config,
-        graph_storage_cls_kwargs=pg_config,
-        doc_status_storage_cls_kwargs=pg_config,
     )
 
     await rag_a.initialize_storages()
@@ -520,9 +514,6 @@ async def test_multi_instance_postgres(
             **pg_config,
             "cosine_better_than_threshold": 0.8
         },
-        kv_storage_cls_kwargs=pg_config,
-        graph_storage_cls_kwargs=pg_config,
-        doc_status_storage_cls_kwargs=pg_config,
     )
 
     await rag_b.initialize_storages()
