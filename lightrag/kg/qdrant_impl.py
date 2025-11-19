@@ -90,7 +90,9 @@ def _find_legacy_collection(
     # Try multiple naming patterns for backward compatibility
     # More specific names (with workspace) have higher priority
     candidates = [
-        f"{workspace}_{namespace}" if workspace else None,  # Old format with workspace - most specific
+        f"{workspace}_{namespace}"
+        if workspace
+        else None,  # Old format with workspace - most specific
         f"lightrag_vdb_{namespace}",  # New legacy format
         namespace,  # Old format without workspace - most generic
     ]
