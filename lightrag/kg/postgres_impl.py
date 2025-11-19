@@ -1163,23 +1163,9 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to batch check/create indexes: {e}")
 
-        # Create vector indexs
-        if self.vector_index_type:
-            logger.info(
-                f"PostgreSQL, Create vector indexs, type: {self.vector_index_type}"
-            )
-            try:
-                if self.vector_index_type in ["HNSW", "IVFFLAT", "VCHORDRQ"]:
-                    await self._create_vector_indexes()
-                else:
-                    logger.warning(
-                        "Doesn't support this vector index type: {self.vector_index_type}. "
-                        "Supported types: HNSW, IVFFLAT, VCHORDRQ"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"PostgreSQL, Failed to create vector index, type: {self.vector_index_type}, Got: {e}"
-                )
+        # NOTE: Vector index creation moved to PGVectorStorage.setup_table()
+        # Each vector storage instance creates its own index with correct embedding_dim
+
         # After all tables are created, attempt to migrate timestamp fields
         try:
             await self._migrate_timestamp_columns()
@@ -1381,64 +1367,72 @@ class PostgreSQLDB:
             except Exception as e:
                 logger.warning(f"Failed to create index {index['name']}: {e}")
 
-    async def _create_vector_indexes(self):
-        vdb_tables = [
-            "LIGHTRAG_VDB_CHUNKS",
-            "LIGHTRAG_VDB_ENTITY",
-            "LIGHTRAG_VDB_RELATION",
-        ]
+    async def _create_vector_index(self, table_name: str, embedding_dim: int):
+        """
+        Create vector index for a specific table.
+
+        Args:
+            table_name: Name of the table to create index on
+            embedding_dim: Embedding dimension for the vector column
+        """
+        if not self.vector_index_type:
+            return
 
         create_sql = {
             "HNSW": f"""
                 CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING hnsw (content_vector vector_cosine_ops)
+                ON {{table_name}} USING hnsw (content_vector vector_cosine_ops)
                 WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
             """,
             "IVFFLAT": f"""
                 CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING ivfflat (content_vector vector_cosine_ops)
+                ON {{table_name}} USING ivfflat (content_vector vector_cosine_ops)
                 WITH (lists = {self.ivfflat_lists})
             """,
             "VCHORDRQ": f"""
                 CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING vchordrq (content_vector vector_cosine_ops)
+                ON {{table_name}} USING vchordrq (content_vector vector_cosine_ops)
                 {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
             """,
         }
 
-        embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
-        for k in vdb_tables:
-            vector_index_name = (
-                f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+        if self.vector_index_type not in create_sql:
+            logger.warning(
+                f"Unsupported vector index type: {self.vector_index_type}. "
+                "Supported types: HNSW, IVFFLAT, VCHORDRQ"
             )
-            check_vector_index_sql = f"""
-                    SELECT 1 FROM pg_indexes
-                    WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
-                """
-            try:
-                vector_index_exists = await self.query(check_vector_index_sql)
-                if not vector_index_exists:
-                    # Only set vector dimension when index doesn't exist
-                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
-                    await self.execute(alter_sql)
-                    logger.debug(f"Ensured vector dimension for {k}")
-                    logger.info(
-                        f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
+            return
+
+        k = table_name
+        vector_index_name = f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+        check_vector_index_sql = f"""
+            SELECT 1 FROM pg_indexes
+            WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
+        """
+        try:
+            vector_index_exists = await self.query(check_vector_index_sql)
+            if not vector_index_exists:
+                # Only set vector dimension when index doesn't exist
+                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                await self.execute(alter_sql)
+                logger.debug(f"Ensured vector dimension for {k}")
+                logger.info(
+                    f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
+                )
+                await self.execute(
+                    create_sql[self.vector_index_type].format(
+                        vector_index_name=vector_index_name, table_name=k
                     )
-                    await self.execute(
-                        create_sql[self.vector_index_type].format(
-                            vector_index_name=vector_index_name, k=k
-                        )
-                    )
-                    logger.info(
-                        f"Successfully created vector index {vector_index_name} on table {k}"
-                    )
-                else:
-                    logger.info(
-                        f"{self.vector_index_type} vector index {vector_index_name} already exists on table {k}"
-                    )
-            except Exception as e:
-                logger.error(f"Failed to create vector index on table {k}, Got: {e}")
+                )
+                logger.info(
+                    f"Successfully created vector index {vector_index_name} on table {k}"
+                )
+            else:
+                logger.info(
+                    f"{self.vector_index_type} vector index {vector_index_name} already exists on table {k}"
+                )
+        except Exception as e:
+            logger.error(f"Failed to create vector index on table {k}, Got: {e}")
 
     async def query(
         self,
@@ -2283,11 +2277,15 @@ class PGVectorStorage(BaseVectorStorage):
                 f"PostgreSQL: Legacy table '{legacy_table_name}' still exists. "
                 f"Remove it if migration is complete."
             )
+            # Ensure vector index exists even if migration was not performed
+            await db._create_vector_index(table_name, embedding_dim)
             return
 
         # Case 2: Only new table exists - Already migrated or newly created
         if new_table_exists:
             logger.debug(f"PostgreSQL: Table '{table_name}' already exists")
+            # Ensure vector index exists with correct embedding dimension
+            await db._create_vector_index(table_name, embedding_dim)
             return
 
         # Case 3: Neither exists - Create new table
@@ -2295,6 +2293,8 @@ class PGVectorStorage(BaseVectorStorage):
             logger.info(f"PostgreSQL: Creating new table '{table_name}'")
             await _pg_create_table(db, table_name, base_table, embedding_dim)
             logger.info(f"PostgreSQL: Table '{table_name}' created successfully")
+            # Create vector index with correct embedding dimension
+            await db._create_vector_index(table_name, embedding_dim)
             return
 
         # Case 4: Only legacy exists - Migrate data
@@ -2312,6 +2312,8 @@ class PGVectorStorage(BaseVectorStorage):
             if legacy_count == 0:
                 logger.info("PostgreSQL: Legacy table is empty, skipping migration")
                 await _pg_create_table(db, table_name, base_table, embedding_dim)
+                # Create vector index with correct embedding dimension
+                await db._create_vector_index(table_name, embedding_dim)
                 return
 
             # Create new table first
@@ -2379,6 +2381,9 @@ class PGVectorStorage(BaseVectorStorage):
             logger.info(
                 f"PostgreSQL: Migration from '{legacy_table_name}' to '{table_name}' completed successfully"
             )
+
+            # Create vector index after successful migration
+            await db._create_vector_index(table_name, embedding_dim)
 
         except PostgreSQLMigrationError:
             # Re-raise migration errors without wrapping
