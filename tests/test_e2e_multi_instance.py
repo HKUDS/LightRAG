@@ -259,7 +259,7 @@ async def test_legacy_migration_postgres(
             tokenizer=mock_tokenizer,
             kv_storage="PGKVStorage",
             vector_storage="PGVectorStorage",
-            graph_storage="PGGraphStorage",
+            # Use default NetworkXStorage for graph storage (AGE extension not available in CI)
             doc_status_storage="PGDocStatusStorage",
             vector_db_storage_cls_kwargs={
                 **pg_config,
@@ -487,7 +487,7 @@ async def test_multi_instance_postgres(
         tokenizer=mock_tokenizer,
         kv_storage="PGKVStorage",
         vector_storage="PGVectorStorage",
-        graph_storage="PGGraphStorage",
+        # Use default NetworkXStorage for graph storage (AGE extension not available in CI)
         doc_status_storage="PGDocStatusStorage",
         vector_db_storage_cls_kwargs={
             **pg_config,
@@ -508,7 +508,7 @@ async def test_multi_instance_postgres(
         tokenizer=mock_tokenizer,
         kv_storage="PGKVStorage",
         vector_storage="PGVectorStorage",
-        graph_storage="PGGraphStorage",
+        # Use default NetworkXStorage for graph storage (AGE extension not available in CI)
         doc_status_storage="PGDocStatusStorage",
         vector_db_storage_cls_kwargs={
             **pg_config,
