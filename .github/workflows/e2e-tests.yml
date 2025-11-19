@@ -73,7 +73,7 @@ jobs:
         POSTGRES_PORT: 5432
         POSTGRES_USER: lightrag
         POSTGRES_PASSWORD: lightrag_test_password
-        POSTGRES_DB: lightrag_test
+        POSTGRES_DATABASE: lightrag_test
       run: |
         pytest tests/test_e2e_multi_instance.py -k "postgres" -v --tb=short -s
       timeout-minutes: 20
