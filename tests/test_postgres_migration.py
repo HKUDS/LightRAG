@@ -22,8 +22,25 @@ def mock_pg_db():
             return []  # Return empty list for multirows
         return {"exists": False, "count": 0}
 
+    # Strict mock for execute that validates parameter types
+    async def mock_execute(sql, *args, **kwargs):
+        """
+        Strict mock that mimics AsyncPG behavior:
+        - Positional parameters must be passed as separate arguments (*args)
+        - Raises TypeError if a dict/list is passed as a single argument
+        """
+        if args and len(args) == 1:
+            # Check if single argument is a dict or list (wrong usage)
+            if isinstance(args[0], (dict, list)):
+                raise TypeError(
+                    "AsyncPG execute() expects positional parameters as separate arguments, "
+                    f"not as {type(args[0]).__name__}. Use: execute(query, val1, val2, ...) "
+                    "or execute(query, *values)"
+                )
+        return None
+
     db.query = AsyncMock(side_effect=mock_query)
-    db.execute = AsyncMock()
+    db.execute = AsyncMock(side_effect=mock_execute)
 
     return db
 

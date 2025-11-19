@@ -23,7 +23,13 @@ import shutil
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.postgres_impl import PostgreSQLDB
-from qdrant_client import QdrantClient
+
+# Conditional import for E2E dependencies
+# This prevents offline tests from failing due to missing E2E dependencies
+qdrant_client = pytest.importorskip(
+    "qdrant_client", reason="Qdrant client required for E2E tests"
+)
+QdrantClient = qdrant_client.QdrantClient
 
 
 # Configuration fixtures
