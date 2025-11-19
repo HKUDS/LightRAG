@@ -226,7 +226,18 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         Returns:
             str: Suffix string, e.g. "text_embedding_3_large_3072d"
         """
-        return self.embedding_func.get_model_identifier()
+        # Try to get model identifier from the embedding function
+        # If it's a wrapped function (doesn't have get_model_identifier),
+        # fallback to the original embedding_func from global_config
+        if hasattr(self.embedding_func, 'get_model_identifier'):
+            return self.embedding_func.get_model_identifier()
+        elif 'embedding_func' in self.global_config:
+            original_embedding_func = self.global_config['embedding_func']
+            if hasattr(original_embedding_func, 'get_model_identifier'):
+                return original_embedding_func.get_model_identifier()
+
+        # Fallback: no model identifier available
+        return ""
 
     def _get_legacy_collection_name(self) -> str:
         """Get legacy collection/table name (without suffix).

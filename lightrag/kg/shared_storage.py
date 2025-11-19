@@ -207,13 +207,13 @@ class UnifiedLock(Generic[T]):
                     self._lock.release()
                 else:
                     self._lock.release()
-                
+
                 direct_log(
                     f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
                     level="INFO",
                     enable_output=self._enable_logging,
                 )
-            main_lock_released = True
+                main_lock_released = True
 
             # Then release async lock if in multiprocess mode
             if not self._is_async and self._async_lock is not None:
