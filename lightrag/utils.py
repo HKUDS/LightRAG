@@ -1,6 +1,8 @@
 from __future__ import annotations
 import weakref
 
+import sys
+
 import asyncio
 import html
 import csv
@@ -40,6 +42,35 @@ from lightrag.constants import (
     SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
 
+# Precompile regex pattern for JSON sanitization (module-level, compiled once)
+_SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
+
+
+class SafeStreamHandler(logging.StreamHandler):
+    """StreamHandler that gracefully handles closed streams during shutdown.
+
+    This handler prevents "ValueError: I/O operation on closed file" errors
+    that can occur when pytest or other test frameworks close stdout/stderr
+    before Python's logging cleanup runs.
+    """
+
+    def flush(self):
+        """Flush the stream, ignoring errors if the stream is closed."""
+        try:
+            super().flush()
+        except (ValueError, OSError):
+            # Stream is closed or otherwise unavailable, silently ignore
+            pass
+
+    def close(self):
+        """Close the handler, ignoring errors if the stream is already closed."""
+        try:
+            super().close()
+        except (ValueError, OSError):
+            # Stream is closed or otherwise unavailable, silently ignore
+            pass
+
+
 # Initialize logger with basic configuration
 logger = logging.getLogger("lightrag")
 logger.propagate = False  # prevent log message send to root logger
@@ -47,7 +78,7 @@ logger.setLevel(logging.INFO)
 
 # Add console handler if no handlers exist
 if not logger.handlers:
-    console_handler = logging.StreamHandler()
+    console_handler = SafeStreamHandler()
     console_handler.setLevel(logging.INFO)
     formatter = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(formatter)
@@ -55,6 +86,33 @@ if not logger.handlers:
 
 # Set httpx logging level to WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def _patch_ascii_colors_console_handler() -> None:
+    """Prevent ascii_colors from printing flush errors during interpreter exit."""
+
+    try:
+        from ascii_colors import ConsoleHandler
+    except ImportError:
+        return
+
+    if getattr(ConsoleHandler, "_lightrag_patched", False):
+        return
+
+    original_handle_error = ConsoleHandler.handle_error
+
+    def _safe_handle_error(self, message: str) -> None:  # type: ignore[override]
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (ValueError, OSError) and "close" in message.lower():
+            return
+        original_handle_error(self, message)
+
+    ConsoleHandler.handle_error = _safe_handle_error  # type: ignore[assignment]
+    ConsoleHandler._lightrag_patched = True  # type: ignore[attr-defined]
+
+
+_patch_ascii_colors_console_handler()
+
 
 # Global import for pypinyin with startup-time logging
 try:
@@ -283,8 +341,8 @@ def setup_logger(
     logger_instance.handlers = []  # Clear existing handlers
     logger_instance.propagate = False
 
-    # Add console handler
-    console_handler = logging.StreamHandler()
+    # Add console handler with safe stream handling
+    console_handler = SafeStreamHandler()
     console_handler.setFormatter(simple_formatter)
     console_handler.setLevel(level)
     logger_instance.addHandler(console_handler)
@@ -350,9 +408,20 @@ class TaskState:
 
 @dataclass
 class EmbeddingFunc:
+    """Embedding function wrapper with dimension validation
+    This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
+    This class should not be wrapped multiple times.
+
+    Args:
+        embedding_dim: Expected dimension of the embeddings
+        func: The actual embedding function to wrap
+        max_token_size: Optional token limit for the embedding model
+        send_dimensions: Whether to inject embedding_dim as a keyword argument
+    """
+
     embedding_dim: int
     func: callable
-    max_token_size: int | None = None  # deprecated keep it for compatible only
+    max_token_size: int | None = None  # Token limit for the embedding model
     send_dimensions: bool = (
         False  # Control whether to send embedding_dim to the function
     )
@@ -376,7 +445,32 @@ class EmbeddingFunc:
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
 
-        return await self.func(*args, **kwargs)
+        # Call the actual embedding function
+        result = await self.func(*args, **kwargs)
+
+        # Validate embedding dimensions using total element count
+        total_elements = result.size  # Total number of elements in the numpy array
+        expected_dim = self.embedding_dim
+
+        # Check if total elements can be evenly divided by embedding_dim
+        if total_elements % expected_dim != 0:
+            raise ValueError(
+                f"Embedding dimension mismatch detected: "
+                f"total elements ({total_elements}) cannot be evenly divided by "
+                f"expected dimension ({expected_dim}). "
+            )
+
+        # Optional: Verify vector count matches input text count
+        actual_vectors = total_elements // expected_dim
+        if args and isinstance(args[0], (list, tuple)):
+            expected_vectors = len(args[0])
+            if actual_vectors != expected_vectors:
+                raise ValueError(
+                    f"Vector count mismatch: "
+                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+                )
+
+        return result
 
 
 def compute_args_hash(*args: Any) -> str:
@@ -930,70 +1024,24 @@ def load_json(file_name):
 def _sanitize_string_for_json(text: str) -> str:
     """Remove characters that cannot be encoded in UTF-8 for JSON serialization.
 
-    This is a simpler sanitizer specifically for JSON that directly removes
-    problematic characters without attempting to encode first.
+    Uses regex for optimal performance with zero-copy optimization for clean strings.
+    Fast detection path for clean strings (99% of cases) with efficient removal for dirty strings.
 
     Args:
         text: String to sanitize
 
     Returns:
-        Sanitized string safe for UTF-8 encoding in JSON
+        Original string if clean (zero-copy), sanitized string if dirty
     """
     if not text:
         return text
 
-    # Directly filter out problematic characters without pre-validation
-    sanitized = ""
-    for char in text:
-        code_point = ord(char)
-        # Skip surrogate characters (U+D800 to U+DFFF) - main cause of encoding errors
-        if 0xD800 <= code_point <= 0xDFFF:
-            continue
-        # Skip other non-characters in Unicode
-        elif code_point == 0xFFFE or code_point == 0xFFFF:
-            continue
-        else:
-            sanitized += char
+    # Fast path: Check if sanitization is needed using C-level regex search
+    if not _SURROGATE_PATTERN.search(text):
+        return text  # Zero-copy for clean strings - most common case
 
-    return sanitized
-
-
-def _sanitize_json_data(data: Any) -> Any:
-    """Recursively sanitize all string values in data structure for safe UTF-8 encoding
-
-    DEPRECATED: This function creates a deep copy of the data which can be memory-intensive.
-    For new code, prefer using write_json with SanitizingJSONEncoder which sanitizes during
-    serialization without creating copies.
-
-    Handles all JSON-serializable types including:
-    - Dictionary keys and values
-    - Lists and tuples (preserves type)
-    - Nested structures
-    - Strings at any level
-
-    Args:
-        data: Data to sanitize (dict, list, tuple, str, or other types)
-
-    Returns:
-        Sanitized data with all strings cleaned of problematic characters
-    """
-    if isinstance(data, dict):
-        # Sanitize both keys and values
-        return {
-            _sanitize_string_for_json(k)
-            if isinstance(k, str)
-            else k: _sanitize_json_data(v)
-            for k, v in data.items()
-        }
-    elif isinstance(data, (list, tuple)):
-        # Handle both lists and tuples, preserve original type
-        sanitized = [_sanitize_json_data(item) for item in data]
-        return type(data)(sanitized)
-    elif isinstance(data, str):
-        return _sanitize_string_for_json(data)
-    else:
-        # Numbers, booleans, None, etc. - return as-is
-        return data
+    # Slow path: Remove problematic characters using C-level regex substitution
+    return _SURROGATE_PATTERN.sub("", text)
 
 
 class SanitizingJSONEncoder(json.JSONEncoder):
