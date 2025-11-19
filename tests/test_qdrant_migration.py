@@ -60,9 +60,9 @@ async def test_qdrant_collection_naming(mock_qdrant_client, mock_embedding_func)
     expected_suffix = "test_model_768d"
     assert expected_suffix in storage.final_namespace
     assert storage.final_namespace == f"lightrag_vdb_chunks_{expected_suffix}"
-    
-    # Verify legacy namespace
-    assert storage.legacy_namespace == "test_ws_chunks"
+
+    # Verify legacy namespace (should not include workspace, just the base collection name)
+    assert storage.legacy_namespace == "lightrag_vdb_chunks"
 
 @pytest.mark.asyncio
 async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func):

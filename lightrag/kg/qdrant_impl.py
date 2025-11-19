@@ -292,15 +292,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # Generate model suffix
         model_suffix = self._generate_collection_suffix()
 
-        # Get legacy namespace for data migration from old version
-        # Note: Legacy namespace logic is preserved for backward compatibility
-        if effective_workspace:
-            self.legacy_namespace = f"{effective_workspace}_{self.namespace}"
-        else:
-            self.legacy_namespace = self.namespace
+        # Legacy collection name (without model suffix, for migration)
+        # This matches the old naming scheme before model isolation was implemented
+        # Example: "lightrag_vdb_chunks" (without model suffix)
+        self.legacy_namespace = f"lightrag_vdb_{self.namespace}"
 
-        # Use a shared collection with payload-based partitioning (Qdrant's recommended approach)
-        # New naming scheme: lightrag_vdb_{namespace}_{model}_{dim}d
+        # New naming scheme with model isolation
+        # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
         self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
         
         logger.info(
