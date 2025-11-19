@@ -2335,10 +2335,10 @@ class PGVectorStorage(BaseVectorStorage):
 
                 # Insert batch into new table
                 for row in rows:
-                    # Get column names and values as dictionary (execute expects dict)
+                    # Get column names and values as dictionary
                     row_dict = dict(row)
 
-                    # Build insert query with named parameters
+                    # Build insert query with positional parameters
                     columns = list(row_dict.keys())
                     columns_str = ", ".join(columns)
                     placeholders = ", ".join([f"${i+1}" for i in range(len(columns))])
@@ -2348,7 +2348,9 @@ class PGVectorStorage(BaseVectorStorage):
                         ON CONFLICT DO NOTHING
                     """
 
-                    await db.execute(insert_query, row_dict)
+                    # AsyncPG requires positional parameters as a list in order
+                    values = [row_dict[col] for col in columns]
+                    await db.execute(insert_query, *values)
 
                 migrated_count += len(rows)
                 logger.info(
