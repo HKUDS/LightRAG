@@ -1,0 +1,21 @@
+# 三语言实体提取器依赖
+# 用于支持中文、英文、瑞典语实体提取
+
+# spaCy - 用于英文和瑞典语
+spacy>=3.7.0
+
+# HanLP - 用于中文
+hanlp>=2.1.0
+
+# 安装说明：
+# 1. 安装基础依赖
+#    pip install -r requirements-trilingual.txt
+#
+# 2. 下载 spaCy 语言模型
+#    python -m spacy download en_core_web_trf  # 英文 Transformer 模型 (~440 MB)
+#    python -m spacy download sv_core_news_lg  # 瑞典语大模型 (~545 MB)
+#
+# 3. HanLP 模型会在首次使用时自动下载 (~400 MB)
+#
+# 总磁盘空间需求: ~1.4 GB
+# 内存占用（按需加载）: ~1.5-1.8 GB（同时只加载一个语言模型）
