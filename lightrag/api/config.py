@@ -346,6 +346,9 @@ def parse_args() -> argparse.Namespace:
     # Get MAX_GRAPH_NODES from environment
     args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
 
+    # Get ENTITY_EXTRACT_MAX_GLEANING from environment
+    args.entity_extract_max_gleaning = get_env_value("MAX_GLEANING", 1, int)
+
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"

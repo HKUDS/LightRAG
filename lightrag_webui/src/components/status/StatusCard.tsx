@@ -22,6 +22,13 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
           <span>cosine {status.configuration.cosine_threshold} / rerank_score {status.configuration.min_rerank_score} / max_related {status.configuration.related_chunk_number}</span>
           <span>{t('graphPanel.statusCard.maxParallelInsert')}:</span>
           <span>{status.configuration.max_parallel_insert}</span>
+          <span>{t('graphPanel.statusCard.entityExtractGleaning')}:</span>
+          <span>
+            {status.configuration.entity_extract_max_gleaning === 0
+              ? t('graphPanel.statusCard.gleaningDisabled')
+              : `${status.configuration.entity_extract_max_gleaning} ${t('graphPanel.statusCard.gleaningRounds')}`
+            }
+          </span>
         </div>
       </div>
 

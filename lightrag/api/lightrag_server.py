@@ -1021,6 +1021,7 @@ def create_app(args):
             rerank_model_func=rerank_model_func,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
+            entity_extract_max_gleaning=args.entity_extract_max_gleaning,
             addon_params={
                 "language": args.summary_language,
                 "entity_types": args.entity_types,
@@ -1195,6 +1196,7 @@ def create_app(args):
                     "max_async": args.max_async,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "entity_extract_max_gleaning": args.entity_extract_max_gleaning,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
