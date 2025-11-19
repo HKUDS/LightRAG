@@ -2231,7 +2231,16 @@ class PGVectorStorage(BaseVectorStorage):
             raise ValueError(f"Unknown namespace: {self.namespace}")
 
         # New table name (with suffix)
-        self.table_name = f"{base_table}_{self.model_suffix}"
+        # Ensure model_suffix is not empty before appending
+        if self.model_suffix:
+            self.table_name = f"{base_table}_{self.model_suffix}"
+        else:
+            # Fallback: use base table name if model_suffix is unavailable
+            self.table_name = base_table
+            logger.warning(
+                f"Model suffix unavailable, using base table name '{base_table}'. "
+                f"Ensure embedding_func has model_name for proper model isolation."
+            )
 
         # Legacy table name (without suffix, for migration)
         self.legacy_table_name = base_table
