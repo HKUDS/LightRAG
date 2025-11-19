@@ -287,19 +287,27 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
+        self.effective_workspace = effective_workspace or DEFAULT_WORKSPACE
+
+        # Generate model suffix
+        model_suffix = self._generate_collection_suffix()
+
         # Get legacy namespace for data migration from old version
+        # Note: Legacy namespace logic is preserved for backward compatibility
         if effective_workspace:
             self.legacy_namespace = f"{effective_workspace}_{self.namespace}"
         else:
             self.legacy_namespace = self.namespace
 
-        self.effective_workspace = effective_workspace or DEFAULT_WORKSPACE
-
         # Use a shared collection with payload-based partitioning (Qdrant's recommended approach)
-        # Ref: https://qdrant.tech/documentation/guides/multiple-partitions/
-        self.final_namespace = f"lightrag_vdb_{self.namespace}"
-        logger.debug(
-            f"Using shared collection '{self.final_namespace}' with workspace '{self.effective_workspace}' for payload-based partitioning"
+        # New naming scheme: lightrag_vdb_{namespace}_{model}_{dim}d
+        self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
+        
+        logger.info(
+            f"Qdrant collection naming: "
+            f"new='{self.final_namespace}', "
+            f"legacy='{self.legacy_namespace}', "
+            f"model_suffix='{model_suffix}'"
         )
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -314,6 +322,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._initialized = False
+
+    def _get_legacy_collection_name(self) -> str:
+        return self.legacy_namespace
+
+    def _get_new_collection_name(self) -> str:
+        return self.final_namespace
 
     async def initialize(self):
         """Initialize Qdrant collection"""
@@ -353,6 +367,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         m=0,
                     ),
                 )
+
+                # Initialize max batch size from config
+                self._max_batch_size = self.global_config["embedding_batch_num"]
 
                 self._initialized = True
                 logger.info(

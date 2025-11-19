@@ -164,16 +164,23 @@ class UnifiedLock(Generic[T]):
                 )
 
             # Then acquire the main lock
-            if self._is_async:
-                await self._lock.acquire()
-            else:
-                self._lock.acquire()
+            if self._lock is not None:
+                if self._is_async:
+                    await self._lock.acquire()
+                else:
+                    self._lock.acquire()
 
-            direct_log(
-                f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
-                level="INFO",
-                enable_output=self._enable_logging,
-            )
+                direct_log(
+                    f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
+                    level="INFO",
+                    enable_output=self._enable_logging,
+                )
+            else:
+                 direct_log(
+                    f"== Lock == Process {self._pid}: Main lock {self._name} is None (async={self._is_async})",
+                    level="WARNING",
+                    enable_output=self._enable_logging,
+                )
             return self
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired
@@ -195,17 +202,18 @@ class UnifiedLock(Generic[T]):
         main_lock_released = False
         try:
             # Release main lock first
-            if self._is_async:
-                self._lock.release()
-            else:
-                self._lock.release()
+            if self._lock is not None:
+                if self._is_async:
+                    self._lock.release()
+                else:
+                    self._lock.release()
+                
+                direct_log(
+                    f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
+                    level="INFO",
+                    enable_output=self._enable_logging,
+                )
             main_lock_released = True
-
-            direct_log(
-                f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
-                level="INFO",
-                enable_output=self._enable_logging,
-            )
 
             # Then release async lock if in multiprocess mode
             if not self._is_async and self._async_lock is not None:
