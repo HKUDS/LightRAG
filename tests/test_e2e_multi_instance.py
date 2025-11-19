@@ -896,17 +896,15 @@ async def test_backward_compat_old_workspace_naming_qdrant(
         )
 
         # Important: Use "prod" workspace to match old naming
-        updated_config = {**qdrant_config}
-        updated_config["workspace"] = "prod"
-
         rag = LightRAG(
             working_dir=temp_dir,
+            workspace="prod",  # Pass workspace to LightRAG instance
             llm_model_func=mock_llm_func,
             embedding_func=embedding_func,
             tokenizer=mock_tokenizer,
             vector_storage="QdrantVectorDBStorage",
             vector_db_storage_cls_kwargs={
-                **updated_config,
+                **qdrant_config,
                 "cosine_better_than_threshold": 0.8,
             },
         )
@@ -1016,13 +1014,13 @@ async def test_workspace_isolation_e2e_qdrant(
     # Instance A: workspace_a
     rag_a = LightRAG(
         working_dir=temp_working_dirs["workspace_a"],
+        workspace="workspace_a",  # Pass workspace to LightRAG instance
         llm_model_func=mock_llm_func,
         embedding_func=embedding_func,
         tokenizer=mock_tokenizer,
         vector_storage="QdrantVectorDBStorage",
         vector_db_storage_cls_kwargs={
             **qdrant_config,
-            "workspace": "workspace_a",
             "cosine_better_than_threshold": 0.8,
         },
     )
@@ -1030,13 +1028,13 @@ async def test_workspace_isolation_e2e_qdrant(
     # Instance B: workspace_b
     rag_b = LightRAG(
         working_dir=temp_working_dirs["workspace_b"],
+        workspace="workspace_b",  # Pass workspace to LightRAG instance
         llm_model_func=mock_llm_func,
         embedding_func=embedding_func,
         tokenizer=mock_tokenizer,
         vector_storage="QdrantVectorDBStorage",
         vector_db_storage_cls_kwargs={
             **qdrant_config,
-            "workspace": "workspace_b",
             "cosine_better_than_threshold": 0.8,
         },
     )
