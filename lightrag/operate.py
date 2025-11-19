@@ -8,7 +8,10 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
-from lightrag.exceptions import PipelineCancelledException
+from lightrag.exceptions import (
+    PipelineCancelledException,
+    ChunkTokenLimitExceededError,
+)
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -109,6 +112,17 @@ def chunking_by_token_size(
         if split_by_character_only:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
+                if len(_tokens) > chunk_token_size:
+                    logger.warning(
+                        "Chunk split_by_character exceeds token limit: len=%d limit=%d",
+                        len(_tokens),
+                        chunk_token_size,
+                    )
+                    raise ChunkTokenLimitExceededError(
+                        chunk_tokens=len(_tokens),
+                        chunk_token_limit=chunk_token_size,
+                        chunk_preview=chunk[:120],
+                    )
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
