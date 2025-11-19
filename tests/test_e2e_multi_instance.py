@@ -2,10 +2,11 @@
 E2E Tests for Multi-Instance LightRAG with Multiple Workspaces
 
 These tests verify:
-1. Multiple LightRAG instances with different embedding models
-2. Multiple workspaces isolation
-3. Both PostgreSQL and Qdrant vector storage
-4. Real document insertion and query operations
+1. Legacy data migration from tables/collections without model suffix
+2. Multiple LightRAG instances with different embedding models
+3. Multiple workspaces isolation
+4. Both PostgreSQL and Qdrant vector storage
+5. Real document insertion and query operations
 
 Prerequisites:
 - PostgreSQL with pgvector extension
@@ -106,6 +107,8 @@ def qdrant_cleanup(qdrant_config):
     )
 
     collections_to_delete = [
+        "lightrag_vdb_chunks",  # Legacy collection (no model suffix)
+        "lightrag_vdb_chunks_text_embedding_ada_002_1536d",  # Migrated collection
         "lightrag_vdb_chunks_model_a_768d",
         "lightrag_vdb_chunks_model_b_1024d",
     ]
@@ -284,6 +287,124 @@ async def test_legacy_migration_postgres(
             f"Expected {legacy_count} records migrated, got {new_count}"
         print(f"✅ Migration successful: {new_count}/{legacy_count} records migrated")
         print(f"✅ New table: {new_table}")
+
+        await rag.finalize_storages()
+
+    finally:
+        # Cleanup temp dir
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# Test: Qdrant legacy data migration
+@pytest.mark.asyncio
+async def test_legacy_migration_qdrant(
+    qdrant_cleanup, mock_llm_func, mock_tokenizer, qdrant_config
+):
+    """
+    Test automatic migration from legacy Qdrant collection (no model suffix)
+
+    Scenario:
+    1. Create legacy collection without model suffix
+    2. Insert test vectors with 1536d
+    3. Initialize LightRAG with model_name (triggers migration)
+    4. Verify data migrated to new collection with model suffix
+    """
+    print("\n[E2E Test] Qdrant legacy data migration (1536d)")
+
+    # Create temp working dir
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp(prefix="lightrag_qdrant_legacy_")
+
+    try:
+        # Step 1: Create legacy collection and insert data
+        legacy_collection = "lightrag_vdb_chunks"
+
+        # Create legacy collection without model suffix
+        from qdrant_client.models import Distance, VectorParams
+
+        qdrant_cleanup.create_collection(
+            collection_name=legacy_collection,
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+        )
+        print(f"✅ Created legacy collection: {legacy_collection}")
+
+        # Insert 3 test records
+        from qdrant_client.models import PointStruct
+
+        test_vectors = []
+        for i in range(3):
+            vector = np.random.rand(1536).tolist()
+            point = PointStruct(
+                id=i,
+                vector=vector,
+                payload={
+                    "id": f"legacy_{i}",
+                    "content": f"Legacy content {i}",
+                    "tokens": 100,
+                    "chunk_order_index": i,
+                    "full_doc_id": "legacy_doc",
+                    "file_path": "/test/path",
+                }
+            )
+            test_vectors.append(point)
+
+        qdrant_cleanup.upsert(
+            collection_name=legacy_collection,
+            points=test_vectors
+        )
+
+        # Verify legacy data
+        legacy_count = qdrant_cleanup.count(legacy_collection).count
+        print(f"✅ Legacy collection created with {legacy_count} vectors")
+
+        # Step 2: Initialize LightRAG with model_name (triggers migration)
+        async def embed_func(texts):
+            await asyncio.sleep(0)
+            return np.random.rand(len(texts), 1536)
+
+        embedding_func = EmbeddingFunc(
+            embedding_dim=1536,
+            max_token_size=8192,
+            func=embed_func,
+            model_name="text-embedding-ada-002"
+        )
+
+        rag = LightRAG(
+            working_dir=temp_dir,
+            llm_model_func=mock_llm_func,
+            embedding_func=embedding_func,
+            tokenizer=mock_tokenizer,
+            vector_storage="QdrantVectorDBStorage",
+            vector_db_storage_cls_kwargs={
+                **qdrant_config,
+                "cosine_better_than_threshold": 0.8
+            },
+        )
+
+        print("🔄 Initializing LightRAG (triggers migration)...")
+        await rag.initialize_storages()
+
+        # Step 3: Verify migration
+        new_collection = rag.chunk_entity_relation_graph.chunk_vdb.final_namespace
+        assert "text_embedding_ada_002_1536d" in new_collection
+
+        # Verify new collection exists
+        assert qdrant_cleanup.collection_exists(new_collection), \
+            f"New collection {new_collection} should exist"
+
+        new_count = qdrant_cleanup.count(new_collection).count
+
+        assert new_count == legacy_count, \
+            f"Expected {legacy_count} vectors migrated, got {new_count}"
+        print(f"✅ Migration successful: {new_count}/{legacy_count} vectors migrated")
+        print(f"✅ New collection: {new_collection}")
+
+        # Verify vector dimension
+        collection_info = qdrant_cleanup.get_collection(new_collection)
+        assert collection_info.config.params.vectors.size == 1536, \
+            "Migrated collection should have 1536 dimensions"
+        print(f"✅ Vector dimension verified: {collection_info.config.params.vectors.size}d")
 
         await rag.finalize_storages()
 
