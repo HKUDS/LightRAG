@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and python_full_version < '4' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
@@ -2735,7 +2735,6 @@ requires-dist = [
     { name = "json-repair", marker = "extra == 'api'" },
     { name = "langfuse", marker = "extra == 'observability'", specifier = ">=3.8.1" },
     { name = "lightrag-hku", extras = ["api", "offline-llm", "offline-storage"], marker = "extra == 'offline'" },
-    { name = "lightrag-hku", extras = ["pytest"], marker = "extra == 'evaluation'" },
     { name = "llama-index", marker = "extra == 'offline-llm'", specifier = ">=0.9.0,<1.0.0" },
     { name = "nano-vectordb" },
     { name = "nano-vectordb", marker = "extra == 'api'" },
@@ -2753,6 +2752,7 @@ requires-dist = [
     { name = "passlib", extras = ["bcrypt"], marker = "extra == 'api'" },
     { name = "pipmaster" },
     { name = "pipmaster", marker = "extra == 'api'" },
+    { name = "pre-commit", marker = "extra == 'evaluation'" },
     { name = "pre-commit", marker = "extra == 'pytest'" },
     { name = "psutil", marker = "extra == 'api'" },
     { name = "pycryptodome", marker = "extra == 'api'", specifier = ">=3.0.0,<4.0.0" },
@@ -2764,7 +2764,9 @@ requires-dist = [
     { name = "pypdf", marker = "extra == 'api'", specifier = ">=6.1.0" },
     { name = "pypinyin" },
     { name = "pypinyin", marker = "extra == 'api'" },
+    { name = "pytest", marker = "extra == 'evaluation'", specifier = ">=8.4.2" },
     { name = "pytest", marker = "extra == 'pytest'", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", marker = "extra == 'evaluation'", specifier = ">=1.2.0" },
     { name = "pytest-asyncio", marker = "extra == 'pytest'", specifier = ">=1.2.0" },
     { name = "python-docx", marker = "extra == 'api'", specifier = ">=0.8.11,<2.0.0" },
     { name = "python-dotenv" },

@@ -2175,6 +2175,38 @@ class PGKVStorage(BaseKVStorage):
             return {"status": "error", "message": str(e)}
 
 
+async def _pg_table_exists(db: PostgreSQLDB, table_name: str) -> bool:
+    """Check if a table exists in PostgreSQL database"""
+    query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = $1
+        )
+    """
+    result = await db.query(query, [table_name.lower()])
+    return result.get("exists", False) if result else False
+
+
+async def _pg_create_table(
+    db: PostgreSQLDB, table_name: str, base_table: str, embedding_dim: int
+) -> None:
+    """Create a new vector table by replacing the table name in DDL template"""
+    if base_table not in TABLES:
+        raise ValueError(f"No DDL template found for table: {base_table}")
+
+    ddl_template = TABLES[base_table]["ddl"]
+
+    # Replace embedding dimension placeholder if exists
+    ddl = ddl_template.replace(
+        f"VECTOR({os.environ.get('EMBEDDING_DIM', 1024)})", f"VECTOR({embedding_dim})"
+    )
+
+    # Replace table name
+    ddl = ddl.replace(base_table, table_name)
+
+    await db.execute(ddl)
+
+
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
@@ -2189,6 +2221,163 @@ class PGVectorStorage(BaseVectorStorage):
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
             )
         self.cosine_better_than_threshold = cosine_threshold
+
+        # Generate model suffix for table isolation
+        self.model_suffix = self._generate_collection_suffix()
+
+        # Get base table name
+        base_table = namespace_to_table_name(self.namespace)
+        if not base_table:
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+
+        # New table name (with suffix)
+        self.table_name = f"{base_table}_{self.model_suffix}"
+
+        # Legacy table name (without suffix, for migration)
+        self.legacy_table_name = base_table
+
+        logger.debug(
+            f"PostgreSQL table naming: "
+            f"new='{self.table_name}', "
+            f"legacy='{self.legacy_table_name}', "
+            f"model_suffix='{self.model_suffix}'"
+        )
+
+    @staticmethod
+    async def setup_table(
+        db: PostgreSQLDB,
+        table_name: str,
+        legacy_table_name: str = None,
+        base_table: str = None,
+        embedding_dim: int = None,
+    ):
+        """
+        Setup PostgreSQL table with migration support from legacy tables.
+
+        This method mirrors Qdrant's setup_collection approach to maintain consistency.
+
+        Args:
+            db: PostgreSQLDB instance
+            table_name: Name of the new table
+            legacy_table_name: Name of the legacy table (if exists)
+            base_table: Base table name for DDL template lookup
+            embedding_dim: Embedding dimension for vector column
+        """
+        new_table_exists = await _pg_table_exists(db, table_name)
+        legacy_exists = legacy_table_name and await _pg_table_exists(
+            db, legacy_table_name
+        )
+
+        # Case 1: Both new and legacy tables exist - Warning only (no migration)
+        if new_table_exists and legacy_exists:
+            logger.warning(
+                f"PostgreSQL: Legacy table '{legacy_table_name}' still exists. "
+                f"Remove it if migration is complete."
+            )
+            return
+
+        # Case 2: Only new table exists - Already migrated or newly created
+        if new_table_exists:
+            logger.debug(f"PostgreSQL: Table '{table_name}' already exists")
+            return
+
+        # Case 3: Neither exists - Create new table
+        if not legacy_exists:
+            logger.info(f"PostgreSQL: Creating new table '{table_name}'")
+            await _pg_create_table(db, table_name, base_table, embedding_dim)
+            logger.info(f"PostgreSQL: Table '{table_name}' created successfully")
+            return
+
+        # Case 4: Only legacy exists - Migrate data
+        logger.info(
+            f"PostgreSQL: Migrating data from legacy table '{legacy_table_name}'"
+        )
+
+        try:
+            # Get legacy table count
+            count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+            count_result = await db.query(count_query, [])
+            legacy_count = count_result.get("count", 0) if count_result else 0
+            logger.info(f"PostgreSQL: Found {legacy_count} records in legacy table")
+
+            if legacy_count == 0:
+                logger.info("PostgreSQL: Legacy table is empty, skipping migration")
+                await _pg_create_table(db, table_name, base_table, embedding_dim)
+                return
+
+            # Create new table first
+            logger.info(f"PostgreSQL: Creating new table '{table_name}'")
+            await _pg_create_table(db, table_name, base_table, embedding_dim)
+
+            # Batch migration (500 records per batch, same as Qdrant)
+            migrated_count = 0
+            offset = 0
+            batch_size = 500  # Mirror Qdrant batch size
+
+            while True:
+                # Fetch a batch of rows
+                select_query = (
+                    f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
+                )
+                rows = await db.fetch(select_query, [offset, batch_size])
+
+                if not rows:
+                    break
+
+                # Insert batch into new table
+                for row in rows:
+                    # Get column names and values
+                    columns = list(row.keys())
+                    values = list(row.values())
+
+                    # Build insert query
+                    placeholders = ", ".join([f"${i+1}" for i in range(len(columns))])
+                    columns_str = ", ".join(columns)
+                    insert_query = f"""
+                        INSERT INTO {table_name} ({columns_str})
+                        VALUES ({placeholders})
+                        ON CONFLICT DO NOTHING
+                    """
+
+                    await db.execute(insert_query, values)
+
+                migrated_count += len(rows)
+                logger.info(
+                    f"PostgreSQL: {migrated_count}/{legacy_count} records migrated"
+                )
+
+                offset += batch_size
+
+            # Verify migration by comparing counts
+            logger.info("Verifying migration...")
+            new_count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+            new_count_result = await db.query(new_count_query, [])
+            new_count = new_count_result.get("count", 0) if new_count_result else 0
+
+            if new_count != legacy_count:
+                error_msg = (
+                    f"PostgreSQL: Migration verification failed, "
+                    f"expected {legacy_count} records, got {new_count} in new table"
+                )
+                logger.error(error_msg)
+                raise PostgreSQLMigrationError(error_msg)
+
+            logger.info(
+                f"PostgreSQL: Migration completed successfully: {migrated_count} records migrated"
+            )
+            logger.info(
+                f"PostgreSQL: Migration from '{legacy_table_name}' to '{table_name}' completed successfully"
+            )
+
+        except PostgreSQLMigrationError:
+            # Re-raise migration errors without wrapping
+            raise
+        except Exception as e:
+            error_msg = f"PostgreSQL: Migration failed with error: {e}"
+            logger.error(error_msg)
+            # Mirror Qdrant behavior: no automatic rollback
+            # Reason: partial data can be continued by re-running migration
+            raise PostgreSQLMigrationError(error_msg) from e
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -2206,6 +2395,15 @@ class PGVectorStorage(BaseVectorStorage):
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
 
+            # Setup table (create if not exists and handle migration)
+            await PGVectorStorage.setup_table(
+                self.db,
+                self.table_name,
+                legacy_table_name=self.legacy_table_name,
+                base_table=self.legacy_table_name,  # base_table for DDL template lookup
+                embedding_dim=self.embedding_func.embedding_dim,
+            )
+
     async def finalize(self):
         if self.db is not None:
             await ClientManager.release_client(self.db)
@@ -2215,7 +2413,9 @@ class PGVectorStorage(BaseVectorStorage):
         self, item: dict[str, Any], current_time: datetime.datetime
     ) -> tuple[str, dict[str, Any]]:
         try:
-            upsert_sql = SQL_TEMPLATES["upsert_chunk"]
+            upsert_sql = SQL_TEMPLATES["upsert_chunk"].format(
+                table_name=self.table_name
+            )
             data: dict[str, Any] = {
                 "workspace": self.workspace,
                 "id": item["__id__"],
@@ -2239,7 +2439,7 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_entities(
         self, item: dict[str, Any], current_time: datetime.datetime
     ) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_entity"]
+        upsert_sql = SQL_TEMPLATES["upsert_entity"].format(table_name=self.table_name)
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
@@ -2262,7 +2462,9 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_relationships(
         self, item: dict[str, Any], current_time: datetime.datetime
     ) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+        upsert_sql = SQL_TEMPLATES["upsert_relationship"].format(
+            table_name=self.table_name
+        )
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
@@ -2335,7 +2537,9 @@ class PGVectorStorage(BaseVectorStorage):
 
         embedding_string = ",".join(map(str, embedding))
 
-        sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
+        sql = SQL_TEMPLATES[self.namespace].format(
+            embedding_string=embedding_string, table_name=self.table_name
+        )
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
@@ -2357,14 +2561,7 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return
 
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for vector deletion: {self.namespace}"
-            )
-            return
-
-        delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+        delete_sql = f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
 
         try:
             await self.db.execute(delete_sql, {"workspace": self.workspace, "ids": ids})
@@ -2383,8 +2580,8 @@ class PGVectorStorage(BaseVectorStorage):
             entity_name: The name of the entity to delete
         """
         try:
-            # Construct SQL to delete the entity
-            delete_sql = """DELETE FROM LIGHTRAG_VDB_ENTITY
+            # Construct SQL to delete the entity using dynamic table name
+            delete_sql = f"""DELETE FROM {self.table_name}
                             WHERE workspace=$1 AND entity_name=$2"""
 
             await self.db.execute(
@@ -2404,7 +2601,7 @@ class PGVectorStorage(BaseVectorStorage):
         """
         try:
             # Delete relations where the entity is either the source or target
-            delete_sql = """DELETE FROM LIGHTRAG_VDB_RELATION
+            delete_sql = f"""DELETE FROM {self.table_name}
                             WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"""
 
             await self.db.execute(
@@ -3186,6 +3383,11 @@ class PGDocStatusStorage(DocStatusStorage):
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+
+class PostgreSQLMigrationError(Exception):
+    """Exception for PostgreSQL table migration errors."""
+    pass
 
 
 class PGGraphQueryException(Exception):
@@ -5047,7 +5249,7 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     # SQL for VectorStorage
-    "upsert_chunk": """INSERT INTO LIGHTRAG_VDB_CHUNKS (workspace, id, tokens,
+    "upsert_chunk": """INSERT INTO {table_name} (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path,
                       create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -5060,7 +5262,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = EXCLUDED.update_time
                      """,
-    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
+    "upsert_entity": """INSERT INTO {table_name} (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path, create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, $8, $9)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -5071,7 +5273,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time=EXCLUDED.update_time
                      """,
-    "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
+    "upsert_relationship": """INSERT INTO {table_name} (workspace, id, source_id,
                       target_id, content, content_vector, chunk_ids, file_path, create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, $9, $10)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -5087,7 +5289,7 @@ SQL_TEMPLATES = {
                      SELECT r.source_id AS src_id,
                             r.target_id AS tgt_id,
                             EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                     FROM LIGHTRAG_VDB_RELATION r
+                     FROM {table_name} r
                      WHERE r.workspace = $1
                        AND r.content_vector <=> '[{embedding_string}]'::vector < $2
                      ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
@@ -5096,7 +5298,7 @@ SQL_TEMPLATES = {
     "entities": """
                 SELECT e.entity_name,
                        EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
-                FROM LIGHTRAG_VDB_ENTITY e
+                FROM {table_name} e
                 WHERE e.workspace = $1
                   AND e.content_vector <=> '[{embedding_string}]'::vector < $2
                 ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
@@ -5107,7 +5309,7 @@ SQL_TEMPLATES = {
                      c.content,
                      c.file_path,
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
-              FROM LIGHTRAG_VDB_CHUNKS c
+              FROM {table_name} c
               WHERE c.workspace = $1
                 AND c.content_vector <=> '[{embedding_string}]'::vector < $2
               ORDER BY c.content_vector <=> '[{embedding_string}]'::vector
