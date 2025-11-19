@@ -992,6 +992,30 @@ def _extract_docx(file_bytes: bytes) -> str:
     docx_file = BytesIO(file_bytes)
     doc = Document(docx_file)
 
+    def escape_cell(cell_value: str | None) -> str:
+        """Escape characters that would break tab-delimited layout.
+
+        Escape order is critical: backslashes first, then tabs/newlines.
+        This prevents double-escaping issues.
+
+        Args:
+            cell_value: The cell value to escape (can be None or str)
+
+        Returns:
+            str: Escaped cell value safe for tab-delimited format
+        """
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        # CRITICAL: Escape backslash first to avoid double-escaping
+        return (
+            text.replace("\\", "\\\\")  # Must be first: \ -> \\
+            .replace("\t", "\\t")  # Tab -> \t (visible)
+            .replace("\r\n", "\\n")  # Windows newline -> \n
+            .replace("\r", "\\n")  # Mac newline -> \n
+            .replace("\n", "\\n")  # Unix newline -> \n
+        )
+
     content_parts = []
     in_table = False  # Track if we're currently processing a table
 
@@ -1021,8 +1045,8 @@ def _extract_docx(file_bytes: bytes) -> str:
                 row_text = []
                 for cell in row.cells:
                     cell_text = cell.text
-                    # Always append cell text to preserve column structure
-                    row_text.append(cell_text)
+                    # Escape special characters to preserve tab-delimited structure
+                    row_text.append(escape_cell(cell_text))
                 # Only add row if at least one cell has content
                 if any(cell for cell in row_text):
                     content_parts.append("\t".join(row_text))
