@@ -2604,9 +2604,8 @@ class PGVectorStorage(BaseVectorStorage):
             delete_sql = f"""DELETE FROM {self.table_name}
                             WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"""
 
-            await self.db.execute(
-                delete_sql, {"workspace": self.workspace, "entity_name": entity_name}
-            )
+            params = {"workspace": self.workspace, "entity_name": entity_name}
+            await self.db.execute(delete_sql, list(params.values()))
             logger.debug(
                 f"[{self.workspace}] Successfully deleted relations for entity {entity_name}"
             )
@@ -2624,14 +2623,7 @@ class PGVectorStorage(BaseVectorStorage):
         Returns:
             The vector data if found, or None if not found
         """
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for ID lookup: {self.namespace}"
-            )
-            return None
-
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {table_name} WHERE workspace=$1 AND id=$2"
+        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {self.table_name} WHERE workspace=$1 AND id=$2"
         params = {"workspace": self.workspace, "id": id}
 
         try:
@@ -2657,15 +2649,8 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for IDs lookup: {self.namespace}"
-            )
-            return []
-
         ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {self.table_name} WHERE workspace=$1 AND id IN ({ids_str})"
         params = {"workspace": self.workspace}
 
         try:
@@ -2706,15 +2691,8 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return {}
 
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for vector lookup: {self.namespace}"
-            )
-            return {}
-
         ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT id, content_vector FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+        query = f"SELECT id, content_vector FROM {self.table_name} WHERE workspace=$1 AND id IN ({ids_str})"
         params = {"workspace": self.workspace}
 
         try:
@@ -2743,15 +2721,8 @@ class PGVectorStorage(BaseVectorStorage):
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
-
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
+                table_name=self.table_name
             )
             await self.db.execute(drop_sql, {"workspace": self.workspace})
             return {"status": "success", "message": "data dropped"}
