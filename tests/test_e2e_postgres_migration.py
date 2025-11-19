@@ -31,6 +31,11 @@ def pg_config():
         "database": os.getenv("POSTGRES_DB", "lightrag_test"),
         "workspace": os.getenv("POSTGRES_WORKSPACE", "e2e_test"),
         "max_connections": 10,
+        # Connection retry configuration
+        "connection_retry_attempts": 3,
+        "connection_retry_backoff": 0.5,
+        "connection_retry_backoff_max": 5.0,
+        "pool_close_timeout": 5.0,
     }
 
 
