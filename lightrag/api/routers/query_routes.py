@@ -11,8 +11,6 @@ from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
-from ascii_colors import trace_exception
-
 router = APIRouter(tags=["query"])
 
 
@@ -453,7 +451,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             else:
                 return QueryResponse(response=response_content, references=None)
         except Exception as e:
-            trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -739,7 +736,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 },
             )
         except Exception as e:
-            trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -1156,7 +1152,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     data={},
                 )
         except Exception as e:
-            trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
     return router

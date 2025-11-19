@@ -1,6 +1,8 @@
 from __future__ import annotations
 import weakref
 
+import sys
+
 import asyncio
 import html
 import csv
@@ -40,6 +42,35 @@ from lightrag.constants import (
     SOURCE_IDS_LIMIT_METHOD_FIFO,
 )
 
+# Precompile regex pattern for JSON sanitization (module-level, compiled once)
+_SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
+
+
+class SafeStreamHandler(logging.StreamHandler):
+    """StreamHandler that gracefully handles closed streams during shutdown.
+
+    This handler prevents "ValueError: I/O operation on closed file" errors
+    that can occur when pytest or other test frameworks close stdout/stderr
+    before Python's logging cleanup runs.
+    """
+
+    def flush(self):
+        """Flush the stream, ignoring errors if the stream is closed."""
+        try:
+            super().flush()
+        except (ValueError, OSError):
+            # Stream is closed or otherwise unavailable, silently ignore
+            pass
+
+    def close(self):
+        """Close the handler, ignoring errors if the stream is already closed."""
+        try:
+            super().close()
+        except (ValueError, OSError):
+            # Stream is closed or otherwise unavailable, silently ignore
+            pass
+
+
 # Initialize logger with basic configuration
 logger = logging.getLogger("lightrag")
 logger.propagate = False  # prevent log message send to root logger
@@ -47,7 +78,7 @@ logger.setLevel(logging.INFO)
 
 # Add console handler if no handlers exist
 if not logger.handlers:
-    console_handler = logging.StreamHandler()
+    console_handler = SafeStreamHandler()
     console_handler.setLevel(logging.INFO)
     formatter = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(formatter)
@@ -56,8 +87,32 @@ if not logger.handlers:
 # Set httpx logging level to WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Precompile regex pattern for JSON sanitization (module-level, compiled once)
-_SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
+
+def _patch_ascii_colors_console_handler() -> None:
+    """Prevent ascii_colors from printing flush errors during interpreter exit."""
+
+    try:
+        from ascii_colors import ConsoleHandler
+    except ImportError:
+        return
+
+    if getattr(ConsoleHandler, "_lightrag_patched", False):
+        return
+
+    original_handle_error = ConsoleHandler.handle_error
+
+    def _safe_handle_error(self, message: str) -> None:  # type: ignore[override]
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (ValueError, OSError) and "close" in message.lower():
+            return
+        original_handle_error(self, message)
+
+    ConsoleHandler.handle_error = _safe_handle_error  # type: ignore[assignment]
+    ConsoleHandler._lightrag_patched = True  # type: ignore[attr-defined]
+
+
+_patch_ascii_colors_console_handler()
+
 
 # Global import for pypinyin with startup-time logging
 try:
@@ -286,8 +341,8 @@ def setup_logger(
     logger_instance.handlers = []  # Clear existing handlers
     logger_instance.propagate = False
 
-    # Add console handler
-    console_handler = logging.StreamHandler()
+    # Add console handler with safe stream handling
+    console_handler = SafeStreamHandler()
     console_handler.setFormatter(simple_formatter)
     console_handler.setLevel(level)
     logger_instance.addHandler(console_handler)
