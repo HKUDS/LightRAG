@@ -13,12 +13,10 @@ Tests are implemented for both PostgreSQL and Qdrant backends.
 """
 
 import pytest
-import asyncio
 import numpy as np
 from unittest.mock import MagicMock, patch, AsyncMock
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage, _find_legacy_collection
-from lightrag.kg.postgres_impl import PGVectorStorage
 
 
 # ============================================================================
