@@ -75,8 +75,8 @@ def _find_legacy_collection(
     This function tries multiple naming patterns to locate legacy collections
     created by older versions of LightRAG:
 
-    1. lightrag_vdb_{namespace} - Current legacy format
-    2. {workspace}_{namespace} - Old format with workspace (pre-model-isolation)
+    1. {workspace}_{namespace} - Old format with workspace (pre-model-isolation) - HIGHEST PRIORITY
+    2. lightrag_vdb_{namespace} - Current legacy format
     3. {namespace} - Old format without workspace (pre-model-isolation)
 
     Args:
@@ -88,10 +88,11 @@ def _find_legacy_collection(
         Collection name if found, None otherwise
     """
     # Try multiple naming patterns for backward compatibility
+    # More specific names (with workspace) have higher priority
     candidates = [
+        f"{workspace}_{namespace}" if workspace else None,  # Old format with workspace - most specific
         f"lightrag_vdb_{namespace}",  # New legacy format
-        f"{workspace}_{namespace}" if workspace else None,  # Old format with workspace
-        namespace,  # Old format without workspace
+        namespace,  # Old format without workspace - most generic
     ]
 
     for candidate in candidates:
