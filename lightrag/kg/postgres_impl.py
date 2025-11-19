@@ -2326,20 +2326,20 @@ class PGVectorStorage(BaseVectorStorage):
 
                 # Insert batch into new table
                 for row in rows:
-                    # Get column names and values
-                    columns = list(row.keys())
-                    values = list(row.values())
+                    # Get column names and values as dictionary (execute expects dict)
+                    row_dict = dict(row)
 
-                    # Build insert query
-                    placeholders = ", ".join([f"${i+1}" for i in range(len(columns))])
+                    # Build insert query with named parameters
+                    columns = list(row_dict.keys())
                     columns_str = ", ".join(columns)
+                    placeholders = ", ".join([f"${i+1}" for i in range(len(columns))])
                     insert_query = f"""
                         INSERT INTO {table_name} ({columns_str})
                         VALUES ({placeholders})
                         ON CONFLICT DO NOTHING
                     """
 
-                    await db.execute(insert_query, values)
+                    await db.execute(insert_query, row_dict)
 
                 migrated_count += len(rows)
                 logger.info(
