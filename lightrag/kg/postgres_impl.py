@@ -2604,8 +2604,9 @@ class PGVectorStorage(BaseVectorStorage):
             delete_sql = f"""DELETE FROM {self.table_name}
                             WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"""
 
-            params = {"workspace": self.workspace, "entity_name": entity_name}
-            await self.db.execute(delete_sql, list(params.values()))
+            await self.db.execute(
+                delete_sql, {"workspace": self.workspace, "entity_name": entity_name}
+            )
             logger.debug(
                 f"[{self.workspace}] Successfully deleted relations for entity {entity_name}"
             )
