@@ -176,7 +176,7 @@ class UnifiedLock(Generic[T]):
                     enable_output=self._enable_logging,
                 )
             else:
-                 direct_log(
+                direct_log(
                     f"== Lock == Process {self._pid}: Main lock {self._name} is None (async={self._is_async})",
                     level="WARNING",
                     enable_output=self._enable_logging,

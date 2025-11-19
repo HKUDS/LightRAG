@@ -1,13 +1,9 @@
-import os
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock, call
+from unittest.mock import patch, AsyncMock
 import numpy as np
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.postgres_impl import (
     PGVectorStorage,
-    _pg_table_exists,
-    _pg_create_table,
-    PostgreSQLMigrationError,
 )
 from lightrag.namespace import NameSpace
 
@@ -56,29 +52,25 @@ def mock_embedding_func():
     async def embed_func(texts, **kwargs):
         return np.array([[0.1] * 768 for _ in texts])
 
-    func = EmbeddingFunc(
-        embedding_dim=768,
-        func=embed_func,
-        model_name="test_model"
-    )
+    func = EmbeddingFunc(embedding_dim=768, func=embed_func, model_name="test_model")
     return func
 
 
 @pytest.mark.asyncio
-async def test_postgres_table_naming(mock_client_manager, mock_pg_db, mock_embedding_func):
+async def test_postgres_table_naming(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
     """Test if table name is correctly generated with model suffix"""
     config = {
         "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.8
-        }
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
     }
 
     storage = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=mock_embedding_func,
-        workspace="test_ws"
+        workspace="test_ws",
     )
 
     # Verify table name contains model suffix
@@ -91,20 +83,20 @@ async def test_postgres_table_naming(mock_client_manager, mock_pg_db, mock_embed
 
 
 @pytest.mark.asyncio
-async def test_postgres_migration_trigger(mock_client_manager, mock_pg_db, mock_embedding_func):
+async def test_postgres_migration_trigger(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
     """Test if migration logic is triggered correctly"""
     config = {
         "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.8
-        }
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
     }
 
     storage = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=mock_embedding_func,
-        workspace="test_ws"
+        workspace="test_ws",
     )
 
     # Setup mocks for migration scenario
@@ -132,9 +124,12 @@ async def test_postgres_migration_trigger(mock_client_manager, mock_pg_db, mock_
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
-    with patch("lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists), \
-         patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()):
-
+    with (
+        patch(
+            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+        ),
+        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()),
+    ):
         # Initialize storage (should trigger migration)
         await storage.initialize()
 
@@ -144,29 +139,32 @@ async def test_postgres_migration_trigger(mock_client_manager, mock_pg_db, mock_
 
 
 @pytest.mark.asyncio
-async def test_postgres_no_migration_needed(mock_client_manager, mock_pg_db, mock_embedding_func):
+async def test_postgres_no_migration_needed(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
     """Test scenario where new table already exists (no migration needed)"""
     config = {
         "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.8
-        }
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
     }
 
     storage = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=mock_embedding_func,
-        workspace="test_ws"
+        workspace="test_ws",
     )
 
     # Mock: new table already exists
     async def mock_table_exists(db, table_name):
         return table_name == storage.table_name
 
-    with patch("lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists), \
-         patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create:
-
+    with (
+        patch(
+            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+        ),
+        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
+    ):
         await storage.initialize()
 
         # Verify no table creation was attempted
@@ -174,7 +172,9 @@ async def test_postgres_no_migration_needed(mock_client_manager, mock_pg_db, moc
 
 
 @pytest.mark.asyncio
-async def test_scenario_1_new_workspace_creation(mock_client_manager, mock_pg_db, mock_embedding_func):
+async def test_scenario_1_new_workspace_creation(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
     """
     Scenario 1: New workspace creation
 
@@ -185,31 +185,32 @@ async def test_scenario_1_new_workspace_creation(mock_client_manager, mock_pg_db
     """
     config = {
         "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.8
-        }
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
     }
 
     embedding_func = EmbeddingFunc(
         embedding_dim=3072,
         func=mock_embedding_func.func,
-        model_name="text-embedding-3-large"
+        model_name="text-embedding-3-large",
     )
 
     storage = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=embedding_func,
-        workspace="new_workspace"
+        workspace="new_workspace",
     )
 
     # Mock: neither table exists
     async def mock_table_exists(db, table_name):
         return False
 
-    with patch("lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists), \
-         patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create:
-
+    with (
+        patch(
+            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+        ),
+        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
+    ):
         await storage.initialize()
 
         # Verify table name format
@@ -218,11 +219,15 @@ async def test_scenario_1_new_workspace_creation(mock_client_manager, mock_pg_db
         # Verify new table creation was called
         mock_create.assert_called_once()
         call_args = mock_create.call_args
-        assert call_args[0][1] == storage.table_name  # table_name is second positional arg
+        assert (
+            call_args[0][1] == storage.table_name
+        )  # table_name is second positional arg
 
 
 @pytest.mark.asyncio
-async def test_scenario_2_legacy_upgrade_migration(mock_client_manager, mock_pg_db, mock_embedding_func):
+async def test_scenario_2_legacy_upgrade_migration(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
     """
     Scenario 2: Upgrade from legacy version
 
@@ -233,22 +238,20 @@ async def test_scenario_2_legacy_upgrade_migration(mock_client_manager, mock_pg_
     """
     config = {
         "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.8
-        }
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
     }
 
     embedding_func = EmbeddingFunc(
         embedding_dim=1536,
         func=mock_embedding_func.func,
-        model_name="text-embedding-ada-002"
+        model_name="text-embedding-ada-002",
     )
 
     storage = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=embedding_func,
-        workspace="legacy_workspace"
+        workspace="legacy_workspace",
     )
 
     # Mock: only legacy table exists
@@ -257,7 +260,11 @@ async def test_scenario_2_legacy_upgrade_migration(mock_client_manager, mock_pg_
 
     # Mock: legacy table has 50 records
     mock_rows = [
-        {"id": f"legacy_id_{i}", "content": f"legacy_content_{i}", "workspace": "legacy_workspace"}
+        {
+            "id": f"legacy_id_{i}",
+            "content": f"legacy_content_{i}",
+            "workspace": "legacy_workspace",
+        }
         for i in range(50)
     ]
 
@@ -279,9 +286,12 @@ async def test_scenario_2_legacy_upgrade_migration(mock_client_manager, mock_pg_
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
-    with patch("lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists), \
-         patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create:
-
+    with (
+        patch(
+            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+        ),
+        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
+    ):
         await storage.initialize()
 
         # Verify table name contains ada-002
@@ -293,7 +303,9 @@ async def test_scenario_2_legacy_upgrade_migration(mock_client_manager, mock_pg_
 
 
 @pytest.mark.asyncio
-async def test_scenario_3_multi_model_coexistence(mock_client_manager, mock_pg_db, mock_embedding_func):
+async def test_scenario_3_multi_model_coexistence(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
     """
     Scenario 3: Multiple embedding models coexist
 
@@ -304,23 +316,19 @@ async def test_scenario_3_multi_model_coexistence(mock_client_manager, mock_pg_d
     """
     config = {
         "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {
-            "cosine_better_than_threshold": 0.8
-        }
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
     }
 
     # Workspace A: uses bge-small (768d)
     embedding_func_a = EmbeddingFunc(
-        embedding_dim=768,
-        func=mock_embedding_func.func,
-        model_name="bge-small"
+        embedding_dim=768, func=mock_embedding_func.func, model_name="bge-small"
     )
 
     storage_a = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=embedding_func_a,
-        workspace="workspace_a"
+        workspace="workspace_a",
     )
 
     # Workspace B: uses bge-large (1024d)
@@ -328,16 +336,14 @@ async def test_scenario_3_multi_model_coexistence(mock_client_manager, mock_pg_d
         return np.array([[0.1] * 1024 for _ in texts])
 
     embedding_func_b = EmbeddingFunc(
-        embedding_dim=1024,
-        func=embed_func_b,
-        model_name="bge-large"
+        embedding_dim=1024, func=embed_func_b, model_name="bge-large"
     )
 
     storage_b = PGVectorStorage(
         namespace=NameSpace.VECTOR_STORE_CHUNKS,
         global_config=config,
         embedding_func=embedding_func_b,
-        workspace="workspace_b"
+        workspace="workspace_b",
     )
 
     # Verify different table names
@@ -349,9 +355,12 @@ async def test_scenario_3_multi_model_coexistence(mock_client_manager, mock_pg_d
     async def mock_table_exists(db, table_name):
         return False
 
-    with patch("lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists), \
-         patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create:
-
+    with (
+        patch(
+            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+        ),
+        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
+    ):
         # Initialize both storages
         await storage_a.initialize()
         await storage_b.initialize()

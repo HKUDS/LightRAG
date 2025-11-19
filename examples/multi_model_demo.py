@@ -15,11 +15,10 @@ Requirements:
 - Qdrant or PostgreSQL for vector storage (optional, defaults to NanoVectorDB)
 """
 
-import os
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
-from lightrag.utils import EmbeddingFunc, logger
+from lightrag.utils import EmbeddingFunc
 
 # Set your API key
 # os.environ["OPENAI_API_KEY"] = "your-api-key-here"
@@ -33,22 +32,19 @@ async def scenario_1_new_workspace_with_explicit_model():
     - Qdrant: lightrag_vdb_chunks_text_embedding_3_large_3072d
     - PostgreSQL: LIGHTRAG_VDB_CHUNKS_text_embedding_3_large_3072d
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Scenario 1: New Workspace with Explicit Model Name")
-    print("="*80)
+    print("=" * 80)
 
     # Define custom embedding function with explicit model name
     async def my_embedding_func(texts: list[str]):
-        return await openai_embed(
-            texts,
-            model="text-embedding-3-large"
-        )
+        return await openai_embed(texts, model="text-embedding-3-large")
 
     # Create EmbeddingFunc with model_name specified
     embedding_func = EmbeddingFunc(
         embedding_dim=3072,
         func=my_embedding_func,
-        model_name="text-embedding-3-large"  # Explicit model name
+        model_name="text-embedding-3-large",  # Explicit model name
     )
 
     rag = LightRAG(
@@ -64,8 +60,7 @@ async def scenario_1_new_workspace_with_explicit_model():
 
     # Query
     result = await rag.aquery(
-        "What does LightRAG support?",
-        param=QueryParam(mode="hybrid")
+        "What does LightRAG support?", param=QueryParam(mode="hybrid")
     )
 
     print(f"\nQuery Result: {result[:200]}...")
@@ -85,9 +80,9 @@ async def scenario_2_legacy_migration():
     - Old: lightrag_vdb_chunks (no suffix)
     - New: lightrag_vdb_chunks_text_embedding_ada_002_1536d (with suffix)
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Scenario 2: Automatic Migration from Legacy Format")
-    print("="*80)
+    print("=" * 80)
 
     # Step 1: Simulate legacy workspace (no model_name)
     print("\n[Step 1] Creating legacy workspace without model_name...")
@@ -98,7 +93,7 @@ async def scenario_2_legacy_migration():
     # Legacy: No model_name specified
     legacy_embedding = EmbeddingFunc(
         embedding_dim=1536,
-        func=legacy_embedding_func
+        func=legacy_embedding_func,
         # model_name not specified → uses "unknown" as fallback
     )
 
@@ -121,7 +116,7 @@ async def scenario_2_legacy_migration():
     new_embedding = EmbeddingFunc(
         embedding_dim=1536,
         func=legacy_embedding_func,
-        model_name="text-embedding-ada-002"  # Now explicitly specified
+        model_name="text-embedding-ada-002",  # Now explicitly specified
     )
 
     rag_new = LightRAG(
@@ -138,8 +133,7 @@ async def scenario_2_legacy_migration():
 
     # Verify data is still accessible
     result = await rag_new.aquery(
-        "What is the legacy data?",
-        param=QueryParam(mode="hybrid")
+        "What is the legacy data?", param=QueryParam(mode="hybrid")
     )
 
     print(f"\nQuery Result: {result[:200] if result else 'No results'}...")
@@ -160,9 +154,9 @@ async def scenario_3_multiple_models_coexistence():
     - Workspace A: lightrag_vdb_chunks_bge_small_768d
     - Workspace B: lightrag_vdb_chunks_bge_large_1024d
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Scenario 3: Multiple Models Coexistence")
-    print("="*80)
+    print("=" * 80)
 
     # Workspace A: Small embedding model (768 dimensions)
     print("\n[Workspace A] Using bge-small model (768d)...")
@@ -175,7 +169,7 @@ async def scenario_3_multiple_models_coexistence():
     embedding_a = EmbeddingFunc(
         embedding_dim=1536,  # text-embedding-3-small dimension
         func=embedding_func_small,
-        model_name="text-embedding-3-small"
+        model_name="text-embedding-3-small",
     )
 
     rag_a = LightRAG(
@@ -199,7 +193,7 @@ async def scenario_3_multiple_models_coexistence():
     embedding_b = EmbeddingFunc(
         embedding_dim=3072,  # text-embedding-3-large dimension
         func=embedding_func_large,
-        model_name="text-embedding-3-large"
+        model_name="text-embedding-3-large",
     )
 
     rag_b = LightRAG(
@@ -217,12 +211,10 @@ async def scenario_3_multiple_models_coexistence():
     print("\n[Verification] Querying both workspaces...")
 
     result_a = await rag_a.aquery(
-        "What model does workspace use?",
-        param=QueryParam(mode="hybrid")
+        "What model does workspace use?", param=QueryParam(mode="hybrid")
     )
     result_b = await rag_b.aquery(
-        "What model does workspace use?",
-        param=QueryParam(mode="hybrid")
+        "What model does workspace use?", param=QueryParam(mode="hybrid")
     )
 
     print(f"\nWorkspace A Result: {result_a[:100] if result_a else 'No results'}...")
@@ -238,9 +230,9 @@ async def main():
     """
     Run all scenarios to demonstrate model isolation features
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("LightRAG Multi-Model Vector Storage Isolation Demo")
-    print("="*80)
+    print("=" * 80)
     print("\nThis demo shows how LightRAG automatically handles:")
     print("1. ✅ Automatic model suffix generation")
     print("2. ✅ Seamless data migration from legacy format")
@@ -256,9 +248,9 @@ async def main():
         # Scenario 3: Multiple models coexistence
         await scenario_3_multiple_models_coexistence()
 
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("✅ All scenarios completed successfully!")
-        print("="*80)
+        print("=" * 80)
 
         print("\n📝 Key Takeaways:")
         print("- Always specify `model_name` in EmbeddingFunc for clear model tracking")
@@ -271,6 +263,7 @@ async def main():
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
 
 

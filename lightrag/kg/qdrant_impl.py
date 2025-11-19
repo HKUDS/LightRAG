@@ -66,6 +66,45 @@ def workspace_filter_condition(workspace: str) -> models.FieldCondition:
     )
 
 
+def _find_legacy_collection(
+    client: QdrantClient, namespace: str, workspace: str = None
+) -> str | None:
+    """
+    Find legacy collection with backward compatibility support.
+
+    This function tries multiple naming patterns to locate legacy collections
+    created by older versions of LightRAG:
+
+    1. lightrag_vdb_{namespace} - Current legacy format
+    2. {workspace}_{namespace} - Old format with workspace (pre-model-isolation)
+    3. {namespace} - Old format without workspace (pre-model-isolation)
+
+    Args:
+        client: QdrantClient instance
+        namespace: Base namespace (e.g., "chunks", "entities")
+        workspace: Optional workspace identifier
+
+    Returns:
+        Collection name if found, None otherwise
+    """
+    # Try multiple naming patterns for backward compatibility
+    candidates = [
+        f"lightrag_vdb_{namespace}",  # New legacy format
+        f"{workspace}_{namespace}" if workspace else None,  # Old format with workspace
+        namespace,  # Old format without workspace
+    ]
+
+    for candidate in candidates:
+        if candidate and client.collection_exists(candidate):
+            logger.info(
+                f"Qdrant: Found legacy collection '{candidate}' "
+                f"(namespace={namespace}, workspace={workspace or 'none'})"
+            )
+            return candidate
+
+    return None
+
+
 @final
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
@@ -85,27 +124,37 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     def setup_collection(
         client: QdrantClient,
         collection_name: str,
-        legacy_namespace: str = None,
+        namespace: str = None,
         workspace: str = None,
         **kwargs,
     ):
         """
         Setup Qdrant collection with migration support from legacy collections.
 
+        This method now supports backward compatibility by automatically detecting
+        legacy collections created by older versions of LightRAG using multiple
+        naming patterns.
+
         Args:
             client: QdrantClient instance
             collection_name: Name of the new collection
-            legacy_namespace: Name of the legacy collection (if exists)
+            namespace: Base namespace (e.g., "chunks", "entities")
             workspace: Workspace identifier for data isolation
             **kwargs: Additional arguments for collection creation (vectors_config, hnsw_config, etc.)
         """
         new_collection_exists = client.collection_exists(collection_name)
-        legacy_exists = legacy_namespace and client.collection_exists(legacy_namespace)
+
+        # Try to find legacy collection with backward compatibility
+        legacy_collection = (
+            _find_legacy_collection(client, namespace, workspace) if namespace else None
+        )
+        legacy_exists = legacy_collection is not None
 
         # Case 1: Both new and legacy collections exist - Warning only (no migration)
         if new_collection_exists and legacy_exists:
             logger.warning(
-                f"Qdrant: Legacy collection '{legacy_namespace}' still exist. Remove it if migration is complete."
+                f"Qdrant: Legacy collection '{legacy_collection}' still exists. "
+                f"Remove it if migration is complete."
             )
             return
 
@@ -149,13 +198,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         # Case 4: Only legacy exists - Migrate data
         logger.info(
-            f"Qdrant: Migrating data from legacy collection '{legacy_namespace}'"
+            f"Qdrant: Migrating data from legacy collection '{legacy_collection}'"
         )
 
         try:
             # Get legacy collection count
             legacy_count = client.count(
-                collection_name=legacy_namespace, exact=True
+                collection_name=legacy_collection, exact=True
             ).count
             logger.info(f"Qdrant: Found {legacy_count} records in legacy collection")
 
@@ -185,7 +234,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             while True:
                 # Scroll through legacy data
                 result = client.scroll(
-                    collection_name=legacy_namespace,
+                    collection_name=legacy_collection,
                     limit=batch_size,
                     offset=offset,
                     with_vectors=True,
@@ -258,7 +307,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 ),
             )
             logger.info(
-                f"Qdrant: Migration from '{legacy_namespace}' to '{collection_name}' completed successfully"
+                f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
             )
 
         except QdrantMigrationError:
@@ -350,11 +399,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     )
 
                 # Setup collection (create if not exists and configure indexes)
-                # Pass legacy_namespace and workspace for migration support
+                # Pass namespace and workspace for backward-compatible migration support
                 QdrantVectorDBStorage.setup_collection(
                     self._client,
                     self.final_namespace,
-                    legacy_namespace=self.legacy_namespace,
+                    namespace=self.namespace,
                     workspace=self.effective_workspace,
                     vectors_config=models.VectorParams(
                         size=self.embedding_func.embedding_dim,
