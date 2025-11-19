@@ -2350,9 +2350,9 @@ class PGVectorStorage(BaseVectorStorage):
                         ON CONFLICT DO NOTHING
                     """
 
-                    # AsyncPG requires positional parameters as a list in order
-                    values = [row_dict[col] for col in columns]
-                    await db.execute(insert_query, *values)
+                    # Construct dict for execute() method
+                    values = {col: row_dict[col] for col in columns}
+                    await db.execute(insert_query, values)
 
                 migrated_count += len(rows)
                 logger.info(
