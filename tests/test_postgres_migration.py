@@ -22,21 +22,18 @@ def mock_pg_db():
             return []  # Return empty list for multirows
         return {"exists": False, "count": 0}
 
-    # Strict mock for execute that validates parameter types
-    async def mock_execute(sql, *args, **kwargs):
+    # Mock for execute that mimics PostgreSQLDB.execute() behavior
+    async def mock_execute(sql, data=None, **kwargs):
         """
-        Strict mock that mimics AsyncPG behavior:
-        - Positional parameters must be passed as separate arguments (*args)
-        - Raises TypeError if a dict/list is passed as a single argument
+        Mock that mimics PostgreSQLDB.execute() behavior:
+        - Accepts data as dict[str, Any] | None (second parameter)
+        - Internally converts dict.values() to tuple for AsyncPG
         """
-        if args and len(args) == 1:
-            # Check if single argument is a dict or list (wrong usage)
-            if isinstance(args[0], (dict, list)):
-                raise TypeError(
-                    "AsyncPG execute() expects positional parameters as separate arguments, "
-                    f"not as {type(args[0]).__name__}. Use: execute(query, val1, val2, ...) "
-                    "or execute(query, *values)"
-                )
+        # Mimic real execute() which accepts dict and converts to tuple
+        if data is not None and not isinstance(data, dict):
+            raise TypeError(
+                f"PostgreSQLDB.execute() expects data as dict, got {type(data).__name__}"
+            )
         return None
 
     db.query = AsyncMock(side_effect=mock_query)
