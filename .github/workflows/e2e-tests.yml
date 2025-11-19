@@ -1,0 +1,181 @@
+name: E2E Tests (Real Databases)
+
+on:
+  workflow_dispatch:  # Manual trigger only for E2E tests
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - 'lightrag/kg/postgres_impl.py'
+      - 'lightrag/kg/qdrant_impl.py'
+      - 'tests/test_e2e_*.py'
+
+jobs:
+  e2e-postgres:
+    name: E2E PostgreSQL Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: ankane/pgvector:latest
+        env:
+          POSTGRES_USER: lightrag
+          POSTGRES_PASSWORD: lightrag_test_password
+          POSTGRES_DB: lightrag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightrag"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-e2e-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-e2e-
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[api]"
+        pip install pytest pytest-asyncio asyncpg numpy
+
+    - name: Wait for PostgreSQL
+      run: |
+        timeout 30 bash -c 'until pg_isready -h localhost -p 5432 -U lightrag; do sleep 1; done'
+
+    - name: Setup pgvector extension
+      env:
+        PGPASSWORD: lightrag_test_password
+      run: |
+        psql -h localhost -U lightrag -d lightrag_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+        psql -h localhost -U lightrag -d lightrag_test -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';"
+
+    - name: Run PostgreSQL E2E tests
+      env:
+        POSTGRES_HOST: localhost
+        POSTGRES_PORT: 5432
+        POSTGRES_USER: lightrag
+        POSTGRES_PASSWORD: lightrag_test_password
+        POSTGRES_DB: lightrag_test
+        POSTGRES_WORKSPACE: e2e_test
+      run: |
+        pytest tests/test_e2e_postgres_migration.py -v --tb=short -s
+      timeout-minutes: 10
+
+    - name: Upload PostgreSQL test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-postgres-results-py${{ matrix.python-version }}
+        path: |
+          .pytest_cache/
+          test-results.xml
+        retention-days: 7
+
+  e2e-qdrant:
+    name: E2E Qdrant Tests
+    runs-on: ubuntu-latest
+
+    services:
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+          - 6334:6334
+        options: >-
+          --health-cmd "curl -f http://localhost:6333/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-e2e-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-e2e-
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[api]"
+        pip install pytest pytest-asyncio qdrant-client numpy
+
+    - name: Wait for Qdrant
+      run: |
+        timeout 30 bash -c 'until curl -f http://localhost:6333/health > /dev/null 2>&1; do sleep 1; done'
+        echo "Qdrant is ready"
+
+    - name: Verify Qdrant connection
+      run: |
+        curl -X GET "http://localhost:6333/collections" -H "Content-Type: application/json"
+
+    - name: Run Qdrant E2E tests
+      env:
+        QDRANT_URL: http://localhost:6333
+        QDRANT_API_KEY: ""
+      run: |
+        pytest tests/test_e2e_qdrant_migration.py -v --tb=short -s
+      timeout-minutes: 10
+
+    - name: Upload Qdrant test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-qdrant-results-py${{ matrix.python-version }}
+        path: |
+          .pytest_cache/
+          test-results.xml
+        retention-days: 7
+
+  e2e-summary:
+    name: E2E Test Summary
+    runs-on: ubuntu-latest
+    needs: [e2e-postgres, e2e-qdrant]
+    if: always()
+
+    steps:
+    - name: Check test results
+      run: |
+        echo "## E2E Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### PostgreSQL E2E Tests" >> $GITHUB_STEP_SUMMARY
+        echo "Status: ${{ needs.e2e-postgres.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Qdrant E2E Tests" >> $GITHUB_STEP_SUMMARY
+        echo "Status: ${{ needs.e2e-qdrant.result }}" >> $GITHUB_STEP_SUMMARY
+
+    - name: Fail if any test failed
+      if: needs.e2e-postgres.result != 'success' || needs.e2e-qdrant.result != 'success'
+      run: exit 1
