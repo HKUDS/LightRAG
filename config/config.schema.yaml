@@ -1,0 +1,199 @@
+# LightRAG 三语言实体提取器配置 Schema
+#
+# 此文件定义配置字段的元数据，包括：
+# - 字段路径（section）
+# - 默认值（default）
+# - 类型（type: 留空为自动推断，secret 为密钥）
+# - 自动生成（auto_generate: 密钥自动生成）
+# - 描述（description）
+#
+# 运行 ./scripts/setup.sh 自动生成 config/local.yaml 和 .env
+
+# ============================================================
+# 三语言实体提取器配置
+# ============================================================
+
+# 通用配置
+- section: trilingual.enabled
+  default: true
+  description: "Enable trilingual entity extractor (Chinese/English/Swedish)"
+
+- section: trilingual.default_language
+  default: "en"
+  description: "Default language if not specified (zh/en/sv)"
+
+- section: trilingual.lazy_loading
+  default: true
+  description: "Enable lazy loading (load models on-demand to save memory)"
+
+# 中文配置（HanLP）
+- section: trilingual.chinese.enabled
+  default: true
+  description: "Enable Chinese entity extraction (HanLP)"
+
+- section: trilingual.chinese.model
+  default: "CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_BASE_ZH"
+  description: "HanLP model name for Chinese"
+
+- section: trilingual.chinese.cache_dir
+  default: ""
+  description: "HanLP model cache directory (empty = default ~/.hanlp)"
+
+# 英文配置（spaCy）
+- section: trilingual.english.enabled
+  default: true
+  description: "Enable English entity extraction (spaCy)"
+
+- section: trilingual.english.model
+  default: "en_core_web_trf"
+  description: "spaCy model name for English (en_core_web_trf/en_core_web_lg/en_core_web_sm)"
+
+- section: trilingual.english.batch_size
+  default: 32
+  description: "spaCy batch size for English processing"
+
+# 瑞典语配置（spaCy）
+- section: trilingual.swedish.enabled
+  default: true
+  description: "Enable Swedish entity extraction (spaCy)"
+
+- section: trilingual.swedish.model
+  default: "sv_core_news_lg"
+  description: "spaCy model name for Swedish (sv_core_news_lg/sv_core_news_md/sv_core_news_sm)"
+
+- section: trilingual.swedish.batch_size
+  default: 32
+  description: "spaCy batch size for Swedish processing"
+
+# 性能配置
+- section: trilingual.performance.max_text_length
+  default: 1000000
+  description: "Maximum text length to process (characters)"
+
+- section: trilingual.performance.enable_gpu
+  default: false
+  description: "Enable GPU acceleration if available"
+
+- section: trilingual.performance.num_threads
+  default: 4
+  description: "Number of threads for parallel processing"
+
+# 缓存配置
+- section: trilingual.cache.enabled
+  default: true
+  description: "Enable result caching"
+
+- section: trilingual.cache.ttl
+  default: 3600
+  description: "Cache TTL in seconds (0 = no expiry)"
+
+- section: trilingual.cache.max_size
+  default: 1000
+  description: "Maximum number of cached results"
+
+# 日志配置
+- section: trilingual.logging.level
+  default: "INFO"
+  description: "Logging level (DEBUG/INFO/WARNING/ERROR)"
+
+- section: trilingual.logging.format
+  default: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  description: "Logging format string"
+
+# ============================================================
+# LightRAG 通用配置示例
+# ============================================================
+
+# API 密钥（自动生成）
+- section: lightrag.api.secret_key
+  type: secret
+  auto_generate: true
+  description: "API secret key (auto-generated, 32 characters)"
+
+# API 配置
+- section: lightrag.api.host
+  default: "0.0.0.0"
+  description: "API server host"
+
+- section: lightrag.api.port
+  default: 9621
+  description: "API server port"
+
+- section: lightrag.api.debug
+  default: false
+  description: "Enable debug mode"
+
+# 数据库配置
+- section: lightrag.database.type
+  default: "sqlite"
+  description: "Database type (sqlite/postgres/mysql)"
+
+- section: lightrag.database.path
+  default: "./data/lightrag.db"
+  description: "Database file path (for SQLite)"
+
+# 向量数据库配置
+- section: lightrag.vector_db.type
+  default: "nano"
+  description: "Vector database type (nano/milvus/qdrant/chroma)"
+
+- section: lightrag.vector_db.dimension
+  default: 1536
+  description: "Vector dimension"
+
+# LLM 配置
+- section: lightrag.llm.provider
+  default: "openai"
+  description: "LLM provider (openai/anthropic/ollama/custom)"
+
+- section: lightrag.llm.model
+  default: "gpt-4o-mini"
+  description: "LLM model name"
+
+- section: lightrag.llm.api_key
+  type: secret
+  auto_generate: false
+  description: "LLM API key (user-provided)"
+
+- section: lightrag.llm.base_url
+  default: ""
+  description: "Custom LLM base URL (optional)"
+
+- section: lightrag.llm.max_tokens
+  default: 4096
+  description: "Maximum tokens per request"
+
+- section: lightrag.llm.temperature
+  default: 0.0
+  description: "LLM temperature (0.0-1.0)"
+
+# 实体提取配置
+- section: lightrag.entity_extraction.max_gleaning
+  default: 1
+  description: "Entity extraction gleaning rounds (0=disabled, 1=enabled)"
+
+- section: lightrag.entity_extraction.use_trilingual
+  default: false
+  description: "Use trilingual extractor instead of LLM (requires setup)"
+
+# 关系提取配置
+- section: lightrag.relation_extraction.enabled
+  default: true
+  description: "Enable relation extraction"
+
+- section: lightrag.relation_extraction.method
+  default: "llm"
+  description: "Relation extraction method (llm/pattern/hybrid)"
+
+# 安全配置
+- section: lightrag.security.enable_api_key
+  default: false
+  description: "Require API key for requests"
+
+- section: lightrag.security.allowed_origins
+  default: "*"
+  description: "CORS allowed origins (comma-separated)"
+
+- section: lightrag.security.rate_limit
+  default: 100
+  description: "API rate limit (requests per minute per IP)"

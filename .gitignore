@@ -14,6 +14,9 @@ venv/
 # Enviroment Variable Files
 .env
 
+# Configuration Files (generated from schema)
+config/local.yaml
+
 # Build / Distribution
 dist/
 build/
