@@ -118,10 +118,11 @@ class ChunkTokenLimitExceededError(ValueError):
         preview = chunk_preview.strip() if chunk_preview else None
         truncated_preview = preview[:80] if preview else None
         preview_note = f" Preview: '{truncated_preview}'" if truncated_preview else ""
-        super().__init__(
+        message = (
             f"Chunk token length {chunk_tokens} exceeds chunk_token_size {chunk_token_limit}."
             f"{preview_note}"
         )
+        super().__init__(message)
         self.chunk_tokens = chunk_tokens
         self.chunk_token_limit = chunk_token_limit
         self.chunk_preview = truncated_preview
