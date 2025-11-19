@@ -2319,7 +2319,7 @@ class PGVectorStorage(BaseVectorStorage):
                 select_query = (
                     f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
                 )
-                rows = await db.fetch(select_query, [offset, batch_size])
+                rows = await db.query(select_query, [offset, batch_size], multirows=True)
 
                 if not rows:
                     break
