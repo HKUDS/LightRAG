@@ -348,7 +348,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         # New naming scheme with model isolation
         # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
-        self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
+        # Ensure model_suffix is not empty before appending
+        if model_suffix:
+            self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
+        else:
+            # Fallback: use legacy namespace if model_suffix is unavailable
+            self.final_namespace = self.legacy_namespace
+            logger.warning(
+                f"Model suffix unavailable, using legacy collection name '{self.legacy_namespace}'. "
+                f"Ensure embedding_func has model_name for proper model isolation."
+            )
 
         logger.info(
             f"Qdrant collection naming: "
