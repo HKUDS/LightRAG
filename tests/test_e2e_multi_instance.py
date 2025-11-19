@@ -148,12 +148,14 @@ def temp_working_dirs():
 @pytest.fixture
 def mock_llm_func():
     """Mock LLM function that returns proper entity/relation format"""
+
     async def llm_func(prompt, system_prompt=None, history_messages=[], **kwargs):
         await asyncio.sleep(0)  # Simulate async I/O
         return """entity<|#|>Artificial Intelligence<|#|>concept<|#|>AI is a field of computer science.
 entity<|#|>Machine Learning<|#|>concept<|#|>ML is a subset of AI.
 relation<|#|>Machine Learning<|#|>Artificial Intelligence<|#|>subset<|#|>ML is a subset of AI.
 <|COMPLETE|>"""
+
     return llm_func
 
 
@@ -191,6 +193,7 @@ async def test_legacy_migration_postgres(
     # Create temp working dir
     import tempfile
     import shutil
+
     temp_dir = tempfile.mkdtemp(prefix="lightrag_legacy_test_")
 
     try:
@@ -221,21 +224,24 @@ async def test_legacy_migration_postgres(
                 (workspace, id, content, content_vector, tokens, chunk_order_index, full_doc_id, file_path)
                 VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8)
             """
-            await pg_cleanup.execute(insert_sql, {
-                "workspace": pg_config["workspace"],
-                "id": f"legacy_{i}",
-                "content": f"Legacy content {i}",
-                "content_vector": vector_str,
-                "tokens": 100,
-                "chunk_order_index": i,
-                "full_doc_id": "legacy_doc",
-                "file_path": "/test/path"
-            })
+            await pg_cleanup.execute(
+                insert_sql,
+                {
+                    "workspace": pg_config["workspace"],
+                    "id": f"legacy_{i}",
+                    "content": f"Legacy content {i}",
+                    "content_vector": vector_str,
+                    "tokens": 100,
+                    "chunk_order_index": i,
+                    "full_doc_id": "legacy_doc",
+                    "file_path": "/test/path",
+                },
+            )
 
         # Verify legacy data
         count_result = await pg_cleanup.query(
             f"SELECT COUNT(*) as count FROM {legacy_table} WHERE workspace=$1",
-            [pg_config["workspace"]]
+            [pg_config["workspace"]],
         )
         legacy_count = count_result.get("count", 0)
         print(f"✅ Legacy table created with {legacy_count} records")
@@ -249,7 +255,7 @@ async def test_legacy_migration_postgres(
             embedding_dim=1536,
             max_token_size=8192,
             func=embed_func,
-            model_name="text-embedding-ada-002"
+            model_name="text-embedding-ada-002",
         )
 
         rag = LightRAG(
@@ -263,7 +269,7 @@ async def test_legacy_migration_postgres(
             doc_status_storage="PGDocStatusStorage",
             vector_db_storage_cls_kwargs={
                 **pg_config,
-                "cosine_better_than_threshold": 0.8
+                "cosine_better_than_threshold": 0.8,
             },
         )
 
@@ -276,12 +282,13 @@ async def test_legacy_migration_postgres(
 
         new_count_result = await pg_cleanup.query(
             f"SELECT COUNT(*) as count FROM {new_table} WHERE workspace=$1",
-            [pg_config["workspace"]]
+            [pg_config["workspace"]],
         )
         new_count = new_count_result.get("count", 0)
 
-        assert new_count == legacy_count, \
-            f"Expected {legacy_count} records migrated, got {new_count}"
+        assert (
+            new_count == legacy_count
+        ), f"Expected {legacy_count} records migrated, got {new_count}"
         print(f"✅ Migration successful: {new_count}/{legacy_count} records migrated")
         print(f"✅ New table: {new_table}")
 
@@ -311,6 +318,7 @@ async def test_legacy_migration_qdrant(
     # Create temp working dir
     import tempfile
     import shutil
+
     temp_dir = tempfile.mkdtemp(prefix="lightrag_qdrant_legacy_")
 
     try:
@@ -342,14 +350,11 @@ async def test_legacy_migration_qdrant(
                     "chunk_order_index": i,
                     "full_doc_id": "legacy_doc",
                     "file_path": "/test/path",
-                }
+                },
             )
             test_vectors.append(point)
 
-        qdrant_cleanup.upsert(
-            collection_name=legacy_collection,
-            points=test_vectors
-        )
+        qdrant_cleanup.upsert(collection_name=legacy_collection, points=test_vectors)
 
         # Verify legacy data
         legacy_count = qdrant_cleanup.count(legacy_collection).count
@@ -364,7 +369,7 @@ async def test_legacy_migration_qdrant(
             embedding_dim=1536,
             max_token_size=8192,
             func=embed_func,
-            model_name="text-embedding-ada-002"
+            model_name="text-embedding-ada-002",
         )
 
         rag = LightRAG(
@@ -375,7 +380,7 @@ async def test_legacy_migration_qdrant(
             vector_storage="QdrantVectorDBStorage",
             vector_db_storage_cls_kwargs={
                 **qdrant_config,
-                "cosine_better_than_threshold": 0.8
+                "cosine_better_than_threshold": 0.8,
             },
         )
 
@@ -387,21 +392,26 @@ async def test_legacy_migration_qdrant(
         assert "text_embedding_ada_002_1536d" in new_collection
 
         # Verify new collection exists
-        assert qdrant_cleanup.collection_exists(new_collection), \
-            f"New collection {new_collection} should exist"
+        assert qdrant_cleanup.collection_exists(
+            new_collection
+        ), f"New collection {new_collection} should exist"
 
         new_count = qdrant_cleanup.count(new_collection).count
 
-        assert new_count == legacy_count, \
-            f"Expected {legacy_count} vectors migrated, got {new_count}"
+        assert (
+            new_count == legacy_count
+        ), f"Expected {legacy_count} vectors migrated, got {new_count}"
         print(f"✅ Migration successful: {new_count}/{legacy_count} vectors migrated")
         print(f"✅ New collection: {new_collection}")
 
         # Verify vector dimension
         collection_info = qdrant_cleanup.get_collection(new_collection)
-        assert collection_info.config.params.vectors.size == 1536, \
-            "Migrated collection should have 1536 dimensions"
-        print(f"✅ Vector dimension verified: {collection_info.config.params.vectors.size}d")
+        assert (
+            collection_info.config.params.vectors.size == 1536
+        ), "Migrated collection should have 1536 dimensions"
+        print(
+            f"✅ Vector dimension verified: {collection_info.config.params.vectors.size}d"
+        )
 
         await rag.finalize_storages()
 
@@ -424,9 +434,6 @@ async def test_multi_instance_postgres(
     - Both instances insert documents independently
     - Verify separate tables created for each model+dimension combination
     - Verify data isolation between instances
-
-    Note: Additional embedding functions (C: 1536d, D: no model_name) are defined
-    but not used in this test. They can be activated for extended testing.
     """
     print("\n[E2E Multi-Instance] PostgreSQL with 2 models (768d vs 1024d)")
 
@@ -436,10 +443,7 @@ async def test_multi_instance_postgres(
         return np.random.rand(len(texts), 768)
 
     embedding_func_a = EmbeddingFunc(
-        embedding_dim=768,
-        max_token_size=8192,
-        func=embed_func_a,
-        model_name="model-a"
+        embedding_dim=768, max_token_size=8192, func=embed_func_a, model_name="model-a"
     )
 
     # Instance B: 1024d with model-b
@@ -448,34 +452,7 @@ async def test_multi_instance_postgres(
         return np.random.rand(len(texts), 1024)
 
     embedding_func_b = EmbeddingFunc(
-        embedding_dim=1024,
-        max_token_size=8192,
-        func=embed_func_b,
-        model_name="model-b"
-    )
-
-    # Instance C: 1536d with text-embedding-ada-002
-    async def embed_func_c(texts):
-        await asyncio.sleep(0)
-        return np.random.rand(len(texts), 1536)
-
-    embedding_func_c = EmbeddingFunc(
-        embedding_dim=1536,
-        max_token_size=8192,
-        func=embed_func_c,
-        model_name="text-embedding-ada-002"
-    )
-
-    # Instance D: 768d WITHOUT model_name (backward compatibility)
-    async def embed_func_d(texts):
-        await asyncio.sleep(0)
-        return np.random.rand(len(texts), 768)
-
-    embedding_func_d = EmbeddingFunc(
-        embedding_dim=768,
-        max_token_size=8192,
-        func=embed_func_d
-        # NO model_name - test backward compatibility
+        embedding_dim=1024, max_token_size=8192, func=embed_func_b, model_name="model-b"
     )
 
     # Initialize LightRAG instance A
@@ -489,10 +466,7 @@ async def test_multi_instance_postgres(
         vector_storage="PGVectorStorage",
         # Use default NetworkXStorage for graph storage (AGE extension not available in CI)
         doc_status_storage="PGDocStatusStorage",
-        vector_db_storage_cls_kwargs={
-            **pg_config,
-            "cosine_better_than_threshold": 0.8
-        },
+        vector_db_storage_cls_kwargs={**pg_config, "cosine_better_than_threshold": 0.8},
     )
 
     await rag_a.initialize_storages()
@@ -510,10 +484,7 @@ async def test_multi_instance_postgres(
         vector_storage="PGVectorStorage",
         # Use default NetworkXStorage for graph storage (AGE extension not available in CI)
         doc_status_storage="PGDocStatusStorage",
-        vector_db_storage_cls_kwargs={
-            **pg_config,
-            "cosine_better_than_threshold": 0.8
-        },
+        vector_db_storage_cls_kwargs={**pg_config, "cosine_better_than_threshold": 0.8},
     )
 
     await rag_b.initialize_storages()
@@ -536,13 +507,15 @@ async def test_multi_instance_postgres(
     result_a = await pg_cleanup.query(check_query, [table_a.lower()])
     result_b = await pg_cleanup.query(check_query, [table_b.lower()])
 
-    assert result_a.get("exists") == True, f"Table {table_a} should exist"
-    assert result_b.get("exists") == True, f"Table {table_b} should exist"
+    assert result_a.get("exists") is True, f"Table {table_a} should exist"
+    assert result_b.get("exists") is True, f"Table {table_b} should exist"
     print("✅ Both tables exist in PostgreSQL")
 
     # Insert documents in instance A
     print("📝 Inserting document in instance A...")
-    await rag_a.ainsert("Document A: This is about artificial intelligence and neural networks.")
+    await rag_a.ainsert(
+        "Document A: This is about artificial intelligence and neural networks."
+    )
 
     # Insert documents in instance B
     print("📝 Inserting document in instance B...")
@@ -550,12 +523,10 @@ async def test_multi_instance_postgres(
 
     # Verify data isolation
     count_a_result = await pg_cleanup.query(
-        f"SELECT COUNT(*) as count FROM {table_a}",
-        []
+        f"SELECT COUNT(*) as count FROM {table_a}", []
     )
     count_b_result = await pg_cleanup.query(
-        f"SELECT COUNT(*) as count FROM {table_b}",
-        []
+        f"SELECT COUNT(*) as count FROM {table_b}", []
     )
 
     count_a = count_a_result.get("count", 0)
@@ -596,10 +567,7 @@ async def test_multi_instance_qdrant(
         return np.random.rand(len(texts), 768)
 
     embedding_func_a = EmbeddingFunc(
-        embedding_dim=768,
-        max_token_size=8192,
-        func=embed_func_a,
-        model_name="model-a"
+        embedding_dim=768, max_token_size=8192, func=embed_func_a, model_name="model-a"
     )
 
     # Create embedding function for model B (1024d)
@@ -608,10 +576,7 @@ async def test_multi_instance_qdrant(
         return np.random.rand(len(texts), 1024)
 
     embedding_func_b = EmbeddingFunc(
-        embedding_dim=1024,
-        max_token_size=8192,
-        func=embed_func_b,
-        model_name="model-b"
+        embedding_dim=1024, max_token_size=8192, func=embed_func_b, model_name="model-b"
     )
 
     # Initialize LightRAG instance A
@@ -624,7 +589,7 @@ async def test_multi_instance_qdrant(
         vector_storage="QdrantVectorDBStorage",
         vector_db_storage_cls_kwargs={
             **qdrant_config,
-            "cosine_better_than_threshold": 0.8
+            "cosine_better_than_threshold": 0.8,
         },
     )
 
@@ -642,7 +607,7 @@ async def test_multi_instance_qdrant(
         vector_storage="QdrantVectorDBStorage",
         vector_db_storage_cls_kwargs={
             **qdrant_config,
-            "cosine_better_than_threshold": 0.8
+            "cosine_better_than_threshold": 0.8,
         },
     )
 
@@ -657,10 +622,12 @@ async def test_multi_instance_qdrant(
     print(f"✅ Collection isolation verified: {collection_a} != {collection_b}")
 
     # Verify both collections exist in Qdrant
-    assert qdrant_cleanup.collection_exists(collection_a), \
-        f"Collection {collection_a} should exist"
-    assert qdrant_cleanup.collection_exists(collection_b), \
-        f"Collection {collection_b} should exist"
+    assert qdrant_cleanup.collection_exists(
+        collection_a
+    ), f"Collection {collection_a} should exist"
+    assert qdrant_cleanup.collection_exists(
+        collection_b
+    ), f"Collection {collection_b} should exist"
     print("✅ Both collections exist in Qdrant")
 
     # Verify vector dimensions
@@ -668,12 +635,18 @@ async def test_multi_instance_qdrant(
     info_b = qdrant_cleanup.get_collection(collection_b)
 
     assert info_a.config.params.vectors.size == 768, "Model A should use 768 dimensions"
-    assert info_b.config.params.vectors.size == 1024, "Model B should use 1024 dimensions"
-    print(f"✅ Vector dimensions verified: {info_a.config.params.vectors.size}d vs {info_b.config.params.vectors.size}d")
+    assert (
+        info_b.config.params.vectors.size == 1024
+    ), "Model B should use 1024 dimensions"
+    print(
+        f"✅ Vector dimensions verified: {info_a.config.params.vectors.size}d vs {info_b.config.params.vectors.size}d"
+    )
 
     # Insert documents in instance A
     print("📝 Inserting document in instance A...")
-    await rag_a.ainsert("Document A: This is about artificial intelligence and neural networks.")
+    await rag_a.ainsert(
+        "Document A: This is about artificial intelligence and neural networks."
+    )
 
     # Insert documents in instance B
     print("📝 Inserting document in instance B...")
