@@ -533,7 +533,7 @@ class LightRAG:
         # Fix global_config now
         global_config = asdict(self)
         # Restore original EmbeddingFunc object (asdict converts it to dict)
-        global_config['embedding_func'] = original_embedding_func
+        global_config["embedding_func"] = original_embedding_func
 
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")

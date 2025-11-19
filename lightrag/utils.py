@@ -381,7 +381,7 @@ class EmbeddingFunc:
         """
         model_part = self.model_name if self.model_name else "unknown"
         # Clean model name: remove special chars, convert to lower, replace - with _
-        safe_model_name = re.sub(r'[^a-zA-Z0-9_]', '_', model_part.lower())
+        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_part.lower())
         return f"{safe_model_name}_{self.embedding_dim}d"
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:

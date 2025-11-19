@@ -2316,10 +2316,10 @@ class PGVectorStorage(BaseVectorStorage):
 
             while True:
                 # Fetch a batch of rows
-                select_query = (
-                    f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
+                select_query = f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
+                rows = await db.query(
+                    select_query, [offset, batch_size], multirows=True
                 )
-                rows = await db.query(select_query, [offset, batch_size], multirows=True)
 
                 if not rows:
                     break
@@ -2561,7 +2561,9 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return
 
-        delete_sql = f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
+        delete_sql = (
+            f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
+        )
 
         try:
             await self.db.execute(delete_sql, {"workspace": self.workspace, "ids": ids})
@@ -3359,6 +3361,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
 class PostgreSQLMigrationError(Exception):
     """Exception for PostgreSQL table migration errors."""
+
     pass
 
 

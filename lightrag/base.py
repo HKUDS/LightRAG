@@ -229,16 +229,21 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         # Try to get model identifier from the embedding function
         # If it's a wrapped function (doesn't have get_model_identifier),
         # fallback to the original embedding_func from global_config
-        if hasattr(self.embedding_func, 'get_model_identifier'):
+        if hasattr(self.embedding_func, "get_model_identifier"):
             return self.embedding_func.get_model_identifier()
-        elif 'embedding_func' in self.global_config:
-            original_embedding_func = self.global_config['embedding_func']
-            if original_embedding_func is not None and hasattr(original_embedding_func, 'get_model_identifier'):
+        elif "embedding_func" in self.global_config:
+            original_embedding_func = self.global_config["embedding_func"]
+            if original_embedding_func is not None and hasattr(
+                original_embedding_func, "get_model_identifier"
+            ):
                 return original_embedding_func.get_model_identifier()
             else:
                 # Debug: log why we couldn't get model identifier
                 from lightrag.utils import logger
-                logger.debug(f"Could not get model_identifier: embedding_func is {type(original_embedding_func)}, has method={hasattr(original_embedding_func, 'get_model_identifier') if original_embedding_func else False}")
+
+                logger.debug(
+                    f"Could not get model_identifier: embedding_func is {type(original_embedding_func)}, has method={hasattr(original_embedding_func, 'get_model_identifier') if original_embedding_func else False}"
+                )
 
         # Fallback: no model identifier available
         return ""

@@ -300,7 +300,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # New naming scheme with model isolation
         # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
         self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
-        
+
         logger.info(
             f"Qdrant collection naming: "
             f"new='{self.final_namespace}', "
