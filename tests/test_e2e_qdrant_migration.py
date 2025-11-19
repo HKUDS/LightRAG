@@ -22,7 +22,7 @@ from qdrant_client.models import Distance, VectorParams
 
 
 # E2E test configuration from environment
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def qdrant_config():
     """Real Qdrant configuration from environment variables"""
     return {
@@ -31,7 +31,7 @@ def qdrant_config():
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def qdrant_client(qdrant_config):
     """Create a real Qdrant client"""
     client = QdrantClient(

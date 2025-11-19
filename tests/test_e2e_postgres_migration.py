@@ -20,7 +20,7 @@ from lightrag.namespace import NameSpace
 
 
 # E2E test configuration from environment
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def pg_config():
     """Real PostgreSQL configuration from environment variables"""
     return {
@@ -34,7 +34,7 @@ def pg_config():
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 async def real_db(pg_config):
     """Create a real PostgreSQL database connection"""
     db = PostgreSQLDB(pg_config)
