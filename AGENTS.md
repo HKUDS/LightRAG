@@ -12,7 +12,7 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - `python -m venv .venv && source .venv/bin/activate`: set up the Python runtime.
 - `pip install -e .` / `pip install -e .[api]`: install the package and API extras in editable mode.
 - `lightrag-server` or `uvicorn lightrag.api.lightrag_server:app --reload`: start the API locally; ensure `.env` is present.
-- `python -m pytest tests` or `python test_graph_storage.py`: run the full suite or a targeted script.
+- `python -m pytest tests` (offline markers apply by default) or `python -m pytest tests --run-integration` / `python test_graph_storage.py`: run the full suite, opt into integration coverage, or target an individual script.
 - `ruff check .`: lint Python sources before committing.
 - `bun install`, `bun run dev`, `bun run build`, `bun test`: manage the web UI workflow (Bun is mandatory).
 
@@ -24,9 +24,11 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Front-end code should remain in TypeScript with two-space indentation, rely on functional React components with hooks, and follow Tailwind utility style.
 
 ## Testing Guidelines
-- Add pytest cases beside the affected module or the relevant `test_*.py`; functions should start with `test_`.
-- Export required `LIGHTRAG_*` environment variables before running integration or storage tests.
-- For UI updates, pair code with Vitest specs and run `bun test`.
+- Keep pytest additions close to the code you touch (`tests/` mirrors feature folders and there are root-level `test_*.py` helpers); functions must start with `test_`.
+- Follow `tests/pytest.ini`: markers include `offline`, `integration`, `requires_db`, and `requires_api`, and the suite runs with `-m "not integration"` by default—pass `--run-integration` (or set `LIGHTRAG_RUN_INTEGRATION=true`) when external services are available.
+- Use the custom CLI toggles from `tests/conftest.py`: `--keep-artifacts`/`LIGHTRAG_KEEP_ARTIFACTS=true`, `--stress-test`/`LIGHTRAG_STRESS_TEST=true`, and `--test-workers N`/`LIGHTRAG_TEST_WORKERS` to dial up workloads or preserve temp files during investigations.
+- Export other required `LIGHTRAG_*` environment variables before running integration or storage tests so adapters can reach configured backends.
+- For UI updates, pair changes with Vitest specs and run `bun test`.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects (e.g., `Fix lock key normalization`) and add body context only when necessary.
@@ -37,3 +39,10 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Copy `.env.example` and `config.ini.example`; never commit secrets or real connection strings.
 - Configure storage backends through `LIGHTRAG_*` variables and validate them with `docker-compose` services when needed.
 - Treat `lightrag.log*` as local artefacts; purge sensitive information before sharing logs or outputs.
+
+## Automation & Agent Workflow
+- Use repo-relative `workdir` arguments for every shell command and prefer `rg`/`rg --files` for searches since they are faster under the CLI harness.
+- Default edits to ASCII, rely on `apply_patch` for single-file changes, and only add concise comments that aid comprehension of complex logic.
+- Honor existing local modifications; never revert or discard user changes (especially via `git reset --hard`) unless explicitly asked.
+- Follow the planning tool guidance: skip it for trivial fixes, but provide multi-step plans for non-trivial work and keep the plan updated as steps progress.
+- Validate changes by running the relevant `ruff`/`pytest`/`bun test` commands whenever feasible, and describe any unrun checks with follow-up guidance.
