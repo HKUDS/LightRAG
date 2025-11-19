@@ -271,7 +271,7 @@ async def test_legacy_migration_postgres(
         await rag.initialize_storages()
 
         # Step 3: Verify migration
-        new_table = rag.chunk_entity_relation_graph.chunk_vdb.table_name
+        new_table = rag.chunks_vdb.table_name
         assert "text_embedding_ada_002_1536d" in new_table.lower()
 
         new_count_result = await pg_cleanup.query(
@@ -383,7 +383,7 @@ async def test_legacy_migration_qdrant(
         await rag.initialize_storages()
 
         # Step 3: Verify migration
-        new_collection = rag.chunk_entity_relation_graph.chunk_vdb.final_namespace
+        new_collection = rag.chunks_vdb.final_namespace
         assert "text_embedding_ada_002_1536d" in new_collection
 
         # Verify new collection exists
@@ -496,7 +496,7 @@ async def test_multi_instance_postgres(
     )
 
     await rag_a.initialize_storages()
-    table_a = rag_a.chunk_entity_relation_graph.chunk_vdb.table_name
+    table_a = rag_a.chunks_vdb.table_name
     print(f"✅ Instance A initialized: {table_a}")
 
     # Initialize LightRAG instance B
@@ -517,7 +517,7 @@ async def test_multi_instance_postgres(
     )
 
     await rag_b.initialize_storages()
-    table_b = rag_b.chunk_entity_relation_graph.chunk_vdb.table_name
+    table_b = rag_b.chunks_vdb.table_name
     print(f"✅ Instance B initialized: {table_b}")
 
     # Verify table names are different
@@ -629,7 +629,7 @@ async def test_multi_instance_qdrant(
     )
 
     await rag_a.initialize_storages()
-    collection_a = rag_a.chunk_entity_relation_graph.chunk_vdb.final_namespace
+    collection_a = rag_a.chunks_vdb.final_namespace
     print(f"✅ Instance A initialized: {collection_a}")
 
     # Initialize LightRAG instance B
@@ -647,7 +647,7 @@ async def test_multi_instance_qdrant(
     )
 
     await rag_b.initialize_storages()
-    collection_b = rag_b.chunk_entity_relation_graph.chunk_vdb.final_namespace
+    collection_b = rag_b.chunks_vdb.final_namespace
     print(f"✅ Instance B initialized: {collection_b}")
 
     # Verify collection names are different
