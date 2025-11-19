@@ -128,12 +128,27 @@ jobs:
 
     - name: Wait for Qdrant
       run: |
-        timeout 30 bash -c 'until curl -f http://localhost:6333/health > /dev/null 2>&1; do sleep 1; done'
-        echo "Qdrant is ready"
+        echo "Waiting for Qdrant to be ready..."
+        for i in {1..60}; do
+          if curl -s http://localhost:6333 > /dev/null 2>&1; then
+            echo "Qdrant is ready!"
+            break
+          fi
+          echo "Attempt $i/60: Qdrant not ready yet, waiting..."
+          sleep 1
+        done
+        # Final check
+        if ! curl -s http://localhost:6333 > /dev/null 2>&1; then
+          echo "ERROR: Qdrant failed to start after 60 seconds"
+          exit 1
+        fi
 
     - name: Verify Qdrant connection
       run: |
+        echo "Verifying Qdrant API..."
         curl -X GET "http://localhost:6333/collections" -H "Content-Type: application/json"
+        echo ""
+        echo "Qdrant is accessible and ready for testing"
 
     - name: Run Qdrant E2E tests
       env:
