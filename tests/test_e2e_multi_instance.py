@@ -1270,7 +1270,7 @@ async def test_dimension_mismatch_qdrant(
         for i in range(3):
             points.append(
                 models.PointStruct(
-                    id=str(i),
+                    id=i,  # Use integer ID instead of string
                     vector=[0.1] * 768,  # OLD dimension
                     payload={"content": f"Legacy content {i}", "id": f"doc_{i}"},
                 )
