@@ -172,6 +172,6 @@ async def azure_openai_embed(
     )
 
     response = await openai_async_client.embeddings.create(
-        model=model, input=texts, encoding_format="float"
+        model=deployment, input=texts, encoding_format="float"
     )
     return np.array([dp.embedding for dp in response.data])
