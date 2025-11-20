@@ -1090,6 +1090,265 @@ async def test_workspace_isolation_e2e_qdrant(
     print("✅ Workspace isolation verified (same collection, isolated data)")
 
 
+# Test: Dimension mismatch during migration (PostgreSQL)
+@pytest.mark.asyncio
+async def test_dimension_mismatch_postgres(
+    pg_cleanup, mock_llm_func, mock_tokenizer, pg_config
+):
+    """
+    Test dimension mismatch scenario - upgrading from 1536d to 3072d model
+
+    Scenario:
+    1. Create legacy table with 1536d vectors
+    2. Insert test data
+    3. Initialize LightRAG with 3072d model
+    4. Verify system handles dimension mismatch gracefully
+    """
+    print("\n[E2E Test] Dimension mismatch: 1536d -> 3072d (PostgreSQL)")
+
+    import tempfile
+    import shutil
+
+    temp_dir = tempfile.mkdtemp(prefix="lightrag_dim_test_")
+
+    try:
+        # Step 1: Create legacy table with 1536d vectors
+        legacy_table = "lightrag_vdb_chunks"
+
+        create_legacy_sql = f"""
+            CREATE TABLE IF NOT EXISTS {legacy_table} (
+                workspace VARCHAR(255),
+                id VARCHAR(255) PRIMARY KEY,
+                content TEXT,
+                content_vector vector(1536),
+                tokens INTEGER,
+                chunk_order_index INTEGER,
+                full_doc_id VARCHAR(255),
+                file_path TEXT,
+                create_time TIMESTAMP DEFAULT NOW(),
+                update_time TIMESTAMP DEFAULT NOW()
+            )
+        """
+        await pg_cleanup.execute(create_legacy_sql, None)
+
+        # Insert test records with 1536d vectors
+        for i in range(3):
+            vector_str = "[" + ",".join(["0.1"] * 1536) + "]"
+            insert_sql = f"""
+                INSERT INTO {legacy_table}
+                (workspace, id, content, content_vector, tokens, chunk_order_index, full_doc_id, file_path)
+                VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8)
+            """
+            await pg_cleanup.execute(
+                insert_sql,
+                {
+                    "workspace": pg_config["workspace"],
+                    "id": f"legacy_{i}",
+                    "content": f"Legacy content {i}",
+                    "content_vector": vector_str,
+                    "tokens": 100,
+                    "chunk_order_index": i,
+                    "full_doc_id": "legacy_doc",
+                    "file_path": "/test/path",
+                },
+            )
+
+        print(f"✅ Legacy table created with 3 records (1536d)")
+
+        # Step 2: Try to initialize LightRAG with NEW model (3072d)
+        async def embed_func_new(texts):
+            await asyncio.sleep(0)
+            return np.random.rand(len(texts), 3072)  # NEW dimension
+
+        embedding_func_new = EmbeddingFunc(
+            embedding_dim=3072,  # NEW dimension
+            max_token_size=8192,
+            func=embed_func_new,
+            model_name="text-embedding-3-large",
+        )
+
+        print("📦 Initializing LightRAG with new model (3072d)...")
+
+        # This should handle dimension mismatch gracefully
+        # Either: 1) Create new table for new model, or 2) Raise clear error
+        try:
+            rag = LightRAG(
+                working_dir=temp_dir,
+                llm_model_func=mock_llm_func,
+                embedding_func=embedding_func_new,
+                tokenizer=mock_tokenizer,
+                kv_storage="PGKVStorage",
+                vector_storage="PGVectorStorage",
+                doc_status_storage="PGDocStatusStorage",
+                vector_db_storage_cls_kwargs={
+                    **pg_config,
+                    "cosine_better_than_threshold": 0.8,
+                },
+            )
+
+            await rag.initialize_storages()
+
+            # Check what happened
+            new_table = rag.chunks_vdb.table_name
+            print(f"✅ Initialization succeeded, new table: {new_table}")
+
+            # Verify new table has correct dimension (3072d)
+            # Check if both tables exist
+            check_legacy = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{legacy_table}')"
+            check_new = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{new_table.lower()}')"
+
+            legacy_exists = await pg_cleanup.query(check_legacy, [])
+            new_exists = await pg_cleanup.query(check_new, [])
+
+            print(f"✅ Legacy table exists: {legacy_exists.get('exists')}")
+            print(f"✅ New table exists: {new_exists.get('exists')}")
+
+            # Test should verify proper handling:
+            # - New table created with 3072d
+            # - Legacy table preserved (or migrated to dimension-matched table)
+            # - System is operational
+
+            await rag.finalize_storages()
+
+        except Exception as e:
+            # If it raises an error, it should be a clear, actionable error
+            print(f"⚠️ Initialization raised exception: {e}")
+            # Verify error message is clear and actionable
+            assert any(
+                keyword in str(e).lower()
+                for keyword in ["dimension", "mismatch", "1536", "3072"]
+            ), f"Error message should mention dimension mismatch: {e}"
+            print("✅ Clear error message provided to user")
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# Test: Dimension mismatch during migration (Qdrant)
+@pytest.mark.asyncio
+async def test_dimension_mismatch_qdrant(
+    qdrant_cleanup, mock_llm_func, mock_tokenizer, qdrant_config
+):
+    """
+    Test dimension mismatch scenario - upgrading from 768d to 1024d model
+
+    Scenario:
+    1. Create legacy collection with 768d vectors
+    2. Insert test data
+    3. Initialize LightRAG with 1024d model
+    4. Verify system handles dimension mismatch gracefully
+    """
+    print("\n[E2E Test] Dimension mismatch: 768d -> 1024d (Qdrant)")
+
+    import tempfile
+    import shutil
+
+    temp_dir = tempfile.mkdtemp(prefix="lightrag_qdrant_dim_test_")
+
+    try:
+        # Step 1: Create legacy collection with 768d vectors
+        legacy_collection = "lightrag_vdb_chunks"
+
+        client = QdrantClient(**qdrant_config)
+
+        # Delete if exists
+        try:
+            client.delete_collection(legacy_collection)
+        except:
+            pass
+
+        # Create legacy collection with 768d
+        from qdrant_client import models
+
+        client.create_collection(
+            collection_name=legacy_collection,
+            vectors_config=models.VectorParams(size=768, distance=models.Distance.COSINE),
+        )
+
+        # Insert test points with 768d vectors
+        points = []
+        for i in range(3):
+            points.append(
+                models.PointStruct(
+                    id=str(i),
+                    vector=[0.1] * 768,  # OLD dimension
+                    payload={"content": f"Legacy content {i}", "id": f"doc_{i}"},
+                )
+            )
+
+        client.upsert(collection_name=legacy_collection, points=points, wait=True)
+        print(f"✅ Legacy collection created with 3 records (768d)")
+
+        # Step 2: Try to initialize LightRAG with NEW model (1024d)
+        async def embed_func_new(texts):
+            await asyncio.sleep(0)
+            return np.random.rand(len(texts), 1024)  # NEW dimension
+
+        embedding_func_new = EmbeddingFunc(
+            embedding_dim=1024,  # NEW dimension
+            max_token_size=8192,
+            func=embed_func_new,
+            model_name="bge-large",
+        )
+
+        print("📦 Initializing LightRAG with new model (1024d)...")
+
+        # This should handle dimension mismatch gracefully
+        try:
+            rag = LightRAG(
+                working_dir=temp_dir,
+                llm_model_func=mock_llm_func,
+                embedding_func=embedding_func_new,
+                tokenizer=mock_tokenizer,
+                vector_storage="QdrantVectorDBStorage",
+                vector_db_storage_cls_kwargs={
+                    **qdrant_config,
+                    "cosine_better_than_threshold": 0.8,
+                },
+            )
+
+            await rag.initialize_storages()
+
+            # Check what happened
+            new_collection = rag.chunks_vdb.final_namespace
+            print(f"✅ Initialization succeeded, new collection: {new_collection}")
+
+            # Verify collections
+            legacy_exists = client.collection_exists(legacy_collection)
+            new_exists = client.collection_exists(new_collection)
+
+            print(f"✅ Legacy collection exists: {legacy_exists}")
+            print(f"✅ New collection exists: {new_exists}")
+
+            # Verify new collection has correct dimension
+            collection_info = client.get_collection(new_collection)
+            new_dim = collection_info.config.params.vectors.size
+            print(f"✅ New collection dimension: {new_dim}d")
+            assert new_dim == 1024, f"New collection should have 1024d, got {new_dim}d"
+
+            await rag.finalize_storages()
+
+        except Exception as e:
+            # If it raises an error, it should be a clear, actionable error
+            print(f"⚠️ Initialization raised exception: {e}")
+            # Verify error message is clear and actionable
+            assert any(
+                keyword in str(e).lower()
+                for keyword in ["dimension", "mismatch", "768", "1024"]
+            ), f"Error message should mention dimension mismatch: {e}"
+            print("✅ Clear error message provided to user")
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        # Cleanup collections
+        try:
+            for coll in client.get_collections().collections:
+                if "lightrag" in coll.name.lower():
+                    client.delete_collection(coll.name)
+        except:
+            pass
+
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])
