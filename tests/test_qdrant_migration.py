@@ -12,9 +12,11 @@ def mock_qdrant_client():
         client = mock_client_cls.return_value
         client.collection_exists.return_value = False
         client.count.return_value.count = 0
-        # Mock payload schema for get_collection
+        # Mock payload schema and vector config for get_collection
         collection_info = MagicMock()
         collection_info.payload_schema = {}
+        # Mock vector dimension to match mock_embedding_func (768d)
+        collection_info.config.params.vectors.size = 768
         client.get_collection.return_value = collection_info
         yield client
 
@@ -253,6 +255,12 @@ async def test_scenario_2_legacy_upgrade_migration(
     mock_qdrant_client.collection_exists.side_effect = (
         lambda name: name == legacy_collection
     )
+
+    # Mock legacy collection info with 1536d vectors
+    legacy_collection_info = MagicMock()
+    legacy_collection_info.payload_schema = {}
+    legacy_collection_info.config.params.vectors.size = 1536
+    mock_qdrant_client.get_collection.return_value = legacy_collection_info
 
     # Mock legacy data
     mock_qdrant_client.count.return_value.count = 150

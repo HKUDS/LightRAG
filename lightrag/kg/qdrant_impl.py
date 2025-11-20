@@ -251,6 +251,51 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
                 return
 
+            # Check vector dimension compatibility before migration
+            try:
+                legacy_info = client.get_collection(legacy_collection)
+                legacy_dim = legacy_info.config.params.vectors.size
+
+                # Get expected dimension from kwargs
+                new_dim = (
+                    kwargs.get("vectors_config").size
+                    if "vectors_config" in kwargs
+                    else None
+                )
+
+                if new_dim and legacy_dim != new_dim:
+                    logger.warning(
+                        f"Qdrant: Dimension mismatch detected! "
+                        f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
+                        f"but new embedding model expects {new_dim}d. "
+                        f"Migration skipped to prevent data loss. "
+                        f"Legacy collection preserved as '{legacy_collection}'. "
+                        f"Creating new empty collection '{collection_name}' for new data."
+                    )
+
+                    # Create new collection but skip migration
+                    client.create_collection(collection_name, **kwargs)
+                    client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name=WORKSPACE_ID_FIELD,
+                        field_schema=models.KeywordIndexParams(
+                            type=models.KeywordIndexType.KEYWORD,
+                            is_tenant=True,
+                        ),
+                    )
+
+                    logger.info(
+                        f"Qdrant: New collection '{collection_name}' created. "
+                        f"To query legacy data, please use a {legacy_dim}d embedding model."
+                    )
+                    return
+
+            except Exception as e:
+                logger.warning(
+                    f"Qdrant: Could not verify legacy collection dimension: {e}. "
+                    f"Proceeding with caution..."
+                )
+
             # Create new collection first
             logger.info(f"Qdrant: Creating new collection '{collection_name}'")
             client.create_collection(collection_name, **kwargs)

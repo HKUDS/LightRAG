@@ -2344,6 +2344,71 @@ class PGVectorStorage(BaseVectorStorage):
                 await db._create_vector_index(table_name, embedding_dim)
                 return
 
+            # Check vector dimension compatibility before migration
+            legacy_dim = None
+            try:
+                # Try to get vector dimension from pg_attribute metadata
+                dim_query = """
+                SELECT
+                    CASE
+                        WHEN typname = 'vector' THEN
+                            COALESCE(atttypmod, -1)
+                        ELSE -1
+                    END as vector_dim
+                FROM pg_attribute a
+                JOIN pg_type t ON a.atttypid = t.oid
+                WHERE a.attrelid = $1::regclass
+                AND a.attname = 'content_vector'
+                """
+                dim_result = await db.query(dim_query, [legacy_table_name])
+                legacy_dim = dim_result.get("vector_dim", -1) if dim_result else -1
+
+                if legacy_dim <= 0:
+                    # Alternative: Try to detect by sampling a vector
+                    logger.info(
+                        "PostgreSQL: Metadata dimension check failed, trying vector sampling..."
+                    )
+                    sample_query = (
+                        f"SELECT content_vector FROM {legacy_table_name} LIMIT 1"
+                    )
+                    sample_result = await db.query(sample_query, [])
+                    if sample_result and sample_result.get("content_vector"):
+                        vector_data = sample_result["content_vector"]
+                        # pgvector returns list directly
+                        if isinstance(vector_data, (list, tuple)):
+                            legacy_dim = len(vector_data)
+                        elif isinstance(vector_data, str):
+                            import json
+
+                            vector_list = json.loads(vector_data)
+                            legacy_dim = len(vector_list)
+
+                if legacy_dim > 0 and embedding_dim and legacy_dim != embedding_dim:
+                    logger.warning(
+                        f"PostgreSQL: Dimension mismatch detected! "
+                        f"Legacy table '{legacy_table_name}' has {legacy_dim}d vectors, "
+                        f"but new embedding model expects {embedding_dim}d. "
+                        f"Migration skipped to prevent data loss. "
+                        f"Legacy table preserved as '{legacy_table_name}'. "
+                        f"Creating new empty table '{table_name}' for new data."
+                    )
+
+                    # Create new table but skip migration
+                    await _pg_create_table(db, table_name, base_table, embedding_dim)
+                    await db._create_vector_index(table_name, embedding_dim)
+
+                    logger.info(
+                        f"PostgreSQL: New table '{table_name}' created. "
+                        f"To query legacy data, please use a {legacy_dim}d embedding model."
+                    )
+                    return
+
+            except Exception as e:
+                logger.warning(
+                    f"PostgreSQL: Could not verify legacy table vector dimension: {e}. "
+                    f"Proceeding with caution..."
+                )
+
             # Create new table first
             logger.info(f"PostgreSQL: Creating new table '{table_name}'")
             await _pg_create_table(db, table_name, base_table, embedding_dim)

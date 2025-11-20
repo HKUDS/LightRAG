@@ -1169,56 +1169,73 @@ async def test_dimension_mismatch_postgres(
 
         print("📦 Initializing LightRAG with new model (3072d)...")
 
-        # This should handle dimension mismatch gracefully
-        # Either: 1) Create new table for new model, or 2) Raise clear error
-        try:
-            rag = LightRAG(
-                working_dir=temp_dir,
-                llm_model_func=mock_llm_func,
-                embedding_func=embedding_func_new,
-                tokenizer=mock_tokenizer,
-                kv_storage="PGKVStorage",
-                vector_storage="PGVectorStorage",
-                doc_status_storage="PGDocStatusStorage",
-                vector_db_storage_cls_kwargs={
-                    **pg_config,
-                    "cosine_better_than_threshold": 0.8,
-                },
-            )
+        # With our fix, this should handle dimension mismatch gracefully:
+        # Expected behavior:
+        # 1. Detect dimension mismatch (1536d legacy vs 3072d new)
+        # 2. Skip migration to prevent data corruption
+        # 3. Preserve legacy table with original data
+        # 4. Create new empty table for 3072d model
+        # 5. System initializes successfully
 
-            await rag.initialize_storages()
+        rag = LightRAG(
+            working_dir=temp_dir,
+            llm_model_func=mock_llm_func,
+            embedding_func=embedding_func_new,
+            tokenizer=mock_tokenizer,
+            kv_storage="PGKVStorage",
+            vector_storage="PGVectorStorage",
+            doc_status_storage="PGDocStatusStorage",
+            vector_db_storage_cls_kwargs={
+                **pg_config,
+                "cosine_better_than_threshold": 0.8,
+            },
+        )
 
-            # Check what happened
-            new_table = rag.chunks_vdb.table_name
-            print(f"✅ Initialization succeeded, new table: {new_table}")
+        await rag.initialize_storages()
 
-            # Verify new table has correct dimension (3072d)
-            # Check if both tables exist
-            check_legacy = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{legacy_table}')"
-            check_new = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{new_table.lower()}')"
+        # Verify expected behavior
+        new_table = rag.chunks_vdb.table_name
+        print(f"✅ Initialization succeeded, new table: {new_table}")
 
-            legacy_exists = await pg_cleanup.query(check_legacy, [])
-            new_exists = await pg_cleanup.query(check_new, [])
+        # 1. New table should exist and be created with model suffix
+        assert "text_embedding_3_large_3072d" in new_table.lower()
+        check_new = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{new_table.lower()}')"
+        new_exists = await pg_cleanup.query(check_new, [])
+        assert new_exists.get("exists") is True, "New table should exist"
+        print(f"✅ New table created: {new_table}")
 
-            print(f"✅ Legacy table exists: {legacy_exists.get('exists')}")
-            print(f"✅ New table exists: {new_exists.get('exists')}")
+        # 2. Legacy table should be preserved (not deleted)
+        check_legacy = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{legacy_table}')"
+        legacy_exists = await pg_cleanup.query(check_legacy, [])
+        assert (
+            legacy_exists.get("exists") is True
+        ), "Legacy table should be preserved when dimensions don't match"
+        print(f"✅ Legacy table preserved: {legacy_table}")
 
-            # Test should verify proper handling:
-            # - New table created with 3072d
-            # - Legacy table preserved (or migrated to dimension-matched table)
-            # - System is operational
+        # 3. Legacy table should still have original data (not migrated)
+        legacy_count_result = await pg_cleanup.query(
+            f"SELECT COUNT(*) as count FROM {legacy_table}", []
+        )
+        legacy_count = legacy_count_result.get("count", 0)
+        assert (
+            legacy_count == 3
+        ), f"Legacy table should still have 3 records, got {legacy_count}"
+        print(f"✅ Legacy data preserved: {legacy_count} records")
 
-            await rag.finalize_storages()
+        # 4. New table should be empty (migration skipped)
+        new_count_result = await pg_cleanup.query(
+            f"SELECT COUNT(*) as count FROM {new_table}", []
+        )
+        new_count = new_count_result.get("count", 0)
+        assert (
+            new_count == 0
+        ), f"New table should be empty (migration skipped), got {new_count}"
+        print(f"✅ New table is empty (migration correctly skipped): {new_count} records")
 
-        except Exception as e:
-            # If it raises an error, it should be a clear, actionable error
-            print(f"⚠️ Initialization raised exception: {e}")
-            # Verify error message is clear and actionable
-            assert any(
-                keyword in str(e).lower()
-                for keyword in ["dimension", "mismatch", "1536", "3072"]
-            ), f"Error message should mention dimension mismatch: {e}"
-            print("✅ Clear error message provided to user")
+        # 5. System should be operational
+        print("✅ System initialized successfully despite dimension mismatch")
+
+        await rag.finalize_storages()
 
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1293,50 +1310,72 @@ async def test_dimension_mismatch_qdrant(
 
         print("📦 Initializing LightRAG with new model (1024d)...")
 
-        # This should handle dimension mismatch gracefully
-        try:
-            rag = LightRAG(
-                working_dir=temp_dir,
-                llm_model_func=mock_llm_func,
-                embedding_func=embedding_func_new,
-                tokenizer=mock_tokenizer,
-                vector_storage="QdrantVectorDBStorage",
-                vector_db_storage_cls_kwargs={
-                    **qdrant_config,
-                    "cosine_better_than_threshold": 0.8,
-                },
-            )
+        # With our fix, this should handle dimension mismatch gracefully:
+        # Expected behavior:
+        # 1. Detect dimension mismatch (768d legacy vs 1024d new)
+        # 2. Skip migration to prevent data corruption
+        # 3. Preserve legacy collection with original data
+        # 4. Create new empty collection for 1024d model
+        # 5. System initializes successfully
 
-            await rag.initialize_storages()
+        rag = LightRAG(
+            working_dir=temp_dir,
+            llm_model_func=mock_llm_func,
+            embedding_func=embedding_func_new,
+            tokenizer=mock_tokenizer,
+            vector_storage="QdrantVectorDBStorage",
+            vector_db_storage_cls_kwargs={
+                **qdrant_config,
+                "cosine_better_than_threshold": 0.8,
+            },
+        )
 
-            # Check what happened
-            new_collection = rag.chunks_vdb.final_namespace
-            print(f"✅ Initialization succeeded, new collection: {new_collection}")
+        await rag.initialize_storages()
 
-            # Verify collections
-            legacy_exists = client.collection_exists(legacy_collection)
-            new_exists = client.collection_exists(new_collection)
+        # Verify expected behavior
+        new_collection = rag.chunks_vdb.final_namespace
+        print(f"✅ Initialization succeeded, new collection: {new_collection}")
 
-            print(f"✅ Legacy collection exists: {legacy_exists}")
-            print(f"✅ New collection exists: {new_exists}")
+        # 1. New collection should exist with model suffix
+        assert "bge_large_1024d" in new_collection
+        assert client.collection_exists(
+            new_collection
+        ), f"New collection {new_collection} should exist"
+        print(f"✅ New collection created: {new_collection}")
 
-            # Verify new collection has correct dimension
-            collection_info = client.get_collection(new_collection)
-            new_dim = collection_info.config.params.vectors.size
-            print(f"✅ New collection dimension: {new_dim}d")
-            assert new_dim == 1024, f"New collection should have 1024d, got {new_dim}d"
+        # 2. Legacy collection should be preserved (not deleted)
+        legacy_exists = client.collection_exists(legacy_collection)
+        assert (
+            legacy_exists
+        ), "Legacy collection should be preserved when dimensions don't match"
+        print(f"✅ Legacy collection preserved: {legacy_collection}")
 
-            await rag.finalize_storages()
+        # 3. Legacy collection should still have original data (not migrated)
+        legacy_count = client.count(legacy_collection).count
+        assert (
+            legacy_count == 3
+        ), f"Legacy collection should still have 3 vectors, got {legacy_count}"
+        print(f"✅ Legacy data preserved: {legacy_count} vectors")
 
-        except Exception as e:
-            # If it raises an error, it should be a clear, actionable error
-            print(f"⚠️ Initialization raised exception: {e}")
-            # Verify error message is clear and actionable
-            assert any(
-                keyword in str(e).lower()
-                for keyword in ["dimension", "mismatch", "768", "1024"]
-            ), f"Error message should mention dimension mismatch: {e}"
-            print("✅ Clear error message provided to user")
+        # 4. New collection should be empty (migration skipped)
+        new_count = client.count(new_collection).count
+        assert (
+            new_count == 0
+        ), f"New collection should be empty (migration skipped), got {new_count}"
+        print(
+            f"✅ New collection is empty (migration correctly skipped): {new_count} vectors"
+        )
+
+        # 5. Verify new collection has correct dimension
+        collection_info = client.get_collection(new_collection)
+        new_dim = collection_info.config.params.vectors.size
+        assert new_dim == 1024, f"New collection should have 1024d, got {new_dim}d"
+        print(f"✅ New collection dimension verified: {new_dim}d")
+
+        # 6. System should be operational
+        print("✅ System initialized successfully despite dimension mismatch")
+
+        await rag.finalize_storages()
 
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
