@@ -292,9 +292,9 @@ async def test_legacy_migration_postgres(
         )
         new_count = new_count_result.get("count", 0)
 
-        assert new_count == legacy_count, (
-            f"Expected {legacy_count} records migrated, got {new_count}"
-        )
+        assert (
+            new_count == legacy_count
+        ), f"Expected {legacy_count} records migrated, got {new_count}"
         print(f"✅ Migration successful: {new_count}/{legacy_count} records migrated")
         print(f"✅ New table: {new_table}")
 
@@ -309,9 +309,9 @@ async def test_legacy_migration_postgres(
             check_legacy_query, [legacy_table.lower()]
         )
         legacy_exists = legacy_result.get("exists", True)
-        assert not legacy_exists, (
-            f"Legacy table '{legacy_table}' should be deleted after successful migration"
-        )
+        assert (
+            not legacy_exists
+        ), f"Legacy table '{legacy_table}' should be deleted after successful migration"
         print(f"✅ Legacy table '{legacy_table}' automatically deleted after migration")
 
         await rag.finalize_storages()
@@ -414,32 +414,30 @@ async def test_legacy_migration_qdrant(
         assert "text_embedding_ada_002_1536d" in new_collection
 
         # Verify new collection exists
-        assert qdrant_cleanup.collection_exists(new_collection), (
-            f"New collection {new_collection} should exist"
-        )
+        assert qdrant_cleanup.collection_exists(
+            new_collection
+        ), f"New collection {new_collection} should exist"
 
         new_count = qdrant_cleanup.count(new_collection).count
 
-        assert new_count == legacy_count, (
-            f"Expected {legacy_count} vectors migrated, got {new_count}"
-        )
+        assert (
+            new_count == legacy_count
+        ), f"Expected {legacy_count} vectors migrated, got {new_count}"
         print(f"✅ Migration successful: {new_count}/{legacy_count} vectors migrated")
         print(f"✅ New collection: {new_collection}")
 
         # Verify vector dimension
         collection_info = qdrant_cleanup.get_collection(new_collection)
-        assert collection_info.config.params.vectors.size == 1536, (
-            "Migrated collection should have 1536 dimensions"
-        )
+        assert (
+            collection_info.config.params.vectors.size == 1536
+        ), "Migrated collection should have 1536 dimensions"
         print(
             f"✅ Vector dimension verified: {collection_info.config.params.vectors.size}d"
         )
 
         # Verify legacy collection was automatically deleted after migration (Case 4)
         legacy_exists = qdrant_cleanup.collection_exists(legacy_collection)
-        assert not legacy_exists, (
-            f"Legacy collection '{legacy_collection}' should be deleted after successful migration"
-        )
+        assert not legacy_exists, f"Legacy collection '{legacy_collection}' should be deleted after successful migration"
         print(
             f"✅ Legacy collection '{legacy_collection}' automatically deleted after migration"
         )
@@ -653,12 +651,12 @@ async def test_multi_instance_qdrant(
     print(f"✅ Collection isolation verified: {collection_a} != {collection_b}")
 
     # Verify both collections exist in Qdrant
-    assert qdrant_cleanup.collection_exists(collection_a), (
-        f"Collection {collection_a} should exist"
-    )
-    assert qdrant_cleanup.collection_exists(collection_b), (
-        f"Collection {collection_b} should exist"
-    )
+    assert qdrant_cleanup.collection_exists(
+        collection_a
+    ), f"Collection {collection_a} should exist"
+    assert qdrant_cleanup.collection_exists(
+        collection_b
+    ), f"Collection {collection_b} should exist"
     print("✅ Both collections exist in Qdrant")
 
     # Verify vector dimensions
@@ -666,9 +664,9 @@ async def test_multi_instance_qdrant(
     info_b = qdrant_cleanup.get_collection(collection_b)
 
     assert info_a.config.params.vectors.size == 768, "Model A should use 768 dimensions"
-    assert info_b.config.params.vectors.size == 1024, (
-        "Model B should use 1024 dimensions"
-    )
+    assert (
+        info_b.config.params.vectors.size == 1024
+    ), "Model B should use 1024 dimensions"
     print(
         f"✅ Vector dimensions verified: {info_a.config.params.vectors.size}d vs {info_b.config.params.vectors.size}d"
     )
@@ -1209,9 +1207,9 @@ async def test_dimension_mismatch_postgres(
         # 2. Legacy table should be preserved (not deleted)
         check_legacy = f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{legacy_table}')"
         legacy_exists = await pg_cleanup.query(check_legacy, [])
-        assert legacy_exists.get("exists") is True, (
-            "Legacy table should be preserved when dimensions don't match"
-        )
+        assert (
+            legacy_exists.get("exists") is True
+        ), "Legacy table should be preserved when dimensions don't match"
         print(f"✅ Legacy table preserved: {legacy_table}")
 
         # 3. Legacy table should still have original data (not migrated)
@@ -1219,9 +1217,9 @@ async def test_dimension_mismatch_postgres(
             f"SELECT COUNT(*) as count FROM {legacy_table}", []
         )
         legacy_count = legacy_count_result.get("count", 0)
-        assert legacy_count == 3, (
-            f"Legacy table should still have 3 records, got {legacy_count}"
-        )
+        assert (
+            legacy_count == 3
+        ), f"Legacy table should still have 3 records, got {legacy_count}"
         print(f"✅ Legacy data preserved: {legacy_count} records")
 
         # 4. New table should be empty (migration skipped)
@@ -1229,9 +1227,9 @@ async def test_dimension_mismatch_postgres(
             f"SELECT COUNT(*) as count FROM {new_table}", []
         )
         new_count = new_count_result.get("count", 0)
-        assert new_count == 0, (
-            f"New table should be empty (migration skipped), got {new_count}"
-        )
+        assert (
+            new_count == 0
+        ), f"New table should be empty (migration skipped), got {new_count}"
         print(
             f"✅ New table is empty (migration correctly skipped): {new_count} records"
         )
@@ -1344,30 +1342,30 @@ async def test_dimension_mismatch_qdrant(
 
         # 1. New collection should exist with model suffix
         assert "bge_large_1024d" in new_collection
-        assert client.collection_exists(new_collection), (
-            f"New collection {new_collection} should exist"
-        )
+        assert client.collection_exists(
+            new_collection
+        ), f"New collection {new_collection} should exist"
         print(f"✅ New collection created: {new_collection}")
 
         # 2. Legacy collection should be preserved (not deleted)
         legacy_exists = client.collection_exists(legacy_collection)
-        assert legacy_exists, (
-            "Legacy collection should be preserved when dimensions don't match"
-        )
+        assert (
+            legacy_exists
+        ), "Legacy collection should be preserved when dimensions don't match"
         print(f"✅ Legacy collection preserved: {legacy_collection}")
 
         # 3. Legacy collection should still have original data (not migrated)
         legacy_count = client.count(legacy_collection).count
-        assert legacy_count == 3, (
-            f"Legacy collection should still have 3 vectors, got {legacy_count}"
-        )
+        assert (
+            legacy_count == 3
+        ), f"Legacy collection should still have 3 vectors, got {legacy_count}"
         print(f"✅ Legacy data preserved: {legacy_count} vectors")
 
         # 4. New collection should be empty (migration skipped)
         new_count = client.count(new_collection).count
-        assert new_count == 0, (
-            f"New collection should be empty (migration skipped), got {new_count}"
-        )
+        assert (
+            new_count == 0
+        ), f"New collection should be empty (migration skipped), got {new_count}"
         print(
             f"✅ New collection is empty (migration correctly skipped): {new_count} vectors"
         )
