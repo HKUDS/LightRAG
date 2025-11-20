@@ -153,12 +153,38 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
         legacy_exists = legacy_collection is not None
 
-        # Case 1: Both new and legacy collections exist - Warning only (no migration)
+        # Case 1: Both new and legacy collections exist
+        # This can happen if:
+        # 1. Previous migration failed to delete the legacy collection
+        # 2. User manually created both collections
+        # Strategy: Only delete legacy if it's empty (safe cleanup)
         if new_collection_exists and legacy_exists:
-            logger.warning(
-                f"Qdrant: Legacy collection '{legacy_collection}' still exists. "
-                f"Remove it if migration is complete."
-            )
+            try:
+                # Check if legacy collection is empty
+                legacy_count = client.count(
+                    collection_name=legacy_collection, exact=True
+                ).count
+
+                if legacy_count == 0:
+                    # Legacy collection is empty, safe to delete without data loss
+                    logger.info(
+                        f"Qdrant: Legacy collection '{legacy_collection}' is empty. Deleting..."
+                    )
+                    client.delete_collection(collection_name=legacy_collection)
+                    logger.info(
+                        f"Qdrant: Legacy collection '{legacy_collection}' deleted successfully"
+                    )
+                else:
+                    # Legacy collection still has data - don't risk deleting it
+                    logger.warning(
+                        f"Qdrant: Legacy collection '{legacy_collection}' still contains {legacy_count} records. "
+                        f"Manual intervention required to verify and delete."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Qdrant: Could not check or cleanup legacy collection '{legacy_collection}': {e}. "
+                    "You may need to delete it manually."
+                )
             return
 
         # Case 2: Only new collection exists - Ensure index exists
@@ -312,6 +338,24 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             logger.info(
                 f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
             )
+
+            # Delete legacy collection after successful migration
+            # Data has been verified to match, so legacy collection is no longer needed
+            # and keeping it would cause Case 1 warnings on next startup
+            try:
+                logger.info(
+                    f"Qdrant: Deleting legacy collection '{legacy_collection}'..."
+                )
+                client.delete_collection(collection_name=legacy_collection)
+                logger.info(
+                    f"Qdrant: Legacy collection '{legacy_collection}' deleted successfully"
+                )
+            except Exception as delete_error:
+                # If deletion fails, user will see Case 1 warning on next startup
+                logger.warning(
+                    f"Qdrant: Failed to delete legacy collection '{legacy_collection}': {delete_error}. "
+                    "You may need to delete it manually."
+                )
 
         except QdrantMigrationError:
             # Re-raise migration errors without wrapping

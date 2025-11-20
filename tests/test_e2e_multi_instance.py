@@ -298,6 +298,22 @@ async def test_legacy_migration_postgres(
         print(f"✅ Migration successful: {new_count}/{legacy_count} records migrated")
         print(f"✅ New table: {new_table}")
 
+        # Verify legacy table was automatically deleted after migration (Case 4)
+        check_legacy_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = $1
+            )
+        """
+        legacy_result = await pg_cleanup.query(
+            check_legacy_query, [legacy_table.lower()]
+        )
+        legacy_exists = legacy_result.get("exists", True)
+        assert (
+            not legacy_exists
+        ), f"Legacy table '{legacy_table}' should be deleted after successful migration"
+        print(f"✅ Legacy table '{legacy_table}' automatically deleted after migration")
+
         await rag.finalize_storages()
 
     finally:
@@ -417,6 +433,13 @@ async def test_legacy_migration_qdrant(
         ), "Migrated collection should have 1536 dimensions"
         print(
             f"✅ Vector dimension verified: {collection_info.config.params.vectors.size}d"
+        )
+
+        # Verify legacy collection was automatically deleted after migration (Case 4)
+        legacy_exists = qdrant_cleanup.collection_exists(legacy_collection)
+        assert not legacy_exists, f"Legacy collection '{legacy_collection}' should be deleted after successful migration"
+        print(
+            f"✅ Legacy collection '{legacy_collection}' automatically deleted after migration"
         )
 
         await rag.finalize_storages()
@@ -681,14 +704,14 @@ async def test_multi_instance_qdrant(
 
 
 @pytest.mark.asyncio
-async def test_case1_both_exist_warning_qdrant(
+async def test_case1_both_exist_with_data_qdrant(
     qdrant_cleanup, mock_llm_func, mock_tokenizer, qdrant_config
 ):
     """
-    E2E Case 1: Both new and legacy collections exist
-    Expected: Log warning, do not migrate, use new collection
+    E2E Case 1b: Both new and legacy collections exist, legacy has data
+    Expected: Log warning, do not delete legacy (preserve data), use new collection
     """
-    print("\n[E2E Case 1] Both collections exist - warning scenario")
+    print("\n[E2E Case 1b] Both collections exist with data - preservation scenario")
 
     import tempfile
     import shutil
@@ -753,11 +776,17 @@ async def test_case1_both_exist_warning_qdrant(
         # Step 3: Verify behavior
         # Should use new collection (not migrate)
         assert rag.chunks_vdb.final_namespace == new_collection
-        legacy_count = qdrant_cleanup.count(legacy_collection).count
 
-        # Legacy should still have its data (not migrated)
+        # Verify legacy collection still exists (Case 1b: has data, should NOT be deleted)
+        legacy_exists = qdrant_cleanup.collection_exists(legacy_collection)
+        assert legacy_exists, "Legacy collection with data should NOT be deleted"
+
+        legacy_count = qdrant_cleanup.count(legacy_collection).count
+        # Legacy should still have its data (not migrated, not deleted)
         assert legacy_count == 3
-        print(f"✅ Legacy collection still has {legacy_count} points (not migrated)")
+        print(
+            f"✅ Legacy collection still has {legacy_count} points (preserved, not deleted)"
+        )
 
         await rag.finalize_storages()
 

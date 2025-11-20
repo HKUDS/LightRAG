@@ -296,8 +296,26 @@ async def test_scenario_2_legacy_upgrade_migration(
     assert len(upsert_calls) >= 1
     assert upsert_calls[0].kwargs["collection_name"] == new_collection
 
+    # 5. Verify legacy collection was automatically deleted after successful migration
+    # This prevents Case 1 warnings on next startup
+    delete_calls = [
+        call for call in mock_qdrant_client.delete_collection.call_args_list
+    ]
+    assert (
+        len(delete_calls) >= 1
+    ), "Legacy collection should be deleted after successful migration"
+    # Check if legacy_collection was passed to delete_collection
+    deleted_collection = (
+        delete_calls[0][0][0]
+        if delete_calls[0][0]
+        else delete_calls[0].kwargs.get("collection_name")
+    )
+    assert (
+        deleted_collection == legacy_collection
+    ), f"Expected to delete '{legacy_collection}', but deleted '{deleted_collection}'"
+
     print(
-        f"✅ Scenario 2: Legacy data migrated from '{legacy_collection}' to '{expected_new_collection}'"
+        f"✅ Scenario 2: Legacy data migrated from '{legacy_collection}' to '{expected_new_collection}' and legacy collection deleted"
     )
 
 
@@ -364,3 +382,133 @@ async def test_scenario_3_multi_model_coexistence(mock_qdrant_client):
     print(f"   - Workspace A: {expected_collection_a} (768d)")
     print(f"   - Workspace B: {expected_collection_b} (1024d)")
     print("   - Collections are independent")
+
+
+@pytest.mark.asyncio
+async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embedding_func):
+    """
+    Case 1a: 新旧collection都存在，且旧库为空
+    预期：自动删除旧库
+    """
+    config = {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
+    }
+
+    storage = QdrantVectorDBStorage(
+        namespace="chunks",
+        global_config=config,
+        embedding_func=mock_embedding_func,
+        workspace="test_ws",
+    )
+
+    legacy_collection = storage.legacy_namespace
+    new_collection = storage.final_namespace
+
+    # Mock: Both collections exist
+    mock_qdrant_client.collection_exists.side_effect = lambda name: name in [
+        legacy_collection,
+        new_collection,
+    ]
+
+    # Mock: Legacy collection is empty (0 records)
+    def count_mock(collection_name, exact=True):
+        mock_result = MagicMock()
+        if collection_name == legacy_collection:
+            mock_result.count = 0  # Empty legacy collection
+        else:
+            mock_result.count = 100  # New collection has data
+        return mock_result
+
+    mock_qdrant_client.count.side_effect = count_mock
+
+    # Mock get_collection for Case 2 check
+    collection_info = MagicMock()
+    collection_info.payload_schema = {"workspace_id": True}
+    mock_qdrant_client.get_collection.return_value = collection_info
+
+    # Initialize storage
+    await storage.initialize()
+
+    # Verify: Empty legacy collection should be automatically cleaned up
+    # Empty collections are safe to delete without data loss risk
+    delete_calls = [
+        call for call in mock_qdrant_client.delete_collection.call_args_list
+    ]
+    assert len(delete_calls) >= 1, "Empty legacy collection should be auto-deleted"
+    deleted_collection = (
+        delete_calls[0][0][0]
+        if delete_calls[0][0]
+        else delete_calls[0].kwargs.get("collection_name")
+    )
+    assert (
+        deleted_collection == legacy_collection
+    ), f"Expected to delete '{legacy_collection}', but deleted '{deleted_collection}'"
+
+    print(
+        f"✅ Case 1a: Empty legacy collection '{legacy_collection}' auto-deleted successfully"
+    )
+
+
+@pytest.mark.asyncio
+async def test_case1_nonempty_legacy_warning(mock_qdrant_client, mock_embedding_func):
+    """
+    Case 1b: 新旧collection都存在，且旧库有数据
+    预期：警告但不删除
+    """
+    config = {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
+    }
+
+    storage = QdrantVectorDBStorage(
+        namespace="chunks",
+        global_config=config,
+        embedding_func=mock_embedding_func,
+        workspace="test_ws",
+    )
+
+    legacy_collection = storage.legacy_namespace
+    new_collection = storage.final_namespace
+
+    # Mock: Both collections exist
+    mock_qdrant_client.collection_exists.side_effect = lambda name: name in [
+        legacy_collection,
+        new_collection,
+    ]
+
+    # Mock: Legacy collection has data (50 records)
+    def count_mock(collection_name, exact=True):
+        mock_result = MagicMock()
+        if collection_name == legacy_collection:
+            mock_result.count = 50  # Legacy has data
+        else:
+            mock_result.count = 100  # New collection has data
+        return mock_result
+
+    mock_qdrant_client.count.side_effect = count_mock
+
+    # Mock get_collection for Case 2 check
+    collection_info = MagicMock()
+    collection_info.payload_schema = {"workspace_id": True}
+    mock_qdrant_client.get_collection.return_value = collection_info
+
+    # Initialize storage
+    await storage.initialize()
+
+    # Verify: Legacy collection with data should be preserved
+    # We never auto-delete collections that contain data to prevent accidental data loss
+    delete_calls = [
+        call for call in mock_qdrant_client.delete_collection.call_args_list
+    ]
+    # Check if legacy collection was deleted (it should not be)
+    legacy_deleted = any(
+        (call[0][0] if call[0] else call.kwargs.get("collection_name"))
+        == legacy_collection
+        for call in delete_calls
+    )
+    assert not legacy_deleted, "Legacy collection with data should NOT be auto-deleted"
+
+    print(
+        f"✅ Case 1b: Legacy collection '{legacy_collection}' with data preserved (warning only)"
+    )

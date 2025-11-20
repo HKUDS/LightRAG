@@ -2271,13 +2271,41 @@ class PGVectorStorage(BaseVectorStorage):
             db, legacy_table_name
         )
 
-        # Case 1: Both new and legacy tables exist - Warning only (no migration)
+        # Case 1: Both new and legacy tables exist
+        # This can happen if:
+        # 1. Previous migration failed to delete the legacy table
+        # 2. User manually created both tables
+        # Strategy: Only delete legacy if it's empty (safe cleanup)
         if new_table_exists and legacy_exists:
-            logger.warning(
-                f"PostgreSQL: Legacy table '{legacy_table_name}' still exists. "
-                f"Remove it if migration is complete."
-            )
-            # Ensure vector index exists even if migration was not performed
+            try:
+                # Check if legacy table is empty
+                count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                count_result = await db.query(count_query, [])
+                legacy_count = count_result.get("count", 0) if count_result else 0
+
+                if legacy_count == 0:
+                    # Legacy table is empty, safe to delete without data loss
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' is empty. Deleting..."
+                    )
+                    drop_query = f"DROP TABLE {legacy_table_name}"
+                    await db.execute(drop_query, None)
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' deleted successfully"
+                    )
+                else:
+                    # Legacy table still has data - don't risk deleting it
+                    logger.warning(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' still contains {legacy_count} records. "
+                        f"Manual intervention required to verify and delete."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"PostgreSQL: Could not check or cleanup legacy table '{legacy_table_name}': {e}. "
+                    "You may need to delete it manually."
+                )
+
+            # Ensure vector index exists even if cleanup was not performed
             await db._create_vector_index(table_name, embedding_dim)
             return
 
@@ -2384,6 +2412,25 @@ class PGVectorStorage(BaseVectorStorage):
 
             # Create vector index after successful migration
             await db._create_vector_index(table_name, embedding_dim)
+
+            # Delete legacy table after successful migration
+            # Data has been verified to match, so legacy table is no longer needed
+            # and keeping it would cause Case 1 warnings on next startup
+            try:
+                logger.info(
+                    f"PostgreSQL: Deleting legacy table '{legacy_table_name}'..."
+                )
+                drop_query = f"DROP TABLE {legacy_table_name}"
+                await db.execute(drop_query, None)
+                logger.info(
+                    f"PostgreSQL: Legacy table '{legacy_table_name}' deleted successfully"
+                )
+            except Exception as delete_error:
+                # If deletion fails, user will see Case 1 warning on next startup
+                logger.warning(
+                    f"PostgreSQL: Failed to delete legacy table '{legacy_table_name}': {delete_error}. "
+                    "You may need to delete it manually."
+                )
 
         except PostgreSQLMigrationError:
             # Re-raise migration errors without wrapping

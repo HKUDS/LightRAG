@@ -315,6 +315,22 @@ async def test_scenario_2_legacy_upgrade_migration(
         assert mock_pg_db.execute.call_count >= 50  # At least one execute per row
         mock_create.assert_called_once()
 
+        # Verify legacy table was automatically deleted after successful migration
+        # This prevents Case 1 warnings on next startup
+        delete_calls = [
+            call
+            for call in mock_pg_db.execute.call_args_list
+            if call[0][0] and "DROP TABLE" in call[0][0]
+        ]
+        assert (
+            len(delete_calls) >= 1
+        ), "Legacy table should be deleted after successful migration"
+        # Check if legacy table was dropped
+        dropped_table = storage.legacy_table_name
+        assert any(
+            dropped_table in str(call) for call in delete_calls
+        ), f"Expected to drop '{dropped_table}'"
+
 
 @pytest.mark.asyncio
 async def test_scenario_3_multi_model_coexistence(
@@ -388,3 +404,131 @@ async def test_scenario_3_multi_model_coexistence(
         assert len(set(table_names)) == 2  # Two unique table names
         assert storage_a.table_name in table_names
         assert storage_b.table_name in table_names
+
+
+@pytest.mark.asyncio
+async def test_case1_empty_legacy_auto_cleanup(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
+    """
+    Case 1a: Both new and legacy tables exist, but legacy is EMPTY
+    Expected: Automatically delete empty legacy table (safe cleanup)
+    """
+    config = {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
+    }
+
+    embedding_func = EmbeddingFunc(
+        embedding_dim=1536,
+        func=mock_embedding_func.func,
+        model_name="test-model",
+    )
+
+    storage = PGVectorStorage(
+        namespace=NameSpace.VECTOR_STORE_CHUNKS,
+        global_config=config,
+        embedding_func=embedding_func,
+        workspace="test_ws",
+    )
+
+    # Mock: Both tables exist
+    async def mock_table_exists(db, table_name):
+        return True  # Both new and legacy exist
+
+    # Mock: Legacy table is empty (0 records)
+    async def mock_query(sql, params=None, multirows=False, **kwargs):
+        if "COUNT(*)" in sql:
+            if storage.legacy_table_name in sql:
+                return {"count": 0}  # Empty legacy table
+            else:
+                return {"count": 100}  # New table has data
+        return {}
+
+    mock_pg_db.query = AsyncMock(side_effect=mock_query)
+
+    with patch(
+        "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+    ):
+        await storage.initialize()
+
+        # Verify: Empty legacy table should be automatically cleaned up
+        # Empty tables are safe to delete without data loss risk
+        delete_calls = [
+            call
+            for call in mock_pg_db.execute.call_args_list
+            if call[0][0] and "DROP TABLE" in call[0][0]
+        ]
+        assert len(delete_calls) >= 1, "Empty legacy table should be auto-deleted"
+        # Check if legacy table was dropped
+        dropped_table = storage.legacy_table_name
+        assert any(
+            dropped_table in str(call) for call in delete_calls
+        ), f"Expected to drop empty legacy table '{dropped_table}'"
+
+        print(
+            f"✅ Case 1a: Empty legacy table '{dropped_table}' auto-deleted successfully"
+        )
+
+
+@pytest.mark.asyncio
+async def test_case1_nonempty_legacy_warning(
+    mock_client_manager, mock_pg_db, mock_embedding_func
+):
+    """
+    Case 1b: Both new and legacy tables exist, and legacy HAS DATA
+    Expected: Log warning, do not delete legacy (preserve data)
+    """
+    config = {
+        "embedding_batch_num": 10,
+        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
+    }
+
+    embedding_func = EmbeddingFunc(
+        embedding_dim=1536,
+        func=mock_embedding_func.func,
+        model_name="test-model",
+    )
+
+    storage = PGVectorStorage(
+        namespace=NameSpace.VECTOR_STORE_CHUNKS,
+        global_config=config,
+        embedding_func=embedding_func,
+        workspace="test_ws",
+    )
+
+    # Mock: Both tables exist
+    async def mock_table_exists(db, table_name):
+        return True  # Both new and legacy exist
+
+    # Mock: Legacy table has data (50 records)
+    async def mock_query(sql, params=None, multirows=False, **kwargs):
+        if "COUNT(*)" in sql:
+            if storage.legacy_table_name in sql:
+                return {"count": 50}  # Legacy has data
+            else:
+                return {"count": 100}  # New table has data
+        return {}
+
+    mock_pg_db.query = AsyncMock(side_effect=mock_query)
+
+    with patch(
+        "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
+    ):
+        await storage.initialize()
+
+        # Verify: Legacy table with data should be preserved
+        # We never auto-delete tables that contain data to prevent accidental data loss
+        delete_calls = [
+            call
+            for call in mock_pg_db.execute.call_args_list
+            if call[0][0] and "DROP TABLE" in call[0][0]
+        ]
+        # Check if legacy table was deleted (it should not be)
+        dropped_table = storage.legacy_table_name
+        legacy_deleted = any(dropped_table in str(call) for call in delete_calls)
+        assert not legacy_deleted, "Legacy table with data should NOT be auto-deleted"
+
+        print(
+            f"✅ Case 1b: Legacy table '{dropped_table}' with data preserved (warning only)"
+        )
