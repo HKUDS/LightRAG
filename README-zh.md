@@ -53,24 +53,24 @@
 
 ## 🎉 新闻
 
-- [x] [2025.11.05]🎯添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持（API可随查询结果返回召回上下文）。
-- [x] [2025.10.22]🎯消除处理**大规模数据集**的性能瓶颈。
-- [x] [2025.09.15]🎯显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
-- [x] [2025.08.29]🎯现已支持**Reranker**，显著提升混合查询性能(现已设为默认查询模式)。
-- [x] [2025.08.04]🎯支持**文档删除**并重新生成知识图谱以确保查询性能。
-- [x] [2025.06.16]🎯我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
-- [x] [2025.06.05]🎯LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
-- [x] [2025.03.18]🎯LightRAG现已支持参考文献功能。
-- [x] [2025.02.12]🎯现在您可以使用MongoDB作为一体化存储解决方案。
-- [x] [2025.02.05]🎯我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
-- [x] [2025.01.13]🎯我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
-- [x] [2025.01.06]🎯现在您可以使用PostgreSQL作为一体化存储解决方案。
-- [x] [2024.11.19]🎯LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
-- [x] [2024.11.09]🎯推出LightRAG Webui，允许您插入、查询、可视化LightRAG知识。
-- [x] [2024.11.04]🎯现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
-- [x] [2024.10.18]🎯我们添加了[LightRAG介绍视频](https://youtu.be/oageL-1I0GE)的链接。感谢作者！
-- [x] [2024.10.17]🎯我们创建了一个[Discord频道](https://discord.gg/yF2MmDJyGJ)！欢迎加入分享和讨论！🎉🎉
-- [x] [2024.10.16]🎯LightRAG现在支持[Ollama模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
+- [2025.11.05]🎯添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持（API可随查询结果返回召回上下文）。
+- [2025.10.22]🎯消除处理**大规模数据集**的性能瓶颈。
+- [2025.09.15]🎯显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
+- [2025.08.29]🎯现已支持**Reranker**，显著提升混合查询性能(现已设为默认查询模式)。
+- [2025.08.04]🎯支持**文档删除**并重新生成知识图谱以确保查询性能。
+- [2025.06.16]🎯我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
+- [2025.06.05]🎯LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
+- [2025.03.18]🎯LightRAG现已支持参考文献功能。
+- [2025.02.12]🎯现在您可以使用MongoDB作为一体化存储解决方案。
+- [2025.02.05]🎯我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
+- [2025.01.13]🎯我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
+- [2025.01.06]🎯现在您可以使用PostgreSQL作为一体化存储解决方案。
+- [2024.11.19]🎯LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
+- [2024.11.09]🎯推出LightRAG Webui，允许您插入、查询、可视化LightRAG知识。
+- [2024.11.04]🎯现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
+- [2024.10.18]🎯我们添加了[LightRAG介绍视频](https://youtu.be/oageL-1I0GE)的链接。感谢作者！
+- [2024.10.17]🎯我们创建了一个[Discord频道](https://discord.gg/yF2MmDJyGJ)！欢迎加入分享和讨论！🎉🎉
+- [2024.10.16]🎯LightRAG现在支持[Ollama模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
