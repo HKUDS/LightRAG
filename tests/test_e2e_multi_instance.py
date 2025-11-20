@@ -1153,7 +1153,7 @@ async def test_dimension_mismatch_postgres(
                 },
             )
 
-        print(f"✅ Legacy table created with 3 records (1536d)")
+        print("✅ Legacy table created with 3 records (1536d)")
 
         # Step 2: Try to initialize LightRAG with NEW model (3072d)
         async def embed_func_new(texts):
@@ -1271,7 +1271,7 @@ async def test_dimension_mismatch_qdrant(
         # Delete if exists
         try:
             client.delete_collection(legacy_collection)
-        except:
+        except Exception:
             pass
 
         # Create legacy collection with 768d
@@ -1294,7 +1294,7 @@ async def test_dimension_mismatch_qdrant(
             )
 
         client.upsert(collection_name=legacy_collection, points=points, wait=True)
-        print(f"✅ Legacy collection created with 3 records (768d)")
+        print("✅ Legacy collection created with 3 records (768d)")
 
         # Step 2: Try to initialize LightRAG with NEW model (1024d)
         async def embed_func_new(texts):
@@ -1384,7 +1384,7 @@ async def test_dimension_mismatch_qdrant(
             for coll in client.get_collections().collections:
                 if "lightrag" in coll.name.lower():
                     client.delete_collection(coll.name)
-        except:
+        except Exception:
             pass
 
 

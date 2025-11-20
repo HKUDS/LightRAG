@@ -7,7 +7,7 @@ legacy collections/tables to new ones with different embedding models.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
