@@ -2375,7 +2375,7 @@ class PGVectorStorage(BaseVectorStorage):
                     insert_query = f"""
                         INSERT INTO {table_name} ({columns_str})
                         VALUES ({placeholders})
-                        ON CONFLICT DO NOTHING
+                        ON CONFLICT (workspace, id) DO NOTHING
                     """
 
                     # Construct dict for execute() method
