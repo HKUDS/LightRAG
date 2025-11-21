@@ -295,15 +295,19 @@ async def openai_complete_if_cache(
     if timeout is not None:
         kwargs["timeout"] = timeout
 
+    # Determine the correct model identifier to use
+    # For Azure OpenAI, we must use the deployment name instead of the model name
+    api_model = azure_deployment if use_azure and azure_deployment else model
+
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
             response = await openai_async_client.chat.completions.parse(
-                model=model, messages=messages, **kwargs
+                model=api_model, messages=messages, **kwargs
             )
         else:
             response = await openai_async_client.chat.completions.create(
-                model=model, messages=messages, **kwargs
+                model=api_model, messages=messages, **kwargs
             )
     except APIConnectionError as e:
         logger.error(f"OpenAI API Connection Error: {e}")
@@ -742,9 +746,13 @@ async def openai_embed(
     )
 
     async with openai_async_client:
+        # Determine the correct model identifier to use
+        # For Azure OpenAI, we must use the deployment name instead of the model name
+        api_model = azure_deployment if use_azure and azure_deployment else model
+
         # Prepare API call parameters
         api_params = {
-            "model": model,
+            "model": api_model,
             "input": texts,
             "encoding_format": "base64",
         }
@@ -813,7 +821,7 @@ async def azure_openai_complete_if_cache(
 
     # Call the unified implementation with Azure-specific parameters
     return await openai_complete_if_cache(
-        model=model,
+        model=deployment,
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -928,7 +936,7 @@ async def azure_openai_embed(
     # openai_embed is an EmbeddingFunc instance, .func accesses the underlying function
     return await openai_embed.func(
         texts=texts,
-        model=model or deployment,
+        model=deployment,
         base_url=base_url,
         api_key=api_key,
         token_tracker=token_tracker,
