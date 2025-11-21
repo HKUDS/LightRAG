@@ -26,6 +26,7 @@ from lightrag.utils import (
     safe_unicode_decode,
     logger,
 )
+from lightrag.types import GPTKeywordExtractionFormat
 
 import numpy as np
 
@@ -46,6 +47,7 @@ async def azure_openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     api_version: str | None = None,
+    keyword_extraction: bool = False,
     **kwargs,
 ):
     if enable_cot:
@@ -66,8 +68,11 @@ async def azure_openai_complete_if_cache(
     )
 
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
     timeout = kwargs.pop("timeout", None)
+
+    # Handle keyword extraction mode
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=base_url,
@@ -85,7 +90,7 @@ async def azure_openai_complete_if_cache(
         messages.append({"role": "user", "content": prompt})
 
     if "response_format" in kwargs:
-        response = await openai_async_client.beta.chat.completions.parse(
+        response = await openai_async_client.chat.completions.parse(
             model=model, messages=messages, **kwargs
         )
     else:
@@ -108,21 +113,32 @@ async def azure_openai_complete_if_cache(
 
         return inner()
     else:
-        content = response.choices[0].message.content
-        if r"\u" in content:
-            content = safe_unicode_decode(content.encode("utf-8"))
+        message = response.choices[0].message
+
+        # Handle parsed responses (structured output via response_format)
+        # When using beta.chat.completions.parse(), the response is in message.parsed
+        if hasattr(message, "parsed") and message.parsed is not None:
+            # Serialize the parsed structured response to JSON
+            content = message.parsed.model_dump_json()
+            logger.debug("Using parsed structured response from API")
+        else:
+            # Handle regular content responses
+            content = message.content
+            if content and r"\u" in content:
+                content = safe_unicode_decode(content.encode("utf-8"))
+
         return content
 
 
 async def azure_openai_complete(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    kwargs.pop("keyword_extraction", None)
     result = await azure_openai_complete_if_cache(
         os.getenv("LLM_MODEL", "gpt-4o-mini"),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
     return result
