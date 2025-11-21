@@ -815,13 +815,6 @@ async def azure_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=1536)
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
-)
 async def azure_openai_embed(
     texts: list[str],
     model: str | None = None,
@@ -833,6 +826,35 @@ async def azure_openai_embed(
 
     This function provides backward compatibility by wrapping the unified
     openai_embed implementation with Azure-specific parameter handling.
+
+    IMPORTANT - Decorator Usage:
+
+    1. This function is decorated with @wrap_embedding_func_with_attrs to provide
+       the EmbeddingFunc interface for users who need to access embedding_dim
+       and other attributes.
+
+    2. This function does NOT use @retry decorator to avoid double-wrapping,
+       since the underlying openai_embed.func already has retry logic.
+
+    3. This function calls openai_embed.func (the unwrapped function) instead of
+       openai_embed (the EmbeddingFunc instance) to avoid double decoration issues:
+
+       ✅ Correct: await openai_embed.func(...)  # Calls unwrapped function with retry
+       ❌ Wrong:   await openai_embed(...)       # Would cause double EmbeddingFunc wrapping
+
+    Double decoration causes:
+    - Double injection of embedding_dim parameter
+    - Incorrect parameter passing to the underlying implementation
+    - Runtime errors due to parameter conflicts
+
+    The call chain with correct implementation:
+    azure_openai_embed(texts)
+    → EmbeddingFunc.__call__(texts)              # azure's decorator
+      → azure_openai_embed_impl(texts, embedding_dim=1536)
+        → openai_embed.func(texts, ...)
+          → @retry_wrapper(texts, ...)           # openai's retry (only one layer)
+            → openai_embed_impl(texts, ...)
+              → actual embedding computation
     """
     # Handle Azure-specific environment variables and parameters
     deployment = (
@@ -856,8 +878,9 @@ async def azure_openai_embed(
         or os.getenv("OPENAI_API_VERSION")
     )
 
-    # Call the unified implementation with Azure-specific parameters
-    return await openai_embed(
+    # CRITICAL: Call openai_embed.func (unwrapped) to avoid double decoration
+    # openai_embed is an EmbeddingFunc instance, .func accesses the underlying function
+    return await openai_embed.func(
         texts=texts,
         model=model or deployment,
         base_url=base_url,
