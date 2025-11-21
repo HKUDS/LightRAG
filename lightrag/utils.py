@@ -1005,7 +1005,76 @@ def priority_limit_async_func_call(
 
 
 def wrap_embedding_func_with_attrs(**kwargs):
-    """Wrap a function with attributes"""
+    """Decorator to add embedding dimension and token limit attributes to embedding functions.
+
+    This decorator wraps an async embedding function and returns an EmbeddingFunc instance
+    that automatically handles dimension parameter injection and attribute management.
+
+    WARNING: DO NOT apply this decorator to wrapper functions that call other
+    decorated embedding functions. This will cause double decoration and parameter
+    injection conflicts.
+
+    Correct usage patterns:
+
+    1. Direct implementation (decorated):
+        ```python
+        @wrap_embedding_func_with_attrs(embedding_dim=1536)
+        async def my_embed(texts, embedding_dim=None):
+            # Direct implementation
+            return embeddings
+        ```
+
+    2. Wrapper calling decorated function (DO NOT decorate wrapper):
+        ```python
+        # my_embed is already decorated above
+
+        async def my_wrapper(texts, **kwargs):  # ❌ DO NOT decorate this!
+            # Must call .func to access unwrapped implementation
+            return await my_embed.func(texts, **kwargs)
+        ```
+
+    3. Wrapper calling decorated function (properly decorated):
+        ```python
+        @wrap_embedding_func_with_attrs(embedding_dim=1536)
+        async def my_wrapper(texts, **kwargs):  # ✅ Can decorate if calling .func
+            # Calling .func avoids double decoration
+            return await my_embed.func(texts, **kwargs)
+        ```
+
+    The decorated function becomes an EmbeddingFunc instance with:
+    - embedding_dim: The embedding dimension
+    - max_token_size: Maximum token limit (optional)
+    - func: The original unwrapped function (access via .func)
+    - __call__: Wrapper that injects embedding_dim parameter
+
+    Double decoration causes:
+    - Double injection of embedding_dim parameter
+    - Incorrect parameter passing to the underlying implementation
+    - Runtime errors due to parameter conflicts
+
+    Args:
+        embedding_dim: The dimension of embedding vectors
+        max_token_size: Maximum number of tokens (optional)
+        send_dimensions: Whether to inject embedding_dim as a keyword argument (optional)
+
+    Returns:
+        A decorator that wraps the function as an EmbeddingFunc instance
+
+    Example of correct wrapper implementation:
+        ```python
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+        @retry(...)
+        async def openai_embed(texts, ...):
+            # Base implementation
+            pass
+
+        @wrap_embedding_func_with_attrs(embedding_dim=1536)  # Note: No @retry here!
+        async def azure_openai_embed(texts, ...):
+            # CRITICAL: Call .func to access unwrapped function
+            return await openai_embed.func(texts, ...)  # ✅ Correct
+            # return await openai_embed(texts, ...)     # ❌ Wrong - double decoration!
+        ```
+    """
 
     def final_decro(func) -> EmbeddingFunc:
         new_func = EmbeddingFunc(**kwargs, func=func)
