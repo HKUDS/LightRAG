@@ -751,7 +751,7 @@ async def azure_openai_complete_if_cache(
     **kwargs,
 ):
     """Azure OpenAI completion wrapper function.
-    
+
     This function provides backward compatibility by wrapping the unified
     openai_complete_if_cache implementation with Azure-specific parameter handling.
     """
@@ -768,10 +768,10 @@ async def azure_openai_complete_if_cache(
         or os.getenv("AZURE_OPENAI_API_VERSION")
         or os.getenv("OPENAI_API_VERSION")
     )
-    
+
     # Pop timeout from kwargs if present (will be handled by openai_complete_if_cache)
     timeout = kwargs.pop("timeout", None)
-    
+
     # Call the unified implementation with Azure-specific parameters
     return await openai_complete_if_cache(
         model=model,
@@ -791,10 +791,14 @@ async def azure_openai_complete_if_cache(
 
 
 async def azure_openai_complete(
-    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    keyword_extraction=False,
+    **kwargs,
 ) -> str:
     """Azure OpenAI complete wrapper function.
-    
+
     Provides backward compatibility for azure_openai_complete calls.
     """
     if history_messages is None:
@@ -826,7 +830,7 @@ async def azure_openai_embed(
     api_version: str | None = None,
 ) -> np.ndarray:
     """Azure OpenAI embedding wrapper function.
-    
+
     This function provides backward compatibility by wrapping the unified
     openai_embed implementation with Azure-specific parameter handling.
     """
@@ -851,7 +855,7 @@ async def azure_openai_embed(
         or os.getenv("AZURE_EMBEDDING_API_VERSION")
         or os.getenv("OPENAI_API_VERSION")
     )
-    
+
     # Call the unified implementation with Azure-specific parameters
     return await openai_embed(
         texts=texts,
