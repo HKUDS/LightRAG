@@ -203,6 +203,10 @@ async def openai_complete_if_cache(
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
 
+    # Handle keyword extraction mode
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
+
     # Create the OpenAI client
     openai_async_client = create_openai_async_client(
         api_key=api_key,
@@ -522,8 +526,6 @@ async def openai_complete(
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
         history_messages = []
-    if keyword_extraction:
-        kwargs["response_format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await openai_complete_if_cache(
         model_name,
@@ -545,8 +547,6 @@ async def gpt_4o_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    if keyword_extraction:
-        kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
         "gpt-4o",
         prompt,
@@ -568,8 +568,6 @@ async def gpt_4o_mini_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    if keyword_extraction:
-        kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
         "gpt-4o-mini",
         prompt,
