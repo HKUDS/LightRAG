@@ -90,7 +90,7 @@ async def azure_openai_complete_if_cache(
         messages.append({"role": "user", "content": prompt})
 
     if "response_format" in kwargs:
-        response = await openai_async_client.beta.chat.completions.parse(
+        response = await openai_async_client.chat.completions.parse(
             model=model, messages=messages, **kwargs
         )
     else:
@@ -114,7 +114,7 @@ async def azure_openai_complete_if_cache(
         return inner()
     else:
         message = response.choices[0].message
-        
+
         # Handle parsed responses (structured output via response_format)
         # When using beta.chat.completions.parse(), the response is in message.parsed
         if hasattr(message, "parsed") and message.parsed is not None:
@@ -126,7 +126,7 @@ async def azure_openai_complete_if_cache(
             content = message.content
             if content and r"\u" in content:
                 content = safe_unicode_decode(content.encode("utf-8"))
-        
+
         return content
 
 

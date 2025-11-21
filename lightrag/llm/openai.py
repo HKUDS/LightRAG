@@ -241,7 +241,7 @@ async def openai_complete_if_cache(
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
-            response = await openai_async_client.beta.chat.completions.parse(
+            response = await openai_async_client.chat.completions.parse(
                 model=model, messages=messages, **kwargs
             )
         else:
@@ -453,7 +453,7 @@ async def openai_complete_if_cache(
                 raise InvalidResponseError("Invalid response from OpenAI API")
 
             message = response.choices[0].message
-            
+
             # Handle parsed responses (structured output via response_format)
             # When using beta.chat.completions.parse(), the response is in message.parsed
             if hasattr(message, "parsed") and message.parsed is not None:
@@ -492,7 +492,9 @@ async def openai_complete_if_cache(
                             reasoning_content = safe_unicode_decode(
                                 reasoning_content.encode("utf-8")
                             )
-                        final_content = f"<think>{reasoning_content}</think>{final_content}"
+                        final_content = (
+                            f"<think>{reasoning_content}</think>{final_content}"
+                        )
                 else:
                     # COT disabled, only use regular content
                     final_content = content or ""
