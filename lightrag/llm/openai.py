@@ -453,46 +453,55 @@ async def openai_complete_if_cache(
                 raise InvalidResponseError("Invalid response from OpenAI API")
 
             message = response.choices[0].message
-            content = getattr(message, "content", None)
-            reasoning_content = getattr(message, "reasoning_content", "")
+            
+            # Handle parsed responses (structured output via response_format)
+            # When using beta.chat.completions.parse(), the response is in message.parsed
+            if hasattr(message, "parsed") and message.parsed is not None:
+                # Serialize the parsed structured response to JSON
+                final_content = message.parsed.model_dump_json()
+                logger.debug("Using parsed structured response from API")
+            else:
+                # Handle regular content responses
+                content = getattr(message, "content", None)
+                reasoning_content = getattr(message, "reasoning_content", "")
 
-            # Handle COT logic for non-streaming responses (only if enabled)
-            final_content = ""
+                # Handle COT logic for non-streaming responses (only if enabled)
+                final_content = ""
 
-            if enable_cot:
-                # Check if we should include reasoning content
-                should_include_reasoning = False
-                if reasoning_content and reasoning_content.strip():
-                    if not content or content.strip() == "":
-                        # Case 1: Only reasoning content, should include COT
-                        should_include_reasoning = True
-                        final_content = (
-                            content or ""
-                        )  # Use empty string if content is None
+                if enable_cot:
+                    # Check if we should include reasoning content
+                    should_include_reasoning = False
+                    if reasoning_content and reasoning_content.strip():
+                        if not content or content.strip() == "":
+                            # Case 1: Only reasoning content, should include COT
+                            should_include_reasoning = True
+                            final_content = (
+                                content or ""
+                            )  # Use empty string if content is None
+                        else:
+                            # Case 3: Both content and reasoning_content present, ignore reasoning
+                            should_include_reasoning = False
+                            final_content = content
                     else:
-                        # Case 3: Both content and reasoning_content present, ignore reasoning
-                        should_include_reasoning = False
-                        final_content = content
+                        # No reasoning content, use regular content
+                        final_content = content or ""
+
+                    # Apply COT wrapping if needed
+                    if should_include_reasoning:
+                        if r"\u" in reasoning_content:
+                            reasoning_content = safe_unicode_decode(
+                                reasoning_content.encode("utf-8")
+                            )
+                        final_content = f"<think>{reasoning_content}</think>{final_content}"
                 else:
-                    # No reasoning content, use regular content
+                    # COT disabled, only use regular content
                     final_content = content or ""
 
-                # Apply COT wrapping if needed
-                if should_include_reasoning:
-                    if r"\u" in reasoning_content:
-                        reasoning_content = safe_unicode_decode(
-                            reasoning_content.encode("utf-8")
-                        )
-                    final_content = f"<think>{reasoning_content}</think>{final_content}"
-            else:
-                # COT disabled, only use regular content
-                final_content = content or ""
-
-            # Validate final content
-            if not final_content or final_content.strip() == "":
-                logger.error("Received empty content from OpenAI API")
-                await openai_async_client.close()  # Ensure client is closed
-                raise InvalidResponseError("Received empty content from OpenAI API")
+                # Validate final content
+                if not final_content or final_content.strip() == "":
+                    logger.error("Received empty content from OpenAI API")
+                    await openai_async_client.close()  # Ensure client is closed
+                    raise InvalidResponseError("Received empty content from OpenAI API")
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:

@@ -113,9 +113,20 @@ async def azure_openai_complete_if_cache(
 
         return inner()
     else:
-        content = response.choices[0].message.content
-        if r"\u" in content:
-            content = safe_unicode_decode(content.encode("utf-8"))
+        message = response.choices[0].message
+        
+        # Handle parsed responses (structured output via response_format)
+        # When using beta.chat.completions.parse(), the response is in message.parsed
+        if hasattr(message, "parsed") and message.parsed is not None:
+            # Serialize the parsed structured response to JSON
+            content = message.parsed.model_dump_json()
+            logger.debug("Using parsed structured response from API")
+        else:
+            # Handle regular content responses
+            content = message.content
+            if content and r"\u" in content:
+                content = safe_unicode_decode(content.encode("utf-8"))
+        
         return content
 
 
