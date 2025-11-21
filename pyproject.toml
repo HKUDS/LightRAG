@@ -151,6 +151,7 @@ observability = [
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
+lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
