@@ -107,13 +107,26 @@ def create_openai_async_client(
                 "LLM_BINDING_API_KEY"
             )
 
-        return AsyncAzureOpenAI(
-            azure_endpoint=base_url,
-            azure_deployment=azure_deployment,
-            api_key=api_key,
-            api_version=api_version,
-            timeout=timeout,
-        )
+        if client_configs is None:
+            client_configs = {}
+
+        # Create a merged config dict with precedence: explicit params > client_configs
+        merged_configs = {
+            **client_configs,
+            "api_key": api_key,
+        }
+
+        # Add explicit parameters (override client_configs)
+        if base_url is not None:
+            merged_configs["azure_endpoint"] = base_url
+        if azure_deployment is not None:
+            merged_configs["azure_deployment"] = azure_deployment
+        if api_version is not None:
+            merged_configs["api_version"] = api_version
+        if timeout is not None:
+            merged_configs["timeout"] = timeout
+
+        return AsyncAzureOpenAI(**merged_configs)
     else:
         if not api_key:
             api_key = os.environ["OPENAI_API_KEY"]
