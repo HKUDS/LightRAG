@@ -230,7 +230,7 @@ class Neo4JStorage(BaseGraphStorage):
         self, driver: AsyncDriver, database: str, workspace_label: str
     ):
         """Create a full-text index on the entity_id property with Chinese tokenizer support."""
-        index_name = "entity_id_fulltext_idx"
+        index_name = f"entity_id_fulltext_idx_{workspace_label}"
         try:
             async with driver.session(database=database) as session:
                 # Check if the full-text index exists and get its configuration
