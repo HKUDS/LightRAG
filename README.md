@@ -51,24 +51,24 @@
 
 ---
 ## 🎉 News
-- [2025.11.05]🎯Add **RAGAS-based** Evaluation Framework and **Langfuse** observability for LightRAG (API can return retrieved contexts with query results).
-- [2025.10.22]🎯Eliminate bottlenecks in processing **large-scale datasets**.
-- [2025.09.15]🎯Significantly enhances KG extraction accuracy for **small LLMs** like Qwen3-30B-A3B.
-- [2025.08.29]🎯**Reranker** is supported now , significantly boosting performance for mixed queries(Set as default query mode now).
-- [2025.08.04]🎯**Document deletion** with KG regeneration to ensure query performance.
-- [2025.06.16]🎯Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
-- [2025.06.05]🎯LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
-- [2025.03.18]🎯LightRAG now supports citation functionality, enabling proper source attribution.
-- [2025.02.12]🎯You can now use MongoDB as all in-one Storage.
-- [2025.02.05]🎯Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
-- [2025.01.13]🎯Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
-- [2025.01.06]🎯You can now use PostgreSQL as all in-one Storage.
-- [2024.11.19]🎯A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
-- [2024.11.09]🎯Introducing the LightRAG Webui, which allows you to insert, query, visualize LightRAG knowledge.
-- [2024.11.04]🎯You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage).
-- [2024.10.18]🎯We've added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
-- [2024.10.17]🎯We have created a [Discord channel](https://discord.gg/yF2MmDJyGJ)! Welcome to join for sharing and discussions! 🎉🎉
-- [2024.10.16]🎯LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
+- [2025.11]🎯[New Feature]: Integrated **RAGAS for Evaluation** and **Langfuse for Tracing**. Updated the API to return retrieved contexts alongside query results to support context precision metrics.
+- [2025.10]🎯[Scalability Enhancement]: Enhanced system throughput by eliminating bottlenecks in **Large-Scale Dataset Processing**.
+- [2025.09]🎯[Performance Optimization]: Enhanced KG extraction accuracy for **Lightweight LLMs** such as Qwen3-30B-A3B.
+- [2025.08]🎯[New Feature]: **Reranker** is now supported! This improves mixed query performance and is now the default query configuration.
+- [2025.08]🎯[New Feature]: **Document Deletion & KG Sync**. Added document deletion support. This automatically triggers a Knowledge Graph rebuild to clear obsolete data.
+- [2025.06]🎯[New Feature]: LightRAG now supports **Comprehensive Multimodal Data Handling** through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
+- [2025.06]🎯[New Feature]: [**RAG-Anything**](https://github.com/HKUDS/RAG-Anything). – An All-in-One Multimodal RAG System delivering seamless integration of text, visual data, tables, and mathematical formulas.
+- [2025.03]🎯[New Feature]: LightRAG now supports **Citation Functionality**, enabling proper source attribution.
+- [2025.02]🎯You can now use MongoDB as all in-one Storage.
+- [2025.02]🎯[New Release]: Our team has released [**VideoRAG**](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
+- [2025.01]🎯[New Release] Our team has released [**MiniRAG**](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
+- [2025.01]🎯[New Release]: You can now use **PostgreSQL** as **All-in-One Storage**.
+- [2024.11]🎯[New Guide]: A **Comprehensive Guide** to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
+- [2024.11]🎯[New Feature]: Introducing the **LightRAG Webui**, which allows you to insert, query, visualize LightRAG knowledge.
+- [2024.11]🎯[New Feature]: You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage).
+- [2024.10]🎯[New Resource]: Check out the new [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
+- [2024.10]🎯[Community Discussion]: We have launched our official [Discord channel](https://discord.gg/yF2MmDJyGJ)! 🚀 Join the community to connect, share resources, and discuss ideas. See you there! 🎉
+- [2024.10]🎯[New Feature]: LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
