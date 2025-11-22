@@ -2,7 +2,7 @@ name: Integration Tests
 
 on:
   push:
-    branches: [ main, dev, copilot/** ]
+  pull_request:
   workflow_dispatch:
 
 jobs:
