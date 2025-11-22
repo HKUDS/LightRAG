@@ -52,7 +52,7 @@
 ---
 ## 🎉 News
 - [2025.11.05]🎯[New Feature]: Integrated **RAGAS for Evaluation** and **Langfuse for Tracing**. Updated the API to return retrieved contexts alongside query results to support context precision metrics.
-- [2025.10.22]🎯Eliminate bottlenecks in processing **large-scale datasets**.
+- [2025.10.22]🎯[Scalability Enhancement]: Eliminated processing bottlenecks to support **Large-Scale Datasets Efficiently**.
 - [2025.09.15]🎯Significantly enhances KG extraction accuracy for **small LLMs** like Qwen3-30B-A3B.
 - [2025.08.29]🎯**Reranker** is supported now , significantly boosting performance for mixed queries(Set as default query mode now).
 - [2025.08.04]🎯**Document deletion** with KG regeneration to ensure query performance.
