@@ -970,15 +970,27 @@ def create_app(args):
             query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
             """Server rerank function with configuration from environment variables"""
-            return await selected_rerank_func(
-                query=query,
-                documents=documents,
-                top_n=top_n,
-                api_key=args.rerank_binding_api_key,
-                model=args.rerank_model,
-                base_url=args.rerank_binding_host,
-                extra_body=extra_body,
-            )
+            # Prepare kwargs for rerank function
+            kwargs = {
+                "query": query,
+                "documents": documents,
+                "top_n": top_n,
+                "api_key": args.rerank_binding_api_key,
+                "model": args.rerank_model,
+                "base_url": args.rerank_binding_host,
+            }
+
+            # Add Cohere-specific parameters if using cohere binding
+            if args.rerank_binding == "cohere":
+                # Enable chunking if configured (useful for models with token limits like ColBERT)
+                kwargs["enable_chunking"] = (
+                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+                )
+                kwargs["max_tokens_per_doc"] = int(
+                    os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
+                )
+
+            return await selected_rerank_func(**kwargs, extra_body=extra_body)
 
         rerank_model_func = server_rerank_func
         logger.info(
