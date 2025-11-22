@@ -247,6 +247,9 @@ class Neo4JStorage(BaseGraphStorage):
                         existing_index = idx
                     elif idx["name"] == legacy_index_name:
                         legacy_index = idx
+                    # Break early if we found both indexes
+                    if existing_index and legacy_index:
+                        break
 
                 # Handle legacy index migration
                 if legacy_index and not existing_index:
