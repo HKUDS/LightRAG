@@ -231,6 +231,7 @@ class Neo4JStorage(BaseGraphStorage):
     ):
         """Create a full-text index on the entity_id property with Chinese tokenizer support."""
         index_name = f"entity_id_fulltext_idx_{workspace_label}"
+        legacy_index_name = "entity_id_fulltext_idx"
         try:
             async with driver.session(database=database) as session:
                 # Check if the full-text index exists and get its configuration
@@ -240,10 +241,33 @@ class Neo4JStorage(BaseGraphStorage):
                 await result.consume()
 
                 existing_index = None
+                legacy_index = None
                 for idx in indexes:
                     if idx["name"] == index_name:
                         existing_index = idx
+                    elif idx["name"] == legacy_index_name:
+                        legacy_index = idx
+                    # Break early if we found both indexes
+                    if existing_index and legacy_index:
                         break
+
+                # Handle legacy index migration
+                if legacy_index and not existing_index:
+                    logger.info(
+                        f"[{self.workspace}] Found legacy index '{legacy_index_name}'. Migrating to '{index_name}'."
+                    )
+                    try:
+                        # Drop the legacy index
+                        drop_query = f"DROP INDEX {legacy_index_name}"
+                        result = await session.run(drop_query)
+                        await result.consume()
+                        logger.info(
+                            f"[{self.workspace}] Dropped legacy index '{legacy_index_name}'"
+                        )
+                    except Exception as drop_error:
+                        logger.warning(
+                            f"[{self.workspace}] Failed to drop legacy index: {str(drop_error)}"
+                        )
 
                 # Check if index exists and is online
                 if existing_index:
@@ -1641,7 +1665,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         query_lower = query_strip.lower()
         is_chinese = self._is_chinese_text(query_strip)
-        index_name = "entity_id_fulltext_idx"
+        index_name = f"entity_id_fulltext_idx_{workspace_label}"
 
         # Attempt to use the full-text index first
         try:
