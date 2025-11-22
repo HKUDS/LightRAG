@@ -991,6 +991,24 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # Check if we should use an offline-compatible tokenizer (for integration testing)
+    custom_tokenizer = None
+    if os.getenv("LIGHTRAG_OFFLINE_TOKENIZER", "false").lower() == "true":
+        logger.info("Using offline-compatible simple tokenizer for integration testing")
+        try:
+            # Import simple tokenizer for offline use
+            import sys
+
+            tests_dir = Path(__file__).parent.parent.parent / "tests"
+            if tests_dir.exists():
+                sys.path.insert(0, str(tests_dir))
+                from simple_tokenizer import create_simple_tokenizer
+
+                custom_tokenizer = create_simple_tokenizer()
+                logger.info("Successfully loaded offline tokenizer")
+        except Exception as e:
+            logger.warning(f"Failed to load offline tokenizer, using default: {e}")
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1026,6 +1044,7 @@ def create_app(args):
                 "entity_types": args.entity_types,
             },
             ollama_server_infos=ollama_server_infos,
+            tokenizer=custom_tokenizer,  # Pass custom tokenizer if available
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
