@@ -2507,23 +2507,63 @@ class PGVectorStorage(BaseVectorStorage):
             # Create vector index after successful migration
             await db._create_vector_index(table_name, embedding_dim)
 
-            # Delete legacy table after successful migration
-            # Data has been verified to match, so legacy table is no longer needed
-            # and keeping it would cause Case 1 warnings on next startup
+            # Clean up migrated data from legacy table
+            # CRITICAL: Only delete current workspace's data, not the entire table!
+            # Other workspaces may still have data in the legacy table.
             try:
-                logger.info(
-                    f"PostgreSQL: Deleting legacy table '{legacy_table_name}'..."
-                )
-                drop_query = f"DROP TABLE {legacy_table_name}"
-                await db.execute(drop_query, None)
-                logger.info(
-                    f"PostgreSQL: Legacy table '{legacy_table_name}' deleted successfully"
-                )
+                if workspace:
+                    # Delete only current workspace's migrated data
+                    logger.info(
+                        f"PostgreSQL: Deleting migrated workspace '{workspace}' data from legacy table '{legacy_table_name}'..."
+                    )
+                    delete_query = (
+                        f"DELETE FROM {legacy_table_name} WHERE workspace = $1"
+                    )
+                    await db.execute(delete_query, [workspace])
+                    logger.info(
+                        f"PostgreSQL: Deleted workspace '{workspace}' data from legacy table"
+                    )
+
+                    # Check if legacy table still has data from other workspaces
+                    remaining_query = (
+                        f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                    )
+                    remaining_result = await db.query(remaining_query, [])
+                    remaining_count = (
+                        remaining_result.get("count", 0) if remaining_result else 0
+                    )
+
+                    if remaining_count == 0:
+                        # Table is now empty, safe to drop
+                        logger.info(
+                            f"PostgreSQL: Legacy table '{legacy_table_name}' is empty, deleting..."
+                        )
+                        drop_query = f"DROP TABLE {legacy_table_name}"
+                        await db.execute(drop_query, None)
+                        logger.info(
+                            f"PostgreSQL: Legacy table '{legacy_table_name}' deleted successfully"
+                        )
+                    else:
+                        # Table still has data from other workspaces, preserve it
+                        logger.info(
+                            f"PostgreSQL: Legacy table '{legacy_table_name}' preserved ({remaining_count} records from other workspaces remain)"
+                        )
+                else:
+                    # No workspace specified - delete entire table (legacy behavior for backward compatibility)
+                    logger.warning(
+                        f"PostgreSQL: No workspace specified, deleting entire legacy table '{legacy_table_name}'..."
+                    )
+                    drop_query = f"DROP TABLE {legacy_table_name}"
+                    await db.execute(drop_query, None)
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' deleted"
+                    )
+
             except Exception as delete_error:
-                # If deletion fails, user will see Case 1 warning on next startup
+                # If cleanup fails, log warning but don't fail migration
                 logger.warning(
-                    f"PostgreSQL: Failed to delete legacy table '{legacy_table_name}': {delete_error}. "
-                    "You may need to delete it manually."
+                    f"PostgreSQL: Failed to clean up legacy table '{legacy_table_name}': {delete_error}. "
+                    "Migration succeeded, but manual cleanup may be needed."
                 )
 
         except PostgreSQLMigrationError:
@@ -2921,6 +2961,12 @@ class PGDocStatusStorage(DocStatusStorage):
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
+
+            # Create table if not exists
+            table_name = namespace_to_table_name(self.namespace)
+            table_exists = await _pg_table_exists(self.db, table_name)
+            if not table_exists:
+                await _pg_create_table(self.db, table_name, table_name)
 
     async def finalize(self):
         if self.db is not None:
