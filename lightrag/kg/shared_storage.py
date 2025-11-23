@@ -164,16 +164,29 @@ class UnifiedLock(Generic[T]):
                 )
 
             # Then acquire the main lock
-            if self._is_async:
-                await self._lock.acquire()
-            else:
-                self._lock.acquire()
+            if self._lock is not None:
+                if self._is_async:
+                    await self._lock.acquire()
+                else:
+                    self._lock.acquire()
 
-            direct_log(
-                f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
-                level="INFO",
-                enable_output=self._enable_logging,
-            )
+                direct_log(
+                    f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
+                    level="INFO",
+                    enable_output=self._enable_logging,
+                )
+            else:
+                # CRITICAL: Raise exception instead of allowing unprotected execution
+                error_msg = (
+                    f"CRITICAL: Lock '{self._name}' is None - shared data not initialized. "
+                    f"Call initialize_share_data() before using locks!"
+                )
+                direct_log(
+                    f"== Lock == Process {self._pid}: {error_msg}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+                raise RuntimeError(error_msg)
             return self
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired
@@ -193,19 +206,21 @@ class UnifiedLock(Generic[T]):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         main_lock_released = False
+        async_lock_released = False
         try:
             # Release main lock first
-            if self._is_async:
-                self._lock.release()
-            else:
-                self._lock.release()
-            main_lock_released = True
+            if self._lock is not None:
+                if self._is_async:
+                    self._lock.release()
+                else:
+                    self._lock.release()
 
-            direct_log(
-                f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
-                level="INFO",
-                enable_output=self._enable_logging,
-            )
+                direct_log(
+                    f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
+                    level="INFO",
+                    enable_output=self._enable_logging,
+                )
+                main_lock_released = True
 
             # Then release async lock if in multiprocess mode
             if not self._is_async and self._async_lock is not None:
@@ -215,6 +230,7 @@ class UnifiedLock(Generic[T]):
                     level="DEBUG",
                     enable_output=self._enable_logging,
                 )
+                async_lock_released = True
 
         except Exception as e:
             direct_log(
@@ -223,9 +239,10 @@ class UnifiedLock(Generic[T]):
                 enable_output=True,
             )
 
-            # If main lock release failed but async lock hasn't been released, try to release it
+            # If main lock release failed but async lock hasn't been attempted yet, try to release it
             if (
                 not main_lock_released
+                and not async_lock_released
                 and not self._is_async
                 and self._async_lock is not None
             ):
