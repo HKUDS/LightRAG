@@ -171,9 +171,9 @@ class TestPostgresDimensionMismatch:
             for call in db.execute.call_args_list
             if call[0][0] and "INSERT INTO" in call[0][0]
         ]
-        assert len(insert_calls) == 0, (
-            "Migration should be skipped due to dimension mismatch"
-        )
+        assert (
+            len(insert_calls) == 0
+        ), "Migration should be skipped due to dimension mismatch"
 
     @pytest.mark.asyncio
     async def test_postgres_dimension_mismatch_skip_migration_sampling(self):
@@ -311,6 +311,6 @@ class TestPostgresDimensionMismatch:
             for call in db.execute.call_args_list
             if call[0][0] and "INSERT INTO" in call[0][0]
         ]
-        assert len(insert_calls) > 0, (
-            "Migration should proceed with matching dimensions"
-        )
+        assert (
+            len(insert_calls) > 0
+        ), "Migration should proceed with matching dimensions"

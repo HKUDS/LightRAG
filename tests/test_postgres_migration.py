@@ -364,14 +364,14 @@ async def test_scenario_2_legacy_upgrade_migration(
             for call in mock_pg_db.execute.call_args_list
             if call[0][0] and "DROP TABLE" in call[0][0]
         ]
-        assert len(delete_calls) >= 1, (
-            "Legacy table should be deleted after successful migration"
-        )
+        assert (
+            len(delete_calls) >= 1
+        ), "Legacy table should be deleted after successful migration"
         # Check if legacy table was dropped
         dropped_table = storage.legacy_table_name
-        assert any(dropped_table in str(call) for call in delete_calls), (
-            f"Expected to drop '{dropped_table}'"
-        )
+        assert any(
+            dropped_table in str(call) for call in delete_calls
+        ), f"Expected to drop '{dropped_table}'"
 
 
 @pytest.mark.asyncio
@@ -504,9 +504,9 @@ async def test_case1_empty_legacy_auto_cleanup(
         assert len(delete_calls) >= 1, "Empty legacy table should be auto-deleted"
         # Check if legacy table was dropped
         dropped_table = storage.legacy_table_name
-        assert any(dropped_table in str(call) for call in delete_calls), (
-            f"Expected to drop empty legacy table '{dropped_table}'"
-        )
+        assert any(
+            dropped_table in str(call) for call in delete_calls
+        ), f"Expected to drop empty legacy table '{dropped_table}'"
 
         print(
             f"✅ Case 1a: Empty legacy table '{dropped_table}' auto-deleted successfully"

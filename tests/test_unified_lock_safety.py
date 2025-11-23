@@ -138,9 +138,9 @@ class TestUnifiedLockSafety:
             assert "Async lock release failed" in str(e)
 
         # Verify async_lock.release() was called only ONCE, not twice
-        assert release_call_count == 1, (
-            f"async_lock.release() should be called only once, but was called {release_call_count} times"
-        )
+        assert (
+            release_call_count == 1
+        ), f"async_lock.release() should be called only once, but was called {release_call_count} times"
 
         # Main lock should have been released successfully
         main_lock.release.assert_called_once()

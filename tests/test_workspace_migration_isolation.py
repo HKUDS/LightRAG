@@ -124,9 +124,9 @@ class TestWorkspaceMigrationIsolation:
             and "WHERE workspace" in call[0][0]
         ]
         assert len(count_calls) > 0, "Count query should use workspace filter"
-        assert count_calls[0][0][1][0] == "workspace_a", (
-            "Count should filter by workspace_a"
-        )
+        assert (
+            count_calls[0][0][1][0] == "workspace_a"
+        ), "Count should filter by workspace_a"
 
         select_calls = [
             call
@@ -136,9 +136,9 @@ class TestWorkspaceMigrationIsolation:
             and "WHERE workspace" in call[0][0]
         ]
         assert len(select_calls) > 0, "Select query should use workspace filter"
-        assert select_calls[0][0][1][0] == "workspace_a", (
-            "Select should filter by workspace_a"
-        )
+        assert (
+            select_calls[0][0][1][0] == "workspace_a"
+        ), "Select should filter by workspace_a"
 
         # Verify INSERT was called (migration happened)
         insert_calls = [
@@ -224,9 +224,9 @@ class TestWorkspaceMigrationIsolation:
         has_workspace_filter = any(
             "WHERE workspace" in call[0][0] for call in count_calls
         )
-        assert not has_workspace_filter, (
-            "Count should NOT filter by workspace when workspace=None"
-        )
+        assert (
+            not has_workspace_filter
+        ), "Count should NOT filter by workspace when workspace=None"
 
     @pytest.mark.asyncio
     async def test_no_cross_workspace_contamination(self):
