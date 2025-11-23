@@ -206,6 +206,7 @@ class UnifiedLock(Generic[T]):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         main_lock_released = False
+        async_lock_released = False
         try:
             # Release main lock first
             if self._lock is not None:
@@ -229,6 +230,7 @@ class UnifiedLock(Generic[T]):
                     level="DEBUG",
                     enable_output=self._enable_logging,
                 )
+                async_lock_released = True
 
         except Exception as e:
             direct_log(
@@ -237,9 +239,10 @@ class UnifiedLock(Generic[T]):
                 enable_output=True,
             )
 
-            # If main lock release failed but async lock hasn't been released, try to release it
+            # If main lock release failed but async lock hasn't been attempted yet, try to release it
             if (
                 not main_lock_released
+                and not async_lock_released
                 and not self._is_async
                 and self._async_lock is not None
             ):
