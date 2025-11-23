@@ -110,9 +110,9 @@ class TestNoModelSuffixSafety:
             for call in db.execute.call_args_list
             if call[0][0] and "DROP TABLE" in call[0][0]
         ]
-        assert (
-            len(drop_calls) == 0
-        ), "Should not drop table when new and legacy are the same"
+        assert len(drop_calls) == 0, (
+            "Should not drop table when new and legacy are the same"
+        )
 
         # Also should not try to count (we returned early)
         count_calls = [
@@ -120,9 +120,9 @@ class TestNoModelSuffixSafety:
             for call in db.query.call_args_list
             if call[0][0] and "COUNT(*)" in call[0][0]
         ]
-        assert (
-            len(count_calls) == 0
-        ), "Should not check count when new and legacy are the same"
+        assert len(count_calls) == 0, (
+            "Should not check count when new and legacy are the same"
+        )
 
     def test_qdrant_with_suffix_case1_still_works(self):
         """
