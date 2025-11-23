@@ -289,13 +289,41 @@ async def test_scenario_2_legacy_upgrade_migration(
         for i in range(50)
     ]
 
+    # Track which queries have been made for proper response
+    query_history = []
+
     async def mock_query(sql, params=None, multirows=False, **kwargs):
+        query_history.append(sql)
+
         if "COUNT(*)" in sql:
-            # First call for legacy count, then for verification
-            if storage.legacy_table_name in sql:
+            # Determine table type:
+            # - Legacy: contains base name but NOT model suffix
+            # - New: contains model suffix (e.g., text_embedding_ada_002_1536d)
+            sql_upper = sql.upper()
+            base_name = storage.legacy_table_name.upper()
+
+            # Check if this is querying the new table (has model suffix)
+            has_model_suffix = any(
+                suffix in sql_upper
+                for suffix in ["TEXT_EMBEDDING", "_1536D", "_768D", "_1024D", "_3072D"]
+            )
+
+            is_legacy_table = base_name in sql_upper and not has_model_suffix
+            is_new_table = has_model_suffix
+            has_workspace_filter = "WHERE workspace" in sql
+
+            if is_legacy_table and has_workspace_filter:
+                # Count for legacy table with workspace filter (before migration)
+                return {"count": 50}
+            elif is_legacy_table and not has_workspace_filter:
+                # Total count for legacy table (after deletion, checking remaining)
+                return {"count": 0}
+            elif is_new_table:
+                # Count for new table (verification after migration)
                 return {"count": 50}
             else:
-                return {"count": 50}
+                # Fallback
+                return {"count": 0}
         elif multirows and "SELECT *" in sql:
             # Mock batch fetch for migration
             # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
@@ -336,14 +364,14 @@ async def test_scenario_2_legacy_upgrade_migration(
             for call in mock_pg_db.execute.call_args_list
             if call[0][0] and "DROP TABLE" in call[0][0]
         ]
-        assert (
-            len(delete_calls) >= 1
-        ), "Legacy table should be deleted after successful migration"
+        assert len(delete_calls) >= 1, (
+            "Legacy table should be deleted after successful migration"
+        )
         # Check if legacy table was dropped
         dropped_table = storage.legacy_table_name
-        assert any(
-            dropped_table in str(call) for call in delete_calls
-        ), f"Expected to drop '{dropped_table}'"
+        assert any(dropped_table in str(call) for call in delete_calls), (
+            f"Expected to drop '{dropped_table}'"
+        )
 
 
 @pytest.mark.asyncio
@@ -476,9 +504,9 @@ async def test_case1_empty_legacy_auto_cleanup(
         assert len(delete_calls) >= 1, "Empty legacy table should be auto-deleted"
         # Check if legacy table was dropped
         dropped_table = storage.legacy_table_name
-        assert any(
-            dropped_table in str(call) for call in delete_calls
-        ), f"Expected to drop empty legacy table '{dropped_table}'"
+        assert any(dropped_table in str(call) for call in delete_calls), (
+            f"Expected to drop empty legacy table '{dropped_table}'"
+        )
 
         print(
             f"✅ Case 1a: Empty legacy table '{dropped_table}' auto-deleted successfully"

@@ -2519,7 +2519,7 @@ class PGVectorStorage(BaseVectorStorage):
                     delete_query = (
                         f"DELETE FROM {legacy_table_name} WHERE workspace = $1"
                     )
-                    await db.execute(delete_query, [workspace])
+                    await db.execute(delete_query, {"workspace": workspace})
                     logger.info(
                         f"PostgreSQL: Deleted workspace '{workspace}' data from legacy table"
                     )
