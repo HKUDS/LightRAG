@@ -176,11 +176,17 @@ class UnifiedLock(Generic[T]):
                     enable_output=self._enable_logging,
                 )
             else:
-                direct_log(
-                    f"== Lock == Process {self._pid}: Main lock {self._name} is None (async={self._is_async})",
-                    level="WARNING",
-                    enable_output=self._enable_logging,
+                # CRITICAL: Raise exception instead of allowing unprotected execution
+                error_msg = (
+                    f"CRITICAL: Lock '{self._name}' is None - shared data not initialized. "
+                    f"Call initialize_share_data() before using locks!"
                 )
+                direct_log(
+                    f"== Lock == Process {self._pid}: {error_msg}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+                raise RuntimeError(error_msg)
             return self
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired

@@ -129,8 +129,15 @@ async def test_postgres_migration_trigger(
             return {"count": 100}
         elif multirows and "SELECT *" in sql:
             # Mock batch fetch for migration
-            offset = params[0] if params else 0
-            limit = params[1] if len(params) > 1 else 500
+            # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
+            if "WHERE workspace" in sql:
+                # With workspace filter: params[0]=workspace, params[1]=offset, params[2]=limit
+                offset = params[1] if len(params) > 1 else 0
+                limit = params[2] if len(params) > 2 else 500
+            else:
+                # No workspace filter: params[0]=offset, params[1]=limit
+                offset = params[0] if params else 0
+                limit = params[1] if len(params) > 1 else 500
             start = offset
             end = min(offset + limit, len(mock_rows))
             return mock_rows[start:end]
@@ -291,8 +298,15 @@ async def test_scenario_2_legacy_upgrade_migration(
                 return {"count": 50}
         elif multirows and "SELECT *" in sql:
             # Mock batch fetch for migration
-            offset = params[0] if params else 0
-            limit = params[1] if len(params) > 1 else 500
+            # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
+            if "WHERE workspace" in sql:
+                # With workspace filter: params[0]=workspace, params[1]=offset, params[2]=limit
+                offset = params[1] if len(params) > 1 else 0
+                limit = params[2] if len(params) > 2 else 500
+            else:
+                # No workspace filter: params[0]=offset, params[1]=limit
+                offset = params[0] if params else 0
+                limit = params[1] if len(params) > 1 else 500
             start = offset
             end = min(offset + limit, len(mock_rows))
             return mock_rows[start:end]

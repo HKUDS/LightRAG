@@ -2253,6 +2253,7 @@ class PGVectorStorage(BaseVectorStorage):
         legacy_table_name: str = None,
         base_table: str = None,
         embedding_dim: int = None,
+        workspace: str = None,
     ):
         """
         Setup PostgreSQL table with migration support from legacy tables.
@@ -2340,11 +2341,22 @@ class PGVectorStorage(BaseVectorStorage):
         )
 
         try:
-            # Get legacy table count
-            count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
-            count_result = await db.query(count_query, [])
+            # Get legacy table count (with workspace filtering)
+            if workspace:
+                count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name} WHERE workspace = $1"
+                count_result = await db.query(count_query, [workspace])
+            else:
+                count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                count_result = await db.query(count_query, [])
+                logger.warning(
+                    "PostgreSQL: Migration without workspace filter - this may copy data from all workspaces!"
+                )
+
             legacy_count = count_result.get("count", 0) if count_result else 0
-            logger.info(f"PostgreSQL: Found {legacy_count} records in legacy table")
+            workspace_info = f" for workspace '{workspace}'" if workspace else ""
+            logger.info(
+                f"PostgreSQL: Found {legacy_count} records in legacy table{workspace_info}"
+            )
 
             if legacy_count == 0:
                 logger.info("PostgreSQL: Legacy table is empty, skipping migration")
@@ -2428,11 +2440,19 @@ class PGVectorStorage(BaseVectorStorage):
             batch_size = 500  # Mirror Qdrant batch size
 
             while True:
-                # Fetch a batch of rows
-                select_query = f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
-                rows = await db.query(
-                    select_query, [offset, batch_size], multirows=True
-                )
+                # Fetch a batch of rows (with workspace filtering)
+                if workspace:
+                    select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 OFFSET $2 LIMIT $3"
+                    rows = await db.query(
+                        select_query, [workspace, offset, batch_size], multirows=True
+                    )
+                else:
+                    select_query = (
+                        f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
+                    )
+                    rows = await db.query(
+                        select_query, [offset, batch_size], multirows=True
+                    )
 
                 if not rows:
                     break
@@ -2539,6 +2559,7 @@ class PGVectorStorage(BaseVectorStorage):
                 legacy_table_name=self.legacy_table_name,
                 base_table=self.legacy_table_name,  # base_table for DDL template lookup
                 embedding_dim=self.embedding_func.embedding_dim,
+                workspace=self.workspace,  # CRITICAL: Filter migration by workspace
             )
 
     async def finalize(self):

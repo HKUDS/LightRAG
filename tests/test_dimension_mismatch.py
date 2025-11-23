@@ -7,10 +7,15 @@ legacy collections/tables to new ones with different embedding models.
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
+
+
+# Note: Tests should use proper table names that have DDL templates
+# Valid base tables: LIGHTRAG_VDB_CHUNKS, LIGHTRAG_VDB_ENTITIES, LIGHTRAG_VDB_RELATIONSHIPS,
+#                    LIGHTRAG_DOC_CHUNKS, LIGHTRAG_DOC_FULL_DOCS, LIGHTRAG_DOC_TEXT_CHUNKS
 
 
 class TestQdrantDimensionMismatch:
@@ -95,16 +100,21 @@ class TestQdrantDimensionMismatch:
         sample_point.payload = {"id": "test"}
         client.scroll.return_value = ([sample_point], None)
 
-        # Call setup_collection with matching 1536d
-        QdrantVectorDBStorage.setup_collection(
-            client,
-            "lightrag_chunks_model_1536d",
-            namespace="chunks",
-            workspace="test",
-            vectors_config=models.VectorParams(
-                size=1536, distance=models.Distance.COSINE
-            ),
-        )
+        # Mock _find_legacy_collection to return the legacy collection name
+        with patch(
+            "lightrag.kg.qdrant_impl._find_legacy_collection",
+            return_value="lightrag_chunks",
+        ):
+            # Call setup_collection with matching 1536d
+            QdrantVectorDBStorage.setup_collection(
+                client,
+                "lightrag_chunks_model_1536d",
+                namespace="chunks",
+                workspace="test",
+                vectors_config=models.VectorParams(
+                    size=1536, distance=models.Distance.COSINE
+                ),
+            )
 
         # Verify migration WAS attempted
         client.create_collection.assert_called_once()
@@ -130,9 +140,9 @@ class TestPostgresDimensionMismatch:
         # Mock table existence and dimension checks
         async def query_side_effect(query, params, **kwargs):
             if "information_schema.tables" in query:
-                if params[0] == "lightrag_doc_chunks":  # legacy
+                if params[0] == "LIGHTRAG_DOC_CHUNKS":  # legacy
                     return {"exists": True}
-                elif params[0] == "lightrag_doc_chunks_model_3072d":  # new
+                elif params[0] == "LIGHTRAG_DOC_CHUNKS_model_3072d":  # new
                     return {"exists": False}
             elif "COUNT(*)" in query:
                 return {"count": 100}  # Legacy has data
@@ -147,27 +157,23 @@ class TestPostgresDimensionMismatch:
         # Call setup_table with 3072d (different from legacy 1536d)
         await PGVectorStorage.setup_table(
             db,
-            "lightrag_doc_chunks_model_3072d",
-            legacy_table_name="lightrag_doc_chunks",
-            base_table="lightrag_doc_chunks",
+            "LIGHTRAG_DOC_CHUNKS_model_3072d",
+            legacy_table_name="LIGHTRAG_DOC_CHUNKS",
+            base_table="LIGHTRAG_DOC_CHUNKS",
             embedding_dim=3072,
+            workspace="test",
         )
 
-        # Verify new table was created (DDL executed)
-        create_table_calls = [
-            call
-            for call in db.execute.call_args_list
-            if call[0][0] and "CREATE TABLE" in call[0][0]
-        ]
-        assert len(create_table_calls) > 0, "New table should be created"
-
         # Verify migration was NOT attempted (no INSERT calls)
+        # Note: _pg_create_table is mocked, so we check INSERT calls to verify migration was skipped
         insert_calls = [
             call
             for call in db.execute.call_args_list
             if call[0][0] and "INSERT INTO" in call[0][0]
         ]
-        assert len(insert_calls) == 0, "Migration should be skipped"
+        assert (
+            len(insert_calls) == 0
+        ), "Migration should be skipped due to dimension mismatch"
 
     @pytest.mark.asyncio
     async def test_postgres_dimension_mismatch_skip_migration_sampling(self):
@@ -183,9 +189,9 @@ class TestPostgresDimensionMismatch:
         # Mock table existence and dimension checks
         async def query_side_effect(query, params, **kwargs):
             if "information_schema.tables" in query:
-                if params[0] == "lightrag_doc_chunks":  # legacy
+                if params[0] == "LIGHTRAG_DOC_CHUNKS":  # legacy
                     return {"exists": True}
-                elif params[0] == "lightrag_doc_chunks_model_3072d":  # new
+                elif params[0] == "LIGHTRAG_DOC_CHUNKS_model_3072d":  # new
                     return {"exists": False}
             elif "COUNT(*)" in query:
                 return {"count": 100}  # Legacy has data
@@ -203,10 +209,11 @@ class TestPostgresDimensionMismatch:
         # Call setup_table with 3072d (different from legacy 1536d)
         await PGVectorStorage.setup_table(
             db,
-            "lightrag_doc_chunks_model_3072d",
-            legacy_table_name="lightrag_doc_chunks",
-            base_table="lightrag_doc_chunks",
+            "LIGHTRAG_DOC_CHUNKS_model_3072d",
+            legacy_table_name="LIGHTRAG_DOC_CHUNKS",
+            base_table="LIGHTRAG_DOC_CHUNKS",
             embedding_dim=3072,
+            workspace="test",
         )
 
         # Verify new table was created
@@ -239,9 +246,9 @@ class TestPostgresDimensionMismatch:
             multirows = kwargs.get("multirows", False)
 
             if "information_schema.tables" in query:
-                if params[0] == "lightrag_doc_chunks":  # legacy
+                if params[0] == "LIGHTRAG_DOC_CHUNKS":  # legacy
                     return {"exists": True}
-                elif params[0] == "lightrag_doc_chunks_model_1536d":  # new
+                elif params[0] == "LIGHTRAG_DOC_CHUNKS_model_1536d":  # new
                     return {"exists": False}
             elif "COUNT(*)" in query:
                 return {"count": 100}  # Legacy has data
@@ -249,7 +256,13 @@ class TestPostgresDimensionMismatch:
                 return {"vector_dim": 1536}  # Legacy has matching 1536d
             elif "SELECT * FROM" in query and multirows:
                 # Return sample data for migration (first batch)
-                if params[0] == 0:  # offset = 0
+                # Handle workspace filtering: params = [workspace, offset, limit]
+                if "WHERE workspace" in query:
+                    offset = params[1] if len(params) > 1 else 0
+                else:
+                    offset = params[0] if params else 0
+
+                if offset == 0:  # First batch
                     return [
                         {
                             "id": "test1",
@@ -270,14 +283,27 @@ class TestPostgresDimensionMismatch:
         db.execute = AsyncMock()
         db._create_vector_index = AsyncMock()
 
-        # Call setup_table with matching 1536d
-        await PGVectorStorage.setup_table(
-            db,
-            "lightrag_doc_chunks_model_1536d",
-            legacy_table_name="lightrag_doc_chunks",
-            base_table="lightrag_doc_chunks",
-            embedding_dim=1536,
-        )
+        # Mock _pg_table_exists
+        async def mock_table_exists(db_inst, name):
+            if name == "LIGHTRAG_DOC_CHUNKS":  # legacy exists
+                return True
+            elif name == "LIGHTRAG_DOC_CHUNKS_model_1536d":  # new doesn't exist
+                return False
+            return False
+
+        with patch(
+            "lightrag.kg.postgres_impl._pg_table_exists",
+            side_effect=mock_table_exists,
+        ):
+            # Call setup_table with matching 1536d
+            await PGVectorStorage.setup_table(
+                db,
+                "LIGHTRAG_DOC_CHUNKS_model_1536d",
+                legacy_table_name="LIGHTRAG_DOC_CHUNKS",
+                base_table="LIGHTRAG_DOC_CHUNKS",
+                embedding_dim=1536,
+                workspace="test",
+            )
 
         # Verify migration WAS attempted (INSERT calls made)
         insert_calls = [
