@@ -157,8 +157,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # This can happen if:
         # 1. Previous migration failed to delete the legacy collection
         # 2. User manually created both collections
-        # Strategy: Only delete legacy if it's empty (safe cleanup)
+        # 3. No model suffix (collection_name == legacy_collection)
+        # Strategy: Only delete legacy if it's empty (safe cleanup) and it's not the same as new collection
         if new_collection_exists and legacy_exists:
+            # CRITICAL: Check if new and legacy are the same collection
+            # This happens when model_suffix is empty (no model_name provided)
+            if collection_name == legacy_collection:
+                logger.debug(
+                    f"Qdrant: Collection '{collection_name}' already exists (no model suffix). Skipping Case 1 cleanup."
+                )
+                return
+
             try:
                 # Check if legacy collection is empty
                 legacy_count = client.count(

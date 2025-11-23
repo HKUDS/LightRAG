@@ -1392,7 +1392,7 @@ class PostgreSQLDB:
             "VCHORDRQ": f"""
                 CREATE INDEX {{vector_index_name}}
                 ON {{table_name}} USING vchordrq (content_vector vector_cosine_ops)
-                {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
+                {f"WITH (options = $${self.vchordrq_build_options}$$)" if self.vchordrq_build_options else ""}
             """,
         }
 
@@ -2275,8 +2275,17 @@ class PGVectorStorage(BaseVectorStorage):
         # This can happen if:
         # 1. Previous migration failed to delete the legacy table
         # 2. User manually created both tables
-        # Strategy: Only delete legacy if it's empty (safe cleanup)
+        # 3. No model suffix (table_name == legacy_table_name)
+        # Strategy: Only delete legacy if it's empty (safe cleanup) and it's not the same as new table
         if new_table_exists and legacy_exists:
+            # CRITICAL: Check if new and legacy are the same table
+            # This happens when model_suffix is empty (no model_name provided)
+            if table_name.lower() == legacy_table_name.lower():
+                logger.debug(
+                    f"PostgreSQL: Table '{table_name}' already exists (no model suffix). Skipping Case 1 cleanup."
+                )
+                return
+
             try:
                 # Check if legacy table is empty
                 count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
@@ -2436,7 +2445,7 @@ class PGVectorStorage(BaseVectorStorage):
                     # Build insert query with positional parameters
                     columns = list(row_dict.keys())
                     columns_str = ", ".join(columns)
-                    placeholders = ", ".join([f"${i+1}" for i in range(len(columns))])
+                    placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])
                     insert_query = f"""
                         INSERT INTO {table_name} ({columns_str})
                         VALUES ({placeholders})
