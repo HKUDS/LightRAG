@@ -39,6 +39,7 @@ dependencies = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "pycryptodome",
 ]
 
 [project.optional-dependencies]
