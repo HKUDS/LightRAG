@@ -279,8 +279,12 @@ async def test_multiple_workspaces_have_separate_indexes(neo4j_storage):
             await result.consume()
 
             index_names = [idx["name"] for idx in indexes]
-            workspace1_index = f"entity_id_fulltext_idx_{storage1._get_workspace_label()}"
-            workspace2_index = f"entity_id_fulltext_idx_{storage2._get_workspace_label()}"
+            workspace1_index = (
+                f"entity_id_fulltext_idx_{storage1._get_workspace_label()}"
+            )
+            workspace2_index = (
+                f"entity_id_fulltext_idx_{storage2._get_workspace_label()}"
+            )
 
             assert (
                 workspace1_index in index_names
