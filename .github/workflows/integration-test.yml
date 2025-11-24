@@ -32,7 +32,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[api]"
+          pip install -e .[api,offline-storage]
           pip install pytest pytest-asyncio httpx
 
       - name: Create minimal frontend stub for testing
