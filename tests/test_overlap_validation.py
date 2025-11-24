@@ -98,3 +98,16 @@ class TestOverlapValidation:
         assert "short doc" in chunked_docs
         # Verify doc_indices maps correctly
         assert doc_indices[-1] == 1  # Last chunk is from second document
+
+    def test_edge_case_max_tokens_one(self):
+        """Test edge case where max_tokens=1"""
+        documents = [" ".join([f"word{i}" for i in range(20)])]
+        
+        # max_tokens=1, overlap_tokens=5 should clamp to 0
+        chunked_docs, doc_indices = chunk_documents_for_rerank(
+            documents, max_tokens=1, overlap_tokens=5
+        )
+        
+        # Should complete without hanging
+        assert len(chunked_docs) > 0
+        assert all(idx == 0 for idx in doc_indices)
