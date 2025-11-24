@@ -39,6 +39,18 @@ def chunk_documents_for_rerank(
         - chunked_documents: List of document chunks (may be more than input)
         - original_doc_indices: Maps each chunk back to its original document index
     """
+    # Clamp overlap_tokens to ensure the loop always advances
+    # If overlap_tokens >= max_tokens, the chunking loop would hang
+    if overlap_tokens >= max_tokens:
+        original_overlap = overlap_tokens
+        # Ensure overlap is at least 1 token less than max to guarantee progress
+        # For very small max_tokens (e.g., 1), set overlap to 0
+        overlap_tokens = max(0, max_tokens - 1)
+        logger.warning(
+            f"overlap_tokens ({original_overlap}) must be less than max_tokens ({max_tokens}). "
+            f"Clamping to {overlap_tokens} to prevent infinite loop."
+        )
+    
     try:
         from .utils import TiktokenTokenizer
 
