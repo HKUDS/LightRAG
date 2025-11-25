@@ -976,19 +976,82 @@ def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
 
 
 def _extract_docx(file_bytes: bytes) -> str:
-    """Extract DOCX content (synchronous).
+    """Extract DOCX content including tables in document order (synchronous).
 
     Args:
         file_bytes: DOCX file content as bytes
 
     Returns:
-        str: Extracted text content
+        str: Extracted text content with tables in their original positions.
+             Tables are separated from paragraphs with blank lines for clarity.
     """
     from docx import Document  # type: ignore
+    from docx.table import Table  # type: ignore
+    from docx.text.paragraph import Paragraph  # type: ignore
 
     docx_file = BytesIO(file_bytes)
     doc = Document(docx_file)
-    return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+
+    def escape_cell(cell_value: str | None) -> str:
+        """Escape characters that would break tab-delimited layout.
+
+        Escape order is critical: backslashes first, then tabs/newlines.
+        This prevents double-escaping issues.
+
+        Args:
+            cell_value: The cell value to escape (can be None or str)
+
+        Returns:
+            str: Escaped cell value safe for tab-delimited format
+        """
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        # CRITICAL: Escape backslash first to avoid double-escaping
+        return (
+            text.replace("\\", "\\\\")  # Must be first: \ -> \\
+            .replace("\t", "\\t")  # Tab -> \t (visible)
+            .replace("\r\n", "\\n")  # Windows newline -> \n
+            .replace("\r", "\\n")  # Mac newline -> \n
+            .replace("\n", "\\n")  # Unix newline -> \n
+        )
+
+    content_parts = []
+    in_table = False  # Track if we're currently processing a table
+
+    # Iterate through all body elements in document order
+    for element in doc.element.body:
+        # Check if element is a paragraph
+        if element.tag.endswith("p"):
+            # If coming out of a table, add blank line after table
+            if in_table:
+                content_parts.append("")  # Blank line after table
+                in_table = False
+
+            paragraph = Paragraph(element, doc)
+            text = paragraph.text
+            # Always append to preserve document spacing (including blank paragraphs)
+            content_parts.append(text)
+
+        # Check if element is a table
+        elif element.tag.endswith("tbl"):
+            # Add blank line before table (if content exists)
+            if content_parts and not in_table:
+                content_parts.append("")  # Blank line before table
+
+            in_table = True
+            table = Table(element, doc)
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    cell_text = cell.text
+                    # Escape special characters to preserve tab-delimited structure
+                    row_text.append(escape_cell(cell_text))
+                # Only add row if at least one cell has content
+                if any(cell for cell in row_text):
+                    content_parts.append("\t".join(row_text))
+
+    return "\n".join(content_parts)
 
 
 def _extract_pptx(file_bytes: bytes) -> str:
@@ -1013,27 +1076,112 @@ def _extract_pptx(file_bytes: bytes) -> str:
 
 
 def _extract_xlsx(file_bytes: bytes) -> str:
-    """Extract XLSX content (synchronous).
+    """Extract XLSX content in tab-delimited format with clear sheet separation.
+
+    This function processes Excel workbooks and converts them to a structured text format
+    suitable for LLM prompts and RAG systems. Each sheet is clearly delimited with
+    separator lines, and special characters are escaped to preserve the tab-delimited structure.
+
+    Features:
+    - Each sheet is wrapped with '====================' separators for visual distinction
+    - Special characters (tabs, newlines, backslashes) are escaped to prevent structure corruption
+    - Column alignment is preserved across all rows to maintain tabular structure
+    - Empty rows are preserved as blank lines to maintain row structure
+    - Uses sheet.max_column to determine column width efficiently
 
     Args:
         file_bytes: XLSX file content as bytes
 
     Returns:
-        str: Extracted text content
+        str: Extracted text content with all sheets in tab-delimited format.
+             Format: Sheet separators, sheet name, then tab-delimited rows.
+
+    Example output:
+        ==================== Sheet: Data ====================
+        Name\tAge\tCity
+        Alice\t30\tNew York
+        Bob\t25\tLondon
+
+        ==================== Sheet: Summary ====================
+        Total\t2
+        ====================
     """
     from openpyxl import load_workbook  # type: ignore
 
     xlsx_file = BytesIO(file_bytes)
     wb = load_workbook(xlsx_file)
-    content = ""
-    for sheet in wb:
-        content += f"Sheet: {sheet.title}\n"
+
+    def escape_cell(cell_value: str | int | float | None) -> str:
+        """Escape characters that would break tab-delimited layout.
+
+        Escape order is critical: backslashes first, then tabs/newlines.
+        This prevents double-escaping issues.
+
+        Args:
+            cell_value: The cell value to escape (can be None, str, int, or float)
+
+        Returns:
+            str: Escaped cell value safe for tab-delimited format
+        """
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        # CRITICAL: Escape backslash first to avoid double-escaping
+        return (
+            text.replace("\\", "\\\\")  # Must be first: \ -> \\
+            .replace("\t", "\\t")  # Tab -> \t (visible)
+            .replace("\r\n", "\\n")  # Windows newline -> \n
+            .replace("\r", "\\n")  # Mac newline -> \n
+            .replace("\n", "\\n")  # Unix newline -> \n
+        )
+
+    def escape_sheet_title(title: str) -> str:
+        """Escape sheet title to prevent formatting issues in separators.
+
+        Args:
+            title: Original sheet title
+
+        Returns:
+            str: Sanitized sheet title with tabs/newlines replaced
+        """
+        return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
+
+    content_parts: list[str] = []
+    sheet_separator = "=" * 20
+
+    for idx, sheet in enumerate(wb):
+        if idx > 0:
+            content_parts.append("")  # Blank line between sheets for readability
+
+        # Escape sheet title to handle edge cases with special characters
+        safe_title = escape_sheet_title(sheet.title)
+        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
+
+        # Use sheet.max_column to get the maximum column width directly
+        max_columns = sheet.max_column if sheet.max_column else 0
+
+        # Extract rows with consistent width to preserve column alignment
         for row in sheet.iter_rows(values_only=True):
-            content += (
-                "\t".join(str(cell) if cell is not None else "" for cell in row) + "\n"
-            )
-        content += "\n"
-    return content
+            row_parts = []
+
+            # Build row up to max_columns width
+            for idx in range(max_columns):
+                if idx < len(row):
+                    row_parts.append(escape_cell(row[idx]))
+                else:
+                    row_parts.append("")  # Pad short rows
+
+            # Check if row is completely empty
+            if all(part == "" for part in row_parts):
+                # Preserve empty rows as blank lines (maintains row structure)
+                content_parts.append("")
+            else:
+                # Join all columns to maintain consistent column count
+                content_parts.append("\t".join(row_parts))
+
+    # Final separator for symmetry (makes parsing easier)
+    content_parts.append(sheet_separator)
+    return "\n".join(content_parts)
 
 
 async def pipeline_enqueue_file(
@@ -1641,11 +1789,15 @@ async def background_delete_documents(
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
         get_namespace_data,
-        get_pipeline_status_lock,
+        get_namespace_lock,
     )
 
-    pipeline_status = await get_namespace_data("pipeline_status")
-    pipeline_status_lock = get_pipeline_status_lock()
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
 
     total_docs = len(doc_ids)
     successful_deletions = []
@@ -1661,6 +1813,7 @@ async def background_delete_documents(
         pipeline_status.update(
             {
                 "busy": True,
+                # Job name can not be changed, it's verified in adelete_by_doc_id()
                 "job_name": f"Deleting {total_docs} Documents",
                 "job_start": datetime.now().isoformat(),
                 "docs": total_docs,
@@ -2134,12 +2287,16 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import (
             get_namespace_data,
-            get_pipeline_status_lock,
+            get_namespace_lock,
         )
 
         # Get pipeline status and lock
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_pipeline_status_lock()
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
 
         # Check and set status with lock
         async with pipeline_status_lock:
@@ -2330,13 +2487,19 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
+                get_namespace_lock,
                 get_all_update_flags_status,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status()
+            update_status = await get_all_update_flags_status(workspace=rag.workspace)
 
             # Convert MutableBoolean objects to regular boolean values
             processed_update_status = {}
@@ -2350,8 +2513,9 @@ def create_document_routes(
                         processed_flags.append(bool(flag))
                 processed_update_status[namespace] = processed_flags
 
-            # Convert to regular dict if it's a Manager.dict
-            status_dict = dict(pipeline_status)
+            async with pipeline_status_lock:
+                # Convert to regular dict if it's a Manager.dict
+                status_dict = dict(pipeline_status)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
@@ -2538,17 +2702,26 @@ def create_document_routes(
         doc_ids = delete_request.doc_ids
 
         try:
-            from lightrag.kg.shared_storage import get_namespace_data
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_namespace_lock,
+            )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
-            # Check if pipeline is busy
-            if pipeline_status.get("busy", False):
-                return DeleteDocByIdResponse(
-                    status="busy",
-                    message="Cannot delete documents while pipeline is busy",
-                    doc_id=", ".join(doc_ids),
-                )
+            # Check if pipeline is busy with proper lock
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy", False):
+                    return DeleteDocByIdResponse(
+                        status="busy",
+                        message="Cannot delete documents while pipeline is busy",
+                        doc_id=", ".join(doc_ids),
+                    )
 
             # Add deletion task to background tasks
             background_tasks.add_task(
@@ -2944,11 +3117,15 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
-                get_pipeline_status_lock,
+                get_namespace_lock,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-            pipeline_status_lock = get_pipeline_status_lock()
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             async with pipeline_status_lock:
                 if not pipeline_status.get("busy", False):

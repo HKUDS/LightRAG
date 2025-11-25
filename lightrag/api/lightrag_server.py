@@ -56,7 +56,8 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    initialize_pipeline_status,
+    get_default_workspace,
+    # set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
 )
@@ -158,19 +159,22 @@ def check_frontend_build():
     """Check if frontend is built and optionally check if source is up-to-date
 
     Returns:
-        bool: True if frontend is outdated, False if up-to-date or production environment
+        tuple: (assets_exist: bool, is_outdated: bool)
+            - assets_exist: True if WebUI build files exist
+            - is_outdated: True if source is newer than build (only in dev environment)
     """
     webui_dir = Path(__file__).parent / "webui"
     index_html = webui_dir / "index.html"
 
-    # 1. Check if build files exist (required)
+    # 1. Check if build files exist
     if not index_html.exists():
-        ASCIIColors.red("\n" + "=" * 80)
-        ASCIIColors.red("ERROR: Frontend Not Built")
-        ASCIIColors.red("=" * 80)
+        ASCIIColors.yellow("\n" + "=" * 80)
+        ASCIIColors.yellow("WARNING: Frontend Not Built")
+        ASCIIColors.yellow("=" * 80)
         ASCIIColors.yellow("The WebUI frontend has not been built yet.")
+        ASCIIColors.yellow("The API server will start without the WebUI interface.")
         ASCIIColors.yellow(
-            "Please build the frontend code first using the following commands:\n"
+            "\nTo enable WebUI, build the frontend using these commands:\n"
         )
         ASCIIColors.cyan("    cd lightrag_webui")
         ASCIIColors.cyan("    bun install --frozen-lockfile")
@@ -180,8 +184,8 @@ def check_frontend_build():
         ASCIIColors.cyan(
             "Note: Make sure you have Bun installed. Visit https://bun.sh for installation."
         )
-        ASCIIColors.red("=" * 80 + "\n")
-        sys.exit(1)  # Exit immediately
+        ASCIIColors.yellow("=" * 80 + "\n")
+        return (False, False)  # Assets don't exist, not outdated
 
     # 2. Check if this is a development environment (source directory exists)
     try:
@@ -194,7 +198,7 @@ def check_frontend_build():
             logger.debug(
                 "Production environment detected, skipping source freshness check"
             )
-            return False
+            return (True, False)  # Assets exist, not outdated (prod environment)
 
         # Development environment, perform source code timestamp check
         logger.debug("Development environment detected, checking source freshness")
@@ -269,20 +273,20 @@ def check_frontend_build():
             ASCIIColors.cyan("    cd ..")
             ASCIIColors.yellow("\nThe server will continue with the current build.")
             ASCIIColors.yellow("=" * 80 + "\n")
-            return True  # Frontend is outdated
+            return (True, True)  # Assets exist, outdated
         else:
             logger.info("Frontend build is up-to-date")
-            return False  # Frontend is up-to-date
+            return (True, False)  # Assets exist, up-to-date
 
     except Exception as e:
         # If check fails, log warning but don't affect startup
         logger.warning(f"Failed to check frontend source freshness: {e}")
-        return False  # Assume up-to-date on error
+        return (True, False)  # Assume assets exist and up-to-date on error
 
 
 def create_app(args):
-    # Check frontend build first and get outdated status
-    is_frontend_outdated = check_frontend_build()
+    # Check frontend build first and get status
+    webui_assets_exist, is_frontend_outdated = check_frontend_build()
 
     # Create unified API version display with warning symbol if frontend is outdated
     api_version_display = (
@@ -350,8 +354,8 @@ def create_app(args):
 
         try:
             # Initialize database connections
+            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
             await rag.initialize_storages()
-            await initialize_pipeline_status()
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
@@ -451,6 +455,28 @@ def create_app(args):
 
     # Create combined auth dependency for all endpoints
     combined_auth = get_combined_auth_dependency(api_key)
+
+    def get_workspace_from_request(request: Request) -> str | None:
+        """
+        Extract workspace from HTTP request header or use default.
+
+        This enables multi-workspace API support by checking the custom
+        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
+        server's default workspace configuration.
+
+        Args:
+            request: FastAPI Request object
+
+        Returns:
+            Workspace identifier (may be empty string for global namespace)
+        """
+        # Check custom header first
+        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+
+        if not workspace:
+            workspace = None
+
+        return workspace
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
@@ -1044,8 +1070,11 @@ def create_app(args):
 
     @app.get("/")
     async def redirect_to_webui():
-        """Redirect root path to /webui"""
-        return RedirectResponse(url="/webui")
+        """Redirect root path based on WebUI availability"""
+        if webui_assets_exist:
+            return RedirectResponse(url="/webui")
+        else:
+            return RedirectResponse(url="/docs")
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -1112,11 +1141,49 @@ def create_app(args):
             "webui_description": webui_description,
         }
 
-    @app.get("/health", dependencies=[Depends(combined_auth)])
-    async def get_status():
-        """Get current system status"""
+    @app.get(
+        "/health",
+        dependencies=[Depends(combined_auth)],
+        summary="Get system health and configuration status",
+        description="Returns comprehensive system status including WebUI availability, configuration, and operational metrics",
+        response_description="System health status with configuration details",
+        responses={
+            200: {
+                "description": "Successful response with system status",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "status": "healthy",
+                            "webui_available": True,
+                            "working_directory": "/path/to/working/dir",
+                            "input_directory": "/path/to/input/dir",
+                            "configuration": {
+                                "llm_binding": "openai",
+                                "llm_model": "gpt-4",
+                                "embedding_binding": "openai",
+                                "embedding_model": "text-embedding-ada-002",
+                                "workspace": "default",
+                            },
+                            "auth_mode": "enabled",
+                            "pipeline_busy": False,
+                            "core_version": "0.0.1",
+                            "api_version": "0.0.1",
+                        }
+                    }
+                },
+            }
+        },
+    )
+    async def get_status(request: Request):
+        """Get current system status including WebUI availability"""
         try:
-            pipeline_status = await get_namespace_data("pipeline_status")
+            workspace = get_workspace_from_request(request)
+            default_workspace = get_default_workspace()
+            if workspace is None:
+                workspace = default_workspace
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
 
             if not auth_configured:
                 auth_mode = "disabled"
@@ -1128,6 +1195,7 @@ def create_app(args):
 
             return {
                 "status": "healthy",
+                "webui_available": webui_assets_exist,
                 "working_directory": str(args.working_dir),
                 "input_directory": str(args.input_dir),
                 "configuration": {
@@ -1147,7 +1215,7 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": args.workspace,
+                    "workspace": default_workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
@@ -1217,16 +1285,27 @@ def create_app(args):
             name="swagger-ui-static",
         )
 
-    # Webui mount webui/index.html
-    static_dir = Path(__file__).parent / "webui"
-    static_dir.mkdir(exist_ok=True)
-    app.mount(
-        "/webui",
-        SmartStaticFiles(
-            directory=static_dir, html=True, check_dir=True
-        ),  # Use SmartStaticFiles
-        name="webui",
-    )
+    # Conditionally mount WebUI only if assets exist
+    if webui_assets_exist:
+        static_dir = Path(__file__).parent / "webui"
+        static_dir.mkdir(exist_ok=True)
+        app.mount(
+            "/webui",
+            SmartStaticFiles(
+                directory=static_dir, html=True, check_dir=True
+            ),  # Use SmartStaticFiles
+            name="webui",
+        )
+        logger.info("WebUI assets mounted at /webui")
+    else:
+        logger.info("WebUI assets not available, /webui route not mounted")
+
+        # Add redirect for /webui when assets are not available
+        @app.get("/webui")
+        @app.get("/webui/")
+        async def webui_redirect_to_docs():
+            """Redirect /webui to /docs when WebUI is not available"""
+            return RedirectResponse(url="/docs")
 
     return app
 

@@ -463,7 +463,9 @@ class CleanupTool:
 
                 # CRITICAL: Set update flag so changes persist to disk
                 # Without this, deletions remain in-memory only and are lost on exit
-                await set_all_update_flags(storage.final_namespace)
+                await set_all_update_flags(
+                    storage.namespace, workspace=storage.workspace
+                )
 
                 # Success
                 stats.successful_batches += 1
@@ -1127,11 +1129,16 @@ class CleanupTool:
                 pass
 
 
-async def main():
-    """Main entry point"""
+async def async_main():
+    """Async main entry point"""
     tool = CleanupTool()
     await tool.run()
 
 
+def main():
+    """Synchronous entry point for CLI command"""
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

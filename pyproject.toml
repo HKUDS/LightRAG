@@ -42,6 +42,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Test framework dependencies (for CI/CD and testing)
+pytest = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pre-commit",
+    "ruff",
+]
+
 api = [
     # Core dependencies
     "aiohttp",
@@ -51,7 +59,7 @@ api = [
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<2.0.0",
-    "openai>=1.0.0,<3.0.0",
+    "openai>=2.0.0,<3.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
@@ -108,7 +116,7 @@ offline-storage = [
 
 offline-llm = [
     # LLM provider dependencies
-    "openai>=1.0.0,<3.0.0",
+    "openai>=2.0.0,<3.0.0",
     "anthropic>=0.18.0,<1.0.0",
     "ollama>=0.1.0,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
@@ -125,12 +133,15 @@ offline = [
 ]
 
 evaluation = [
+    # Test framework dependencies
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pre-commit",
+    "ruff",
     # RAG evaluation dependencies (RAGAS framework)
     "ragas>=0.3.7",
     "datasets>=4.3.0",
     "httpx>=0.28.1",
-    "pytest>=8.4.2",
-    "pytest-asyncio>=1.2.0",
 ]
 
 observability = [
@@ -142,6 +153,7 @@ observability = [
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
+lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
@@ -161,6 +173,14 @@ version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
 lightrag = ["api/webui/**/*", "api/static/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
 [tool.ruff]
 target-version = "py310"
