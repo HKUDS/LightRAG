@@ -47,6 +47,7 @@ pytest = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pre-commit",
+    "ruff",
 ]
 
 api = [
@@ -132,10 +133,11 @@ offline = [
 ]
 
 evaluation = [
-    # Test framework dependencies (for evaluation)
+    # Test framework dependencies
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pre-commit",
+    "ruff",
     # RAG evaluation dependencies (RAGAS framework)
     "ragas>=0.3.7",
     "datasets>=4.3.0",
