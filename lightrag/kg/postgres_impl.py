@@ -2237,6 +2237,8 @@ async def _pg_migrate_workspace_data(
                 VALUES ({placeholders})
                 ON CONFLICT (workspace, id) DO NOTHING
             """
+            # Rebuild dict in columns order to ensure values() matches placeholders order
+            # Python 3.7+ dicts maintain insertion order, and execute() uses tuple(data.values())
             values = {col: row_dict[col] for col in columns}
             await db.execute(insert_query, values)
 
@@ -3058,11 +3060,8 @@ class PGDocStatusStorage(DocStatusStorage):
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
 
-            # Create table if not exists
-            table_name = namespace_to_table_name(self.namespace)
-            table_exists = await _pg_table_exists(self.db, table_name)
-            if not table_exists:
-                await _pg_create_table(self.db, table_name, table_name)
+            # NOTE: Table creation is handled by PostgreSQLDB.initdb() during initialization
+            # No need to create table here as it's already created in the TABLES dict
 
     async def finalize(self):
         if self.db is not None:
