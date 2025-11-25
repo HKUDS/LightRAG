@@ -7,7 +7,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.ollama import ollama_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from dotenv import load_dotenv
 
@@ -120,9 +119,7 @@ async def initialize_rag():
         ),
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

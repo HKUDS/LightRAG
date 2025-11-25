@@ -11,7 +11,7 @@ import pipmaster as pm
 
 from ..base import BaseVectorStorage
 from ..exceptions import QdrantMigrationError
-from ..kg.shared_storage import get_data_init_lock, get_storage_lock
+from ..kg.shared_storage import get_data_init_lock
 from ..utils import compute_mdhash_id, logger
 
 if not pm.is_installed("qdrant-client"):
@@ -698,25 +698,25 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_storage_lock():
-            try:
-                # Delete all points for the current workspace
-                self._client.delete(
-                    collection_name=self.final_namespace,
-                    points_selector=models.FilterSelector(
-                        filter=models.Filter(
-                            must=[workspace_filter_condition(self.effective_workspace)]
-                        )
-                    ),
-                    wait=True,
-                )
+        # No need to lock: data integrity is ensured by allowing only one process to hold pipeline at a time
+        try:
+            # Delete all points for the current workspace
+            self._client.delete(
+                collection_name=self.final_namespace,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[workspace_filter_condition(self.effective_workspace)]
+                    )
+                ),
+                wait=True,
+            )
 
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"
-                )
-                return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping workspace data from Qdrant collection {self.namespace}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"
+            )
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping workspace data from Qdrant collection {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}

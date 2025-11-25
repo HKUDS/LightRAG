@@ -8,7 +8,10 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
-from lightrag.exceptions import PipelineCancelledException
+from lightrag.exceptions import (
+    PipelineCancelledException,
+    ChunkTokenLimitExceededError,
+)
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -98,8 +101,8 @@ def chunking_by_token_size(
     content: str,
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
-    overlap_token_size: int = 128,
-    max_token_size: int = 1024,
+    chunk_overlap_token_size: int = 100,
+    chunk_token_size: int = 1200,
 ) -> list[dict[str, Any]]:
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
@@ -109,19 +112,30 @@ def chunking_by_token_size(
         if split_by_character_only:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
+                if len(_tokens) > chunk_token_size:
+                    logger.warning(
+                        "Chunk split_by_character exceeds token limit: len=%d limit=%d",
+                        len(_tokens),
+                        chunk_token_size,
+                    )
+                    raise ChunkTokenLimitExceededError(
+                        chunk_tokens=len(_tokens),
+                        chunk_token_limit=chunk_token_size,
+                        chunk_preview=chunk[:120],
+                    )
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
-                if len(_tokens) > max_token_size:
+                if len(_tokens) > chunk_token_size:
                     for start in range(
-                        0, len(_tokens), max_token_size - overlap_token_size
+                        0, len(_tokens), chunk_token_size - chunk_overlap_token_size
                     ):
                         chunk_content = tokenizer.decode(
-                            _tokens[start : start + max_token_size]
+                            _tokens[start : start + chunk_token_size]
                         )
                         new_chunks.append(
-                            (min(max_token_size, len(_tokens) - start), chunk_content)
+                            (min(chunk_token_size, len(_tokens) - start), chunk_content)
                         )
                 else:
                     new_chunks.append((len(_tokens), chunk))
@@ -135,12 +149,12 @@ def chunking_by_token_size(
             )
     else:
         for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size)
+            range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
         ):
-            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
+            chunk_content = tokenizer.decode(tokens[start : start + chunk_token_size])
             results.append(
                 {
-                    "tokens": min(max_token_size, len(tokens) - start),
+                    "tokens": min(chunk_token_size, len(tokens) - start),
                     "content": chunk_content.strip(),
                     "chunk_order_index": index,
                 }
