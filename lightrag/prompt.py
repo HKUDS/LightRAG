@@ -65,7 +65,7 @@ Entity_types: [{entity_types}]
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the following input text.
+Extract entities and relationships from the input text below.
 
 ---Input Text---
 Text:
