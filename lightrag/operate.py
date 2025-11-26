@@ -12,6 +12,7 @@ from .utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
+    TokenTracker,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
     pack_user_ass_to_openai_messages,
@@ -126,6 +127,7 @@ async def _handle_entity_relation_summary(
     seperator: str,
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[str, bool]:
     """Handle entity relation description summary using map-reduce approach.
 
@@ -188,6 +190,7 @@ async def _handle_entity_relation_summary(
                     current_list,
                     global_config,
                     llm_response_cache,
+                    token_tracker,
                 )
                 return final_summary, True  # LLM was used for final summarization
 
@@ -243,6 +246,7 @@ async def _handle_entity_relation_summary(
                     chunk,
                     global_config,
                     llm_response_cache,
+                    token_tracker,
                 )
                 new_summaries.append(summary)
                 llm_was_used = True  # Mark that LLM was used in reduce phase
@@ -257,6 +261,7 @@ async def _summarize_descriptions(
     description_list: list[str],
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> str:
     """Helper function to summarize a list of descriptions using LLM.
 
@@ -312,9 +317,10 @@ async def _summarize_descriptions(
     # Use LLM function with cache (higher priority for summary generation)
     summary, _ = await use_llm_func_with_cache(
         use_prompt,
-        use_llm_func,
-        llm_response_cache=llm_response_cache,
+        use_llm_func=use_llm_func,
+        hashing_kv=llm_response_cache,
         cache_type="summary",
+        token_tracker=token_tracker,
     )
     return summary
 
@@ -405,7 +411,7 @@ async def _handle_single_relationship_extraction(
     ):  # treat "relationship" and "relation" interchangeable
         if len(record_attributes) > 1 and "relation" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) >2 else 'N/A'}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
         return None
@@ -463,7 +469,6 @@ async def _handle_single_relationship_extraction(
             file_path=file_path,
             timestamp=timestamp,
             metadata=metadata,
-
         )
 
     except ValueError as e:
@@ -2037,6 +2042,7 @@ async def extract_entities(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> list:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -2150,12 +2156,13 @@ async def extract_entities(
 
         final_result, timestamp = await use_llm_func_with_cache(
             entity_extraction_user_prompt,
-            use_llm_func,
+            use_llm_func=use_llm_func,
             system_prompt=entity_extraction_system_prompt,
-            llm_response_cache=llm_response_cache,
+            hashing_kv=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            token_tracker=token_tracker,
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -2177,15 +2184,15 @@ async def extract_entities(
         if entity_extract_max_gleaning > 0:
             glean_result, timestamp = await use_llm_func_with_cache(
                 entity_continue_extraction_user_prompt,
-                use_llm_func,
+                use_llm_func=use_llm_func,
                 system_prompt=entity_extraction_system_prompt,
                 llm_response_cache=llm_response_cache,
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
                 cache_keys_collector=cache_keys_collector,
+                token_tracker=token_tracker,
             )
-
 
             # Process gleaning result separately with file path and metadata
             glean_nodes, glean_edges = await _process_extraction_result(
@@ -2300,7 +2307,7 @@ async def extract_entities(
             await asyncio.wait(pending)
 
         # Add progress prefix to the exception message
-        progress_prefix = f"C[{processed_chunks+1}/{total_chunks}]"
+        progress_prefix = f"C[{processed_chunks + 1}/{total_chunks}]"
 
         # Re-raise the original exception with a prefix
         prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
@@ -2324,6 +2331,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     return_raw_data: Literal[True] = False,
+    token_tracker: TokenTracker | None = None,
 ) -> dict[str, Any]: ...
 
 
@@ -2341,6 +2349,7 @@ async def kg_query(
     chunks_vdb: BaseVectorStorage = None,
     metadata_filters: list | None = None,
     return_raw_data: Literal[False] = False,
+    token_tracker: TokenTracker | None = None,
 ) -> str | AsyncIterator[str]: ...
 
 
@@ -2355,6 +2364,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    token_tracker: TokenTracker | None = None,
 ) -> QueryResult:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -2422,7 +2432,7 @@ async def kg_query(
         return QueryResult(content=cached_response)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, token_tracker
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -2526,6 +2536,7 @@ async def kg_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=token_tracker,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
@@ -2583,6 +2594,7 @@ async def get_keywords_from_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
@@ -2605,7 +2617,7 @@ async def get_keywords_from_query(
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
     hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, token_tracker
     )
     return hl_keywords, ll_keywords
 
@@ -2615,6 +2627,7 @@ async def extract_keywords_only(
     param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
@@ -2668,7 +2681,9 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    result = await use_model_func(
+        kw_prompt, keyword_extraction=True, token_tracker=token_tracker
+    )
 
     # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
@@ -2746,7 +2761,10 @@ async def _get_vector_context(
         cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
         results = await chunks_vdb.query(
-            query, top_k=search_top_k, query_embedding=query_embedding, metadata_filter=query_param.metadata_filter
+            query,
+            top_k=search_top_k,
+            query_embedding=query_embedding,
+            metadata_filter=query_param.metadata_filter,
         )
         if not results:
             logger.info(
@@ -2763,7 +2781,7 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
-                    "metadata": result.get("metadata")
+                    "metadata": result.get("metadata"),
                 }
                 valid_chunks.append(chunk_with_metadata)
 
@@ -3529,15 +3547,15 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-
-    results = await entities_vdb.query(query, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter)
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter
+    )
 
     if not len(results):
         return [], []
 
     # Extract all entity IDs from your results list
     node_ids = [r["entity_name"] for r in results]
-
 
     # Extract all entity IDs from your results list
     node_ids = [r["entity_name"] for r in results]
@@ -3810,7 +3828,9 @@ async def _get_edge_data(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter)
+    results = await relationships_vdb.query(
+        keywords, top_k=query_param.top_k, metadata_filter=query_param.metadata_filter
+    )
 
     if not len(results):
         return [], []
@@ -4104,6 +4124,7 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     return_raw_data: Literal[True] = True,
+    token_tracker: TokenTracker | None = None,
 ) -> dict[str, Any]: ...
 
 
@@ -4116,6 +4137,7 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     return_raw_data: Literal[False] = False,
+    token_tracker: TokenTracker | None = None,
 ) -> str | AsyncIterator[str]: ...
 
 
@@ -4126,6 +4148,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> QueryResult:
     """
     Execute naive query and return unified QueryResult object.
@@ -4321,6 +4344,7 @@ async def naive_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=token_tracker,
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):

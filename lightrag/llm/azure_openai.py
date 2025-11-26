@@ -46,6 +46,7 @@ async def azure_openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     api_version: str | None = None,
+    token_tracker: Any | None = None,
     **kwargs,
 ):
     if enable_cot:
@@ -94,28 +95,73 @@ async def azure_openai_complete_if_cache(
         )
 
     if hasattr(response, "__aiter__"):
+        final_chunk_usage = None
+        accumulated_response = ""
 
         async def inner():
-            async for chunk in response:
-                if len(chunk.choices) == 0:
-                    continue
-                content = chunk.choices[0].delta.content
-                if content is None:
-                    continue
-                if r"\u" in content:
-                    content = safe_unicode_decode(content.encode("utf-8"))
-                yield content
+            nonlocal final_chunk_usage, accumulated_response
+            try:
+                async for chunk in response:
+                    if len(chunk.choices) == 0:
+                        continue
+                    content = chunk.choices[0].delta.content
+                    if content is None:
+                        continue
+                    accumulated_response += content
+                    if r"\u" in content:
+                        content = safe_unicode_decode(content.encode("utf-8"))
+                    yield content
+
+                    # Check for usage in the last chunk
+                    if hasattr(chunk, "usage") and chunk.usage is not None:
+                        final_chunk_usage = chunk.usage
+            except Exception as e:
+                logger.error(f"Error in Azure OpenAI stream response: {str(e)}")
+                raise
+            finally:
+                # After streaming is complete, track token usage
+                if token_tracker and final_chunk_usage:
+                    # Use actual usage from the API
+                    token_counts = {
+                        "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(
+                            final_chunk_usage, "completion_tokens", 0
+                        ),
+                        "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
+                    }
+                    token_tracker.add_usage(token_counts)
+                    logger.debug(f"Azure OpenAI streaming token usage: {token_counts}")
+                elif token_tracker:
+                    logger.debug(
+                        "No usage information available in Azure OpenAI streaming response"
+                    )
 
         return inner()
     else:
         content = response.choices[0].message.content
         if r"\u" in content:
             content = safe_unicode_decode(content.encode("utf-8"))
+
+        # Track token usage for non-streaming response
+        if token_tracker and hasattr(response, "usage"):
+            token_counts = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+            token_tracker.add_usage(token_counts)
+            logger.debug(f"Azure OpenAI non-streaming token usage: {token_counts}")
+
         return content
 
 
 async def azure_openai_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    token_tracker=None,
+    **kwargs,
 ) -> str:
     kwargs.pop("keyword_extraction", None)
     result = await azure_openai_complete_if_cache(
@@ -123,6 +169,7 @@ async def azure_openai_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        token_tracker=token_tracker,
         **kwargs,
     )
     return result
@@ -142,6 +189,7 @@ async def azure_openai_embed(
     base_url: str | None = None,
     api_key: str | None = None,
     api_version: str | None = None,
+    token_tracker: Any | None = None,
 ) -> np.ndarray:
     deployment = (
         os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
@@ -174,4 +222,14 @@ async def azure_openai_embed(
     response = await openai_async_client.embeddings.create(
         model=model, input=texts, encoding_format="float"
     )
+
+    # Track token usage for embeddings if token tracker is provided
+    if token_tracker and hasattr(response, "usage"):
+        token_counts = {
+            "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+            "total_tokens": getattr(response.usage, "total_tokens", 0),
+        }
+        token_tracker.add_usage(token_counts)
+        logger.debug(f"Azure OpenAI embedding token usage: {token_counts}")
+
     return np.array([dp.embedding for dp in response.data])

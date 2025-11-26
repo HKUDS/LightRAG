@@ -397,6 +397,15 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
     )
 
+    # Token tracking configuration
+    parser.add_argument(
+        "--enable-token-tracking",
+        action="store_true",
+        default=get_env_value("ENABLE_TOKEN_TRACKING", False, bool),
+        help="Enable token usage tracking for LLM calls (default: from env or False)",
+    )
+    args.enable_token_tracking = get_env_value("ENABLE_TOKEN_TRACKING", False, bool)
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 

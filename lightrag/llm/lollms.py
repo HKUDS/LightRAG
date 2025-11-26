@@ -108,6 +108,7 @@ async def lollms_model_complete(
     history_messages=[],
     enable_cot: bool = False,
     keyword_extraction=False,
+    token_tracker=None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Complete function for lollms model generation."""
@@ -135,7 +136,11 @@ async def lollms_model_complete(
 
 
 async def lollms_embed(
-    texts: List[str], embed_model=None, base_url="http://localhost:9600", **kwargs
+    texts: List[str],
+    embed_model=None,
+    base_url="http://localhost:9600",
+    token_tracker=None,
+    **kwargs,
 ) -> np.ndarray:
     """
     Generate embeddings for a list of texts using lollms server.
@@ -144,6 +149,7 @@ async def lollms_embed(
         texts: List of strings to embed
         embed_model: Model name (not used directly as lollms uses configured vectorizer)
         base_url: URL of the lollms server
+        token_tracker: Optional token usage tracker for monitoring API usage
         **kwargs: Additional arguments passed to the request
 
     Returns:

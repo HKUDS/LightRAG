@@ -48,6 +48,7 @@ async def bedrock_complete_if_cache(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    token_tracker=None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     if enable_cot:
@@ -155,6 +156,18 @@ async def bedrock_complete_if_cache(
                             yield text
                     # Handle other event types that might indicate stream end
                     elif "messageStop" in event:
+                        # Track token usage for streaming if token tracker is provided
+                        if token_tracker and "usage" in event:
+                            usage = event["usage"]
+                            token_counts = {
+                                "prompt_tokens": usage.get("inputTokens", 0),
+                                "completion_tokens": usage.get("outputTokens", 0),
+                                "total_tokens": usage.get("totalTokens", 0),
+                            }
+                            token_tracker.add_usage(token_counts)
+                            logging.debug(
+                                f"Bedrock streaming token usage: {token_counts}"
+                            )
                         break
 
             except Exception as e:
@@ -228,6 +241,17 @@ async def bedrock_complete_if_cache(
             if not content or content.strip() == "":
                 raise BedrockError("Received empty content from Bedrock API")
 
+            # Track token usage for non-streaming if token tracker is provided
+            if token_tracker and "usage" in response:
+                usage = response["usage"]
+                token_counts = {
+                    "prompt_tokens": usage.get("inputTokens", 0),
+                    "completion_tokens": usage.get("outputTokens", 0),
+                    "total_tokens": usage.get("totalTokens", 0),
+                }
+                token_tracker.add_usage(token_counts)
+                logging.debug(f"Bedrock non-streaming token usage: {token_counts}")
+
             return content
 
         except Exception as e:
@@ -239,7 +263,12 @@ async def bedrock_complete_if_cache(
 
 # Generic Bedrock completion function
 async def bedrock_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    token_tracker=None,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     kwargs.pop("keyword_extraction", None)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
@@ -248,6 +277,7 @@ async def bedrock_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        token_tracker=token_tracker,
         **kwargs,
     )
     return result
@@ -265,6 +295,7 @@ async def bedrock_embed(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    token_tracker=None,
 ) -> np.ndarray:
     # Respect existing env; only set if a non-empty value is available
     access_key = os.environ.get("AWS_ACCESS_KEY_ID") or aws_access_key_id

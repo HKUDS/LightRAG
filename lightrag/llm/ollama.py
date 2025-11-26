@@ -39,6 +39,7 @@ async def _ollama_model_if_cache(
     system_prompt=None,
     history_messages=[],
     enable_cot: bool = False,
+    token_tracker=None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     if enable_cot:
@@ -74,13 +75,47 @@ async def _ollama_model_if_cache(
             """cannot cache stream response and process reasoning"""
 
             async def inner():
+                accumulated_response = ""
                 try:
                     async for chunk in response:
-                        yield chunk["message"]["content"]
+                        chunk_content = chunk["message"]["content"]
+                        accumulated_response += chunk_content
+                        yield chunk_content
                 except Exception as e:
                     logger.error(f"Error in stream response: {str(e)}")
                     raise
                 finally:
+                    # Track token usage for streaming if token tracker is provided
+                    if token_tracker:
+                        # Estimate prompt tokens: roughly 4 characters per token for English text
+                        prompt_text = ""
+                        if system_prompt:
+                            prompt_text += system_prompt + " "
+                        prompt_text += (
+                            " ".join(
+                                [msg.get("content", "") for msg in history_messages]
+                            )
+                            + " "
+                        )
+                        prompt_text += prompt
+                        prompt_tokens = len(prompt_text) // 4 + (
+                            1 if len(prompt_text) % 4 else 0
+                        )
+
+                        # Estimate completion tokens from accumulated response
+                        completion_tokens = len(accumulated_response) // 4 + (
+                            1 if len(accumulated_response) % 4 else 0
+                        )
+                        total_tokens = prompt_tokens + completion_tokens
+
+                        token_tracker.add_usage(
+                            {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": total_tokens,
+                            }
+                        )
+
                     try:
                         await ollama_client._client.aclose()
                         logger.debug("Successfully closed Ollama client for streaming")
@@ -90,6 +125,35 @@ async def _ollama_model_if_cache(
             return inner()
         else:
             model_response = response["message"]["content"]
+
+            # Track token usage if token tracker is provided
+            # Note: Ollama doesn't provide token usage in chat responses, so we estimate
+            if token_tracker:
+                # Estimate prompt tokens: roughly 4 characters per token for English text
+                prompt_text = ""
+                if system_prompt:
+                    prompt_text += system_prompt + " "
+                prompt_text += (
+                    " ".join([msg.get("content", "") for msg in history_messages]) + " "
+                )
+                prompt_text += prompt
+                prompt_tokens = len(prompt_text) // 4 + (
+                    1 if len(prompt_text) % 4 else 0
+                )
+
+                # Estimate completion tokens from response
+                completion_tokens = len(model_response) // 4 + (
+                    1 if len(model_response) % 4 else 0
+                )
+                total_tokens = prompt_tokens + completion_tokens
+
+                token_tracker.add_usage(
+                    {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                    }
+                )
 
             """
             If the model also wraps its thoughts in a specific tag,
@@ -126,6 +190,7 @@ async def ollama_model_complete(
     history_messages=[],
     enable_cot: bool = False,
     keyword_extraction=False,
+    token_tracker=None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
@@ -138,11 +203,14 @@ async def ollama_model_complete(
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        token_tracker=token_tracker,
         **kwargs,
     )
 
 
-async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+async def ollama_embed(
+    texts: list[str], embed_model, token_tracker=None, **kwargs
+) -> np.ndarray:
     api_key = kwargs.pop("api_key", None)
     headers = {
         "Content-Type": "application/json",
@@ -160,6 +228,21 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
         data = await ollama_client.embed(
             model=embed_model, input=texts, options=options
         )
+
+        # Track token usage if token tracker is provided
+        # Note: Ollama doesn't provide token usage in embedding responses, so we estimate
+        if token_tracker:
+            # Estimate tokens: roughly 4 characters per token for English text
+            total_chars = sum(len(text) for text in texts)
+            estimated_tokens = total_chars // 4 + (1 if total_chars % 4 else 0)
+            token_tracker.add_usage(
+                {
+                    "prompt_tokens": estimated_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": estimated_tokens,
+                }
+            )
+
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")

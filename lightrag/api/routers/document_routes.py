@@ -243,6 +243,7 @@ class InsertResponse(BaseModel):
         status: Status of the operation (success, duplicated, partial_success, failure)
         message: Detailed message describing the operation result
         track_id: Tracking ID for monitoring processing status
+        token_usage: Token usage statistics for the insertion (prompt_tokens, completion_tokens, total_tokens, call_count)
     """
 
     status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
@@ -250,6 +251,10 @@ class InsertResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
+    token_usage: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Token usage statistics for the insertion (prompt_tokens, completion_tokens, total_tokens, call_count)",
+    )
 
     class Config:
         json_schema_extra = {
@@ -257,8 +262,15 @@ class InsertResponse(BaseModel):
                 "status": "success",
                 "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
                 "track_id": "upload_20250729_170612_abc123",
+                "token_usage": {
+                    "prompt_tokens": 1250,
+                    "completion_tokens": 450,
+                    "total_tokens": 1700,
+                    "call_count": 3,
+                },
             }
         }
+
 
 
 class ClearDocumentsResponse(BaseModel):

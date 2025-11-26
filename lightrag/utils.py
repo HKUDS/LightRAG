@@ -4,6 +4,7 @@ import weakref
 import asyncio
 import html
 import csv
+import contextvars
 import json
 import logging
 import logging.handlers
@@ -507,6 +508,7 @@ def priority_limit_async_func_call(
                                 task_id,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
@@ -536,11 +538,15 @@ def priority_limit_async_func_call(
                         try:
                             # Execute function with timeout protection
                             if max_execution_timeout is not None:
+                                # Run the function in the captured context
+                                task = ctx.run(lambda: asyncio.create_task(func(*args, **kwargs)))
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs), timeout=max_execution_timeout
+                                    task, timeout=max_execution_timeout
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                # Run the function in the captured context
+                                task = ctx.run(lambda: asyncio.create_task(func(*args, **kwargs)))
+                                result = await task
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -791,6 +797,9 @@ def priority_limit_async_func_call(
                 future=future, start_time=asyncio.get_event_loop().time()
             )
 
+            # Capture current context
+            ctx = contextvars.copy_context()
+
             try:
                 # Register task state
                 async with task_states_lock:
@@ -809,13 +818,13 @@ def priority_limit_async_func_call(
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
-                                (_priority, current_count, task_id, args, kwargs)
+                                (_priority, current_count, task_id, args, kwargs, ctx)
                             ),
                             timeout=_queue_timeout,
                         )
                     else:
                         await queue.put(
-                            (_priority, current_count, task_id, args, kwargs)
+                            (_priority, current_count, task_id, args, kwargs, ctx)
                         )
                 except asyncio.TimeoutError:
                     raise QueueFullError(
@@ -1472,8 +1481,7 @@ async def aexport_data(
 
     else:
         raise ValueError(
-            f"Unsupported file format: {file_format}. "
-            f"Choose from: csv, excel, md, txt"
+            f"Unsupported file format: {file_format}. Choose from: csv, excel, md, txt"
         )
     if file_format is not None:
         print(f"Data exported to: {output_path} with format: {file_format}")
@@ -1601,6 +1609,8 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    hashing_kv: "BaseKVStorage | None" = None,
+    token_tracker=None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -1685,7 +1695,10 @@ async def use_llm_func_with_cache(
             kwargs["max_tokens"] = max_tokens
 
         res: str = await use_llm_func(
-            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+            safe_user_prompt,
+            system_prompt=safe_system_prompt,
+            token_tracker=token_tracker,
+            **kwargs,
         )
 
         res = remove_think_tags(res)
@@ -1720,7 +1733,10 @@ async def use_llm_func_with_cache(
 
     try:
         res = await use_llm_func(
-            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+            safe_user_prompt,
+            system_prompt=safe_system_prompt,
+            token_tracker=token_tracker,
+            **kwargs,
         )
     except Exception as e:
         # Add [LLM func] prefix to error message
@@ -2216,52 +2232,74 @@ async def pick_by_vector_similarity(
         return all_chunk_ids[:num_of_chunks]
 
 
+from contextvars import ContextVar
+
+
 class TokenTracker:
-    """Track token usage for LLM calls."""
+    """Track token usage for LLM calls using ContextVars for concurrency support."""
+
+    _usage_var: ContextVar[dict] = ContextVar("token_usage", default=None)
 
     def __init__(self):
-        self.reset()
+        # No instance state needed as we use ContextVar
+        pass
 
     def __enter__(self):
         self.reset()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        print(self)
+        # Optional: Log usage on exit if needed
+        pass
 
     def reset(self):
-        self.prompt_tokens = 0
-        self.completion_tokens = 0
-        self.total_tokens = 0
-        self.call_count = 0
+        """Initialize/Reset token usage for the current context."""
+        self._usage_var.set(
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "call_count": 0,
+            }
+        )
 
-    def add_usage(self, token_counts):
+    def _get_current_usage(self) -> dict:
+        """Get the usage dict for the current context, initializing if necessary."""
+        usage = self._usage_var.get()
+        if usage is None:
+            usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "call_count": 0,
+            }
+            self._usage_var.set(usage)
+        return usage
+
+    def add_usage(self, token_counts: dict):
         """Add token usage from one LLM call.
 
         Args:
             token_counts: A dictionary containing prompt_tokens, completion_tokens, total_tokens
         """
-        self.prompt_tokens += token_counts.get("prompt_tokens", 0)
-        self.completion_tokens += token_counts.get("completion_tokens", 0)
+        usage = self._get_current_usage()
+
+        usage["prompt_tokens"] += token_counts.get("prompt_tokens", 0)
+        usage["completion_tokens"] += token_counts.get("completion_tokens", 0)
 
         # If total_tokens is provided, use it directly; otherwise calculate the sum
         if "total_tokens" in token_counts:
-            self.total_tokens += token_counts["total_tokens"]
+            usage["total_tokens"] += token_counts["total_tokens"]
         else:
-            self.total_tokens += token_counts.get(
+            usage["total_tokens"] += token_counts.get(
                 "prompt_tokens", 0
             ) + token_counts.get("completion_tokens", 0)
 
-        self.call_count += 1
+        usage["call_count"] += 1
 
     def get_usage(self):
         """Get current usage statistics."""
-        return {
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "total_tokens": self.total_tokens,
-            "call_count": self.call_count,
-        }
+        return self._get_current_usage().copy()
 
     def __str__(self):
         usage = self.get_usage()
@@ -2271,6 +2309,26 @@ class TokenTracker:
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
+
+
+def estimate_embedding_tokens(texts: list[str], tokenizer: Tokenizer) -> int:
+    """Estimate tokens for embedding operations based on text length.
+
+    Most embedding APIs don't return token counts, so we estimate based on
+    the tokenizer encoding. This provides a reasonable approximation for tracking.
+
+    Args:
+        texts: List of text strings to be embedded
+        tokenizer: Tokenizer instance for encoding
+
+    Returns:
+        Estimated total token count for all texts
+    """
+    total = 0
+    for text in texts:
+        if text:  # Skip empty strings
+            total += len(tokenizer.encode(text))
+    return total
 
 
 async def apply_rerank_if_enabled(

@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from lightrag.base import QueryParam
 from lightrag.types import MetadataFilter
 from lightrag.api.utils_api import get_combined_auth_dependency
@@ -157,6 +157,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
+    token_usage: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Token usage statistics for the query (prompt_tokens, completion_tokens, total_tokens)",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -167,6 +171,10 @@ class QueryDataResponse(BaseModel):
     )
     metadata: Dict[str, Any] = Field(
         description="Query metadata including mode, keywords, and processing information"
+    )
+    token_usage: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Token usage statistics for the query (prompt_tokens, completion_tokens, total_tokens)",
     )
 
 
@@ -183,9 +191,18 @@ class StreamChunkResponse(BaseModel):
     error: Optional[str] = Field(
         default=None, description="Error message if processing fails"
     )
+    token_usage: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Token usage statistics for the entire query (only in final chunk)",
+    )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(
+    rag,
+    api_key: Optional[str] = None,
+    top_k: int = 60,
+    token_tracker: Optional[Any] = None,
+):
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
@@ -220,7 +237,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         },
                         "examples": {
                             "with_references": {
-                                "summary": "Response with references",
+                                "summary": "Response with references and token usage",
                                 "description": "Example response when include_references=True",
                                 "value": {
                                     "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
@@ -234,13 +251,25 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                             "file_path": "/documents/machine_learning.txt",
                                         },
                                     ],
+                                    "token_usage": {
+                                        "prompt_tokens": 245,
+                                        "completion_tokens": 87,
+                                        "total_tokens": 332,
+                                        "call_count": 1,
+                                    },
                                 },
                             },
                             "without_references": {
-                                "summary": "Response without references",
+                                "summary": "Response without references but with token usage",
                                 "description": "Example response when include_references=False",
                                 "value": {
-                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving."
+                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
+                                    "token_usage": {
+                                        "prompt_tokens": 245,
+                                        "completion_tokens": 87,
+                                        "total_tokens": 332,
+                                        "call_count": 1,
+                                    },
                                 },
                             },
                             "different_modes": {
@@ -358,6 +387,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
+            # Reset token tracker at start of query if available
+            if token_tracker:
+                token_tracker.reset()
+
             param = request.to_query_params(
                 False
             )  # Ensure stream=False for non-streaming endpoint
@@ -376,11 +409,22 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if not response_content:
                 response_content = "No relevant context found for the query."
 
+            # Get token usage if available
+            token_usage = None
+            if token_tracker:
+                token_usage = token_tracker.get_usage()
+
             # Return response with or without references based on request
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                return QueryResponse(
+                    response=response_content,
+                    references=references,
+                    token_usage=token_usage,
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                return QueryResponse(
+                    response=response_content, references=None, token_usage=token_usage
+                )
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
@@ -577,6 +621,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
         """
         try:
+            # Reset token tracker at start of query if available
+            if token_tracker:
+                token_tracker.reset()
+
             # Use the stream parameter from the request, defaulting to True if not specified
             stream_mode = request.stream if request.stream is not None else True
             param = request.to_query_params(stream_mode)
@@ -605,6 +653,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         except Exception as e:
                             logging.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
+
+                    # Add final token usage chunk if streaming and token tracker is available
+                    if token_tracker and llm_response.get("is_streaming"):
+                        yield f"{json.dumps({'token_usage': token_tracker.get_usage()})}\n"
                 else:
                     # Non-streaming mode: send complete response in one message
                     response_content = llm_response.get("content", "")
@@ -615,6 +667,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     complete_response = {"response": response_content}
                     if request.include_references:
                         complete_response["references"] = references
+
+                    # Add token usage if available
+                    if token_tracker:
+                        complete_response["token_usage"] = token_tracker.get_usage()
 
                     yield f"{json.dumps(complete_response)}\n"
 
@@ -1022,18 +1078,31 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             as structured data analysis typically requires source attribution.
         """
         try:
+            # Reset token tracker at start of query if available
+            if token_tracker:
+                token_tracker.reset()
+
             param = request.to_query_params(False)  # No streaming for data endpoint
             response = await rag.aquery_data(request.query, param=param)
 
+            # Get token usage if available
+            token_usage = None
+            if token_tracker:
+                token_usage = token_tracker.get_usage()
+
             # aquery_data returns the new format with status, message, data, and metadata
             if isinstance(response, dict):
-                return QueryDataResponse(**response)
+                response_dict = dict(response)
+                response_dict["token_usage"] = token_usage
+                return QueryDataResponse(**response_dict)
             else:
                 # Handle unexpected response format
                 return QueryDataResponse(
                     status="failure",
-                    message="Invalid response type",
+                    message="Unexpected response format",
                     data={},
+                    metadata={},
+                    token_usage=None,
                 )
         except Exception as e:
             trace_exception(e)

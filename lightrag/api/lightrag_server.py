@@ -301,7 +301,10 @@ def create_app(args):
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     def create_optimized_openai_llm_func(
-        config_cache: LLMConfigCache, args, llm_timeout: int
+        config_cache: LLMConfigCache,
+        args,
+        llm_timeout: int,
+        enable_token_tracking=False,
     ):
         """Create optimized OpenAI LLM function with pre-processed configuration"""
 
@@ -332,13 +335,19 @@ def create_app(args):
                 history_messages=history_messages,
                 base_url=args.llm_binding_host,
                 api_key=args.llm_binding_api_key,
+                token_tracker=getattr(app.state, "token_tracker", None)
+                if enable_token_tracking and hasattr(app.state, "token_tracker")
+                else None,
                 **kwargs,
             )
 
         return optimized_openai_alike_model_complete
 
     def create_optimized_azure_openai_llm_func(
-        config_cache: LLMConfigCache, args, llm_timeout: int
+        config_cache: LLMConfigCache,
+        args,
+        llm_timeout: int,
+        enable_token_tracking=False,
     ):
         """Create optimized Azure OpenAI LLM function with pre-processed configuration"""
 
@@ -359,8 +368,8 @@ def create_app(args):
 
             # Use pre-processed configuration to avoid repeated parsing
             kwargs["timeout"] = llm_timeout
-            if config_cache.openai_llm_options:
-                kwargs.update(config_cache.openai_llm_options)
+            if config_cache.azure_openai_llm_options:
+                kwargs.update(config_cache.azure_openai_llm_options)
 
             return await azure_openai_complete_if_cache(
                 args.llm_model,
@@ -370,12 +379,15 @@ def create_app(args):
                 base_url=args.llm_binding_host,
                 api_key=os.getenv("AZURE_OPENAI_API_KEY", args.llm_binding_api_key),
                 api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+                token_tracker=getattr(app.state, "token_tracker", None)
+                if enable_token_tracking and hasattr(app.state, "token_tracker")
+                else None,
                 **kwargs,
             )
 
         return optimized_azure_openai_model_complete
 
-    def create_llm_model_func(binding: str):
+    def create_llm_model_func(binding: str, enable_token_tracking=False):
         """
         Create LLM model function based on binding type.
         Uses optimized functions for OpenAI bindings and lazy import for others.
@@ -384,21 +396,42 @@ def create_app(args):
             if binding == "lollms":
                 from lightrag.llm.lollms import lollms_model_complete
 
-                return lollms_model_complete
+                async def lollms_model_complete_with_tracker(*args, **kwargs):
+                    # Add token tracker if enabled
+                    if enable_token_tracking and hasattr(app.state, "token_tracker"):
+                        kwargs["token_tracker"] = app.state.token_tracker
+                    return await lollms_model_complete(*args, **kwargs)
+
+                return lollms_model_complete_with_tracker
             elif binding == "ollama":
                 from lightrag.llm.ollama import ollama_model_complete
 
-                return ollama_model_complete
+                async def ollama_model_complete_with_tracker(*args, **kwargs):
+                    # Add token tracker if enabled
+                    if enable_token_tracking and hasattr(app.state, "token_tracker"):
+                        kwargs["token_tracker"] = app.state.token_tracker
+                    return await ollama_model_complete(*args, **kwargs)
+
+                return ollama_model_complete_with_tracker
             elif binding == "aws_bedrock":
-                return bedrock_model_complete  # Already defined locally
+
+                async def bedrock_model_complete_with_tracker(*args, **kwargs):
+                    # Add token tracker if enabled
+                    if enable_token_tracking and hasattr(app.state, "token_tracker"):
+                        kwargs["token_tracker"] = app.state.token_tracker
+                    return await bedrock_model_complete(*args, **kwargs)
+
+                return bedrock_model_complete_with_tracker
             elif binding == "azure_openai":
                 # Use optimized function with pre-processed configuration
                 return create_optimized_azure_openai_llm_func(
-                    config_cache, args, llm_timeout
+                    config_cache, args, llm_timeout, enable_token_tracking
                 )
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
-                return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
+                return create_optimized_openai_llm_func(
+                    config_cache, args, llm_timeout, enable_token_tracking
+                )
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
 
@@ -422,7 +455,14 @@ def create_app(args):
         return {}
 
     def create_optimized_embedding_function(
-        config_cache: LLMConfigCache, binding, model, host, api_key, dimensions, args
+        config_cache: LLMConfigCache,
+        binding,
+        model,
+        host,
+        api_key,
+        dimensions,
+        args,
+        enable_token_tracking=False,
     ):
         """
         Create optimized embedding function with pre-processed configuration for applicable bindings.
@@ -435,7 +475,13 @@ def create_app(args):
                     from lightrag.llm.lollms import lollms_embed
 
                     return await lollms_embed(
-                        texts, embed_model=model, host=host, api_key=api_key
+                        texts,
+                        embed_model=model,
+                        host=host,
+                        api_key=api_key,
+                        token_tracker=getattr(app.state, "token_tracker", None)
+                        if enable_token_tracking and hasattr(app.state, "token_tracker")
+                        else None,
                     )
                 elif binding == "ollama":
                     from lightrag.llm.ollama import ollama_embed
@@ -455,26 +501,54 @@ def create_app(args):
                         host=host,
                         api_key=api_key,
                         options=ollama_options,
+                        token_tracker=getattr(app.state, "token_tracker", None)
+                        if enable_token_tracking and hasattr(app.state, "token_tracker")
+                        else None,
                     )
                 elif binding == "azure_openai":
                     from lightrag.llm.azure_openai import azure_openai_embed
 
-                    return await azure_openai_embed(texts, model=model, api_key=api_key)
+                    return await azure_openai_embed(
+                        texts,
+                        model=model,
+                        api_key=api_key,
+                        token_tracker=getattr(app.state, "token_tracker", None)
+                        if enable_token_tracking and hasattr(app.state, "token_tracker")
+                        else None,
+                    )
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
-                    return await bedrock_embed(texts, model=model)
+                    return await bedrock_embed(
+                        texts,
+                        model=model,
+                        token_tracker=getattr(app.state, "token_tracker", None)
+                        if enable_token_tracking and hasattr(app.state, "token_tracker")
+                        else None,
+                    )
                 elif binding == "jina":
                     from lightrag.llm.jina import jina_embed
 
                     return await jina_embed(
-                        texts, dimensions=dimensions, base_url=host, api_key=api_key
+                        texts,
+                        dimensions=dimensions,
+                        base_url=host,
+                        api_key=api_key,
+                        token_tracker=getattr(app.state, "token_tracker", None)
+                        if enable_token_tracking and hasattr(app.state, "token_tracker")
+                        else None,
                     )
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
                     return await openai_embed(
-                        texts, model=model, base_url=host, api_key=api_key
+                        texts,
+                        model=model,
+                        base_url=host,
+                        api_key=api_key,
+                        token_tracker=getattr(app.state, "token_tracker", None)
+                        if enable_token_tracking and hasattr(app.state, "token_tracker")
+                        else None,
                     )
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
@@ -594,7 +668,9 @@ def create_app(args):
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
+            llm_model_func=create_llm_model_func(
+                args.llm_binding, args.enable_token_tracking
+            ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.summary_max_tokens,
@@ -604,7 +680,16 @@ def create_app(args):
             llm_model_kwargs=create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             ),
-            embedding_func=embedding_func,
+            embedding_func=create_optimized_embedding_function(
+                config_cache,
+                args.embedding_binding,
+                args.embedding_model,
+                args.embedding_binding_host,
+                args.embedding_binding_api_key,
+                args.embedding_dim,
+                args,
+                args.enable_token_tracking,
+            ),
             default_llm_timeout=llm_timeout,
             default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
@@ -629,6 +714,17 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Initialize token tracking if enabled
+    token_tracker = None
+    if args.enable_token_tracking:
+        from lightrag.utils import TokenTracker
+
+        token_tracker = TokenTracker()
+        logger.info("Token tracking enabled")
+
+        # Add token tracker to the app state for use in endpoints
+        app.state.token_tracker = token_tracker
+
     # Add routes
     app.include_router(
         create_document_routes(
@@ -637,7 +733,7 @@ def create_app(args):
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, token_tracker))
     app.include_router(create_graph_routes(rag, api_key))
 
     # Add Ollama API routes

@@ -870,7 +870,8 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
-    ) -> str:
+        token_tracker: TokenTracker | None = None,
+    ) -> tuple[str, dict]:
         """Sync Insert documents with checkpoint support
 
         Args:
@@ -884,10 +885,10 @@ class LightRAG:
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
 
         Returns:
-            str: tracking ID for monitoring processing status
+            tuple[str, dict]: (tracking ID for monitoring processing status, token usage statistics)
         """
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(
+        result = loop.run_until_complete(
             self.ainsert(
                 input,
                 split_by_character,
@@ -895,8 +896,10 @@ class LightRAG:
                 ids,
                 file_paths,
                 track_id,
+                token_tracker,
             )
         )
+        return result
 
     async def ainsert(
         self,
@@ -906,7 +909,8 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
-    ) -> str:
+        token_tracker: TokenTracker | None = None,
+    ) -> tuple[str, dict]:
         """Async Insert documents with checkpoint support
 
         Args:
@@ -930,9 +934,15 @@ class LightRAG:
         await self.apipeline_process_enqueue_documents(
             split_by_character,
             split_by_character_only,
+            token_tracker,
         )
 
-        return track_id
+        return track_id, token_tracker.get_usage() if token_tracker else {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "call_count": 0,
+        }
 
     # TODO: deprecated, use insert instead
     def insert_custom_chunks(
@@ -1107,7 +1117,9 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
-                "metadata": metadata[i] if isinstance(metadata, list) and i < len(metadata) else metadata,  # added provided custom metadata per document
+                "metadata": metadata[i]
+                if isinstance(metadata, list) and i < len(metadata)
+                else metadata,  # added provided custom metadata per document
             }
             for i, (id_, content_data) in enumerate(contents.items())
         }
@@ -1363,6 +1375,7 @@ class LightRAG:
         self,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        token_tracker: TokenTracker | None = None,
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -1484,9 +1497,12 @@ class LightRAG:
                     pipeline_status: dict,
                     pipeline_status_lock: asyncio.Lock,
                     semaphore: asyncio.Semaphore,
+                    token_tracker: TokenTracker | None = None,
                 ) -> None:
                     """Process single document"""
-                    doc_metadata  = getattr(status_doc, "metadata", None)
+                    doc_metadata = getattr(status_doc, "metadata", None)
+                    if doc_metadata is None:
+                        doc_metadata = {}
                     file_extraction_stage_ok = False
                     async with semaphore:
                         nonlocal processed_count
@@ -1498,7 +1514,6 @@ class LightRAG:
                             # Get file path from status document
                             file_path = getattr(
                                 status_doc, "file_path", "unknown_source"
-                                
                             )
 
                             async with pipeline_status_lock:
@@ -1561,7 +1576,9 @@ class LightRAG:
 
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)
-                            doc_metadata["processing_start_time"] = processing_start_time
+                            doc_metadata["processing_start_time"] = (
+                                processing_start_time
+                            )
 
                             doc_status_task = asyncio.create_task(
                                 self.doc_status.upsert(
@@ -1610,6 +1627,7 @@ class LightRAG:
                                     doc_metadata,
                                     pipeline_status,
                                     pipeline_status_lock,
+                                    token_tracker,
                                 )
                             )
                             await entity_relation_task
@@ -1643,7 +1661,9 @@ class LightRAG:
                             processing_end_time = int(time.time())
 
                             # Update document status to failed
-                            doc_metadata["processing_start_time"] = processing_start_time
+                            doc_metadata["processing_start_time"] = (
+                                processing_start_time
+                            )
                             doc_metadata["processing_end_time"] = processing_end_time
                             await self.doc_status.upsert(
                                 {
@@ -1691,7 +1711,9 @@ class LightRAG:
                                 doc_metadata["processing_start_time"] = (
                                     processing_start_time
                                 )
-                                doc_metadata["processing_end_time"] = processing_end_time
+                                doc_metadata["processing_end_time"] = (
+                                    processing_end_time
+                                )
 
                                 await self.doc_status.upsert(
                                     {
@@ -1748,7 +1770,9 @@ class LightRAG:
                                 doc_metadata["processing_start_time"] = (
                                     processing_start_time
                                 )
-                                doc_metadata["processing_end_time"] = processing_end_time
+                                doc_metadata["processing_end_time"] = (
+                                    processing_end_time
+                                )
 
                                 await self.doc_status.upsert(
                                     {
@@ -1778,6 +1802,7 @@ class LightRAG:
                             pipeline_status,
                             pipeline_status_lock,
                             semaphore,
+                            token_tracker,
                         )
                     )
 
@@ -1827,6 +1852,7 @@ class LightRAG:
         metadata: dict | None,
         pipeline_status=None,
         pipeline_status_lock=None,
+        token_tracker: TokenTracker | None = None,
     ) -> list:
         try:
             chunk_results = await extract_entities(
@@ -1837,6 +1863,7 @@ class LightRAG:
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
                 text_chunks_storage=self.text_chunks,
+                token_tracker=token_tracker,
             )
             return chunk_results
         except Exception as e:
@@ -2061,14 +2088,18 @@ class LightRAG:
         self,
         query: str,
         param: QueryParam = QueryParam(),
+        token_tracker: TokenTracker | None = None,
         system_prompt: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> Any:
         """
-        Perform a sync query.
+        User query interface (backward compatibility wrapper).
+
+        Delegates to aquery() for asynchronous execution and returns the result.
 
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
+            token_tracker (TokenTracker | None): Optional token tracker for monitoring usage.
             prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
@@ -2076,14 +2107,17 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
 
-        return loop.run_until_complete(self.aquery(query, param, system_prompt))  # type: ignore
+        return loop.run_until_complete(
+            self.aquery(query, param, token_tracker, system_prompt)
+        )  # type: ignore
 
     async def aquery(
         self,
         query: str,
         param: QueryParam = QueryParam(),
+        token_tracker: TokenTracker | None = None,
         system_prompt: str | None = None,
-    ) -> str | AsyncIterator[str]:
+    ) -> Any:
         """
         Perform a async query (backward compatibility wrapper).
 
@@ -2102,7 +2136,7 @@ class LightRAG:
                 - Streaming: Returns AsyncIterator[str]
         """
         # Call the new aquery_llm function to get complete results
-        result = await self.aquery_llm(query, param, system_prompt)
+        result = await self.aquery_llm(query, param, system_prompt, token_tracker)
 
         # Extract and return only the LLM response for backward compatibility
         llm_response = result.get("llm_response", {})
@@ -2137,6 +2171,7 @@ class LightRAG:
         self,
         query: str,
         param: QueryParam = QueryParam(),
+        token_tracker: TokenTracker | None = None,
     ) -> dict[str, Any]:
         """
         Asynchronous data retrieval API: returns structured retrieval results without LLM generation.
@@ -2330,6 +2365,7 @@ class LightRAG:
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
+        token_tracker: TokenTracker | None = None,
     ) -> dict[str, Any]:
         """
         Asynchronous complete query API: returns structured retrieval results with LLM generation.
@@ -2364,6 +2400,7 @@ class LightRAG:
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
+                    token_tracker=token_tracker,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -2373,6 +2410,7 @@ class LightRAG:
                     global_config,
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
+                    token_tracker=token_tracker,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
