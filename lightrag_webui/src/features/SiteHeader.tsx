@@ -35,7 +35,7 @@ function shouldShowTableExplorer(storageConfig: any) {
   // Always show for now - TODO: fix storageConfig state propagation from health check
   return true
 
-  // Original logic:
+  // Original logic (storageConfig not being populated from health endpoint):
   // if (import.meta.env.DEV) return true
   // return (
   //   storageConfig &&
@@ -80,7 +80,6 @@ export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, username, webuiTitle, webuiDescription } = useAuthStore()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  const storageConfig = useSettingsStore.use.storageConfig()
 
   const handleLogout = () => {
     navigationService.navigateToLogin();

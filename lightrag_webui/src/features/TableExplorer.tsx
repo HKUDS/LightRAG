@@ -48,23 +48,28 @@ function isJsonLike(value: any): boolean {
 
 // Copy to clipboard helper
 async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    // Fallback for older browsers
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
+  if (navigator.clipboard?.writeText) {
     try {
-      document.execCommand('copy')
+      await navigator.clipboard.writeText(text)
       return true
     } catch {
-      return false
-    } finally {
+      // Fall through to legacy approach
+    }
+  }
+  // Fallback for older browsers
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  try {
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    return true
+  } catch {
+    return false
+  } finally {
+    if (textarea.parentNode) {
       document.body.removeChild(textarea)
     }
   }
@@ -114,7 +119,13 @@ function RowDetailModal({
   if (!row) return null
 
   const entries = Object.entries(row)
-  const fullRowJson = JSON.stringify(row, null, 2)
+  const fullRowJson = useMemo(() => {
+    try {
+      return JSON.stringify(row, null, 2)
+    } catch {
+      return '[Unable to serialize row]'
+    }
+  }, [row])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -197,6 +208,9 @@ export default function TableExplorer() {
     setModalOpen(true)
   }, [])
 
+  // Columns to hide from UI (exist in schema but not populated)
+  const HIDDEN_COLUMNS = ['meta']
+
   // Generate columns dynamically from data
   const columns = useMemo<ColumnDef<any>[]>(() => {
     const cols: ColumnDef<any>[] = []
@@ -206,7 +220,8 @@ export default function TableExplorer() {
         Object.keys(row).forEach(key => allKeys.add(key))
       })
 
-      allKeys.forEach((key) => {
+      Array.from(allKeys).sort().forEach((key) => {
+        if (HIDDEN_COLUMNS.includes(key)) return // Skip hidden columns
         cols.push({
           accessorKey: key,
           header: () => (

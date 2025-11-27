@@ -4,6 +4,13 @@ import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
+const DEV_STORAGE_CONFIG = import.meta.env.DEV ? {
+  kv_storage: 'PGKVStorage',
+  doc_status_storage: 'PGDocStatusStorage',
+  graph_storage: 'PGGraphStorage',
+  vector_storage: 'PGVectorStorage'
+} : null
+
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api' | 'table-explorer'
@@ -118,12 +125,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       apiKey: null,
       // In dev mode, mock PG storage config so Tables tab is visible
-      storageConfig: import.meta.env.DEV ? {
-        kv_storage: 'PGKVStorage',
-        doc_status_storage: 'PGDocStatusStorage',
-        graph_storage: 'PGGraphStorage',
-        vector_storage: 'PGVectorStorage'
-      } : null,
+      storageConfig: DEV_STORAGE_CONFIG,
 
       currentTab: 'documents',
       showFileName: false,
@@ -365,12 +367,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 21) {
           // Reset storageConfig to pick up dev mode default
-          state.storageConfig = import.meta.env.DEV ? {
-            kv_storage: 'PGKVStorage',
-            doc_status_storage: 'PGDocStatusStorage',
-            graph_storage: 'PGGraphStorage',
-            vector_storage: 'PGVectorStorage'
-          } : null
+          state.storageConfig = DEV_STORAGE_CONFIG
         }
         return state
       }

@@ -1065,10 +1065,13 @@ def create_app(args):
     app.include_router(create_graph_routes(rag, api_key))
 
     # Register table routes if all storages are PostgreSQL
-    if (args.kv_storage == "PGKVStorage" and
+    all_postgres_storages = (
+        args.kv_storage == "PGKVStorage" and
         args.doc_status_storage == "PGDocStatusStorage" and
         args.graph_storage == "PGGraphStorage" and
-        args.vector_storage == "PGVectorStorage"):
+        args.vector_storage == "PGVectorStorage"
+    )
+    if all_postgres_storages:
         app.include_router(create_table_routes(rag, api_key), prefix="/tables")
 
     # Add Ollama API routes

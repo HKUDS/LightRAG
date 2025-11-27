@@ -886,6 +886,8 @@ const mockTableData: Record<string, any[]> = {
   ]
 }
 
+const SAFE_TABLE_NAME_REGEX = /^[a-zA-Z0-9_.-]+$/
+
 export const getTableList = async (): Promise<string[]> => {
   if (import.meta.env.DEV) {
     return mockTables
@@ -898,6 +900,9 @@ export const getTableSchema = async (tableName: string): Promise<TableSchema> =>
   if (!tableName || typeof tableName !== 'string') {
     throw new Error('Invalid table name')
   }
+  if (!SAFE_TABLE_NAME_REGEX.test(tableName)) {
+    throw new Error('Invalid table name: contains forbidden characters')
+  }
   if (import.meta.env.DEV) {
     return { ddl: mockSchemas[tableName] || `-- Schema not available for ${tableName}` }
   }
@@ -909,7 +914,10 @@ export const getTableData = async (tableName: string, page: number, pageSize: nu
   if (!tableName || typeof tableName !== 'string') {
     throw new Error('Invalid table name')
   }
-  if (page < 1 || pageSize < 1 || pageSize > 1000) {
+  if (!SAFE_TABLE_NAME_REGEX.test(tableName)) {
+    throw new Error('Invalid table name: contains forbidden characters')
+  }
+  if (!Number.isInteger(page) || !Number.isInteger(pageSize) || page < 1 || pageSize < 1 || pageSize > 1000) {
     throw new Error('Page must be >= 1 and page size must be between 1 and 1000')
   }
 

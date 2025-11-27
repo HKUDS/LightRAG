@@ -7,8 +7,6 @@ from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.kg.postgres_impl import TABLES
 from lightrag.utils import logger
 
-router = APIRouter(tags=["Tables"])
-
 def get_order_clause(ddl: str) -> str:
     """Determine the best ORDER BY clause based on available columns in DDL."""
     ddl_lower = ddl.lower()
@@ -25,6 +23,7 @@ def get_order_clause(ddl: str) -> str:
     return ""
 
 def create_table_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
+    router = APIRouter(tags=["Tables"])
     combined_auth = get_combined_auth_dependency(api_key)
 
     def get_workspace_from_request(request: Request) -> Optional[str]:
@@ -81,12 +80,22 @@ def create_table_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRout
             # 1. Get total count
             count_sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE workspace = $1"
             count_res = await db.query(count_sql, [target_workspace])
-            total = count_res['count'] if count_res else 0
+            
+            total = 0
+            if isinstance(count_res, dict):
+                total = count_res.get('count', 0)
+            elif isinstance(count_res, list) and len(count_res) > 0:
+                first_row = count_res[0]
+                if isinstance(first_row, dict):
+                    total = first_row.get('count', 0)
             
             # 2. Get data
             # Try to determine order column
-            ddl = TABLES[table_name]['ddl']
-            order_clause = get_order_clause(ddl)
+            if 'ddl' in TABLES[table_name]:
+                ddl = TABLES[table_name]['ddl']
+                order_clause = get_order_clause(ddl)
+            else:
+                order_clause = ""
             
             sql = f"SELECT * FROM {table_name} WHERE workspace = $1 {order_clause} LIMIT $2 OFFSET $3"
             rows = await db.query(sql, [target_workspace, page_size, offset], multirows=True)

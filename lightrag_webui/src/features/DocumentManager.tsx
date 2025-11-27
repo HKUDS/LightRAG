@@ -32,7 +32,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, FileText, CheckCircle2, Loader2, Clock, AlertCircle, Brain, Shell } from 'lucide-react'
+import { RefreshCwIcon, ArrowUpIcon, ArrowDownIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, FileText, CheckCircle2, Loader2, AlertCircle, Brain, Shell } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -496,6 +496,14 @@ export default function DocumentManager() {
       activeColor: "text-emerald-600 dark:text-emerald-500"
     },
     {
+      id: 'preprocessed' as StatusFilter,
+      label: t('documentPanel.documentManager.status.preprocessed'),
+      icon: Brain,
+      count: preprocessedCount,
+      color: "text-purple-500",
+      activeColor: "text-purple-600 dark:text-purple-500"
+    },
+    {
       id: 'processing' as StatusFilter,
       label: t('documentPanel.documentManager.status.processing'),
       icon: Loader2,
@@ -521,7 +529,7 @@ export default function DocumentManager() {
       color: "text-red-500",
       activeColor: "text-red-600 dark:text-red-500"
     }
-  ], [t, statusCounts, documentCounts, processedCount, processingCount, pendingCount, failedCount]);
+  ], [t, statusCounts, documentCounts, processedCount, preprocessedCount, processingCount, pendingCount, failedCount]);
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -1175,6 +1183,15 @@ export default function DocumentManager() {
               <div
                 key={item.id}
                 onClick={() => handleStatusFilterChange(item.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleStatusFilterChange(item.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isActive}
                 className={cn(
                   "flex-1 min-w-[140px] flex flex-col gap-1 p-3 rounded-lg transition-all cursor-pointer border select-none",
                   isActive 
