@@ -20,19 +20,23 @@ export default function EmptyCard({
   return (
     <Card
       className={cn(
-        'flex w-full flex-col items-center justify-center space-y-6 bg-transparent p-16',
+        'flex w-full h-full flex-col items-center justify-center space-y-6 bg-transparent p-16 border-none shadow-none',
         className
       )}
       {...props}
     >
-      <div className="mr-4 shrink-0 rounded-full border border-dashed p-4">
-        <Icon className="text-muted-foreground size-8" aria-hidden="true" />
+      <div className="shrink-0 rounded-2xl bg-gradient-to-br from-muted/80 to-muted/40 p-6 ring-1 ring-border/50">
+        <Icon className="text-muted-foreground/70 size-10" aria-hidden="true" />
       </div>
-      <div className="flex flex-col items-center gap-1.5 text-center">
-        <CardTitle>{title}</CardTitle>
-        {description ? <CardDescription>{description}</CardDescription> : null}
+      <div className="flex flex-col items-center gap-2 text-center max-w-sm">
+        <CardTitle className="text-lg font-semibold">{title}</CardTitle>
+        {description ? (
+          <CardDescription className="text-sm text-muted-foreground/80">
+            {description}
+          </CardDescription>
+        ) : null}
       </div>
-      {action ? action : null}
+      {action ? <div className="mt-2">{action}</div> : null}
     </Card>
   )
 }

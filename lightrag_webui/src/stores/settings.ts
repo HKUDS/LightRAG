@@ -6,7 +6,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW'
-type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api' | 'table-explorer'
 
 interface SettingsState {
   // Document manager settings
@@ -66,6 +66,10 @@ interface SettingsState {
   apiKey: string | null
   setApiKey: (key: string | null) => void
 
+  // Storage configuration (for conditional UI)
+  storageConfig: Record<string, string> | null
+  setStorageConfig: (config: Record<string, string>) => void
+
   // App settings
   theme: Theme
   setTheme: (theme: Theme) => void
@@ -113,6 +117,13 @@ const useSettingsStoreBase = create<SettingsState>()(
       enableHealthCheck: true,
 
       apiKey: null,
+      // In dev mode, mock PG storage config so Tables tab is visible
+      storageConfig: import.meta.env.DEV ? {
+        kv_storage: 'PGKVStorage',
+        doc_status_storage: 'PGDocStatusStorage',
+        graph_storage: 'PGGraphStorage',
+        vector_storage: 'PGVectorStorage'
+      } : null,
 
       currentTab: 'documents',
       showFileName: false,
@@ -184,6 +195,8 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setApiKey: (apiKey: string | null) => set({ apiKey }),
 
+      setStorageConfig: (config: Record<string, string>) => set({ storageConfig: config }),
+
       setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
 
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
@@ -238,7 +251,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -349,6 +362,15 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (!state.language) {
             state.language = 'en'
           }
+        }
+        if (version < 21) {
+          // Reset storageConfig to pick up dev mode default
+          state.storageConfig = import.meta.env.DEV ? {
+            kv_storage: 'PGKVStorage',
+            doc_status_storage: 'PGDocStatusStorage',
+            graph_storage: 'PGGraphStorage',
+            vector_storage: 'PGVectorStorage'
+          } : null
         }
         return state
       }

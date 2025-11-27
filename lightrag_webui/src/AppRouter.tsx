@@ -1,12 +1,24 @@
 import '@/lib/extensions'; // Import all global extensions
 import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
 import ThemeProvider from '@/components/ThemeProvider'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60 * 1000, // 1 minute
+      gcTime: 5 * 60 * 1000, // 5 minutes
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+})
 
 const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
@@ -78,17 +90,19 @@ const AppContent = () => {
 
 const AppRouter = () => {
   return (
-    <ThemeProvider>
-      <Router>
-        <AppContent />
-        <Toaster
-          position="bottom-center"
-          theme="system"
-          closeButton
-          richColors
-        />
-      </Router>
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <Router>
+          <AppContent />
+          <Toaster
+            position="bottom-center"
+            theme="system"
+            closeButton
+            richColors
+          />
+        </Router>
+      </ThemeProvider>
+    </QueryClientProvider>
   )
 }
 

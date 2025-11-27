@@ -2,8 +2,6 @@
 LightRAG FastAPI Server
 """
 
-from __future__ import annotations
-
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -53,6 +51,7 @@ from lightrag.api.routers.document_routes import (
 )
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
+from lightrag.api.routers.table_routes import create_table_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 
 from lightrag.utils import logger, set_verbose_debug
@@ -644,7 +643,7 @@ def create_app(args):
                 raise Exception(f"Failed to import {binding} options: {e}")
         return {}
 
-    def create_entity_resolution_config(args) -> object | None:
+    def create_entity_resolution_config(args) -> "EntityResolutionConfig | None":
         """
         Create EntityResolutionConfig from command line/env arguments.
         Returns None if entity resolution is disabled.
@@ -1064,6 +1063,13 @@ def create_app(args):
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+
+    # Register table routes if all storages are PostgreSQL
+    if (args.kv_storage == "PGKVStorage" and
+        args.doc_status_storage == "PGDocStatusStorage" and
+        args.graph_storage == "PGGraphStorage" and
+        args.vector_storage == "PGVectorStorage"):
+        app.include_router(create_table_routes(rag, api_key), prefix="/tables")
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)

@@ -11,6 +11,7 @@
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
     "api": "API",
+    "tables": "Tables",
     "projectRepository": "Project Repository",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",

@@ -815,3 +815,117 @@ export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> =
   const response = await axiosInstance.get('/documents/status_counts')
   return response.data
 }
+
+export type TableSchema = {
+  ddl: string
+}
+
+export type TableDataResponse = {
+  data: Record<string, any>[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+// Mock data for dev mode
+const mockTables = [
+  'lightrag_doc_status',
+  'lightrag_doc_chunks',
+  'lightrag_entities',
+  'lightrag_relations',
+  'lightrag_entity_aliases',
+  'lightrag_llm_cache'
+]
+
+const mockSchemas: Record<string, string> = {
+  'lightrag_doc_status': `CREATE TABLE lightrag_doc_status (
+  id VARCHAR(255) PRIMARY KEY,
+  workspace VARCHAR(255) NOT NULL,
+  content_summary TEXT,
+  content_length INTEGER,
+  status VARCHAR(50),
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);`,
+  'lightrag_entities': `CREATE TABLE lightrag_entities (
+  id SERIAL PRIMARY KEY,
+  workspace VARCHAR(255) NOT NULL,
+  entity_name VARCHAR(500) NOT NULL,
+  entity_type VARCHAR(100),
+  description TEXT,
+  source_chunk_id VARCHAR(255),
+  created_at TIMESTAMP DEFAULT NOW()
+);`,
+  'lightrag_entity_aliases': `CREATE TABLE lightrag_entity_aliases (
+  id SERIAL PRIMARY KEY,
+  workspace VARCHAR(255) NOT NULL,
+  alias VARCHAR(500) NOT NULL,
+  canonical_entity VARCHAR(500) NOT NULL,
+  method VARCHAR(50),
+  confidence FLOAT,
+  created_at TIMESTAMP DEFAULT NOW()
+);`
+}
+
+const mockTableData: Record<string, any[]> = {
+  'lightrag_doc_status': [
+    { id: 'doc_001', workspace: 'default', content_summary: 'Research paper on AI...', content_length: 15420, status: 'processed', created_at: '2024-01-15T10:30:00Z' },
+    { id: 'doc_002', workspace: 'default', content_summary: 'Technical documentation...', content_length: 8750, status: 'processed', created_at: '2024-01-16T14:22:00Z' },
+    { id: 'doc_003', workspace: 'default', content_summary: 'Meeting notes from Q4...', content_length: 3200, status: 'pending', created_at: '2024-01-17T09:15:00Z' },
+  ],
+  'lightrag_entities': [
+    { id: 1, workspace: 'default', entity_name: 'OpenAI', entity_type: 'Organization', description: 'AI research company', created_at: '2024-01-15T10:30:00Z' },
+    { id: 2, workspace: 'default', entity_name: 'GPT-4', entity_type: 'Product', description: 'Large language model', created_at: '2024-01-15T10:31:00Z' },
+    { id: 3, workspace: 'default', entity_name: 'San Francisco', entity_type: 'Location', description: 'City in California', created_at: '2024-01-15T10:32:00Z' },
+  ],
+  'lightrag_entity_aliases': [
+    { id: 1, workspace: 'default', alias: 'openai', canonical_entity: 'OpenAI', method: 'exact', confidence: 1.0, created_at: '2024-01-15T10:30:00Z' },
+    { id: 2, workspace: 'default', alias: 'gpt4', canonical_entity: 'GPT-4', method: 'fuzzy', confidence: 0.92, created_at: '2024-01-15T10:31:00Z' },
+    { id: 3, workspace: 'default', alias: 'SF', canonical_entity: 'San Francisco', method: 'llm', confidence: 0.85, created_at: '2024-01-15T10:32:00Z' },
+  ]
+}
+
+export const getTableList = async (): Promise<string[]> => {
+  if (import.meta.env.DEV) {
+    return mockTables
+  }
+  const response = await axiosInstance.get('/tables/list')
+  return response.data
+}
+
+export const getTableSchema = async (tableName: string): Promise<TableSchema> => {
+  if (!tableName || typeof tableName !== 'string') {
+    throw new Error('Invalid table name')
+  }
+  if (import.meta.env.DEV) {
+    return { ddl: mockSchemas[tableName] || `-- Schema not available for ${tableName}` }
+  }
+  const response = await axiosInstance.get(`/tables/${encodeURIComponent(tableName)}/schema`)
+  return response.data
+}
+
+export const getTableData = async (tableName: string, page: number, pageSize: number): Promise<TableDataResponse> => {
+  if (!tableName || typeof tableName !== 'string') {
+    throw new Error('Invalid table name')
+  }
+  if (page < 1 || pageSize < 1 || pageSize > 1000) {
+    throw new Error('Page must be >= 1 and page size must be between 1 and 1000')
+  }
+
+  if (import.meta.env.DEV) {
+    const data = mockTableData[tableName] || []
+    const start = (page - 1) * pageSize
+    const end = start + pageSize
+    const paginatedData = data.slice(start, end)
+    return {
+      data: paginatedData,
+      total: data.length,
+      page: page,
+      page_size: pageSize,
+      total_pages: Math.ceil(data.length / pageSize)
+    }
+  }
+  const response = await axiosInstance.get(`/tables/${encodeURIComponent(tableName)}/data`, { params: { page, page_size: pageSize } })
+  return response.data
+}

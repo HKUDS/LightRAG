@@ -14,6 +14,7 @@ import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import ApiSite from '@/features/ApiSite'
+import TableExplorer from '@/features/TableExplorer'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
@@ -60,7 +61,10 @@ function App() {
       try {
         // Only perform health check if component is still mounted
         if (isMountedRef.current) {
-          await useBackendState.getState().check();
+          const status = await useBackendState.getState().check();
+          if (status && 'status' in status && status.status === 'healthy' && status.configuration) {
+             useSettingsStore.getState().setStorageConfig(status.configuration);
+          }
         }
       } catch (error) {
         console.error('Health check error:', error);
@@ -171,7 +175,7 @@ function App() {
             <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
               <div className="min-w-[200px] w-auto flex items-center">
                 <a href={webuiPrefix} className="flex items-center gap-2">
-                  <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
+                  <ZapIcon className="size-4 text-plum" aria-hidden="true" />
                   <span className="font-bold md:inline-block">{SiteInfo.name}</span>
                 </a>
               </div>
@@ -214,6 +218,9 @@ function App() {
                 </TabsContent>
                 <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <ApiSite />
+                </TabsContent>
+                <TabsContent value="table-explorer" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
+                  <TableExplorer />
                 </TabsContent>
               </div>
             </Tabs>

@@ -32,7 +32,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, FileText, CheckCircle2, Loader2, Clock, AlertCircle, Brain, Shell } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -476,6 +476,52 @@ export default function DocumentManager() {
   const processingCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.processing || 0;
   const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
   const failedCount = getCountValue(statusCounts, 'FAILED', 'failed') || documentCounts.failed || 0;
+
+  // Stats items configuration for modern dashboard
+  const statItems = useMemo(() => [
+    {
+      id: 'all' as StatusFilter,
+      label: t('documentPanel.documentManager.status.all'),
+      icon: FileText,
+      count: statusCounts.all || documentCounts.all || 0,
+      color: "text-muted-foreground",
+      activeColor: "text-foreground"
+    },
+    {
+      id: 'processed' as StatusFilter,
+      label: t('documentPanel.documentManager.status.completed'),
+      icon: CheckCircle2,
+      count: processedCount,
+      color: "text-emerald-500",
+      activeColor: "text-emerald-600 dark:text-emerald-500"
+    },
+    {
+      id: 'processing' as StatusFilter,
+      label: t('documentPanel.documentManager.status.processing'),
+      icon: Loader2,
+      count: processingCount,
+      color: "text-blue-500",
+      activeColor: "text-blue-600 dark:text-blue-500",
+      spin: true
+    },
+    {
+      id: 'pending' as StatusFilter,
+      label: t('documentPanel.documentManager.status.pending'),
+      icon: Loader2,
+      count: pendingCount,
+      color: "text-amber-500",
+      activeColor: "text-amber-600 dark:text-amber-500",
+      spin: true
+    },
+    {
+      id: 'failed' as StatusFilter,
+      label: t('documentPanel.documentManager.status.failed'),
+      icon: AlertCircle,
+      count: failedCount,
+      color: "text-red-500",
+      activeColor: "text-red-600 dark:text-red-500"
+    }
+  ], [t, statusCounts, documentCounts, processedCount, processingCount, pendingCount, failedCount]);
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -1114,10 +1160,50 @@ export default function DocumentManager() {
 
   return (
     <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
-      <CardHeader className="py-2 px-6">
-        <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
+      <CardHeader className="py-4 px-6 border-b border-border/50">
+        <CardTitle className="text-xl font-semibold tracking-tight">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
       <CardContent className="flex-1 flex flex-col min-h-0 overflow-auto">
+        {/* Modern Interactive Stats Bar */}
+        <div className="bg-muted/20 p-2 rounded-xl flex flex-wrap gap-2 mb-6">
+          {statItems.map((item) => {
+            const isActive = statusFilter === item.id;
+            const Icon = item.icon;
+            const showIcon = item.count > 0 || item.id === 'all';
+            
+            return (
+              <div
+                key={item.id}
+                onClick={() => handleStatusFilterChange(item.id)}
+                className={cn(
+                  "flex-1 min-w-[140px] flex flex-col gap-1 p-3 rounded-lg transition-all cursor-pointer border select-none",
+                  isActive 
+                    ? "bg-background shadow-sm border-border ring-1 ring-black/5 dark:ring-white/5" 
+                    : "bg-background/80 border-border/40 hover:bg-background hover:border-border/60"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={cn("text-xs font-medium", isActive ? "text-foreground" : "text-muted-foreground")}>
+                    {item.label}
+                  </span>
+                  {showIcon && (
+                    <Icon 
+                      className={cn(
+                        "h-4 w-4", 
+                        isActive ? item.activeColor : item.color,
+                        item.spin && item.count > 0 && "animate-spin"
+                      )} 
+                    />
+                  )}
+                </div>
+                <div className={cn("text-2xl font-bold", isActive ? "text-foreground" : "text-muted-foreground/80")}>
+                  {item.count}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
         <div className="flex justify-between items-center gap-2 mb-2">
           <div className="flex gap-2">
             <Button
@@ -1139,7 +1225,7 @@ export default function DocumentManager() {
                 pipelineBusy && 'pipeline-busy'
               )}
             >
-              <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
+              <Shell className="h-4 w-4" /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>
           </div>
 
@@ -1157,7 +1243,27 @@ export default function DocumentManager() {
             />
           )}
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowFileName(!showFileName)}
+              className={cn(
+                "transition-all border",
+                showFileName 
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90 border-primary shadow-sm" 
+                  : "text-muted-foreground border-dashed border-border/60 hover:border-solid hover:text-foreground hover:bg-accent/50"
+              )}
+              side="bottom"
+              tooltip={showFileName ? t('documentPanel.documentManager.hideButton') : t('documentPanel.documentManager.showButton')}
+            >
+              {showFileName ? (
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+              ) : (
+                <FileText className="h-4 w-4 mr-2" />
+              )}
+              {t('documentPanel.documentManager.columns.fileName')}
+            </Button>
             {isSelectionMode && (
               <DeleteDocumentsDialog
                 selectedDocIds={selectedDocIds}
@@ -1196,111 +1302,6 @@ export default function DocumentManager() {
           <CardHeader className="flex-none py-2 px-4">
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
-              <div className="flex items-center gap-2">
-                <div className="flex gap-1" dir={i18n.dir()}>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'all' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('all')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.all')} ({statusCounts.all || documentCounts.all})
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('processed')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      processedCount > 0 ? 'text-green-600' : 'text-gray-500',
-                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.completed')} ({processedCount})
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'preprocessed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('preprocessed')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      preprocessedCount > 0 ? 'text-purple-600' : 'text-gray-500',
-                      statusFilter === 'preprocessed' && 'bg-purple-100 dark:bg-purple-900/30 font-medium border border-purple-400 dark:border-purple-600 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.preprocessed')} ({preprocessedCount})
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('processing')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      processingCount > 0 ? 'text-blue-600' : 'text-gray-500',
-                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.processing')} ({processingCount})
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('pending')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      pendingCount > 0 ? 'text-yellow-600' : 'text-gray-500',
-                      statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.pending')} ({pendingCount})
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('failed')}
-                    disabled={isRefreshing}
-                    className={cn(
-                      failedCount > 0 ? 'text-red-600' : 'text-gray-500',
-                      statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
-                    )}
-                  >
-                    {t('documentPanel.documentManager.status.failed')} ({failedCount})
-                  </Button>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleManualRefresh}
-                  disabled={isRefreshing}
-                  side="bottom"
-                  tooltip={t('documentPanel.documentManager.refreshTooltip')}
-                >
-                  <RotateCcwIcon className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor="toggle-filename-btn"
-                  className="text-sm text-gray-500"
-                >
-                  {t('documentPanel.documentManager.fileNameLabel')}
-                </label>
-                <Button
-                  id="toggle-filename-btn"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowFileName(!showFileName)}
-                  className="border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
-                >
-                  {showFileName
-                    ? t('documentPanel.documentManager.hideButton')
-                    : t('documentPanel.documentManager.showButton')
-                  }
-                </Button>
-              </div>
             </div>
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>

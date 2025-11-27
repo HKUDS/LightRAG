@@ -11,6 +11,7 @@
     "knowledgeGraph": "知识图谱",
     "retrieval": "检索",
     "api": "API",
+    "tables": "数据表",
     "projectRepository": "项目仓库",
     "logout": "退出登录",
     "frontendNeedsRebuild": "前端代码需重新构建",

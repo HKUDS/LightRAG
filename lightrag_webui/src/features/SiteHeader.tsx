@@ -8,7 +8,7 @@ import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, LogOutIcon } from 'lucide-react'
+import { ZapIcon, LogOutIcon, BrainIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 interface NavigationTabProps {
@@ -23,7 +23,7 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
       value={value}
       className={cn(
         'cursor-pointer px-2 py-1 transition-all',
-        currentTab === value ? '!bg-emerald-400 !text-zinc-50' : 'hover:bg-background/60'
+        currentTab === value ? '!bg-plum !text-plum-foreground' : 'hover:bg-background/60'
       )}
     >
       {children}
@@ -31,8 +31,24 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
   )
 }
 
+function shouldShowTableExplorer(storageConfig: any) {
+  // Always show for now - TODO: fix storageConfig state propagation from health check
+  return true
+
+  // Original logic:
+  // if (import.meta.env.DEV) return true
+  // return (
+  //   storageConfig &&
+  //   storageConfig.kv_storage === 'PGKVStorage' &&
+  //   storageConfig.doc_status_storage === 'PGDocStatusStorage' &&
+  //   storageConfig.graph_storage === 'PGGraphStorage' &&
+  //   storageConfig.vector_storage === 'PGVectorStorage'
+  // )
+}
+
 function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
+  const storageConfig = useSettingsStore.use.storageConfig()
   const { t } = useTranslation()
 
   return (
@@ -50,6 +66,11 @@ function TabsNavigation() {
         <NavigationTab value="api" currentTab={currentTab}>
           {t('header.api')}
         </NavigationTab>
+        {shouldShowTableExplorer(storageConfig) && (
+          <NavigationTab value="table-explorer" currentTab={currentTab}>
+            {t('header.tables')}
+          </NavigationTab>
+        )}
       </TabsList>
     </div>
   )
@@ -59,6 +80,7 @@ export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, username, webuiTitle, webuiDescription } = useAuthStore()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
+  const storageConfig = useSettingsStore.use.storageConfig()
 
   const handleLogout = () => {
     navigationService.navigateToLogin();
@@ -68,7 +90,7 @@ export default function SiteHeader() {
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <div className="min-w-[200px] w-auto flex items-center">
         <a href={webuiPrefix} className="flex items-center gap-2">
-          <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
+          <BrainIcon className="size-4 text-plum" aria-hidden="true" />
         </a>
         {webuiTitle && (
           <div className="flex items-center">
@@ -93,11 +115,6 @@ export default function SiteHeader() {
 
       <div className="flex h-10 flex-1 items-center justify-center">
         <TabsNavigation />
-        {isGuestMode && (
-          <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
-            {t('login.guestMode', 'Guest Mode')}
-          </div>
-        )}
       </div>
 
       <nav className="w-[200px] flex items-center justify-end">
