@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import StatusDialog from './StatusDialog'
 import { useTranslation } from 'react-i18next'
 
-const StatusIndicator = () => {
+const StatusIndicator = ({ className }: { className?: string }) => {
   const { t } = useTranslation()
   const health = useBackendState.use.health()
   const lastCheckTime = useBackendState.use.lastCheckTime()
@@ -20,7 +20,7 @@ const StatusIndicator = () => {
   }, [lastCheckTime])
 
   return (
-    <div className="fixed right-4 bottom-4 flex items-center gap-2 opacity-80 select-none">
+    <div className={cn("flex items-center gap-2 opacity-80 select-none", className)}>
       <div
         className="flex cursor-pointer items-center gap-2"
         onClick={() => setDialogOpen(true)}

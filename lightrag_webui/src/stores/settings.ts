@@ -87,7 +87,7 @@ interface SettingsState {
 const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      theme: 'light',
       language: 'en',
       showPropertyPanel: true,
       showNodeSearchBar: true,
@@ -238,7 +238,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -339,6 +339,15 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Remove deprecated response_type parameter
           if (state.querySettings) {
             delete state.querySettings.response_type
+          }
+        }
+        if (version < 20) {
+          // Only set defaults if values are missing (preserve user preference)
+          if (!state.theme) {
+            state.theme = 'light'
+          }
+          if (!state.language) {
+            state.language = 'en'
           }
         }
         return state

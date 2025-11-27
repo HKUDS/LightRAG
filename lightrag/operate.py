@@ -5,6 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
@@ -50,6 +51,13 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.entity_resolution import (
+    resolve_entity_with_vdb,
+    get_cached_alias,
+    store_alias,
+    fuzzy_similarity,
+    EntityResolutionConfig,
+)
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -1590,6 +1598,180 @@ async def _rebuild_single_relationship(
             pipeline_status["history_messages"].append(status_message)
 
 
+def _has_different_numeric_suffix(name_a: str, name_b: str) -> bool:
+    """Check if two names have different numeric components.
+
+    This prevents false fuzzy matches between entities that differ only by number,
+    such as "Interleukin-4" vs "Interleukin-13" (88.9% similar but semantically distinct).
+
+    Scientific/medical entities often use numbers as key identifiers:
+    - Interleukins: IL-4, IL-13, IL-17
+    - Drug phases: Phase 1, Phase 2, Phase 3
+    - Receptor types: Type 1, Type 2
+    - Versions: v1.0, v2.0
+
+    Args:
+        name_a: First entity name
+        name_b: Second entity name
+
+    Returns:
+        True if both names contain numbers but the numbers differ, False otherwise.
+    """
+    # Extract all numeric patterns (integers and decimals)
+    pattern = r"(\d+(?:\.\d+)?)"
+    nums_a = re.findall(pattern, name_a)
+    nums_b = re.findall(pattern, name_b)
+
+    # If both have numbers and they differ, these are likely distinct entities
+    if nums_a and nums_b and nums_a != nums_b:
+        return True
+    return False
+
+
+async def _build_pre_resolution_map(
+    entity_names: list[str],
+    entity_types: dict[str, str],
+    entity_vdb,
+    llm_fn,
+    config: EntityResolutionConfig,
+) -> tuple[dict[str, str], dict[str, float]]:
+    """Build resolution map before parallel processing to prevent race conditions.
+
+    This function resolves entities against each other within the batch (using
+    instant fuzzy matching) and against existing VDB entries. The resulting map
+    is applied during parallel entity processing.
+
+    Args:
+        entity_names: List of entity names to resolve
+        entity_types: Dict mapping entity names to their types (e.g., "person", "organization").
+                      Used to prevent fuzzy matching between entities of different types.
+        entity_vdb: Entity vector database for checking existing entities
+        llm_fn: LLM function for semantic verification
+        config: Entity resolution configuration
+
+    Returns:
+        Tuple of:
+        - resolution_map: Dict mapping original entity names to their resolved canonical names.
+          Only entities that need remapping are included.
+        - confidence_map: Dict mapping alias to confidence score (1.0 for exact, actual
+          similarity for fuzzy, result.confidence for VDB matches).
+    """
+    resolution_map: dict[str, str] = {}
+    confidence_map: dict[str, float] = {}
+    # Track canonical entities with their types: [(name, type), ...]
+    canonical_entities: list[tuple[str, str]] = []
+
+    for entity_name in entity_names:
+        normalized = entity_name.lower().strip()
+        entity_type = entity_types.get(entity_name, "")
+
+        # Skip if already resolved to something in this batch
+        if entity_name in resolution_map:
+            continue
+
+        # Layer 1: Case-insensitive exact match within batch
+        matched = False
+        for canonical, canonical_type in canonical_entities:
+            if canonical.lower().strip() == normalized:
+                resolution_map[entity_name] = canonical
+                confidence_map[entity_name] = 1.0  # Exact match = perfect confidence
+                logger.debug(
+                    f"Pre-resolution (case match): '{entity_name}' → '{canonical}'"
+                )
+                matched = True
+                break
+
+        if matched:
+            continue
+
+        # Layer 2: Fuzzy match within batch (catches typos like Dupixant→Dupixent)
+        # Only enabled when config.fuzzy_pre_resolution_enabled is True.
+        # Requires: similarity >= threshold AND matching types (or unknown).
+        if config.fuzzy_pre_resolution_enabled:
+            for canonical, canonical_type in canonical_entities:
+                similarity = fuzzy_similarity(entity_name, canonical)
+                if similarity >= config.fuzzy_threshold:
+                    # Type compatibility check: skip if types differ and both known.
+                    # Empty/unknown types are treated as compatible to avoid
+                    # blocking legitimate matches when type info is incomplete.
+                    types_compatible = (
+                        not entity_type
+                        or not canonical_type
+                        or entity_type == canonical_type
+                    )
+                    if not types_compatible:
+                        logger.debug(
+                            f"Pre-resolution (fuzzy {similarity:.2f}): SKIPPED "
+                            f"'{entity_name}' ({entity_type}) → "
+                            f"'{canonical}' ({canonical_type}) - type mismatch"
+                        )
+                        continue
+
+                    # Numeric suffix check: skip if names have different numbers
+                    # This prevents false matches like "Interleukin-4" → "Interleukin-13"
+                    # where fuzzy similarity is high (88.9%) but entities are distinct
+                    if _has_different_numeric_suffix(entity_name, canonical):
+                        logger.debug(
+                            f"Pre-resolution (fuzzy {similarity:.2f}): SKIPPED "
+                            f"'{entity_name}' → '{canonical}' - different numeric suffix"
+                        )
+                        continue
+
+                    # Accept the fuzzy match - emit warning for review
+                    resolution_map[entity_name] = canonical
+                    confidence_map[entity_name] = (
+                        similarity  # Use actual similarity score
+                    )
+                    etype_display = entity_type or "unknown"
+                    ctype_display = canonical_type or "unknown"
+                    logger.warning(
+                        f"Fuzzy pre-resolution accepted: '{entity_name}' → "
+                        f"'{canonical}' (similarity={similarity:.3f}, "
+                        f"types: {etype_display}→{ctype_display}). "
+                        f"Review for correctness; adjust fuzzy_threshold or "
+                        f"disable fuzzy_pre_resolution_enabled if needed."
+                    )
+                    matched = True
+                    break
+
+        if matched:
+            continue
+
+        # Layer 3: Check existing VDB for cross-document deduplication
+        if entity_vdb and llm_fn:
+            try:
+                result = await resolve_entity_with_vdb(
+                    entity_name, entity_vdb, llm_fn, config
+                )
+                if result.action == "match" and result.matched_entity:
+                    resolution_map[entity_name] = result.matched_entity
+                    confidence_map[entity_name] = (
+                        result.confidence
+                    )  # Use VDB result confidence
+                    # Add canonical from VDB so batch entities can match it.
+                    # VDB matches don't have type info available, use empty.
+                    canonical_entities.append((result.matched_entity, ""))
+                    logger.debug(
+                        f"Pre-resolution (VDB {result.method}): "
+                        f"'{entity_name}' → '{result.matched_entity}'"
+                    )
+                    continue
+            except Exception as e:
+                logger.debug(
+                    f"Pre-resolution VDB check failed for '{entity_name}': {e}"
+                )
+
+        # No match found - this is a new canonical entity
+        canonical_entities.append((entity_name, entity_type))
+
+    if resolution_map:
+        logger.info(
+            f"Pre-resolution: {len(resolution_map)} entities mapped to canonical forms"
+        )
+
+    return resolution_map, confidence_map
+
+
 async def _merge_nodes_then_upsert(
     entity_name: str,
     nodes_data: list[dict],
@@ -1600,8 +1782,128 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
-):
-    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
+    pre_resolution_map: dict[str, str] | None = None,
+) -> tuple[dict, str | None]:
+    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert.
+
+    Returns:
+        Tuple of (node_data, original_entity_name). original_entity_name is set if
+        entity resolution changed the name (e.g., "Dupixant" → "Dupixent"),
+        otherwise None.
+    """
+    original_entity_name = entity_name  # Track original before resolution
+
+    # Apply pre-resolution map immediately (prevents race conditions in parallel processing)
+    pre_resolved = False
+    if pre_resolution_map and entity_name in pre_resolution_map:
+        entity_name = pre_resolution_map[entity_name]
+        pre_resolved = True
+        logger.debug(
+            f"Applied pre-resolution: '{original_entity_name}' → '{entity_name}'"
+        )
+
+    # Entity Resolution: Resolve new entity against existing entities
+    # Skip if already pre-resolved (to avoid redundant VDB queries)
+    entity_resolution_config_raw = global_config.get("entity_resolution_config")
+    entity_resolution_config = None
+    if entity_resolution_config_raw:
+        # Handle both dict (from asdict() serialization) and EntityResolutionConfig instances
+        if isinstance(entity_resolution_config_raw, EntityResolutionConfig):
+            entity_resolution_config = entity_resolution_config_raw
+        elif isinstance(entity_resolution_config_raw, dict):
+            try:
+                entity_resolution_config = EntityResolutionConfig(
+                    **entity_resolution_config_raw
+                )
+            except TypeError as e:
+                logger.warning(
+                    f"Invalid entity_resolution_config: {e}. "
+                    f"Config: {entity_resolution_config_raw}. Skipping resolution."
+                )
+
+    # Safely check if entity resolution is enabled, handling both object and dict forms
+    def _is_resolution_enabled(config) -> bool:
+        if config is None:
+            return False
+        if isinstance(config, dict):
+            return config.get("enabled", False)
+        return getattr(config, "enabled", False)
+
+    # Skip VDB resolution if entity was already pre-resolved (prevents redundant queries)
+    if (
+        _is_resolution_enabled(entity_resolution_config)
+        and entity_vdb
+        and not pre_resolved
+    ):
+        original_name = entity_name
+        workspace = global_config.get("workspace", "")
+        # Try knowledge_graph_inst.db first (more reliable), fallback to entity_vdb.db
+        db = getattr(knowledge_graph_inst, "db", None) or getattr(
+            entity_vdb, "db", None
+        )
+
+        # Layer 0: Check alias cache first (PostgreSQL-only - requires db connection)
+        # Note: Alias caching is only available when using PostgreSQL storage backend
+        if db is not None:
+            try:
+                cached = await get_cached_alias(original_name, db, workspace)
+                if cached:
+                    canonical, method, _ = cached
+                    logger.debug(
+                        f"Alias cache hit: '{original_name}' → '{canonical}' "
+                        f"(method: {method})"
+                    )
+                    entity_name = canonical
+            except Exception as e:
+                logger.warning(
+                    f"Entity resolution cache lookup failed for '{original_name}' "
+                    f"(workspace: {workspace}): {type(e).__name__}: {e}. "
+                    "Continuing without cache."
+                )
+
+        # Layers 1-3: Full VDB resolution (if not found in cache)
+        if entity_name == original_name:
+            llm_fn = global_config.get("llm_model_func")
+            if llm_fn:
+                try:
+                    resolution = await resolve_entity_with_vdb(
+                        entity_name,
+                        entity_vdb,
+                        llm_fn,
+                        entity_resolution_config,
+                    )
+                    if resolution.action == "match" and resolution.matched_entity:
+                        logger.info(
+                            f"Entity resolution: '{entity_name}' → '{resolution.matched_entity}' "
+                            f"(method: {resolution.method}, confidence: {resolution.confidence:.2f})"
+                        )
+                        entity_name = resolution.matched_entity
+
+                        # Store in alias cache for next time (PostgreSQL-only)
+                        # Note: Alias caching requires PostgreSQL storage backend
+                        if db is not None:
+                            try:
+                                await store_alias(
+                                    original_name,
+                                    entity_name,
+                                    resolution.method,
+                                    resolution.confidence,
+                                    db,
+                                    workspace,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to store entity alias '{original_name}' → '{entity_name}' "
+                                    f"(workspace: {workspace}): {type(e).__name__}: {e}. "
+                                    "Resolution succeeded but cache not updated."
+                                )
+                except Exception as e:
+                    logger.warning(
+                        f"Entity resolution failed for '{original_name}' "
+                        f"(workspace: {workspace}): {type(e).__name__}: {e}. "
+                        "Continuing with original entity name."
+                    )
+
     already_entity_types = []
     already_source_ids = []
     already_description = []
@@ -1865,7 +2167,12 @@ async def _merge_nodes_then_upsert(
             max_retries=3,
             retry_delay=0.1,
         )
-    return node_data
+
+    # Return original name if resolution changed it, None otherwise
+    resolved_from = (
+        original_entity_name if entity_name != original_entity_name else None
+    )
+    return node_data, resolved_from
 
 
 async def _merge_edges_then_upsert(
@@ -1882,7 +2189,13 @@ async def _merge_edges_then_upsert(
     added_entities: list = None,  # New parameter to track entities added during edge processing
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    entity_resolution_map: dict[str, str] | None = None,  # Map original→resolved names
 ):
+    # Apply entity resolution mapping to edge endpoints
+    if entity_resolution_map:
+        src_id = entity_resolution_map.get(src_id, src_id)
+        tgt_id = entity_resolution_map.get(tgt_id, tgt_id)
+
     if src_id == tgt_id:
         return None
 
@@ -2472,12 +2785,87 @@ async def merge_nodes_and_edges(
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
     semaphore = asyncio.Semaphore(graph_max_async)
 
+    # ===== Pre-Resolution Phase: Build entity resolution map =====
+    # This prevents race conditions when parallel workers process similar entities
+    # IMPORTANT: Include BOTH entity names AND relation endpoints to catch all duplicates
+    pre_resolution_map: dict[str, str] = {}
+    entity_resolution_config_raw = global_config.get("entity_resolution_config")
+    if entity_resolution_config_raw:
+        # Handle both dict (from asdict() serialization) and EntityResolutionConfig instances
+        config = None
+        if isinstance(entity_resolution_config_raw, EntityResolutionConfig):
+            config = entity_resolution_config_raw
+        elif isinstance(entity_resolution_config_raw, dict):
+            try:
+                config = EntityResolutionConfig(**entity_resolution_config_raw)
+            except TypeError as e:
+                logger.warning(
+                    f"Invalid entity_resolution_config: {e}. "
+                    f"Config: {entity_resolution_config_raw}. Skipping resolution."
+                )
+        if config and config.enabled:
+            llm_fn = global_config.get("llm_model_func")
+            # Build entity_types map for type-aware fuzzy matching.
+            # Use first non-empty type for entities with multiple occurrences.
+            entity_types: dict[str, str] = {}
+            for entity_name, entities in all_nodes.items():
+                for entity_data in entities:
+                    etype = entity_data.get("entity_type", "")
+                    if etype:
+                        entity_types[entity_name] = etype
+                        break
+
+            # Collect ALL entity names: from entities AND from relation endpoints
+            # This ensures relation endpoints like "EU Medicines Agency" get resolved
+            # against existing entities like "European Medicines Agency"
+            all_entity_names = set(all_nodes.keys())
+            for src_id, tgt_id in all_edges.keys():
+                all_entity_names.add(src_id)
+                all_entity_names.add(tgt_id)
+
+            pre_resolution_map, confidence_map = await _build_pre_resolution_map(
+                list(all_entity_names),
+                entity_types,
+                entity_vdb,
+                llm_fn,
+                config,
+            )
+
+            # Cache pre-resolution aliases for future lookups (PostgreSQL-only)
+            # This ensures aliases discovered during batch processing are available
+            # for subsequent document ingestion without re-running resolution
+            db = getattr(knowledge_graph_inst, "db", None)
+            if db is not None and pre_resolution_map:
+                workspace = global_config.get("workspace", "")
+                for alias, canonical in pre_resolution_map.items():
+                    # Don't cache self-references (entity → itself)
+                    if alias.lower().strip() != canonical.lower().strip():
+                        try:
+                            await store_alias(
+                                alias=alias,
+                                canonical=canonical,
+                                method="pre_resolution",
+                                confidence=confidence_map.get(alias, 1.0),
+                                db=db,
+                                workspace=workspace,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                f"Failed to cache pre-resolution alias "
+                                f"'{alias}' → '{canonical}': {e}"
+                            )
+
     # ===== Phase 1: Process all entities concurrently =====
     log_message = f"Phase 1: Processing {total_entities_count} entities from {doc_id} (async: {graph_max_async})"
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
+
+    # Resolution map to track original→resolved entity names (e.g., "Dupixant"→"Dupixent")
+    # This will be used to remap edge endpoints in Phase 2
+    entity_resolution_map: dict[str, str] = {}
+    resolution_map_lock = asyncio.Lock()
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
@@ -2496,7 +2884,7 @@ async def merge_nodes_and_edges(
             ):
                 try:
                     logger.debug(f"Processing entity {entity_name}")
-                    entity_data = await _merge_nodes_then_upsert(
+                    entity_data, resolved_from = await _merge_nodes_then_upsert(
                         entity_name,
                         entities,
                         knowledge_graph_inst,
@@ -2506,7 +2894,14 @@ async def merge_nodes_and_edges(
                         pipeline_status_lock,
                         llm_response_cache,
                         entity_chunks_storage,
+                        pre_resolution_map,
                     )
+
+                    # Track resolution mapping for edge remapping in Phase 2
+                    if resolved_from is not None:
+                        resolved_to = entity_data.get("entity_name", entity_name)
+                        async with resolution_map_lock:
+                            entity_resolution_map[resolved_from] = resolved_to
 
                     return entity_data
 
@@ -2617,6 +3012,7 @@ async def merge_nodes_and_edges(
                         added_entities,  # Pass list to collect added entities
                         relation_chunks_storage,
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
+                        entity_resolution_map,  # Apply entity resolution to edge endpoints
                     )
 
                     if edge_data is None:
@@ -2649,9 +3045,36 @@ async def merge_nodes_and_edges(
                     raise prefixed_exception from e
 
     # Create relationship processing tasks
-    edge_tasks = []
+    # Apply pre_resolution_map to edge endpoints to prevent duplicates from relation extraction
+    # Key fixes: sort for lock ordering, filter self-loops, deduplicate merged edges
+    resolved_edges: dict[tuple[str, str], list] = {}
     for edge_key, edges in all_edges.items():
-        task = asyncio.create_task(_locked_process_edges(edge_key, edges))
+        # Remap edge endpoints using pre-resolution map
+        # This catches cases like "EU Medicines Agency" → "European Medicines Agency"
+        resolved_src = pre_resolution_map.get(edge_key[0], edge_key[0])
+        resolved_tgt = pre_resolution_map.get(edge_key[1], edge_key[1])
+
+        # Skip self-loops created by resolution (e.g., both endpoints resolve to same entity)
+        if resolved_src == resolved_tgt:
+            logger.debug(
+                f"Skipping self-loop after resolution: {edge_key} → ({resolved_src}, {resolved_tgt})"
+            )
+            continue
+
+        # Sort for consistent lock ordering (prevents deadlocks)
+        resolved_edge_key = tuple(sorted([resolved_src, resolved_tgt]))
+
+        # Merge edges that resolve to same key (deduplication)
+        if resolved_edge_key not in resolved_edges:
+            resolved_edges[resolved_edge_key] = []
+        resolved_edges[resolved_edge_key].extend(edges)
+
+    # Create tasks from deduplicated edges
+    edge_tasks = []
+    for resolved_edge_key, merged_edges in resolved_edges.items():
+        task = asyncio.create_task(
+            _locked_process_edges(resolved_edge_key, merged_edges)
+        )
         edge_tasks.append(task)
 
     # Execute relationship tasks with error handling

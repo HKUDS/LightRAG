@@ -1,0 +1,84 @@
+name: lightrag-entity-resolution-test
+
+services:
+  postgres:
+    container_name: lightrag-postgres
+    build:
+      context: ./docker/postgres-age-vector
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_DB: lightrag
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: lightrag_pass
+    ports:
+      - "5433:5432"  # Use 5433 to avoid conflict with agent-sdk postgres
+    volumes:
+      - pgdata_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  lightrag:
+    container_name: lightrag-test
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9622:9621"  # Use 9622 to avoid conflict
+    volumes:
+      - ./data/rag_storage_test:/app/data/rag_storage
+      - ./data/inputs_test:/app/data/inputs
+    environment:
+      # Server
+      - HOST=0.0.0.0
+      - PORT=9621
+      - LOG_LEVEL=DEBUG
+
+      # LLM (OpenAI)
+      - LLM_BINDING=openai
+      - LLM_MODEL=gpt-4o-mini
+      - LLM_BINDING_HOST=https://api.openai.com/v1
+      - LLM_BINDING_API_KEY=${OPENAI_API_KEY}
+
+      # Embedding
+      - EMBEDDING_BINDING=openai
+      - EMBEDDING_MODEL=text-embedding-3-small
+      - EMBEDDING_DIM=1536
+      - EMBEDDING_BINDING_HOST=https://api.openai.com/v1
+      - EMBEDDING_BINDING_API_KEY=${OPENAI_API_KEY}
+
+      # Storage Configuration - Full PostgreSQL!
+      # Custom postgres image has pgvector + Apache AGE
+      - LIGHTRAG_KV_STORAGE=PGKVStorage
+      - LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+      - LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+      - LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=lightrag
+      - POSTGRES_PASSWORD=lightrag_pass
+      - POSTGRES_DATABASE=lightrag
+
+      # Entity Resolution - ENABLED!
+      - ENTITY_RESOLUTION_ENABLED=true
+      - ENTITY_RESOLUTION_FUZZY_THRESHOLD=0.85
+      - ENTITY_RESOLUTION_VECTOR_THRESHOLD=0.5
+      - ENTITY_RESOLUTION_MAX_CANDIDATES=3
+
+      # Processing
+      - MAX_ASYNC=4
+      - CHUNK_SIZE=1200
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9621/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  pgdata_test:

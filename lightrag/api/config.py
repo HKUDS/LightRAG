@@ -450,6 +450,20 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
     )
 
+    # Entity Resolution configuration
+    args.entity_resolution_enabled = get_env_value(
+        "ENTITY_RESOLUTION_ENABLED", False, bool
+    )
+    args.entity_resolution_fuzzy_threshold = get_env_value(
+        "ENTITY_RESOLUTION_FUZZY_THRESHOLD", 0.85, float
+    )
+    args.entity_resolution_vector_threshold = get_env_value(
+        "ENTITY_RESOLUTION_VECTOR_THRESHOLD", 0.5, float
+    )
+    args.entity_resolution_max_candidates = get_env_value(
+        "ENTITY_RESOLUTION_MAX_CANDIDATES", 3, int
+    )
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 

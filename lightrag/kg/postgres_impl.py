@@ -1130,7 +1130,14 @@ class PostgreSQLDB:
                 existing_indexes = {row["indexname"] for row in existing_indexes_result}
 
             # Create missing indexes
+            # Tables that don't have an 'id' column (use different primary key structure)
+            tables_without_id = {"LIGHTRAG_ENTITY_ALIASES"}
+
             for k in table_names:
+                # Skip tables that don't have an 'id' column
+                if k in tables_without_id:
+                    continue
+
                 # Create index for id column if missing
                 index_name = f"idx_{k.lower()}_id"
                 if index_name not in existing_indexes:
@@ -1259,6 +1266,12 @@ class PostgreSQLDB:
                 f"PostgreSQL, Failed to create full entities/relations tables: {e}"
             )
 
+        # Migrate entity aliases table to add update_time, index on canonical_entity, and confidence constraint
+        try:
+            await self._migrate_entity_aliases_schema()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to migrate entity aliases schema: {e}")
+
     async def _migrate_create_full_entities_relations_tables(self):
         """Create LIGHTRAG_FULL_ENTITIES and LIGHTRAG_FULL_RELATIONS tables if they don't exist"""
         tables_to_check = [
@@ -1322,6 +1335,127 @@ class PostgreSQLDB:
 
             except Exception as e:
                 logger.error(f"Failed to create table {table_name}: {e}")
+
+    async def _migrate_entity_aliases_schema(self):
+        """Migrate LIGHTRAG_ENTITY_ALIASES table to add update_time column, canonical index, and confidence constraint"""
+        table_name = "LIGHTRAG_ENTITY_ALIASES"
+
+        # Check if table exists first
+        check_table_sql = """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_name = $1
+        AND table_schema = 'public'
+        """
+        table_exists = await self.query(check_table_sql, [table_name.lower()])
+        if not table_exists:
+            logger.debug(f"Table {table_name} does not exist yet, skipping migration")
+            return
+
+        # 1. Add update_time column if it doesn't exist
+        check_column_sql = """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = $1
+        AND column_name = 'update_time'
+        AND table_schema = 'public'
+        """
+        column_exists = await self.query(check_column_sql, [table_name.lower()])
+
+        if not column_exists:
+            try:
+                # Three-step migration to add update_time column:
+                # 1. Add column WITHOUT default - avoids full table rewrite on large tables
+                # 2. Backfill existing rows with create_time values
+                # 3. Set DEFAULT for future inserts
+                # Note: There's a tiny race window between steps 1-3 where concurrent
+                # inserts could get NULL. This is acceptable for this migration use case.
+                #
+                # Step 1: Add column WITHOUT default (existing rows get NULL)
+                add_column_sql = f"""
+                ALTER TABLE {table_name}
+                ADD COLUMN update_time TIMESTAMP(0)
+                """
+                await self.execute(add_column_sql)
+                logger.info(f"PostgreSQL, Added update_time column to {table_name}")
+
+                # Step 2: Set existing rows' update_time to their create_time
+                update_sql = f"""
+                UPDATE {table_name}
+                SET update_time = create_time
+                WHERE update_time IS NULL
+                """
+                await self.execute(update_sql)
+                logger.info(
+                    f"PostgreSQL, Initialized update_time values in {table_name}"
+                )
+
+                # Step 3: Set default for future rows
+                set_default_sql = f"""
+                ALTER TABLE {table_name}
+                ALTER COLUMN update_time SET DEFAULT CURRENT_TIMESTAMP
+                """
+                await self.execute(set_default_sql)
+                logger.info(
+                    f"PostgreSQL, Set default for update_time column in {table_name}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL, Failed to add update_time column to {table_name}: {e}"
+                )
+
+        # 2. Create index on (workspace, canonical_entity) for get_aliases_for_canonical query
+        index_name = "idx_lightrag_entity_aliases_canonical"
+        check_index_sql = """
+        SELECT indexname
+        FROM pg_indexes
+        WHERE tablename = $1
+        AND indexname = $2
+        """
+        index_exists = await self.query(
+            check_index_sql, [table_name.lower(), index_name]
+        )
+
+        if not index_exists:
+            try:
+                create_index_sql = f"""
+                CREATE INDEX {index_name}
+                ON {table_name} (workspace, canonical_entity)
+                """
+                await self.execute(create_index_sql)
+                logger.info(f"PostgreSQL, Created index {index_name} on {table_name}")
+            except Exception as e:
+                logger.error(f"PostgreSQL, Failed to create index {index_name}: {e}")
+
+        # 3. Add CHECK constraint for confidence range if it doesn't exist
+        constraint_name = "confidence_range"
+        check_constraint_sql = """
+        SELECT constraint_name
+        FROM information_schema.table_constraints
+        WHERE table_name = $1
+        AND constraint_name = $2
+        AND constraint_type = 'CHECK'
+        AND table_schema = 'public'
+        """
+        constraint_exists = await self.query(
+            check_constraint_sql, [table_name.lower(), constraint_name]
+        )
+
+        if not constraint_exists:
+            try:
+                add_constraint_sql = f"""
+                ALTER TABLE {table_name}
+                ADD CONSTRAINT {constraint_name}
+                CHECK (confidence >= 0 AND confidence <= 1)
+                """
+                await self.execute(add_constraint_sql)
+                logger.info(
+                    f"PostgreSQL, Added CHECK constraint {constraint_name} to {table_name}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"PostgreSQL, Failed to add CHECK constraint {constraint_name} to {table_name}: {e}"
+                )
 
     async def _create_pagination_indexes(self):
         """Create indexes to optimize pagination queries for LIGHTRAG_DOC_STATUS"""
@@ -1402,7 +1536,7 @@ class PostgreSQLDB:
             "VCHORDRQ": f"""
                 CREATE INDEX {{vector_index_name}}
                 ON {{k}} USING vchordrq (content_vector vector_cosine_ops)
-                {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
+                {f"WITH (options = $${self.vchordrq_build_options}$$)" if self.vchordrq_build_options else ""}
             """,
         }
 
@@ -4906,6 +5040,19 @@ TABLES = {
                     CONSTRAINT LIGHTRAG_RELATION_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
+    "LIGHTRAG_ENTITY_ALIASES": {
+        "ddl": """CREATE TABLE LIGHTRAG_ENTITY_ALIASES (
+                    workspace VARCHAR(255),
+                    alias VARCHAR(512),
+                    canonical_entity VARCHAR(512),
+                    method VARCHAR(50),
+                    confidence FLOAT,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_ENTITY_ALIASES_PK PRIMARY KEY (workspace, alias),
+                    CONSTRAINT confidence_range CHECK (confidence >= 0 AND confidence <= 1)
+                    )"""
+    },
 }
 
 
@@ -5117,4 +5264,25 @@ SQL_TEMPLATES = {
     "drop_specifiy_table_workspace": """
         DELETE FROM {table_name} WHERE workspace=$1
        """,
+    # Entity alias cache
+    "get_alias": """
+        SELECT canonical_entity, method, confidence
+        FROM LIGHTRAG_ENTITY_ALIASES
+        WHERE workspace=$1 AND alias=$2
+        """,
+    "upsert_alias": """
+        INSERT INTO LIGHTRAG_ENTITY_ALIASES
+            (workspace, alias, canonical_entity, method, confidence, create_time, update_time)
+        VALUES ($1, $2, $3, $4, $5, $6, $6)
+        ON CONFLICT (workspace, alias) DO UPDATE SET
+            canonical_entity = EXCLUDED.canonical_entity,
+            method = EXCLUDED.method,
+            confidence = EXCLUDED.confidence,
+            update_time = CURRENT_TIMESTAMP
+        """,
+    "get_aliases_for_canonical": """
+        SELECT alias, method, confidence
+        FROM LIGHTRAG_ENTITY_ALIASES
+        WHERE workspace=$1 AND canonical_entity=$2
+        """,
 }

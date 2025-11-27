@@ -2,6 +2,8 @@
 LightRAG FastAPI Server
 """
 
+from __future__ import annotations
+
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -642,6 +644,23 @@ def create_app(args):
                 raise Exception(f"Failed to import {binding} options: {e}")
         return {}
 
+    def create_entity_resolution_config(args) -> object | None:
+        """
+        Create EntityResolutionConfig from command line/env arguments.
+        Returns None if entity resolution is disabled.
+        """
+        if not args.entity_resolution_enabled:
+            return None
+
+        from lightrag.entity_resolution import EntityResolutionConfig
+
+        return EntityResolutionConfig(
+            enabled=True,
+            fuzzy_threshold=args.entity_resolution_fuzzy_threshold,
+            vector_threshold=args.entity_resolution_vector_threshold,
+            max_candidates=args.entity_resolution_max_candidates,
+        )
+
     def create_optimized_embedding_function(
         config_cache: LLMConfigCache, binding, model, host, api_key, args
     ) -> EmbeddingFunc:
@@ -1029,6 +1048,7 @@ def create_app(args):
                 "entity_types": args.entity_types,
             },
             ollama_server_infos=ollama_server_infos,
+            entity_resolution_config=create_entity_resolution_config(args),
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")

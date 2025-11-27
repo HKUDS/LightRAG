@@ -26,6 +26,7 @@ from typing import (
 )
 from lightrag.prompt import PROMPTS
 from lightrag.exceptions import PipelineCancelledException
+from lightrag.entity_resolution import EntityResolutionConfig
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
@@ -216,6 +217,11 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    entity_resolution_config: EntityResolutionConfig | None = field(default=None)
+    """Configuration for entity resolution (deduplication).
+    Set to EntityResolutionConfig() to enable, or None to disable.
+    Resolves entities like 'FDA' → 'US Food and Drug Administration'."""
 
     # Text chunking
     # ---
