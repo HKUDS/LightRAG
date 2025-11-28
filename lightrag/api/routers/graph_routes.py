@@ -41,6 +41,31 @@ class EntityMergeRequest(BaseModel):
     )
 
 
+class OrphanConnectionRequest(BaseModel):
+    max_candidates: int = Field(
+        default=3,
+        description="Maximum number of candidate connections to evaluate per orphan",
+        ge=1,
+        le=10,
+    )
+    similarity_threshold: Optional[float] = Field(
+        default=None,
+        description="Vector similarity threshold for candidates (0.0-1.0). Uses server config if not provided.",
+        ge=0.0,
+        le=1.0,
+    )
+    confidence_threshold: Optional[float] = Field(
+        default=None,
+        description="LLM confidence threshold for creating connections (0.0-1.0). Uses server config if not provided.",
+        ge=0.0,
+        le=1.0,
+    )
+    cross_connect: Optional[bool] = Field(
+        default=None,
+        description="Allow orphans to connect to other orphans. Uses server config if not provided.",
+    )
+
+
 class EntityCreateRequest(BaseModel):
     entity_name: str = Field(
         ...,
@@ -683,6 +708,78 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error merging entities: {str(e)}"
+            )
+
+    @router.post("/graph/orphans/connect", dependencies=[Depends(combined_auth)])
+    async def connect_orphan_entities(request: OrphanConnectionRequest):
+        """
+        Connect orphan entities (entities with no relationships) to the knowledge graph
+
+        This endpoint identifies entities that have no connections (orphans) and attempts
+        to find meaningful relationships using vector similarity and LLM validation.
+        This helps improve graph connectivity and retrieval quality.
+
+        The process:
+            1. Identifies all orphan entities (entities with zero relationships)
+            2. For each orphan, finds candidate connections using vector similarity
+            3. Validates each candidate with LLM to ensure meaningful relationships
+            4. Creates connections only for validated relationships above confidence threshold
+
+        Request Body:
+            max_candidates (int): Maximum candidates to evaluate per orphan (default: 3)
+            similarity_threshold (float): Vector similarity threshold (0.0-1.0)
+            confidence_threshold (float): LLM confidence required (0.0-1.0)
+            cross_connect (bool): Allow orphan-to-orphan connections
+
+        Response Schema:
+            {
+                "status": "success",
+                "message": "Connected 15 out of 72 orphan entities",
+                "data": {
+                    "orphans_found": 72,
+                    "connections_made": 15,
+                    "connections": [
+                        {
+                            "orphan": "Amazon",
+                            "connected_to": "E-Commerce",
+                            "relationship_type": "categorical",
+                            "keywords": "technology, retail",
+                            "confidence": 0.85,
+                            "similarity": 0.72
+                        },
+                        ...
+                    ],
+                    "errors": []
+                }
+            }
+
+        HTTP Status Codes:
+            200: Operation completed (check connections_made for results)
+            500: Internal server error
+
+        Note:
+            - Requires PostgreSQL vector storage (PGVectorStorage)
+            - LLM calls are made for each candidate, so cost scales with orphans × candidates
+            - Only one connection is made per orphan (to the first valid candidate)
+        """
+        try:
+            result = await rag.aconnect_orphan_entities(
+                max_candidates=request.max_candidates,
+                similarity_threshold=request.similarity_threshold,
+                confidence_threshold=request.confidence_threshold,
+                cross_connect=request.cross_connect,
+            )
+
+            return {
+                "status": "success",
+                "message": f"Connected {result['connections_made']} out of {result['orphans_found']} orphan entities",
+                "data": result,
+            }
+        except Exception as e:
+            logger.error(f"Error connecting orphan entities: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error connecting orphan entities: {str(e)}"
             )
 
     return router

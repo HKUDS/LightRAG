@@ -223,6 +223,34 @@ class LightRAG:
     Set to EntityResolutionConfig() to enable, or None to disable.
     Resolves entities like 'FDA' → 'US Food and Drug Administration'."""
 
+    # Orphan connection
+    # ---
+
+    auto_connect_orphans: bool = field(
+        default=get_env_value("AUTO_CONNECT_ORPHANS", False, bool)
+    )
+    """Automatically run orphan connection after each document insert.
+    Orphans are entities with no relationships. This finds meaningful
+    connections using vector similarity + LLM validation."""
+
+    orphan_connection_threshold: float = field(
+        default=get_env_value("ORPHAN_CONNECTION_THRESHOLD", 0.3, float)
+    )
+    """Vector similarity threshold for orphan connection candidates.
+    Lower = more candidates (more LLM calls). Range: 0.0-1.0."""
+
+    orphan_confidence_threshold: float = field(
+        default=get_env_value("ORPHAN_CONFIDENCE_THRESHOLD", 0.7, float)
+    )
+    """LLM confidence threshold for creating orphan connections.
+    Higher = stricter validation. Range: 0.0-1.0."""
+
+    orphan_cross_connect: bool = field(
+        default=get_env_value("ORPHAN_CROSS_CONNECT", True, bool)
+    )
+    """Allow orphans to connect to other orphans, forming new clusters.
+    If False, orphans can only connect to already-connected entities."""
+
     # Text chunking
     # ---
 
@@ -2214,6 +2242,30 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
+        # Auto-connect orphan entities if enabled
+        if self.auto_connect_orphans:
+            try:
+                orphan_log = "Running auto orphan connection..."
+                logger.info(orphan_log)
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = orphan_log
+                        pipeline_status["history_messages"].append(orphan_log)
+
+                result = await self.aconnect_orphan_entities()
+
+                orphan_done_log = (
+                    f"Orphan connection complete: {result['connections_made']} connections made"
+                )
+                logger.info(orphan_done_log)
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = orphan_done_log
+                        pipeline_status["history_messages"].append(orphan_done_log)
+
+            except Exception as e:
+                logger.warning(f"Auto orphan connection failed: {e}")
+
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
     ) -> None:
@@ -4036,4 +4088,217 @@ class LightRAG:
 
         loop.run_until_complete(
             self.aexport_data(output_path, file_format, include_vector_data)
+        )
+
+    async def aconnect_orphan_entities(
+        self,
+        max_candidates: int = 3,
+        similarity_threshold: float | None = None,
+        confidence_threshold: float | None = None,
+        cross_connect: bool | None = None,
+    ) -> dict[str, Any]:
+        """Asynchronously connect orphan entities to the knowledge graph.
+
+        Finds entities with no relationships (orphans), identifies potential
+        connections using vector similarity, validates them with LLM, and
+        creates meaningful relationships.
+
+        Args:
+            max_candidates: Maximum candidates to evaluate per orphan (default: 3)
+            similarity_threshold: Vector similarity threshold (0.0-1.0). Uses config if None.
+            confidence_threshold: LLM confidence threshold (0.0-1.0). Uses config if None.
+            cross_connect: Allow orphan-to-orphan connections. Uses config if None.
+
+        Returns:
+            Dictionary containing:
+                - orphans_found: Number of orphan entities found
+                - connections_made: Number of new connections created
+                - connections: List of connection details
+                - errors: List of any errors encountered
+        """
+        # Use config values if not explicitly provided
+        sim_threshold = similarity_threshold if similarity_threshold is not None else self.orphan_connection_threshold
+        conf_threshold = confidence_threshold if confidence_threshold is not None else self.orphan_confidence_threshold
+        allow_cross_connect = cross_connect if cross_connect is not None else self.orphan_cross_connect
+
+        result = {
+            "orphans_found": 0,
+            "connections_made": 0,
+            "connections": [],
+            "errors": [],
+        }
+
+        # Check if using PostgreSQL storage (required for this feature)
+        if not hasattr(self.entities_vdb, "db") or self.entities_vdb.db is None:
+            result["errors"].append("Orphan connection requires PostgreSQL vector storage")
+            return result
+
+        try:
+            from lightrag.kg.postgres_impl import SQL_TEMPLATES
+
+            db = self.entities_vdb.db
+            workspace = self.entities_vdb.workspace
+
+            # Step 1: Get orphan entities
+            orphan_sql = SQL_TEMPLATES["get_orphan_entities"]
+            orphans = await db.query(orphan_sql, [workspace], multirows=True)
+
+            if not orphans:
+                logger.info(f"[{workspace}] No orphan entities found")
+                return result
+
+            result["orphans_found"] = len(orphans)
+            logger.info(f"[{workspace}] Found {len(orphans)} orphan entities to process")
+
+            # Step 2: Process each orphan
+            for orphan in orphans:
+                orphan_name = orphan.get("entity_name", "")
+                orphan_content = orphan.get("content", "")
+                orphan_vector = orphan.get("content_vector", "")
+
+                if not orphan_vector:
+                    result["errors"].append(f"No vector for orphan: {orphan_name}")
+                    continue
+
+                # Step 3: Get candidate connections
+                # Choose query based on cross_connect setting
+                candidate_sql = (
+                    SQL_TEMPLATES["get_orphan_candidates"]
+                    if allow_cross_connect
+                    else SQL_TEMPLATES["get_connected_candidates"]
+                )
+
+                # Format vector for PostgreSQL
+                vector_str = orphan_vector if isinstance(orphan_vector, str) else str(list(orphan_vector))
+
+                candidates = await db.query(
+                    candidate_sql,
+                    [workspace, vector_str, orphan_name, sim_threshold, max_candidates],
+                    multirows=True,
+                )
+
+                if not candidates:
+                    logger.debug(f"[{workspace}] No candidates found for orphan: {orphan_name}")
+                    continue
+
+                # Step 4: Validate each candidate with LLM
+                for candidate in candidates:
+                    candidate_name = candidate.get("entity_name", "")
+                    candidate_content = candidate.get("content", "")
+                    similarity = candidate.get("similarity", 0.0)
+
+                    # Parse entity type from content (format: "entity_type: description")
+                    orphan_type = orphan_content.split(":")[0].strip() if ":" in orphan_content else "Unknown"
+                    orphan_desc = orphan_content.split(":", 1)[1].strip() if ":" in orphan_content else orphan_content
+                    candidate_type = candidate_content.split(":")[0].strip() if ":" in candidate_content else "Unknown"
+                    candidate_desc = candidate_content.split(":", 1)[1].strip() if ":" in candidate_content else candidate_content
+
+                    # Build validation prompt
+                    validation_prompt = PROMPTS["orphan_connection_validation"].format(
+                        orphan_name=orphan_name,
+                        orphan_type=orphan_type,
+                        orphan_description=orphan_desc,
+                        candidate_name=candidate_name,
+                        candidate_type=candidate_type,
+                        candidate_description=candidate_desc,
+                        similarity_score=f"{similarity:.3f}",
+                    )
+
+                    try:
+                        # Call LLM for validation
+                        llm_response = await self.llm_model_func(validation_prompt)
+
+                        # Parse JSON response
+                        import json
+                        import re
+
+                        # Extract JSON from response (handle markdown code blocks)
+                        json_match = re.search(r"\{[^{}]*\}", llm_response, re.DOTALL)
+                        if not json_match:
+                            logger.warning(f"[{workspace}] No JSON in LLM response for {orphan_name} -> {candidate_name}")
+                            continue
+
+                        validation = json.loads(json_match.group())
+
+                        should_connect = validation.get("should_connect", False)
+                        confidence = float(validation.get("confidence", 0.0))
+
+                        # Step 5: Create connection if validated
+                        if should_connect and confidence >= conf_threshold:
+                            rel_type = validation.get("relationship_type", "related_to")
+                            rel_keywords = validation.get("relationship_keywords", "connection")
+                            rel_description = validation.get("relationship_description", f"Connected via orphan resolution (confidence: {confidence:.2f})")
+
+                            try:
+                                await self.acreate_relation(
+                                    orphan_name,
+                                    candidate_name,
+                                    {
+                                        "description": rel_description,
+                                        "keywords": rel_keywords,
+                                        "source_id": "orphan_connection",
+                                    },
+                                )
+
+                                result["connections_made"] += 1
+                                result["connections"].append({
+                                    "orphan": orphan_name,
+                                    "connected_to": candidate_name,
+                                    "relationship_type": rel_type,
+                                    "keywords": rel_keywords,
+                                    "confidence": confidence,
+                                    "similarity": similarity,
+                                })
+
+                                logger.info(
+                                    f"[{workspace}] Connected orphan '{orphan_name}' -> '{candidate_name}' "
+                                    f"(confidence: {confidence:.2f}, similarity: {similarity:.3f})"
+                                )
+
+                                # Only connect to first valid candidate per orphan
+                                break
+
+                            except Exception as e:
+                                result["errors"].append(
+                                    f"Failed to create relation {orphan_name} -> {candidate_name}: {str(e)}"
+                                )
+                        else:
+                            logger.debug(
+                                f"[{workspace}] Rejected connection {orphan_name} -> {candidate_name} "
+                                f"(should_connect={should_connect}, confidence={confidence:.2f})"
+                            )
+
+                    except json.JSONDecodeError as e:
+                        result["errors"].append(
+                            f"JSON parse error for {orphan_name} -> {candidate_name}: {str(e)}"
+                        )
+                    except Exception as e:
+                        result["errors"].append(
+                            f"LLM validation error for {orphan_name} -> {candidate_name}: {str(e)}"
+                        )
+
+        except Exception as e:
+            result["errors"].append(f"Orphan connection failed: {str(e)}")
+            logger.error(f"[{workspace}] Orphan connection error: {e}")
+
+        logger.info(
+            f"[{workspace}] Orphan connection complete: "
+            f"{result['connections_made']}/{result['orphans_found']} orphans connected"
+        )
+
+        return result
+
+    def connect_orphan_entities(
+        self,
+        max_candidates: int = 3,
+        similarity_threshold: float | None = None,
+        confidence_threshold: float | None = None,
+        cross_connect: bool | None = None,
+    ) -> dict[str, Any]:
+        """Synchronously connect orphan entities. See aconnect_orphan_entities for details."""
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.aconnect_orphan_entities(
+                max_candidates, similarity_threshold, confidence_threshold, cross_connect
+            )
         )

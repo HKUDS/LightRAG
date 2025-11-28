@@ -22,7 +22,12 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
 
 2.  **Relationship Extraction & Output:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+    *   **Identification:** Identify meaningful relationships between previously extracted entities. Include:
+        *   **Direct relationships:** Explicitly stated interactions or connections.
+        *   **Categorical relationships:** Entities belonging to the same category, domain, or class.
+        *   **Thematic relationships:** Entities that share a common theme, context, or subject matter.
+        *   **Implicit relationships:** Connections inferable from context (e.g., co-occurrence, causation, comparison).
+        *   **Hierarchical relationships:** Part-of, member-of, or type-of connections.
     *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
         *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
     *   **Relationship Details:** For each binary relationship, extract the following fields:
@@ -32,6 +37,10 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
     *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+    *   **Relationship Density Requirement:** Strive to extract at least one relationship for EVERY entity. Entities without relationships (orphan nodes) significantly reduce knowledge graph utility. If an entity appears isolated:
+        *   Look for implicit categorical or thematic connections to other entities.
+        *   Consider whether the entity belongs to a broader group or domain represented by other entities.
+        *   Extract comparative relationships if the entity is mentioned alongside others.
 
 3.  **Delimiter Usage Protocol:**
     *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
@@ -81,19 +90,23 @@ Extract entities and relationships from the input text to be processed.
 """
 
 PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
-Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
+Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text. Pay special attention to **orphan entities** (entities with no relationships).
 
 ---Instructions---
 1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
-2.  **Focus on Corrections/Additions:**
+2.  **Orphan Entity Resolution (CRITICAL):**
+    *   Review the entities from the last extraction. For any entity that has NO relationships, you MUST attempt to find connections.
+    *   Look for implicit, categorical, or thematic relationships that connect isolated entities to others.
+    *   If an entity is truly unconnected to anything in the text, consider whether it should have been extracted at all.
+3.  **Focus on Corrections/Additions:**
     *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
     *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
     *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
-3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+4.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
+5.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
+6.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+7.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
+8.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -143,9 +156,12 @@ entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold
 entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
 entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
 entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
-entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
 relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
 relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
+relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Market Selloff{tuple_delimiter}tech decline, earnings impact{tuple_delimiter}Nexon Technologies was among the hardest hit in the market selloff after disappointing earnings.
+relation{tuple_delimiter}Omega Energy{tuple_delimiter}Crude Oil{tuple_delimiter}energy sector, price correlation{tuple_delimiter}Omega Energy's stock gain was driven by rising crude oil prices.
+relation{tuple_delimiter}Omega Energy{tuple_delimiter}Market Selloff{tuple_delimiter}market contrast, energy resilience{tuple_delimiter}Omega Energy posted gains in contrast to the broader market selloff, showing energy sector resilience.
+relation{tuple_delimiter}Crude Oil{tuple_delimiter}Market Selloff{tuple_delimiter}commodity rally, market divergence{tuple_delimiter}Crude oil prices rallied while stock markets experienced a selloff, reflecting divergent market dynamics.
 relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
 relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
 {completion_delimiter}
@@ -419,3 +435,52 @@ Output:
 
 """,
 ]
+
+PROMPTS["orphan_connection_validation"] = """---Role---
+You are a Knowledge Graph Quality Specialist. Your task is to evaluate whether a proposed relationship between two entities is meaningful and should be added to a knowledge graph.
+
+---Context---
+An orphan entity (entity with no connections) has been identified. Vector similarity search found a potentially related entity. You must determine if a genuine, meaningful relationship exists between them.
+
+---Input---
+**Orphan Entity:**
+- Name: {orphan_name}
+- Type: {orphan_type}
+- Description: {orphan_description}
+
+**Candidate Entity:**
+- Name: {candidate_name}
+- Type: {candidate_type}
+- Description: {candidate_description}
+
+**Vector Similarity Score:** {similarity_score}
+
+---Instructions---
+1. Analyze both entities carefully based on their names, types, and descriptions.
+2. Determine if there is a genuine, meaningful relationship between them. Consider:
+   - Direct relationships (interaction, causation, membership)
+   - Categorical relationships (same domain, field, or category)
+   - Thematic relationships (shared concepts, contexts, or subject matter)
+   - Hierarchical relationships (part-of, type-of, related-to)
+3. If a relationship exists, describe it and provide your confidence level.
+4. If NO meaningful relationship exists, state this clearly. High vector similarity alone is NOT sufficient - entities must have a logical, describable connection.
+
+---Output Format---
+Your response MUST be a valid JSON object with exactly these fields:
+{{
+    "should_connect": true/false,
+    "confidence": 0.0-1.0,
+    "relationship_type": "type of relationship or null",
+    "relationship_keywords": "comma-separated keywords or null",
+    "relationship_description": "description of the relationship or null",
+    "reasoning": "brief explanation of your decision"
+}}
+
+---Decision Guidelines---
+- `should_connect: true` ONLY if you can articulate a clear, logical relationship
+- `confidence >= 0.7` required for connection to be created
+- High similarity + no logical connection = should_connect: false
+- When in doubt, reject the connection (orphans are better than garbage connections)
+
+---Output---
+"""

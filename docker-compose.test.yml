@@ -69,7 +69,18 @@ services:
 
       # Processing
       - MAX_ASYNC=4
-      - CHUNK_SIZE=1200
+
+      # Extraction Optimization - Reduce Orphan Nodes
+      - CHUNK_SIZE=800                         # Smaller chunks for focused extraction
+      - CHUNK_OVERLAP_SIZE=400                 # 50% overlap captures cross-boundary relationships
+      - MAX_GLEANING=1                         # Enable gleaning refinement pass
+      - FORCE_LLM_SUMMARY_ON_MERGE=4           # More aggressive entity consolidation
+
+      # Orphan Connection - Self-healing graph
+      - AUTO_CONNECT_ORPHANS=true              # Run orphan connection after each doc
+      - ORPHAN_CONNECTION_THRESHOLD=0.3        # Vector similarity pre-filter threshold
+      - ORPHAN_CONFIDENCE_THRESHOLD=0.7        # LLM confidence required for connection
+      - ORPHAN_CROSS_CONNECT=true              # Allow orphan-to-orphan connections
     depends_on:
       postgres:
         condition: service_healthy

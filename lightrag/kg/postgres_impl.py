@@ -5285,4 +5285,40 @@ SQL_TEMPLATES = {
         FROM LIGHTRAG_ENTITY_ALIASES
         WHERE workspace=$1 AND canonical_entity=$2
         """,
+    # Orphan connection queries
+    "get_orphan_entities": """
+        SELECT e.id, e.entity_name, e.content, e.content_vector
+        FROM LIGHTRAG_VDB_ENTITY e
+        WHERE e.workspace = $1
+          AND NOT EXISTS (
+              SELECT 1 FROM LIGHTRAG_VDB_RELATION r
+              WHERE r.workspace = $1
+                AND (r.source_id = e.entity_name OR r.target_id = e.entity_name)
+          )
+        """,
+    "get_orphan_candidates": """
+        SELECT e.id, e.entity_name, e.content,
+               1 - (e.content_vector <=> $2::vector) AS similarity
+        FROM LIGHTRAG_VDB_ENTITY e
+        WHERE e.workspace = $1
+          AND e.entity_name != $3
+          AND 1 - (e.content_vector <=> $2::vector) >= $4
+        ORDER BY e.content_vector <=> $2::vector
+        LIMIT $5
+        """,
+    "get_connected_candidates": """
+        SELECT e.id, e.entity_name, e.content,
+               1 - (e.content_vector <=> $2::vector) AS similarity
+        FROM LIGHTRAG_VDB_ENTITY e
+        WHERE e.workspace = $1
+          AND e.entity_name != $3
+          AND 1 - (e.content_vector <=> $2::vector) >= $4
+          AND EXISTS (
+              SELECT 1 FROM LIGHTRAG_VDB_RELATION r
+              WHERE r.workspace = $1
+                AND (r.source_id = e.entity_name OR r.target_id = e.entity_name)
+          )
+        ORDER BY e.content_vector <=> $2::vector
+        LIMIT $5
+        """,
 }
