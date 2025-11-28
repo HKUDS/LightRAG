@@ -1694,10 +1694,13 @@ async def use_llm_func_with_cache(
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
+        # Only add token_tracker if not already in kwargs (to avoid duplicate argument error)
+        if token_tracker is not None and "token_tracker" not in kwargs:
+            kwargs["token_tracker"] = token_tracker
+
         res: str = await use_llm_func(
             safe_user_prompt,
             system_prompt=safe_system_prompt,
-            token_tracker=token_tracker,
             **kwargs,
         )
 
@@ -1731,11 +1734,14 @@ async def use_llm_func_with_cache(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
+    # Only add token_tracker if not already in kwargs (to avoid duplicate argument error)
+    if token_tracker is not None and "token_tracker" not in kwargs:
+        kwargs["token_tracker"] = token_tracker
+
     try:
         res = await use_llm_func(
             safe_user_prompt,
             system_prompt=safe_system_prompt,
-            token_tracker=token_tracker,
             **kwargs,
         )
     except Exception as e:
