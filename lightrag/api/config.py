@@ -365,8 +365,12 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
-    args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
-    args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
+    # EMBEDDING_MODEL defaults to None - each binding will use its own default model
+    # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
+    args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
+    # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
+    # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
+    args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
     args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration

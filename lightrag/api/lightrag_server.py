@@ -713,6 +713,7 @@ def create_app(args):
         )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
+        # Note: When model is None, each binding will use its own default model
         async def optimized_embedding_function(texts, embedding_dim=None):
             try:
                 if binding == "lollms":
@@ -724,9 +725,9 @@ def create_app(args):
                         if isinstance(lollms_embed, EmbeddingFunc)
                         else lollms_embed
                     )
-                    return await actual_func(
-                        texts, embed_model=model, host=host, api_key=api_key
-                    )
+                    # lollms embed_model is not used (server uses configured vectorizer)
+                    # Only pass base_url and api_key
+                    return await actual_func(texts, base_url=host, api_key=api_key)
                 elif binding == "ollama":
                     from lightrag.llm.ollama import ollama_embed
 
@@ -745,13 +746,16 @@ def create_app(args):
 
                         ollama_options = OllamaEmbeddingOptions.options_dict(args)
 
-                    return await actual_func(
-                        texts,
-                        embed_model=model,
-                        host=host,
-                        api_key=api_key,
-                        options=ollama_options,
-                    )
+                    # Pass embed_model only if provided, let function use its default (bge-m3:latest)
+                    kwargs = {
+                        "texts": texts,
+                        "host": host,
+                        "api_key": api_key,
+                        "options": ollama_options,
+                    }
+                    if model:
+                        kwargs["embed_model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "azure_openai":
                     from lightrag.llm.azure_openai import azure_openai_embed
 
@@ -760,7 +764,11 @@ def create_app(args):
                         if isinstance(azure_openai_embed, EmbeddingFunc)
                         else azure_openai_embed
                     )
-                    return await actual_func(texts, model=model, api_key=api_key)
+                    # Pass model only if provided, let function use its default otherwise
+                    kwargs = {"texts": texts, "api_key": api_key}
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
@@ -769,7 +777,11 @@ def create_app(args):
                         if isinstance(bedrock_embed, EmbeddingFunc)
                         else bedrock_embed
                     )
-                    return await actual_func(texts, model=model)
+                    # Pass model only if provided, let function use its default otherwise
+                    kwargs = {"texts": texts}
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "jina":
                     from lightrag.llm.jina import jina_embed
 
@@ -778,13 +790,16 @@ def create_app(args):
                         if isinstance(jina_embed, EmbeddingFunc)
                         else jina_embed
                     )
-                    return await actual_func(
-                        texts,
-                        model=model,
-                        embedding_dim=embedding_dim,
-                        base_url=host,
-                        api_key=api_key,
-                    )
+                    # Pass model only if provided, let function use its default (jina-embeddings-v4)
+                    kwargs = {
+                        "texts": texts,
+                        "embedding_dim": embedding_dim,
+                        "base_url": host,
+                        "api_key": api_key,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
 
@@ -802,14 +817,19 @@ def create_app(args):
 
                         gemini_options = GeminiEmbeddingOptions.options_dict(args)
 
-                    return await actual_func(
-                        texts,
-                        model=model,
-                        base_url=host,
-                        api_key=api_key,
-                        embedding_dim=embedding_dim,
-                        task_type=gemini_options.get("task_type", "RETRIEVAL_DOCUMENT"),
-                    )
+                    # Pass model only if provided, let function use its default (gemini-embedding-001)
+                    kwargs = {
+                        "texts": texts,
+                        "base_url": host,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
+                        "task_type": gemini_options.get(
+                            "task_type", "RETRIEVAL_DOCUMENT"
+                        ),
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
@@ -818,13 +838,16 @@ def create_app(args):
                         if isinstance(openai_embed, EmbeddingFunc)
                         else openai_embed
                     )
-                    return await actual_func(
-                        texts,
-                        model=model,
-                        base_url=host,
-                        api_key=api_key,
-                        embedding_dim=embedding_dim,
-                    )
+                    # Pass model only if provided, let function use its default (text-embedding-3-small)
+                    kwargs = {
+                        "texts": texts,
+                        "base_url": host,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
 
