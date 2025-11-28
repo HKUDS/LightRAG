@@ -1,8 +1,6 @@
-name: Build Latest Docker Image on Release
+name: Build and Push Docker Image
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -15,8 +13,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch all history for tags
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -28,40 +24,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get latest tag
-        id: get_tag
-        run: |
-          TAG=$(git describe --tags --abbrev=0)
-          echo "Found tag: $TAG"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - name: Check if pre-release
-        id: check_prerelease
-        run: |
-          TAG="${{ steps.get_tag.outputs.tag }}"
-          if [[ "$TAG" == *"rc"* ]] || [[ "$TAG" == *"dev"* ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-            echo "This is a pre-release version: $TAG"
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-            echo "This is a stable release: $TAG"
-          fi
-
-      - name: Update version in __init__.py
-        run: |
-          sed -i "s/__version__ = \".*\"/__version__ = \"${{ steps.get_tag.outputs.tag }}\"/" lightrag/__init__.py
-          echo "Updated __init__.py with version ${{ steps.get_tag.outputs.tag }}"
-          cat lightrag/__init__.py | grep __version__
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ steps.get_tag.outputs.tag }}
-            type=raw,value=latest,enable=${{ steps.check_prerelease.outputs.is_prerelease == 'false' }}
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -69,7 +31,6 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ghcr.io/${{ github.repository_owner }}/lightrag:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
