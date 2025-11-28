@@ -403,6 +403,11 @@ LightRAG requires the utilization of LLM and Embedding models to accomplish docu
 * LightRAG also supports Open AI-like chat/embeddings APIs:
 
 ```python
+import os
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
@@ -416,8 +421,9 @@ async def llm_model_func(
         **kwargs
     )
 
+@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192)
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embed(
+    return await openai_embed.func(
         texts,
         model="solar-embedding-1-large-query",
         api_key=os.getenv("UPSTAGE_API_KEY"),
@@ -428,10 +434,7 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=4096,
-            func=embedding_func
-        )
+        embedding_func=embedding_func  # Pass the decorated function directly
     )
 
     await rag.initialize_storages()
@@ -476,19 +479,20 @@ If you want to use Ollama models, you need to pull model you plan to use and emb
 Then you only need to set LightRAG as follows:
 
 ```python
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
+
 # Initialize LightRAG with Ollama model
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
     llm_model_name='your_model_name', # Your model name
-    # Use Ollama embedding function
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        func=lambda texts: ollama_embed(
-            texts,
-            embed_model="nomic-embed-text"
-        )
-    ),
+    embedding_func=embedding_func,  # Pass the decorated function directly
 )
 ```
 
@@ -527,19 +531,20 @@ ollama create -f Modelfile qwen2m
 Tiy can use `llm_model_kwargs` param to configure ollama:
 
 ```python
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
+
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
     llm_model_name='your_model_name', # Your model name
     llm_model_kwargs={"options": {"num_ctx": 32768}},
-    # Use Ollama embedding function
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        func=lambda texts: ollama_embed(
-            texts,
-            embed_model="nomic-embed-text"
-        )
-    ),
+    embedding_func=embedding_func,  # Pass the decorated function directly
 )
 ```
 
