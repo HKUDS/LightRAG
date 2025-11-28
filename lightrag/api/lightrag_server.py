@@ -780,6 +780,7 @@ def create_app(args):
                     )
                     return await actual_func(
                         texts,
+                        model=model,
                         embedding_dim=embedding_dim,
                         base_url=host,
                         api_key=api_key,
