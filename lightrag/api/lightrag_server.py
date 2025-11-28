@@ -328,6 +328,10 @@ def create_app(args):
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
 
+            # Remove token_tracker from kwargs if it exists to avoid duplicate argument error
+            # (we pass it explicitly below)
+            kwargs.pop("token_tracker", None)
+
             return await openai_complete_if_cache(
                 args.llm_model,
                 prompt,
@@ -370,6 +374,10 @@ def create_app(args):
             kwargs["timeout"] = llm_timeout
             if config_cache.azure_openai_llm_options:
                 kwargs.update(config_cache.azure_openai_llm_options)
+            # Remove token_tracker from kwargs if it exists to avoid duplicate argument error
+            # (we pass it explicitly below)
+            kwargs.pop("token_tracker", None)
+
 
             return await azure_openai_complete_if_cache(
                 args.llm_model,
