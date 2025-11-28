@@ -441,6 +441,10 @@ async def initialize_rag():
     return rag
 ```
 
+> **Important Note on Embedding Function Wrapping:**
+>
+> `EmbeddingFunc` cannot be nested. Functions that have been decorated with `@wrap_embedding_func_with_attrs` (such as `openai_embed`, `ollama_embed`, etc.) cannot be wrapped again using `EmbeddingFunc()`. This is why we call `xxx_embed.func` (the underlying unwrapped function) instead of `xxx_embed` directly when creating custom embedding functions.
+
 </details>
 
 <details>
@@ -547,6 +551,10 @@ rag = LightRAG(
     embedding_func=embedding_func,  # Pass the decorated function directly
 )
 ```
+
+> **Important Note on Embedding Function Wrapping:**
+>
+> `EmbeddingFunc` cannot be nested. Functions that have been decorated with `@wrap_embedding_func_with_attrs` (such as `openai_embed`, `ollama_embed`, etc.) cannot be wrapped again using `EmbeddingFunc()`. This is why we call `xxx_embed.func` (the underlying unwrapped function) instead of `xxx_embed` directly when creating custom embedding functions.
 
 * **Low RAM GPUs**
 
