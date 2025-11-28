@@ -1694,9 +1694,10 @@ async def use_llm_func_with_cache(
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        # Only add token_tracker if not already in kwargs (to avoid duplicate argument error)
-        if token_tracker is not None and "token_tracker" not in kwargs:
-            kwargs["token_tracker"] = token_tracker
+        # Note: token_tracker is NOT passed here because the LLM wrapper functions
+        # (e.g., optimized_openai_alike_model_complete in lightrag_server.py)
+        # already handle token_tracker directly. Passing it here would cause
+        # "got multiple values for keyword argument 'token_tracker'" error.
 
         res: str = await use_llm_func(
             safe_user_prompt,
@@ -1734,9 +1735,10 @@ async def use_llm_func_with_cache(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    # Only add token_tracker if not already in kwargs (to avoid duplicate argument error)
-    if token_tracker is not None and "token_tracker" not in kwargs:
-        kwargs["token_tracker"] = token_tracker
+    # Note: token_tracker is NOT passed here because the LLM wrapper functions
+    # (e.g., optimized_openai_alike_model_complete in lightrag_server.py)
+    # already handle token_tracker directly. Passing it here would cause
+    # "got multiple values for keyword argument 'token_tracker'" error.
 
     try:
         res = await use_llm_func(
