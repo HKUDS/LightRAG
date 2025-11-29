@@ -1437,6 +1437,8 @@ class MongoGraphStorage(BaseGraphStorage):
         node_label: str,
         max_depth: int = 3,
         max_nodes: int = None,
+        min_degree: int = 0,
+        include_orphans: bool = False,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -1445,6 +1447,8 @@ class MongoGraphStorage(BaseGraphStorage):
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maximum nodes to return, Defaults to global_config max_graph_nodes
+            min_degree: Minimum degree (connections) for nodes to be included. 0=all nodes
+            include_orphans: Include orphan nodes (degree=0) even when min_degree > 0
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag

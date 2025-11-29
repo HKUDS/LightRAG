@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
 import Button from '@/components/ui/Button'
+import Badge from '@/components/ui/Badge'
 import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
-import { GitBranchPlus, Scissors } from 'lucide-react'
+import { GitBranchPlus, Scissors, Link } from 'lucide-react'
 import EditablePropertyRow from './EditablePropertyRow'
 
 /**
@@ -309,14 +310,41 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
             useGraphStore.getState().setSelectedNode(node.id, true)
           }}
         />
-        <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
+        {/* Degree row with db_degree badge */}
+        <div className="flex items-center justify-between py-0.5 text-xs">
+          <Text size="xs" weight="semibold" className="pr-2">
+            {t('graphPanel.propertiesView.node.degree')}
+          </Text>
+          <div className="flex items-center gap-2">
+            <Text size="xs">{node.degree}</Text>
+            {node.properties?.db_degree != null && node.properties.db_degree > node.degree && (
+              <Badge variant="outline" className="text-xs px-1.5 py-0 text-amber-600 border-amber-400">
+                {node.properties.db_degree} {t('graphPanel.propertiesView.node.inDatabase')}
+              </Badge>
+            )}
+          </div>
+        </div>
       </div>
+      {/* Load Hidden Connections button for nodes with hidden database connections */}
+      {(node.properties?.db_degree || 0) > node.degree && (
+        <div className="py-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full text-amber-600 border-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950"
+            onClick={handleExpandNode}
+          >
+            <Link className="h-4 w-4 mr-2" />
+            {t('graphPanel.propertiesView.node.loadConnections', { count: node.properties.db_degree - node.degree })}
+          </Button>
+        </div>
+      )}
       <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.node.properties')}</h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
           .map((name) => {
-            if (name === 'created_at' || name === 'truncate') return null; // Hide created_at and truncate properties
+            if (name === 'created_at' || name === 'truncate' || name === 'db_degree') return null; // Hide internal properties
             return (
               <PropertyRow
                 key={name}

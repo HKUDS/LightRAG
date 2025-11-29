@@ -162,6 +162,9 @@ export default function Settings() {
   const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
   const backendMaxGraphNodes = useSettingsStore.use.backendMaxGraphNodes()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
+  const graphMinDegree = useSettingsStore.use.graphMinDegree()
+  const graphIncludeOrphans = useSettingsStore.use.graphIncludeOrphans()
+  const graphExpandDepth = useSettingsStore.use.graphExpandDepth()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
 
@@ -231,6 +234,20 @@ export default function Settings() {
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
     if (iterations < 1) return
     useSettingsStore.setState({ graphLayoutMaxIterations: iterations })
+  }, [])
+
+  const setGraphMinDegree = useCallback((degree: number) => {
+    if (degree < 0 || degree > 5) return
+    useSettingsStore.getState().setGraphMinDegree(degree, true)
+  }, [])
+
+  const setGraphIncludeOrphans = useCallback(() => {
+    useSettingsStore.getState().setGraphIncludeOrphans(!graphIncludeOrphans, true)
+  }, [graphIncludeOrphans])
+
+  const setGraphExpandDepth = useCallback((depth: number) => {
+    if (depth < 1 || depth > 5) return
+    useSettingsStore.setState({ graphExpandDepth: depth })
   }, [])
 
   const handleGenerateRandomGraph = useCallback(() => {
@@ -386,6 +403,31 @@ export default function Settings() {
               defaultValue={15}
               onEditFinished={setGraphLayoutMaxIterations}
             />
+
+            <Separator />
+
+            <LabeledNumberInput
+              label={t('graphPanel.sideBar.settings.minDegree')}
+              min={0}
+              max={5}
+              value={graphMinDegree}
+              defaultValue={0}
+              onEditFinished={setGraphMinDegree}
+            />
+            <LabeledCheckBox
+              checked={graphIncludeOrphans}
+              onCheckedChange={setGraphIncludeOrphans}
+              label={t('graphPanel.sideBar.settings.includeOrphans')}
+            />
+            <LabeledNumberInput
+              label={t('graphPanel.sideBar.settings.expandDepth')}
+              min={1}
+              max={5}
+              value={graphExpandDepth}
+              defaultValue={1}
+              onEditFinished={setGraphExpandDepth}
+            />
+
             {/* Development/Testing Section - Only visible in development mode */}
             {import.meta.env.DEV && (
               <>

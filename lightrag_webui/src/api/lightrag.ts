@@ -54,6 +54,7 @@ export type LightragStatus = {
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
+    auto_connect_orphans?: boolean
   }
   update_status?: Record<string, any>
   core_version?: string
@@ -330,9 +331,11 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  maxNodes: number
+  maxNodes: number,
+  minDegree: number = 0,
+  includeOrphans: boolean = false
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}&min_degree=${minDegree}&include_orphans=${includeOrphans}`)
   return response.data
 }
 
@@ -769,6 +772,103 @@ export const updateRelation = async (
     target_id: targetEntity,
     updated_data: updatedData
   })
+  return response.data
+}
+
+/**
+ * Response from the orphan connection endpoint
+ */
+export type OrphanConnectionResponse = {
+  status: string
+  message: string
+  data: {
+    orphans_found: number
+    connections_made: number
+    connections: Array<{
+      orphan: string
+      connected_to: string
+      relationship_type: string
+      keywords: string
+      confidence: number
+      similarity: number
+    }>
+    errors: string[]
+  }
+}
+
+/**
+ * Status of the orphan connection background pipeline
+ */
+export type OrphanConnectionStatus = {
+  busy: boolean
+  job_name: string
+  job_start: string | null
+  total_orphans: number
+  processed_orphans: number
+  connections_made: number
+  request_pending: boolean
+  cancellation_requested: boolean
+  latest_message: string
+  history_messages: string[]
+}
+
+/**
+ * Connects orphan entities (entities with no relationships) to the knowledge graph
+ * @param maxCandidates Maximum number of connection candidates per orphan (1-10, default 3)
+ * @param similarityThreshold Minimum vector similarity for candidates (0.0-1.0)
+ * @param confidenceThreshold Minimum LLM confidence for connections (0.0-1.0)
+ * @param crossConnect Whether to allow orphan-to-orphan connections
+ * @returns Promise with connection results including number of connections made
+ */
+export const connectOrphanEntities = async (
+  maxCandidates: number = 3,
+  similarityThreshold?: number,
+  confidenceThreshold?: number,
+  crossConnect?: boolean
+): Promise<OrphanConnectionResponse> => {
+  const response = await axiosInstance.post('/graph/orphans/connect', {
+    max_candidates: maxCandidates,
+    similarity_threshold: similarityThreshold,
+    confidence_threshold: confidenceThreshold,
+    cross_connect: crossConnect
+  })
+  return response.data
+}
+
+/**
+ * Get the current status of the orphan connection background pipeline
+ * @returns Promise with current pipeline status
+ */
+export const getOrphanConnectionStatus = async (): Promise<OrphanConnectionStatus> => {
+  const response = await axiosInstance.get('/graph/orphans/status')
+  return response.data
+}
+
+/**
+ * Start orphan connection as a background job
+ * @param maxCandidates Maximum candidates to evaluate per entity (default: 3)
+ * @param maxDegree Maximum connection degree to target (default: 0)
+ *   - 0: True orphans only (no connections)
+ *   - 1: Orphans + leaf nodes (0-1 connections)
+ *   - 2+: Include sparsely connected nodes
+ * @returns Promise with start status
+ */
+export const startOrphanConnection = async (
+  maxCandidates: number = 3,
+  maxDegree: number = 0
+): Promise<{ status: string }> => {
+  const response = await axiosInstance.post('/graph/orphans/start', null, {
+    params: { max_candidates: maxCandidates, max_degree: maxDegree }
+  })
+  return response.data
+}
+
+/**
+ * Request cancellation of a running orphan connection job
+ * @returns Promise with cancellation status
+ */
+export const cancelOrphanConnection = async (): Promise<{ status: string }> => {
+  const response = await axiosInstance.post('/graph/orphans/cancel')
   return response.data
 }
 

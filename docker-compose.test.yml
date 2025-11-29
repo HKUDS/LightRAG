@@ -91,6 +91,9 @@ services:
       - ENTITY_RESOLUTION_VECTOR_THRESHOLD=0.5
       - ENTITY_RESOLUTION_MAX_CANDIDATES=3
 
+      # Orphan Connection - MANUAL (use UI button instead of auto)
+      - AUTO_CONNECT_ORPHANS=false
+
       # Processing - Aggressive settings from agent-sdk
       - MAX_ASYNC=96
       - MAX_PARALLEL_INSERT=10
@@ -106,8 +109,8 @@ services:
       - MAX_GLEANING=1                         # Enable gleaning refinement pass
       - FORCE_LLM_SUMMARY_ON_MERGE=4           # More aggressive entity consolidation
 
-      # Orphan Connection - Self-healing graph
-      - AUTO_CONNECT_ORPHANS=true              # Run orphan connection after each doc
+      # Orphan Connection - Use UI button for manual triggering
+      # AUTO_CONNECT_ORPHANS is set to false above (manual mode)
       - ORPHAN_CONNECTION_THRESHOLD=0.3        # Vector similarity pre-filter threshold
       - ORPHAN_CONFIDENCE_THRESHOLD=0.7        # LLM confidence required for connection
       - ORPHAN_CROSS_CONNECT=true              # Allow orphan-to-orphan connections

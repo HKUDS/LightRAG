@@ -2,9 +2,9 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
@@ -64,6 +64,21 @@ class OrphanConnectionRequest(BaseModel):
         default=None,
         description="Allow orphans to connect to other orphans. Uses server config if not provided.",
     )
+
+
+class OrphanConnectionStatusResponse(BaseModel):
+    """Response model for orphan connection pipeline status."""
+
+    busy: bool = Field(description="Whether the orphan connection pipeline is currently running")
+    job_name: str = Field(description="Name of the current or last job")
+    job_start: Optional[str] = Field(description="ISO timestamp when the job started")
+    total_orphans: int = Field(description="Total number of orphan entities found")
+    processed_orphans: int = Field(description="Number of orphans processed so far")
+    connections_made: int = Field(description="Number of connections created so far")
+    request_pending: bool = Field(description="Whether another request is pending")
+    cancellation_requested: bool = Field(description="Whether cancellation has been requested")
+    latest_message: str = Field(description="Most recent status message")
+    history_messages: List[str] = Field(description="History of status messages")
 
 
 class EntityCreateRequest(BaseModel):
@@ -186,6 +201,16 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
         max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
+        min_degree: int = Query(
+            0,
+            description="Minimum degree (connections) required for nodes to be included. 0=all nodes, 1=exclude orphans, 2+=only well-connected nodes",
+            ge=0,
+            le=10,
+        ),
+        include_orphans: bool = Query(
+            False,
+            description="Include orphan nodes (degree=0) even when min_degree > 0. Useful for reviewing disconnected entities.",
+        ),
     ):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified label.
@@ -194,9 +219,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             2. Followed by the degree of the nodes
 
         Args:
-            label (str): Label of the starting node
-            max_depth (int, optional): Maximum depth of the subgraph,Defaults to 3
-            max_nodes: Maxiumu nodes to return
+            label (str): Label of the starting node, use '*' for all nodes
+            max_depth (int, optional): Maximum depth of the subgraph, Defaults to 3
+            max_nodes (int): Maximum nodes to return
+            min_degree (int): Minimum connections required (0=all, 1=exclude orphans, 2+=well-connected only)
+            include_orphans (bool): Also include orphan nodes when min_degree > 0
 
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
@@ -211,6 +238,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 node_label=label,
                 max_depth=max_depth,
                 max_nodes=max_nodes,
+                min_degree=min_degree,
+                include_orphans=include_orphans,
             )
         except Exception as e:
             logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")
@@ -780,6 +809,170 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error connecting orphan entities: {str(e)}"
+            )
+
+    @router.get(
+        "/graph/orphans/status",
+        response_model=OrphanConnectionStatusResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_orphan_connection_status():
+        """
+        Get current orphan connection pipeline status.
+
+        Returns the real-time status of the orphan connection background pipeline,
+        including progress, messages, and whether cancellation has been requested.
+
+        This endpoint can be polled to monitor the progress of a running orphan
+        connection job.
+
+        Response Schema:
+            {
+                "busy": true,
+                "job_name": "Connecting orphan entities",
+                "job_start": "2024-01-15T10:30:00",
+                "total_orphans": 100,
+                "processed_orphans": 45,
+                "connections_made": 12,
+                "request_pending": false,
+                "cancellation_requested": false,
+                "latest_message": "[10:35:22] Processing orphan 46/100...",
+                "history_messages": ["[10:30:00] Starting...", ...]
+            }
+        """
+        try:
+            from lightrag.kg.shared_storage import get_namespace_data
+
+            status = await get_namespace_data(
+                "orphan_connection_status", workspace=rag.workspace
+            )
+
+            return OrphanConnectionStatusResponse(
+                busy=status.get("busy", False),
+                job_name=status.get("job_name", ""),
+                job_start=status.get("job_start"),
+                total_orphans=status.get("total_orphans", 0),
+                processed_orphans=status.get("processed_orphans", 0),
+                connections_made=status.get("connections_made", 0),
+                request_pending=status.get("request_pending", False),
+                cancellation_requested=status.get("cancellation_requested", False),
+                latest_message=status.get("latest_message", ""),
+                history_messages=list(status.get("history_messages", []))[-1000:],
+            )
+        except Exception as e:
+            logger.error(f"Error getting orphan connection status: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error getting orphan connection status: {str(e)}",
+            )
+
+    @router.post("/graph/orphans/start", dependencies=[Depends(combined_auth)])
+    async def start_orphan_connection_background(
+        background_tasks: BackgroundTasks,
+        max_candidates: int = Query(
+            default=3,
+            description="Maximum candidates to evaluate per entity",
+            ge=1,
+            le=10,
+        ),
+        max_degree: int = Query(
+            default=0,
+            description="Maximum connection degree to target. 0=orphans only, 1=include leaf nodes, 2+=include sparse nodes",
+            ge=0,
+            le=5,
+        ),
+    ):
+        """
+        Start orphan/sparse entity connection as a background job.
+
+        This endpoint starts the connection process as a background task
+        that runs independently from the document processing pipeline. Progress
+        can be monitored via the /graph/orphans/status endpoint.
+
+        The job will:
+            1. Find all target entities (based on max_degree setting)
+            2. Process each entity to find connection candidates
+            3. Validate candidates with LLM
+            4. Create connections for validated relationships
+            5. Update progress in real-time
+
+        Query Parameters:
+            max_candidates (int): Maximum candidates per entity (default: 3)
+            max_degree (int): Maximum connection degree to target (default: 0)
+                - 0: True orphans only (entities with no connections)
+                - 1: Orphans + leaf nodes (entities with 0-1 connections)
+                - 2+: Include sparsely connected nodes
+
+        Response:
+            {"status": "started"} - Job was started
+            {"status": "already_running"} - A job is already in progress
+
+        Note:
+            - Poll /graph/orphans/status to monitor progress
+            - Use /graph/orphans/cancel to request cancellation
+        """
+        try:
+            from lightrag.kg.shared_storage import get_namespace_data
+
+            # Check if already running
+            status = await get_namespace_data(
+                "orphan_connection_status", workspace=rag.workspace
+            )
+            if status.get("busy"):
+                return {"status": "already_running"}
+
+            # Start background task
+            background_tasks.add_task(
+                rag.aprocess_orphan_connections_background,
+                max_candidates=max_candidates,
+                max_degree=max_degree,
+            )
+
+            return {"status": "started"}
+        except Exception as e:
+            logger.error(f"Error starting orphan connection: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error starting orphan connection: {str(e)}",
+            )
+
+    @router.post("/graph/orphans/cancel", dependencies=[Depends(combined_auth)])
+    async def cancel_orphan_connection():
+        """
+        Request cancellation of a running orphan connection job.
+
+        This endpoint sets a flag that the background job checks periodically.
+        Cancellation is graceful - the job will stop at the next checkpoint
+        (after completing the current orphan).
+
+        Response:
+            {"status": "cancellation_requested"} - Flag was set
+            {"status": "not_running"} - No job is currently running
+        """
+        try:
+            from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+            status = await get_namespace_data(
+                "orphan_connection_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock(
+                "orphan_connection_status", workspace=rag.workspace
+            )
+
+            async with lock:
+                if not status.get("busy"):
+                    return {"status": "not_running"}
+                status["cancellation_requested"] = True
+
+            return {"status": "cancellation_requested"}
+        except Exception as e:
+            logger.error(f"Error cancelling orphan connection: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error cancelling orphan connection: {str(e)}",
             )
 
     return router

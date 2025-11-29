@@ -59,6 +59,15 @@ interface SettingsState {
   graphLayoutMaxIterations: number
   setGraphLayoutMaxIterations: (iterations: number) => void
 
+  graphMinDegree: number
+  setGraphMinDegree: (degree: number, triggerRefresh?: boolean) => void
+
+  graphIncludeOrphans: boolean
+  setGraphIncludeOrphans: (include: boolean, triggerRefresh?: boolean) => void
+
+  graphExpandDepth: number
+  setGraphExpandDepth: (depth: number) => void
+
   // Retrieval settings
   queryLabel: string
   setQueryLabel: (queryLabel: string) => void
@@ -118,6 +127,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       graphMaxNodes: 1000,
       backendMaxGraphNodes: null,
       graphLayoutMaxIterations: 15,
+      graphMinDegree: 0,
+      graphIncludeOrphans: false,
+      graphExpandDepth: 1,
 
       queryLabel: defaultQueryLabel,
 
@@ -189,6 +201,42 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setBackendMaxGraphNodes: (maxNodes: number | null) => set({ backendMaxGraphNodes: maxNodes }),
 
+      setGraphMinDegree: (degree: number, triggerRefresh: boolean = false) => {
+        const state = useSettingsStore.getState()
+        if (state.graphMinDegree === degree) {
+          return
+        }
+
+        if (triggerRefresh) {
+          const currentLabel = state.queryLabel
+          set({ graphMinDegree: degree, queryLabel: '' })
+          setTimeout(() => {
+            set({ queryLabel: currentLabel })
+          }, 300)
+        } else {
+          set({ graphMinDegree: degree })
+        }
+      },
+
+      setGraphIncludeOrphans: (include: boolean, triggerRefresh: boolean = false) => {
+        const state = useSettingsStore.getState()
+        if (state.graphIncludeOrphans === include) {
+          return
+        }
+
+        if (triggerRefresh) {
+          const currentLabel = state.queryLabel
+          set({ graphIncludeOrphans: include, queryLabel: '' })
+          setTimeout(() => {
+            set({ queryLabel: currentLabel })
+          }, 300)
+        } else {
+          set({ graphIncludeOrphans: include })
+        }
+      },
+
+      setGraphExpandDepth: (depth: number) => set({ graphExpandDepth: depth }),
+
       setMinEdgeSize: (size: number) => set({ minEdgeSize: size }),
 
       setMaxEdgeSize: (size: number) => set({ maxEdgeSize: size }),
@@ -253,7 +301,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 23,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -368,6 +416,15 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 21) {
           // Reset storageConfig to pick up dev mode default
           state.storageConfig = DEV_STORAGE_CONFIG
+        }
+        if (version < 22) {
+          // Add graph filtering settings
+          state.graphMinDegree = 0
+          state.graphIncludeOrphans = false
+        }
+        if (version < 23) {
+          // Add expand depth setting for Load Connections
+          state.graphExpandDepth = 1
         }
         return state
       }

@@ -12,6 +12,7 @@ export const labelColorLightTheme = '#000'
 export const nodeColorDisabled = '#E2E2E2'
 export const nodeBorderColor = '#EEEEEE'
 export const nodeBorderColorSelected = '#F57F17'
+export const nodeBorderColorHiddenConnections = '#F59E0B' // Amber color for nodes with hidden connections
 
 export const edgeColorDarkTheme = '#888888'
 export const edgeColorSelected = '#F57F17'

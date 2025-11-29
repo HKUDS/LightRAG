@@ -414,6 +414,9 @@ def parse_args() -> argparse.Namespace:
         "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
     )
 
+    # Orphan connection configuration
+    args.auto_connect_orphans = get_env_value("AUTO_CONNECT_ORPHANS", False, bool)
+
     # Query configuration
     args.history_turns = get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)
     args.top_k = get_env_value("TOP_K", DEFAULT_TOP_K, int)

@@ -1170,6 +1170,37 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to batch check/create indexes: {e}")
 
+        # Create additional performance indexes for common query patterns
+        try:
+            performance_indexes = [
+                # Entity resolution lookups (used heavily during ingestion)
+                ("idx_lightrag_vdb_entity_workspace_name", "LIGHTRAG_VDB_ENTITY", "(workspace, entity_name)"),
+                # Graph traversal queries (forward and backward edge lookups)
+                ("idx_lightrag_vdb_relation_workspace_source", "LIGHTRAG_VDB_RELATION", "(workspace, source_id)"),
+                ("idx_lightrag_vdb_relation_workspace_target", "LIGHTRAG_VDB_RELATION", "(workspace, target_id)"),
+                # Document chunk lookups by document
+                ("idx_lightrag_doc_chunks_workspace_doc", "LIGHTRAG_DOC_CHUNKS", "(workspace, full_doc_id)"),
+                # File path lookups in doc status
+                ("idx_lightrag_doc_status_workspace_path", "LIGHTRAG_DOC_STATUS", "(workspace, file_path)"),
+            ]
+
+            for index_name, table_name, columns in performance_indexes:
+                if index_name not in existing_indexes:
+                    try:
+                        create_perf_index_sql = (
+                            f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}{columns}"
+                        )
+                        logger.info(
+                            f"PostgreSQL, Creating performance index {index_name} on {table_name}"
+                        )
+                        await self.execute(create_perf_index_sql)
+                    except Exception as e:
+                        logger.warning(
+                            f"PostgreSQL, Failed to create performance index {index_name}: {e}"
+                        )
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to create performance indexes: {e}")
+
         # Create vector indexs
         if self.vector_index_type:
             logger.info(
@@ -2601,12 +2632,12 @@ class PGVectorStorage(BaseVectorStorage):
             )
             return []
 
-        ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
-        params = {"workspace": self.workspace}
+        # Use parameterized array for security and performance
+        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+        params = [self.workspace, list(ids)]
 
         try:
-            results = await self.db.query(query, list(params.values()), multirows=True)
+            results = await self.db.query(query, params, multirows=True)
             if not results:
                 return []
 
@@ -2650,12 +2681,12 @@ class PGVectorStorage(BaseVectorStorage):
             )
             return {}
 
-        ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT id, content_vector FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
-        params = {"workspace": self.workspace}
+        # Use parameterized array for security and performance
+        query = f"SELECT id, content_vector FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+        params = [self.workspace, list(ids)]
 
         try:
-            results = await self.db.query(query, list(params.values()), multirows=True)
+            results = await self.db.query(query, params, multirows=True)
             vectors_dict = {}
 
             for result in results:
@@ -4539,6 +4570,27 @@ class PGGraphStorage(BaseGraphStorage):
                         if current_depth < max_depth:
                             result.is_truncated = True
 
+        # Add db_degree to all nodes via bulk query
+        if result.nodes:
+            entity_ids = [node.labels[0] for node in result.nodes]
+            formatted_ids = ", ".join(
+                [f'"{self._normalize_node_id(eid)}"' for eid in entity_ids]
+            )
+            degree_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                UNWIND [{formatted_ids}] AS entity_id
+                MATCH (n:base {{entity_id: entity_id}})
+                OPTIONAL MATCH (n)-[r]-()
+                RETURN entity_id, count(r) as degree
+            $$) AS (entity_id text, degree bigint)"""
+            degree_results = await self._query(degree_query)
+            degree_map = {
+                row["entity_id"]: int(row["degree"]) for row in degree_results
+            }
+            # Update node properties with db_degree
+            for node in result.nodes:
+                entity_id = node.labels[0]
+                node.properties["db_degree"] = degree_map.get(entity_id, 0)
+
         return result
 
     async def get_knowledge_graph(
@@ -4546,6 +4598,8 @@ class PGGraphStorage(BaseGraphStorage):
         node_label: str,
         max_depth: int = 3,
         max_nodes: int = None,
+        min_degree: int = 0,
+        include_orphans: bool = False,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -4554,6 +4608,8 @@ class PGGraphStorage(BaseGraphStorage):
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maximum nodes to return, Defaults to global_config max_graph_nodes
+            min_degree: Minimum degree (connections) for nodes to be included. 0=all nodes
+            include_orphans: Include orphan nodes (degree=0) even when min_degree > 0
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
@@ -4579,17 +4635,36 @@ class PGGraphStorage(BaseGraphStorage):
             total_nodes = count_result[0]["total_nodes"] if count_result else 0
             is_truncated = total_nodes > max_nodes
 
-            # Get max_nodes with highest degrees
-            query_nodes = f"""SELECT * FROM cypher('{self.graph_name}', $$
+            # Get max_nodes with highest degrees, applying min_degree filter
+            # Build the degree filter condition
+            if min_degree > 0:
+                if include_orphans:
+                    # Include nodes with degree >= min_degree OR degree = 0 (orphans)
+                    degree_filter = f"WHERE degree >= {min_degree} OR degree = 0"
+                else:
+                    # Only include nodes with degree >= min_degree
+                    degree_filter = f"WHERE degree >= {min_degree}"
+            else:
+                degree_filter = ""
+
+            query_nodes = f"""SELECT * FROM (
+                SELECT * FROM cypher('{self.graph_name}', $$
                     MATCH (n:base)
                     OPTIONAL MATCH (n)-[r]->()
                     RETURN id(n) as node_id, count(r) as degree
                 $$) AS (node_id BIGINT, degree BIGINT)
-                ORDER BY degree DESC
-                LIMIT {max_nodes}"""
+            ) AS subq
+            {degree_filter}
+            ORDER BY degree DESC
+            LIMIT {max_nodes}"""
             node_results = await self._query(query_nodes)
 
             node_ids = [str(result["node_id"]) for result in node_results]
+            # Build degree map for db_degree property
+            degree_map = {
+                str(result["node_id"]): int(result["degree"])
+                for result in node_results
+            }
 
             logger.info(
                 f"[{self.workspace}] Total nodes: {total_nodes}, Selected nodes: {len(node_ids)}"
@@ -4617,10 +4692,12 @@ class PGGraphStorage(BaseGraphStorage):
                         node_a = result["a"]
                         node_id = str(node_a["id"])
                         if node_id not in nodes_dict and "properties" in node_a:
+                            props = dict(node_a["properties"])
+                            props["db_degree"] = degree_map.get(node_id, 0)
                             nodes_dict[node_id] = KnowledgeGraphNode(
                                 id=node_id,
                                 labels=[node_a["properties"]["entity_id"]],
-                                properties=node_a["properties"],
+                                properties=props,
                             )
 
                     # Process node b
@@ -4628,10 +4705,12 @@ class PGGraphStorage(BaseGraphStorage):
                         node_b = result["b"]
                         node_id = str(node_b["id"])
                         if node_id not in nodes_dict and "properties" in node_b:
+                            props = dict(node_b["properties"])
+                            props["db_degree"] = degree_map.get(node_id, 0)
                             nodes_dict[node_id] = KnowledgeGraphNode(
                                 id=node_id,
                                 labels=[node_b["properties"]["entity_id"]],
-                                properties=node_b["properties"],
+                                properties=props,
                             )
 
                     # Process edge r
@@ -5295,6 +5374,24 @@ SQL_TEMPLATES = {
               WHERE r.workspace = $1
                 AND (r.source_id = e.entity_name OR r.target_id = e.entity_name)
           )
+        """,
+    # Get entities with degree <= max_degree (sparse entities)
+    # $1 = workspace, $2 = max_degree
+    "get_sparse_entities": """
+        SELECT e.id, e.entity_name, e.content, e.content_vector, COALESCE(degree_counts.degree, 0) as degree
+        FROM LIGHTRAG_VDB_ENTITY e
+        LEFT JOIN (
+            SELECT entity_name, COUNT(*) as degree
+            FROM (
+                SELECT source_id as entity_name FROM LIGHTRAG_VDB_RELATION WHERE workspace = $1
+                UNION ALL
+                SELECT target_id as entity_name FROM LIGHTRAG_VDB_RELATION WHERE workspace = $1
+            ) as edges
+            GROUP BY entity_name
+        ) degree_counts ON e.entity_name = degree_counts.entity_name
+        WHERE e.workspace = $1
+          AND COALESCE(degree_counts.degree, 0) <= $2
+        ORDER BY COALESCE(degree_counts.degree, 0) ASC, e.entity_name
         """,
     "get_orphan_candidates": """
         SELECT e.id, e.entity_name, e.content,

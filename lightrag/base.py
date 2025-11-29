@@ -608,7 +608,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
+        self,
+        node_label: str,
+        max_depth: int = 3,
+        max_nodes: int = 1000,
+        min_degree: int = 0,
+        include_orphans: bool = False,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -617,6 +622,8 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             node_label: Label of the starting node，* means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maxiumu nodes to return, Defaults to 1000（BFS if possible)
+            min_degree: Minimum node degree to include, Defaults to 0 (no filtering)
+            include_orphans: Include nodes with zero connections when min_degree > 0
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag

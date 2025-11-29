@@ -244,7 +244,16 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         const newData: NodeType & {
           labelColor?: string
           borderColor?: string
+          borderSize?: number
         } = { ...data, highlighted: data.highlighted || false, labelColor }
+
+        // Check for hidden connections (db_degree > visual_degree)
+        const dbDegree = graph.getNodeAttribute(node, 'db_degree') || 0
+        const visualDegree = graph.degree(node)
+        if (dbDegree > visualDegree) {
+          newData.borderColor = Constants.nodeBorderColorHiddenConnections
+          newData.borderSize = 1.5
+        }
 
         if (!disableHoverEffect) {
           newData.highlighted = false

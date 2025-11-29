@@ -75,7 +75,57 @@ from lightrag.constants import (
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
 import time
+import hashlib
 from dotenv import load_dotenv
+
+# Query embedding cache for avoiding redundant API calls
+# Structure: {query_hash: (embedding, timestamp)}
+_query_embedding_cache: dict[str, tuple[list[float], float]] = {}
+QUERY_EMBEDDING_CACHE_TTL = 3600  # 1 hour TTL
+QUERY_EMBEDDING_CACHE_MAX_SIZE = 1000  # Maximum cache entries
+
+
+async def get_cached_query_embedding(
+    query: str, embedding_func
+) -> list[float] | None:
+    """Get query embedding with caching to avoid redundant API calls.
+
+    Args:
+        query: The query string to embed
+        embedding_func: The embedding function to call on cache miss
+
+    Returns:
+        The embedding vector, or None if embedding fails
+    """
+    query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
+    current_time = time.time()
+
+    # Check cache
+    cached = _query_embedding_cache.get(query_hash)
+    if cached and (current_time - cached[1]) < QUERY_EMBEDDING_CACHE_TTL:
+        logger.debug(f"Query embedding cache hit for hash {query_hash[:8]}")
+        return cached[0]
+
+    # Cache miss - compute embedding
+    try:
+        embedding = await embedding_func([query])
+        embedding_result = embedding[0]  # Extract first from batch
+
+        # Manage cache size - simple eviction of oldest entries
+        if len(_query_embedding_cache) >= QUERY_EMBEDDING_CACHE_MAX_SIZE:
+            # Remove oldest 10% of entries
+            sorted_entries = sorted(
+                _query_embedding_cache.items(), key=lambda x: x[1][1]
+            )
+            for old_key, _ in sorted_entries[: QUERY_EMBEDDING_CACHE_MAX_SIZE // 10]:
+                del _query_embedding_cache[old_key]
+
+        _query_embedding_cache[query_hash] = (embedding_result, current_time)
+        logger.debug(f"Query embedding cached for hash {query_hash[:8]}")
+        return embedding_result
+    except Exception as e:
+        logger.warning(f"Failed to compute query embedding: {e}")
+        return None
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -3880,7 +3930,7 @@ async def _perform_kg_search(
     # Track chunk sources and metadata for final logging
     chunk_tracking = {}  # chunk_id -> {source, frequency, order}
 
-    # Pre-compute query embedding once for all vector operations
+    # Pre-compute query embedding once for all vector operations (with caching)
     kg_chunk_pick_method = text_chunks_db.global_config.get(
         "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
     )
@@ -3888,15 +3938,11 @@ async def _perform_kg_search(
     if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
         actual_embedding_func = text_chunks_db.embedding_func
         if actual_embedding_func:
-            try:
-                query_embedding = await actual_embedding_func([query])
-                query_embedding = query_embedding[
-                    0
-                ]  # Extract first embedding from batch result
+            query_embedding = await get_cached_query_embedding(
+                query, actual_embedding_func
+            )
+            if query_embedding:
                 logger.debug("Pre-computed query embedding for all vector operations")
-            except Exception as e:
-                logger.warning(f"Failed to pre-compute query embedding: {e}")
-                query_embedding = None
 
     # Handle local and global modes
     if query_param.mode == "local" and len(ll_keywords) > 0:

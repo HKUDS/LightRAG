@@ -90,7 +90,7 @@ export type EdgeType = {
   hidden?: boolean
 }
 
-const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
+const fetchGraph = async (label: string, maxDepth: number, maxNodes: number, minDegree: number = 0, includeOrphans: boolean = false) => {
   let rawData: any = null;
 
   // Trigger GraphLabels component to check if the label is valid
@@ -101,8 +101,8 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   const queryLabel = label || '*';
 
   try {
-    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
+    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}, minDegree: ${minDegree}, includeOrphans: ${includeOrphans}`);
+    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes, minDegree, includeOrphans);
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -211,7 +211,9 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
       size: rawNode.size,
       // for node-border
       borderColor: Constants.nodeBorderColor,
-      borderSize: 0.2
+      borderSize: 0.2,
+      // Store db_degree for hidden connections indicator
+      db_degree: rawNode.properties?.db_degree ?? 0
     })
   }
 
@@ -265,6 +267,8 @@ const useLightrangeGraph = () => {
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
   const maxNodes = useSettingsStore.use.graphMaxNodes()
+  const minDegree = useSettingsStore.use.graphMinDegree()
+  const includeOrphans = useSettingsStore.use.graphIncludeOrphans()
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
@@ -342,13 +346,15 @@ const useLightrangeGraph = () => {
       const currentQueryLabel = queryLabel
       const currentMaxQueryDepth = maxQueryDepth
       const currentMaxNodes = maxNodes
+      const currentMinDegree = minDegree
+      const currentIncludeOrphans = includeOrphans
 
       // Declare a variable to store data promise
       let dataPromise: Promise<{ rawGraph: RawGraph | null; is_truncated: boolean | undefined } | null>;
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
-        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes);
+        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes, currentMinDegree, currentIncludeOrphans);
       } else {
         // 2. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
@@ -477,8 +483,11 @@ const useLightrangeGraph = () => {
           return;
         }
 
-        // Fetch the extended subgraph with depth 2
-        const extendedGraph = await queryGraphs(label, 2, 1000);
+        // Fetch neighbors using the configured expand depth and max nodes (minDegree=0, includeOrphans=true)
+        // This ensures we get all hidden connections, even orphan neighbors
+        const expandDepth = useSettingsStore.getState().graphExpandDepth
+        const maxNodes = useSettingsStore.getState().graphMaxNodes
+        const extendedGraph = await queryGraphs(label, expandDepth, maxNodes, 0, true);
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');

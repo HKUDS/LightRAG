@@ -42,12 +42,19 @@ const useRandomGraph = () => {
     // Create the graph
     const graph = erdosRenyi(UndirectedGraph, { order: 100, probability: 0.1 })
     graph.nodes().forEach((node: string) => {
+      // Calculate visual degree from graph edges
+      const visualDegree = graph.degree(node)
+      // Simulate db_degree being higher than visual degree (some nodes have hidden connections)
+      const db_degree = faker.number.int({ min: visualDegree, max: visualDegree + 8 })
+
       graph.mergeNodeAttributes(node, {
         label: faker.person.fullName(),
         size: faker.number.int({ min: Constants.minNodeSize, max: Constants.maxNodeSize }),
         color: randomColor(),
         x: Math.random(),
         y: Math.random(),
+        // Simulate database degree being higher than visual degree for testing
+        db_degree,
         // for node-border
         borderColor: randomColor(),
         borderSize: faker.number.float({ min: 0, max: 1, multipleOf: 0.1 }),

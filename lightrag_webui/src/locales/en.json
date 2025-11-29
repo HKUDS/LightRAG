@@ -36,6 +36,7 @@
   },
   "common": {
     "cancel": "Cancel",
+    "close": "Close",
     "save": "Save",
     "saving": "Saving...",
     "saveFailed": "Save failed"
@@ -121,6 +122,12 @@
       "refreshTooltip": "Reset document list",
       "pipelineStatusButton": "Pipeline",
       "pipelineStatusTooltip": "View document processing pipeline status",
+      "connectOrphansButton": "Connect Orphans",
+      "connectOrphansTooltip": "Connect orphan entities (entities with no relationships) to the knowledge graph",
+      "connectOrphansStarted": "Connecting orphan entities...",
+      "noOrphansFound": "No orphan entities found in the knowledge graph",
+      "orphansConnected": "Successfully connected {{connected}} of {{found}} orphan entities",
+      "orphansNotConnected": "Found {{found}} orphan entities but could not connect any",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
@@ -148,7 +155,8 @@
       "errors": {
         "loadFailed": "Failed to load documents\n{{error}}",
         "scanFailed": "Failed to scan documents\n{{error}}",
-        "scanProgressFailed": "Failed to get scan progress\n{{error}}"
+        "scanProgressFailed": "Failed to get scan progress\n{{error}}",
+        "connectOrphansFailed": "Failed to connect orphan entities\n{{error}}"
       },
       "fileNameLabel": "File Name",
       "showButton": "Show",
@@ -186,6 +194,43 @@
     "statusDialog": {
       "title": "LightRAG Server Settings",
       "description": "View current system status and connection information"
+    },
+    "orphanConnection": {
+      "title": "Connect Orphan Entities",
+      "description": "Connect orphan entities to the knowledge graph",
+      "tooltip": "Connect orphan entities (entities with no relationships) to the knowledge graph",
+      "explanation": "Orphan entities are nodes in the knowledge graph that have no connections to other entities. This feature uses semantic similarity to find and create meaningful relationships for these isolated entities.",
+      "connectButton": "Connect Orphans",
+      "connecting": "Connecting...",
+      "noOrphansFound": "No orphan entities found in the knowledge graph",
+      "success": "Successfully connected {{connected}} of {{found}} orphan entities",
+      "noConnectionsMade": "Found {{found}} orphan entities but could not establish any connections",
+      "error": "Failed to connect orphan entities: {{error}}",
+      "errorTitle": "Connection Failed",
+      "orphansFound": "Orphans Found",
+      "connectionsMade": "Connections Made",
+      "pipelineBusy": "Pipeline is currently busy. Please wait for it to complete.",
+      "alreadyRunning": "Orphan connection is already running",
+      "started": "Orphan connection started",
+      "cancelSuccess": "Cancellation requested",
+      "notRunning": "Orphan connection is not running",
+      "running": "Connecting orphan entities...",
+      "completed": "Connection complete",
+      "ready": "Ready to connect",
+      "cancellationPending": "Cancellation in progress...",
+      "progress": "Progress",
+      "totalOrphans": "Total Orphans",
+      "processed": "Processed",
+      "activityLog": "Activity Log",
+      "startButton": "Start Connection",
+      "cancelButton": "Cancel",
+      "starting": "Starting...",
+      "cancelling": "Cancelling...",
+      "targetDegree": "Target",
+      "degree0": "Orphans only (0 connections)",
+      "degree1": "Include leaf nodes (≤1)",
+      "degree2": "Include sparse nodes (≤2)",
+      "degree3": "Include sparse nodes (≤3)"
     },
     "legend": "Legend",
     "nodeTypes": {
@@ -231,6 +276,10 @@
         "maxQueryDepth": "Max Query Depth",
         "maxNodes": "Max Nodes",
         "maxLayoutIterations": "Max Layout Iterations",
+        "minDegree": "Min Node Degree",
+        "minDegreeTooltip": "Only show nodes with at least this many connections. Nodes with fewer connections will be hidden.",
+        "includeOrphans": "Include Orphan Nodes",
+        "includeOrphansTooltip": "Also show nodes with zero connections even when Min Degree > 0",
         "resetToDefault": "Reset to default",
         "edgeSizeRange": "Edge Size Range",
         "depth": "D",
@@ -239,7 +288,8 @@
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
         "save": "Save",
-        "refreshLayout": "Refresh Layout"
+        "refreshLayout": "Refresh Layout",
+        "expandDepth": "Expand Depth"
       },
       "zoomControl": {
         "zoomIn": "Zoom In",
@@ -338,6 +388,8 @@
         "deleteAllNodesError": "Refuse to delete all nodes in the graph",
         "nodesRemoved": "{{count}} nodes removed, including orphan nodes",
         "noNewNodes": "No expandable nodes found",
+        "inDatabase": "in database",
+        "loadConnections": "Load {{count}} connection(s)",
         "propertyNames": {
           "description": "Description",
           "entity_id": "Name",

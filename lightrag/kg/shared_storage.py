@@ -1288,6 +1288,48 @@ async def initialize_pipeline_status(workspace: str | None = None):
         )
 
 
+async def initialize_orphan_connection_status(workspace: str | None = None):
+    """
+    Initialize orphan_connection_status share data with default values.
+    This enables a separate background pipeline for connecting orphan entities.
+
+    Args:
+        workspace: Optional workspace identifier for orphan_connection_status of specific workspace.
+                   If None or empty string, uses the default workspace set by
+                   set_default_workspace().
+    """
+    orphan_namespace = await get_namespace_data(
+        "orphan_connection_status", first_init=True, workspace=workspace
+    )
+
+    async with get_internal_lock():
+        # Check if already initialized by checking for required fields
+        if "busy" in orphan_namespace:
+            return
+
+        # Create a shared list object for history_messages
+        history_messages = _manager.list() if _is_multiprocess else []
+        orphan_namespace.update(
+            {
+                "busy": False,  # Control concurrent processes
+                "job_name": "",  # Current job name
+                "job_start": None,  # Job start time
+                "total_orphans": 0,  # Total number of orphan entities found
+                "processed_orphans": 0,  # Number of orphans processed so far
+                "connections_made": 0,  # Number of connections created
+                "request_pending": False,  # Flag for pending request
+                "cancellation_requested": False,  # Flag for cancellation request
+                "latest_message": "",  # Latest message from orphan connection
+                "history_messages": history_messages,  # Message history
+            }
+        )
+
+        final_namespace = get_final_namespace("orphan_connection_status", workspace)
+        direct_log(
+            f"Process {os.getpid()} Orphan connection namespace '{final_namespace}' initialized"
+        )
+
+
 async def get_update_flag(namespace: str, workspace: str | None = None):
     """
     Create a namespace's update flag for a workers.
