@@ -14,11 +14,35 @@ services:
       - "5433:5432"  # Use 5433 to avoid conflict with agent-sdk postgres
     volumes:
       - pgdata_test:/var/lib/postgresql/data
+    command: |
+      postgres
+      -c shared_preload_libraries='vector,age'
+      -c max_connections=150
+      -c shared_buffers=768MB
+      -c work_mem=32MB
+      -c checkpoint_completion_target=0.9
+      -c effective_cache_size=2GB
+      -c maintenance_work_mem=192MB
+      -c wal_compression=on
+      -c checkpoint_timeout=10min
+      -c max_wal_size=1GB
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c max_worker_processes=12
+      -c max_parallel_workers_per_gather=4
+      -c max_parallel_workers=8
+      -c max_parallel_maintenance_workers=4
+      -c jit_above_cost=50000
+      -c jit_inline_above_cost=250000
+      -c jit_optimize_above_cost=250000
+      -c default_statistics_target=200
+      -c hash_mem_multiplier=4
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag"]
       interval: 5s
       timeout: 5s
       retries: 5
+    mem_limit: 2g
 
   lightrag:
     container_name: lightrag-test
@@ -67,8 +91,14 @@ services:
       - ENTITY_RESOLUTION_VECTOR_THRESHOLD=0.5
       - ENTITY_RESOLUTION_MAX_CANDIDATES=3
 
-      # Processing
-      - MAX_ASYNC=4
+      # Processing - Aggressive settings from agent-sdk
+      - MAX_ASYNC=96
+      - MAX_PARALLEL_INSERT=10
+      - EMBEDDING_FUNC_MAX_ASYNC=16
+      - EMBEDDING_BATCH_NUM=48
+
+      # Gunicorn - 8 workers x 4 threads = 32 concurrent handlers
+      - GUNICORN_CMD_ARGS=--workers=8 --worker-class=gthread --threads=4 --worker-connections=1000 --timeout=120 --keep-alive=5 --graceful-timeout=30
 
       # Extraction Optimization - Reduce Orphan Nodes
       - CHUNK_SIZE=800                         # Smaller chunks for focused extraction
@@ -84,12 +114,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    entrypoint: []
+    command:
+      - python
+      - /app/lightrag/api/run_with_gunicorn.py
+      - --workers
+      - "8"
+      - --llm-binding
+      - openai
+      - --embedding-binding
+      - openai
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9621/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 30s
+      start_period: 60s
+    mem_limit: 2g
 
 volumes:
   pgdata_test:

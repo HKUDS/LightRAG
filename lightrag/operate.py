@@ -280,12 +280,12 @@ async def _handle_entity_relation_summary(
             f"   Summarizing {entity_or_relation_name}: Map {len(current_list)} descriptions into {len(chunks)} groups"
         )
 
-        # Reduce phase: summarize each group from chunks
-        new_summaries = []
-        for chunk in chunks:
+        # Reduce phase: summarize each group from chunks IN PARALLEL
+        async def _summarize_single_chunk(chunk: list[str]) -> tuple[str, bool]:
+            """Summarize a single chunk, returning (summary, used_llm)."""
             if len(chunk) == 1:
                 # Optimization: single description chunks don't need LLM summarization
-                new_summaries.append(chunk[0])
+                return chunk[0], False
             else:
                 # Multiple descriptions need LLM summarization
                 summary = await _summarize_descriptions(
@@ -295,8 +295,18 @@ async def _handle_entity_relation_summary(
                     global_config,
                     llm_response_cache,
                 )
-                new_summaries.append(summary)
-                llm_was_used = True  # Mark that LLM was used in reduce phase
+                return summary, True
+
+        # Create tasks for all chunks and run in parallel
+        tasks = [
+            asyncio.create_task(_summarize_single_chunk(chunk)) for chunk in chunks
+        ]
+        results = await asyncio.gather(*tasks)
+
+        # Collect results while preserving order
+        new_summaries = [result[0] for result in results]
+        if any(result[1] for result in results):
+            llm_was_used = True  # Mark that LLM was used in reduce phase
 
         # Update current list with new summaries for next iteration
         current_list = new_summaries
@@ -2115,7 +2125,7 @@ async def _merge_nodes_then_upsert(
     deduplicated_num = already_fragment + len(nodes_data) - num_fragment
     dd_message = ""
     if deduplicated_num > 0:
-        # Duplicated description detected across multiple trucks for the same entity
+        # Duplicated description detected across multiple chunks for the same entity
         dd_message = f"dd {deduplicated_num}"
 
     if dd_message or truncation_info_log:
@@ -2459,7 +2469,7 @@ async def _merge_edges_then_upsert(
     deduplicated_num = already_fragment + len(edges_data) - num_fragment
     dd_message = ""
     if deduplicated_num > 0:
-        # Duplicated description detected across multiple trucks for the same entity
+        # Duplicated description detected across multiple chunks for the same entity
         dd_message = f"dd {deduplicated_num}"
 
     if dd_message or truncation_info_log:
