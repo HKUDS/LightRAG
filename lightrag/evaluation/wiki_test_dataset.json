@@ -1,0 +1,49 @@
+{
+  "test_cases": [
+    {
+      "question": "What are the main causes of climate change?",
+      "ground_truth": "Climate change is primarily caused by human activities that release greenhouse gases into the atmosphere, including burning fossil fuels like coal, oil, and natural gas for energy, deforestation, industrial processes, and agriculture. These activities increase concentrations of carbon dioxide, methane, and other greenhouse gases that trap heat in Earth's atmosphere.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "What are the different types of renewable energy sources?",
+      "ground_truth": "Renewable energy sources include solar energy from photovoltaic panels and solar thermal systems, wind energy from turbines, hydroelectric power from dams and flowing water, geothermal energy from Earth's internal heat, biomass energy from organic materials, and tidal/wave energy from ocean movements. These sources are sustainable because they naturally replenish and produce minimal greenhouse gas emissions.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "How does Bitcoin and cryptocurrency work?",
+      "ground_truth": "Bitcoin and cryptocurrencies work using blockchain technology, a decentralized digital ledger that records all transactions across a network of computers. Transactions are verified through cryptographic protocols and consensus mechanisms like proof-of-work mining. Users have digital wallets with public and private keys to send and receive cryptocurrency. The decentralized nature means no central authority controls the currency.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "What factors influence stock market prices?",
+      "ground_truth": "Stock market prices are influenced by multiple factors including company earnings and financial performance, economic indicators like GDP growth and unemployment rates, interest rates set by central banks, investor sentiment and market psychology, geopolitical events and global trade policies, industry trends and competition, and supply and demand dynamics. Technical analysis of trading patterns also affects short-term price movements.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "What were the main symptoms and transmission methods of COVID-19?",
+      "ground_truth": "COVID-19 symptoms include fever, cough, fatigue, loss of taste or smell, shortness of breath, body aches, and in severe cases, pneumonia and respiratory failure. The virus primarily spreads through respiratory droplets and aerosols when infected people cough, sneeze, talk, or breathe. It can also spread through contaminated surfaces, though less commonly. Close contact in poorly ventilated spaces increases transmission risk.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "What are the types and risk factors for diabetes?",
+      "ground_truth": "There are three main types of diabetes: Type 1 diabetes is an autoimmune condition where the body attacks insulin-producing cells, Type 2 diabetes occurs when the body becomes resistant to insulin or doesn't produce enough, and gestational diabetes develops during pregnancy. Risk factors include genetics, obesity, sedentary lifestyle, poor diet, age, and certain ethnicities. Management involves blood sugar monitoring, medication or insulin, diet, and exercise.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "Which country has won the most FIFA World Cups?",
+      "ground_truth": "Brazil has won the most FIFA World Cup titles with 5 championships in 1958, 1962, 1970, 1994, and 2002. Germany and Italy have each won 4 titles. Argentina has won 3 World Cups including the most recent in 2022. France has won 2 titles. The FIFA World Cup is held every four years and is the most prestigious tournament in international football.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "What is the history and significance of the Olympic Games?",
+      "ground_truth": "The Olympic Games originated in ancient Greece around 776 BC at Olympia and were held every four years as athletic competitions honoring Zeus. The modern Olympics were revived in 1896 by Pierre de Coubertin in Athens. Today, the Olympics include Summer and Winter Games alternating every two years, featuring thousands of athletes from over 200 nations competing in hundreds of events. The Games promote international cooperation, athletic excellence, and peaceful competition among nations.",
+      "project": "wiki_evaluation"
+    },
+    {
+      "question": "What are the main applications and concerns about artificial intelligence?",
+      "ground_truth": "Artificial intelligence applications include machine learning for data analysis and predictions, natural language processing for chatbots and translation, computer vision for image recognition, autonomous vehicles, healthcare diagnostics, recommendation systems, and robotics. Key concerns include job displacement through automation, algorithmic bias and fairness, privacy and surveillance, AI safety and control, potential misuse in autonomous weapons, and ensuring AI systems align with human values.",
+      "project": "wiki_evaluation"
+    }
+  ]
+}
