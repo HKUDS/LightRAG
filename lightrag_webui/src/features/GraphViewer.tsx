@@ -62,6 +62,41 @@ const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   // labelFont: 'Lato, sans-serif'
 })
 
+// Keep focus logic isolated to avoid re-rendering the whole viewer during hover/selection churn
+const FocusSync = () => {
+  const selectedNode = useGraphStore.use.selectedNode()
+  const focusedNode = useGraphStore.use.focusedNode()
+  const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
+
+  const autoFocusedNode = useMemo(() => focusedNode ?? selectedNode, [focusedNode, selectedNode])
+
+  return <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+}
+
+// Keep GraphSearch value derivation local to avoid bubbling re-renders
+const GraphSearchWithSelection = ({
+  onFocus,
+  onSelect
+}: {
+  onFocus: (value: GraphSearchOption | null) => void
+  onSelect: (value: GraphSearchOption | null) => void
+}) => {
+  const selectedNode = useGraphStore.use.selectedNode()
+
+  const searchInitSelectedNode = useMemo(
+    (): OptionItem | null => (selectedNode ? { type: 'nodes', id: selectedNode } : null),
+    [selectedNode]
+  )
+
+  return (
+    <GraphSearch
+      value={searchInitSelectedNode}
+      onFocus={onFocus}
+      onChange={onSelect}
+    />
+  )
+}
+
 const GraphEvents = () => {
   const registerEvents = useRegisterEvents()
   const sigma = useSigma()
@@ -113,9 +148,6 @@ const GraphViewer = () => {
   const sigmaRef = useRef<any>(null)
   const prevTheme = useRef<string>('')
 
-  const selectedNode = useGraphStore.use.selectedNode()
-  const focusedNode = useGraphStore.use.focusedNode()
-  const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
   const isFetching = useGraphStore.use.isFetching()
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
@@ -186,12 +218,6 @@ const GraphViewer = () => {
     }
   }, [])
 
-  const autoFocusedNode = useMemo(() => focusedNode ?? selectedNode, [focusedNode, selectedNode])
-  const searchInitSelectedNode = useMemo(
-    (): OptionItem | null => (selectedNode ? { type: 'nodes', id: selectedNode } : null),
-    [selectedNode]
-  )
-
   // Always render SigmaContainer but control its visibility with CSS
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -204,15 +230,14 @@ const GraphViewer = () => {
 
         {enableNodeDrag && <GraphEvents />}
 
-        <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+        <FocusSync />
 
         <div className="absolute top-2 left-2 flex items-start gap-2">
           <GraphLabels />
           {showNodeSearchBar && !isThemeSwitching && (
-            <GraphSearch
-              value={searchInitSelectedNode}
+            <GraphSearchWithSelection
               onFocus={onSearchFocus}
-              onChange={onSearchSelect}
+              onSelect={onSearchSelect}
             />
           )}
         </div>

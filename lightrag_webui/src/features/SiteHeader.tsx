@@ -8,7 +8,7 @@ import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, LogOutIcon, BrainIcon } from 'lucide-react'
+import { LogOutIcon, BrainIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 interface NavigationTabProps {
@@ -31,7 +31,7 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
   )
 }
 
-function shouldShowTableExplorer(storageConfig: any) {
+function shouldShowTableExplorer() {
   // Always show for now - TODO: fix storageConfig state propagation from health check
   return true
 
@@ -48,7 +48,6 @@ function shouldShowTableExplorer(storageConfig: any) {
 
 function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
-  const storageConfig = useSettingsStore.use.storageConfig()
   const { t } = useTranslation()
 
   return (
@@ -66,7 +65,7 @@ function TabsNavigation() {
         <NavigationTab value="api" currentTab={currentTab}>
           {t('header.api')}
         </NavigationTab>
-        {shouldShowTableExplorer(storageConfig) && (
+        {shouldShowTableExplorer() && (
           <NavigationTab value="table-explorer" currentTab={currentTab}>
             {t('header.tables')}
           </NavigationTab>

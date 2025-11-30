@@ -219,7 +219,7 @@ export default function DocumentManager() {
   }, []);
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
 
@@ -484,32 +484,32 @@ export default function DocumentManager() {
       label: t('documentPanel.documentManager.status.all'),
       icon: FileText,
       count: statusCounts.all || documentCounts.all || 0,
-      color: "text-muted-foreground",
-      activeColor: "text-foreground"
+      color: 'text-muted-foreground',
+      activeColor: 'text-foreground'
     },
     {
       id: 'processed' as StatusFilter,
       label: t('documentPanel.documentManager.status.completed'),
       icon: CheckCircle2,
       count: processedCount,
-      color: "text-emerald-500",
-      activeColor: "text-emerald-600 dark:text-emerald-500"
+      color: 'text-emerald-500',
+      activeColor: 'text-emerald-600 dark:text-emerald-500'
     },
     {
       id: 'preprocessed' as StatusFilter,
       label: t('documentPanel.documentManager.status.preprocessed'),
       icon: Brain,
       count: preprocessedCount,
-      color: "text-purple-500",
-      activeColor: "text-purple-600 dark:text-purple-500"
+      color: 'text-purple-500',
+      activeColor: 'text-purple-600 dark:text-purple-500'
     },
     {
       id: 'processing' as StatusFilter,
       label: t('documentPanel.documentManager.status.processing'),
       icon: Loader2,
       count: processingCount,
-      color: "text-blue-500",
-      activeColor: "text-blue-600 dark:text-blue-500",
+      color: 'text-blue-500',
+      activeColor: 'text-blue-600 dark:text-blue-500',
       spin: true
     },
     {
@@ -517,8 +517,8 @@ export default function DocumentManager() {
       label: t('documentPanel.documentManager.status.pending'),
       icon: Loader2,
       count: pendingCount,
-      color: "text-amber-500",
-      activeColor: "text-amber-600 dark:text-amber-500",
+      color: 'text-amber-500',
+      activeColor: 'text-amber-600 dark:text-amber-500',
       spin: true
     },
     {
@@ -526,8 +526,8 @@ export default function DocumentManager() {
       label: t('documentPanel.documentManager.status.failed'),
       icon: AlertCircle,
       count: failedCount,
-      color: "text-red-500",
-      activeColor: "text-red-600 dark:text-red-500"
+      color: 'text-red-500',
+      activeColor: 'text-red-600 dark:text-red-500'
     }
   ], [t, statusCounts, documentCounts, processedCount, preprocessedCount, processingCount, pendingCount, failedCount]);
 
@@ -941,63 +941,6 @@ export default function DocumentManager() {
     setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
   }, [pagination.page_size, setDocumentsPageSize]);
 
-  // Handle manual refresh with pagination reset logic
-  const handleManualRefresh = useCallback(async () => {
-    try {
-      setIsRefreshing(true);
-
-      // Fetch documents from the first page
-      const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
-        page: 1,
-        page_size: pagination.page_size,
-        sort_field: sortField,
-        sort_direction: sortDirection
-      };
-
-      const response = await getDocumentsPaginated(request);
-
-      if (!isMountedRef.current) return;
-
-      // Check if total count is less than current page size and page size is not already 10
-      if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
-        // Reset page size to 10 which will trigger a new fetch
-        handlePageSizeChange(10);
-      } else {
-        // Update pagination state
-        setPagination(response.pagination);
-        setCurrentPageDocs(response.documents);
-        setStatusCounts(response.status_counts);
-
-        // Update legacy docs state for backward compatibility
-        const legacyDocs: DocsStatusesResponse = {
-          statuses: {
-            processed: response.documents.filter(doc => doc.status === 'processed'),
-            preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
-            processing: response.documents.filter(doc => doc.status === 'processing'),
-            pending: response.documents.filter(doc => doc.status === 'pending'),
-            failed: response.documents.filter(doc => doc.status === 'failed')
-          }
-        };
-
-        if (response.pagination.total_count > 0) {
-          setDocs(legacyDocs);
-        } else {
-          setDocs(null);
-        }
-      }
-
-    } catch (err) {
-      if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsRefreshing(false);
-      }
-    }
-  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
-
   // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
   useEffect(() => {
     // Skip the first render when prevPipelineBusyRef is undefined
@@ -1193,27 +1136,27 @@ export default function DocumentManager() {
                 tabIndex={0}
                 aria-pressed={isActive}
                 className={cn(
-                  "flex-1 min-w-[140px] flex flex-col gap-1 p-3 rounded-lg transition-all cursor-pointer border select-none",
+                  'flex-1 min-w-[140px] flex flex-col gap-1 p-3 rounded-lg transition-all cursor-pointer border select-none',
                   isActive 
-                    ? "bg-background shadow-sm border-border ring-1 ring-black/5 dark:ring-white/5" 
-                    : "bg-background/80 border-border/40 hover:bg-background hover:border-border/60"
+                    ? 'bg-background shadow-sm border-border ring-1 ring-black/5 dark:ring-white/5' 
+                    : 'bg-background/80 border-border/40 hover:bg-background hover:border-border/60'
                 )}
               >
                 <div className="flex items-center justify-between">
-                  <span className={cn("text-xs font-medium", isActive ? "text-foreground" : "text-muted-foreground")}>
+                  <span className={cn('text-xs font-medium', isActive ? 'text-foreground' : 'text-muted-foreground')}>
                     {item.label}
                   </span>
                   {showIcon && (
                     <Icon 
                       className={cn(
-                        "h-4 w-4", 
+                        'h-4 w-4', 
                         isActive ? item.activeColor : item.color,
-                        item.spin && item.count > 0 && "animate-spin"
+                        item.spin && item.count > 0 && 'animate-spin'
                       )} 
                     />
                   )}
                 </div>
-                <div className={cn("text-2xl font-bold", isActive ? "text-foreground" : "text-muted-foreground/80")}>
+                <div className={cn('text-2xl font-bold', isActive ? 'text-foreground' : 'text-muted-foreground/80')}>
                   {item.count}
                 </div>
               </div>
@@ -1266,10 +1209,10 @@ export default function DocumentManager() {
               size="sm"
               onClick={() => setShowFileName(!showFileName)}
               className={cn(
-                "transition-all border",
+                'transition-all border',
                 showFileName 
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90 border-primary shadow-sm" 
-                  : "text-muted-foreground border-dashed border-border/60 hover:border-solid hover:text-foreground hover:bg-accent/50"
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 border-primary shadow-sm' 
+                  : 'text-muted-foreground border-dashed border-border/60 hover:border-solid hover:text-foreground hover:bg-accent/50'
               )}
               side="bottom"
               tooltip={showFileName ? t('documentPanel.documentManager.hideButton') : t('documentPanel.documentManager.showButton')}

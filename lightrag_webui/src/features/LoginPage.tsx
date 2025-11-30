@@ -145,9 +145,9 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-fuchsia-50 to-purple-100 dark:from-gray-900 dark:to-gray-800">
+    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-fuchsia-50 to-purple-100 dark:from-gray-800 dark:to-gray-700">
       <div className="absolute top-4 right-4 flex items-center gap-2">
-        <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
+        <AppSettings className="bg-white/30 dark:bg-gray-700/30 backdrop-blur-sm rounded-md" />
       </div>
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">

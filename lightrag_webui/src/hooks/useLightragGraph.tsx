@@ -461,7 +461,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, minDegree, includeOrphans, isFetching, t, graphDataVersion])
 
   // Handle node expansion
   useEffect(() => {

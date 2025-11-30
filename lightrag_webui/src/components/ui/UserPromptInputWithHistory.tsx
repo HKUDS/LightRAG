@@ -150,7 +150,7 @@ export default function UserPromptInputWithHistory({
           <button
             type="button"
             onClick={handleInputClick}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-0 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-0 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             tabIndex={-1}
           >
             <ChevronDown
@@ -165,13 +165,13 @@ export default function UserPromptInputWithHistory({
 
       {/* Dropdown */}
       {isOpen && history.length > 0 && (
-        <div className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md shadow-lg max-h-96 overflow-auto min-w-0">
+        <div className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg max-h-96 overflow-auto min-w-0">
           {history.map((prompt, index) => (
             <div
               key={index}
               className={cn(
                 'flex items-center justify-between pl-3 pr-1 py-2 text-sm hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
-                'border-b border-gray-100 dark:border-gray-700 last:border-b-0',
+                'border-b border-gray-100 dark:border-gray-600 last:border-b-0',
                 'focus-within:bg-gray-100 dark:focus-within:bg-gray-700',
                 selectedIndex === index && 'bg-gray-100 dark:bg-gray-700'
               )}
@@ -188,7 +188,7 @@ export default function UserPromptInputWithHistory({
                 <button
                   type="button"
                   onClick={(e) => handleDeleteHistoryItem(index, e)}
-                  className="flex-shrink-0 p-0 rounded hover:bg-red-100 dark:hover:bg-red-900 transition-colors focus:outline-none ml-auto"
+                  className="flex-shrink-0 p-0 rounded hover:bg-red-100 dark:hover:bg-red-800 transition-colors focus:outline-none ml-auto"
                   title="Delete this history item"
                 >
                   <X className="h-3 w-3 text-gray-400 hover:text-red-500" />

@@ -10,6 +10,8 @@ import Button from '@/components/ui/Button'
 import { ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon, CopyIcon, CheckIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
+const HIDDEN_COLUMNS = ['meta']
+
 // Truncate long values for display
 function truncateValue(value: any, maxLength = 50): string {
   if (value === null || value === undefined) return ''
@@ -116,9 +118,7 @@ function RowDetailModal({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  if (!row) return null
-
-  const entries = Object.entries(row)
+  const entries = useMemo(() => (row ? Object.entries(row) : []), [row])
   const fullRowJson = useMemo(() => {
     try {
       return JSON.stringify(row, null, 2)
@@ -126,6 +126,8 @@ function RowDetailModal({
       return '[Unable to serialize row]'
     }
   }, [row])
+
+  if (!row) return null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -208,9 +210,6 @@ export default function TableExplorer() {
     setModalOpen(true)
   }, [])
 
-  // Columns to hide from UI (exist in schema but not populated)
-  const HIDDEN_COLUMNS = ['meta']
-
   // Generate columns dynamically from data
   const columns = useMemo<ColumnDef<any>[]>(() => {
     const cols: ColumnDef<any>[] = []
@@ -260,7 +259,7 @@ export default function TableExplorer() {
             <div className="flex items-center gap-2">
               <Select value={effectiveSelectedTable} onValueChange={handleTableChange}>
                 <SelectTrigger className="w-[250px]">
-                  <SelectValue placeholder={tableList && tableList.length > 0 ? "Select a table" : "No tables available"} />
+                  <SelectValue placeholder={tableList && tableList.length > 0 ? 'Select a table' : 'No tables available'} />
                 </SelectTrigger>
                 <SelectContent>
                   {tableList && tableList.length > 0 ? (
@@ -284,39 +283,39 @@ export default function TableExplorer() {
         </CardHeader>
         {schema && (
           <CardContent className="pb-2">
-             <details className="text-xs text-muted-foreground cursor-pointer">
-               <summary>Show Schema (DDL)</summary>
-               <pre className="mt-2 p-2 bg-muted rounded overflow-auto max-h-[200px] font-mono text-xs">
-                 {schema.ddl}
-               </pre>
-             </details>
+            <details className="text-xs text-muted-foreground cursor-pointer">
+              <summary>Show Schema (DDL)</summary>
+              <pre className="mt-2 p-2 bg-muted rounded overflow-auto max-h-[200px] font-mono text-xs">
+                {schema.ddl}
+              </pre>
+            </details>
           </CardContent>
         )}
       </Card>
 
       <Card className="flex-1 overflow-hidden flex flex-col">
         <CardContent className="flex-1 p-0 overflow-auto">
-           {isLoading ? (
-             <div className="flex items-center justify-center h-full">
-               <RefreshCwIcon className="h-8 w-8 animate-spin text-muted-foreground" />
-             </div>
-           ) : isError ? (
-             <div className="flex flex-col items-center justify-center h-full text-destructive gap-2">
-               <p className="font-medium">Failed to load table data</p>
-               <p className="text-sm text-muted-foreground">{error instanceof Error ? error.message : 'Unknown error'}</p>
-               <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-2">
-                 Retry
-               </Button>
-             </div>
-           ) : (
-             <div className="h-full">
-               <DataTable
-                 columns={columns}
-                 data={tableData?.data || []}
-                 onRowClick={handleRowClick}
-               />
-             </div>
-           )}
+          {isLoading ? (
+            <div className="flex items-center justify-center h-full">
+              <RefreshCwIcon className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center h-full text-destructive gap-2">
+              <p className="font-medium">Failed to load table data</p>
+              <p className="text-sm text-muted-foreground">{error instanceof Error ? error.message : 'Unknown error'}</p>
+              <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-2">
+                Retry
+              </Button>
+            </div>
+          ) : (
+            <div className="h-full">
+              <DataTable
+                columns={columns}
+                data={tableData?.data || []}
+                onRowClick={handleRowClick}
+              />
+            </div>
+          )}
         </CardContent>
 
         <div className="border-t p-2 flex items-center justify-between bg-muted/20">

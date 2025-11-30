@@ -2,7 +2,7 @@ import { useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
 import { AbstractGraph } from 'graphology-types'
 // import { useLayoutCircular } from '@react-sigma/layout-circular'
 import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 
 // import useRandomGraph, { EdgeType, NodeType } from '@/hooks/useRandomGraph'
 import { EdgeType, NodeType } from '@/hooks/useLightragGraph'
@@ -212,158 +212,191 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     }
   }, [sigma, sigmaGraph, minEdgeSize, maxEdgeSize])
 
+  // Cache selection state in refs so we don't trigger expensive reducer recreation on hover/selection changes
+  const selectionRef = useRef({
+    selectedNode: null as string | null,
+    focusedNode: null as string | null,
+    selectedEdge: null as string | null,
+    focusedEdge: null as string | null,
+    hideUnselectedEdges
+  })
 
-  /**
-   * When component mount or hovered node change
-   * => Setting the sigma reducers
-   */
+  const focusedNeighborsRef = useRef<{ key: string | null; neighbors: Set<string> | null }>(
+    { key: null, neighbors: null }
+  )
+
   useEffect(() => {
-    // Check if dark mode is actually applied (handles both 'dark' theme and 'system' theme when OS is dark)
+    selectionRef.current = {
+      selectedNode,
+      focusedNode,
+      selectedEdge,
+      focusedEdge,
+      hideUnselectedEdges
+    }
+
+    // Invalidate neighbor cache when focused node changes
+    if (focusedNeighborsRef.current.key !== (focusedNode || null)) {
+      focusedNeighborsRef.current = { key: focusedNode || null, neighbors: null }
+    }
+  }, [selectedNode, focusedNode, selectedEdge, focusedEdge, hideUnselectedEdges])
+
+  // Theme values used inside reducers; kept in refs to avoid re-creating reducer functions
+  const themeRef = useRef({
+    isDarkTheme: false,
+    labelColor: undefined as string | undefined,
+    edgeColor: undefined as string | undefined
+  })
+
+  useEffect(() => {
     const isDarkTheme = theme === 'dark' ||
       (theme === 'system' && window.document.documentElement.classList.contains('dark'))
-    const labelColor = isDarkTheme ? Constants.labelColorDarkTheme : undefined
-    const edgeColor = isDarkTheme ? Constants.edgeColorDarkTheme : undefined
 
-    // Update all dynamic settings directly without recreating the sigma container
+    themeRef.current = {
+      isDarkTheme,
+      labelColor: isDarkTheme ? Constants.labelColorDarkTheme : undefined,
+      edgeColor: isDarkTheme ? Constants.edgeColorDarkTheme : undefined
+    }
+  }, [theme, systemThemeIsDark])
+
+  // Helper to lazily compute focused node neighbors and reuse across reducer calls
+  const getFocusedNeighbors = useCallback((graph: AbstractGraph, nodeId: string): Set<string> => {
+    if (focusedNeighborsRef.current.key === nodeId && focusedNeighborsRef.current.neighbors) {
+      return focusedNeighborsRef.current.neighbors
+    }
+    const neighbors = new Set(graph.neighbors(nodeId))
+    focusedNeighborsRef.current = { key: nodeId, neighbors }
+    return neighbors
+  }, [])
+
+  const nodeReducer = useCallback((node: string, data: NodeType) => {
+    const graph = sigma.getGraph()
+    const { selectedNode, focusedNode, selectedEdge, focusedEdge } = selectionRef.current
+    const { isDarkTheme, labelColor } = themeRef.current
+
+    if (!graph.hasNode(node)) {
+      return { ...data, highlighted: false, labelColor }
+    }
+
+    const newData: NodeType & { labelColor?: string; borderColor?: string; borderSize?: number } = {
+      ...data,
+      highlighted: data.highlighted || false,
+      labelColor
+    }
+
+    // Hidden connections indicator
+    const dbDegree = graph.getNodeAttribute(node, 'db_degree') || 0
+    const visualDegree = graph.degree(node)
+    if (dbDegree > visualDegree) {
+      newData.borderColor = Constants.nodeBorderColorHiddenConnections
+      newData.borderSize = 1.5
+    }
+
+    if (disableHoverEffect) {
+      return newData
+    }
+
+    const targetNode = focusedNode || selectedNode
+    const targetEdge = focusedEdge || selectedEdge
+
+    if (targetNode && graph.hasNode(targetNode)) {
+      try {
+        const neighbors = getFocusedNeighbors(graph, targetNode)
+        if (node === targetNode || neighbors.has(node)) {
+          newData.highlighted = true
+          if (node === selectedNode) {
+            newData.borderColor = Constants.nodeBorderColorSelected
+          }
+        }
+      } catch (error) {
+        console.error('Error in nodeReducer:', error)
+        return { ...data, highlighted: false, labelColor }
+      }
+    } else if (targetEdge && graph.hasEdge(targetEdge)) {
+      try {
+        if (graph.extremities(targetEdge).includes(node)) {
+          newData.highlighted = true
+          newData.size = 3
+        }
+      } catch (error) {
+        console.error('Error accessing edge extremities in nodeReducer:', error)
+        return { ...data, highlighted: false, labelColor }
+      }
+    }
+
+    if (newData.highlighted) {
+      if (isDarkTheme) {
+        newData.labelColor = Constants.LabelColorHighlightedDarkTheme
+      }
+    } else {
+      newData.color = Constants.nodeColorDisabled
+    }
+
+    return newData
+  }, [sigma, disableHoverEffect, getFocusedNeighbors])
+
+  const edgeReducer = useCallback((edge: string, data: EdgeType) => {
+    const graph = sigma.getGraph()
+    const { selectedNode, focusedNode, selectedEdge, focusedEdge, hideUnselectedEdges } = selectionRef.current
+    const { isDarkTheme, labelColor, edgeColor } = themeRef.current
+
+    if (!graph.hasEdge(edge)) {
+      return { ...data, hidden: false, labelColor, color: edgeColor }
+    }
+
+    const newData = { ...data, hidden: false, labelColor, color: edgeColor }
+
+    if (disableHoverEffect) {
+      return newData
+    }
+
+    const targetNode = focusedNode || selectedNode
+    const edgeHighlightColor = isDarkTheme
+      ? Constants.edgeColorHighlightedDarkTheme
+      : Constants.edgeColorHighlightedLightTheme
+
+    if (targetNode && graph.hasNode(targetNode)) {
+      try {
+        const includesNode = graph.extremities(edge).includes(targetNode)
+        if (hideUnselectedEdges && !includesNode) {
+          newData.hidden = true
+        } else if (includesNode) {
+          newData.color = edgeHighlightColor
+        }
+      } catch (error) {
+        console.error('Error in edgeReducer:', error)
+        return { ...data, hidden: false, labelColor, color: edgeColor }
+      }
+    } else {
+      const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null
+      const _focusedEdge = focusedEdge && graph.hasEdge(focusedEdge) ? focusedEdge : null
+
+      if (_selectedEdge || _focusedEdge) {
+        if (edge === _selectedEdge) {
+          newData.color = Constants.edgeColorSelected
+        } else if (edge === _focusedEdge) {
+          newData.color = edgeHighlightColor
+        } else if (hideUnselectedEdges) {
+          newData.hidden = true
+        }
+      }
+    }
+
+    return newData
+  }, [sigma, disableHoverEffect])
+
+  /**
+   * Keep sigma reducers stable; selection/theme changes are read from refs to avoid
+   * re-registering reducers on every hover and maintain frame budget.
+   */
+  useEffect(() => {
     setSettings({
-      // Update display settings
       enableEdgeEvents,
       renderEdgeLabels,
       renderLabels,
-
-      // Node reducer for node appearance
-      nodeReducer: (node, data) => {
-        const graph = sigma.getGraph()
-
-        // Add defensive check for node existence during theme switching
-        if (!graph.hasNode(node)) {
-          console.warn(`Node ${node} not found in graph during theme switch, returning default data`)
-          return { ...data, highlighted: false, labelColor }
-        }
-
-        const newData: NodeType & {
-          labelColor?: string
-          borderColor?: string
-          borderSize?: number
-        } = { ...data, highlighted: data.highlighted || false, labelColor }
-
-        // Check for hidden connections (db_degree > visual_degree)
-        const dbDegree = graph.getNodeAttribute(node, 'db_degree') || 0
-        const visualDegree = graph.degree(node)
-        if (dbDegree > visualDegree) {
-          newData.borderColor = Constants.nodeBorderColorHiddenConnections
-          newData.borderSize = 1.5
-        }
-
-        if (!disableHoverEffect) {
-          newData.highlighted = false
-          const _focusedNode = focusedNode || selectedNode
-          const _focusedEdge = focusedEdge || selectedEdge
-
-          if (_focusedNode && graph.hasNode(_focusedNode)) {
-            try {
-              if (node === _focusedNode || graph.neighbors(_focusedNode).includes(node)) {
-                newData.highlighted = true
-                if (node === selectedNode) {
-                  newData.borderColor = Constants.nodeBorderColorSelected
-                }
-              }
-            } catch (error) {
-              console.error('Error in nodeReducer:', error);
-              return { ...data, highlighted: false, labelColor }
-            }
-          } else if (_focusedEdge && graph.hasEdge(_focusedEdge)) {
-            try {
-              if (graph.extremities(_focusedEdge).includes(node)) {
-                newData.highlighted = true
-                newData.size = 3
-              }
-            } catch (error) {
-              console.error('Error accessing edge extremities in nodeReducer:', error);
-              return { ...data, highlighted: false, labelColor }
-            }
-          } else {
-            return newData
-          }
-
-          if (newData.highlighted) {
-            if (isDarkTheme) {
-              newData.labelColor = Constants.LabelColorHighlightedDarkTheme
-            }
-          } else {
-            newData.color = Constants.nodeColorDisabled
-          }
-        }
-        return newData
-      },
-
-      // Edge reducer for edge appearance
-      edgeReducer: (edge, data) => {
-        const graph = sigma.getGraph()
-
-        // Add defensive check for edge existence during theme switching
-        if (!graph.hasEdge(edge)) {
-          console.warn(`Edge ${edge} not found in graph during theme switch, returning default data`)
-          return { ...data, hidden: false, labelColor, color: edgeColor }
-        }
-
-        const newData = { ...data, hidden: false, labelColor, color: edgeColor }
-
-        if (!disableHoverEffect) {
-          const _focusedNode = focusedNode || selectedNode
-          // Choose edge highlight color based on theme
-          const edgeHighlightColor = isDarkTheme
-            ? Constants.edgeColorHighlightedDarkTheme
-            : Constants.edgeColorHighlightedLightTheme
-
-          if (_focusedNode && graph.hasNode(_focusedNode)) {
-            try {
-              if (hideUnselectedEdges) {
-                if (!graph.extremities(edge).includes(_focusedNode)) {
-                  newData.hidden = true
-                }
-              } else {
-                if (graph.extremities(edge).includes(_focusedNode)) {
-                  newData.color = edgeHighlightColor
-                }
-              }
-            } catch (error) {
-              console.error('Error in edgeReducer:', error);
-              return { ...data, hidden: false, labelColor, color: edgeColor }
-            }
-          } else {
-            const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null;
-            const _focusedEdge = focusedEdge && graph.hasEdge(focusedEdge) ? focusedEdge : null;
-
-            if (_selectedEdge || _focusedEdge) {
-              if (edge === _selectedEdge) {
-                newData.color = Constants.edgeColorSelected
-              } else if (edge === _focusedEdge) {
-                newData.color = edgeHighlightColor
-              } else if (hideUnselectedEdges) {
-                newData.hidden = true
-              }
-            }
-          }
-        }
-        return newData
-      }
+      nodeReducer,
+      edgeReducer
     })
-  }, [
-    selectedNode,
-    focusedNode,
-    selectedEdge,
-    focusedEdge,
-    setSettings,
-    sigma,
-    disableHoverEffect,
-    theme,
-    systemThemeIsDark,
-    hideUnselectedEdges,
-    enableEdgeEvents,
-    renderEdgeLabels,
-    renderLabels
-  ])
+  }, [setSettings, enableEdgeEvents, renderEdgeLabels, renderLabels, nodeReducer, edgeReducer])
 
   return null
 }

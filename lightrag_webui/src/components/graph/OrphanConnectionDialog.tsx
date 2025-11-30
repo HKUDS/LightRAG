@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { AlignLeft, AlignCenter, AlignRight, Link, Loader2, CheckCircle2, AlertCircle, X, Play, Square } from 'lucide-react'
+import { AlignLeft, AlignCenter, AlignRight, Link, Loader2, CheckCircle2, AlertCircle, Play, Square } from 'lucide-react'
 
 import {
   Dialog,

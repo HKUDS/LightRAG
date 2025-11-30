@@ -20,7 +20,7 @@ const StatusIndicator = ({ className }: { className?: string }) => {
   }, [lastCheckTime])
 
   return (
-    <div className={cn("flex items-center gap-2 opacity-80 select-none", className)}>
+    <div className={cn('flex items-center gap-2 opacity-80 select-none', className)}>
       <div
         className="flex cursor-pointer items-center gap-2"
         onClick={() => setDialogOpen(true)}

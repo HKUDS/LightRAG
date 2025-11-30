@@ -47,40 +47,40 @@
 }
 
 .dark {
-  --background: hsl(240 10% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  --card: hsl(240 10% 3.9%);
-  --card-foreground: hsl(0 0% 98%);
-  --popover: hsl(240 10% 3.9%);
-  --popover-foreground: hsl(0 0% 98%);
-  --primary: hsl(0 0% 98%);
-  --primary-foreground: hsl(240 5.9% 10%);
-  --secondary: hsl(240 3.7% 15.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  --muted: hsl(240 3.7% 15.9%);
-  --muted-foreground: hsl(240 5% 64.9%);
-  --accent: hsl(240 3.7% 15.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 3.7% 15.9%);
-  --input: hsl(240 3.7% 15.9%);
-  --ring: hsl(240 4.9% 83.9%);
+  --background: hsl(220 8% 12%);
+  --foreground: hsl(0 0% 95%);
+  --card: hsl(220 8% 16%);
+  --card-foreground: hsl(0 0% 96%);
+  --popover: hsl(220 8% 16%);
+  --popover-foreground: hsl(0 0% 96%);
+  --primary: hsl(0 0% 96%);
+  --primary-foreground: hsl(220 8% 14%);
+  --secondary: hsl(220 7% 22%);
+  --secondary-foreground: hsl(0 0% 96%);
+  --muted: hsl(220 6% 26%);
+  --muted-foreground: hsl(220 12% 72%);
+  --accent: hsl(220 7% 24%);
+  --accent-foreground: hsl(0 0% 96%);
+  --destructive: hsl(0 65% 52%);
+  --destructive-foreground: hsl(0 0% 96%);
+  --border: hsl(220 6% 30%);
+  --input: hsl(220 6% 30%);
+  --ring: hsl(220 15% 65%);
   --chart-1: hsl(220 70% 50%);
   --chart-2: hsl(160 60% 45%);
   --chart-3: hsl(30 80% 55%);
   --chart-4: hsl(280 65% 60%);
   --chart-5: hsl(340 75% 55%);
-  --plum: #9d5ba3;
-  --plum-foreground: hsl(0 0% 98%);
-  --sidebar-background: hsl(240 5.9% 10%);
-  --sidebar-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-primary: hsl(224.3 76.3% 48%);
-  --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(240 3.7% 15.9%);
-  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-border: hsl(240 3.7% 15.9%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+  --plum: #b06ab6;
+  --plum-foreground: hsl(0 0% 96%);
+  --sidebar-background: hsl(220 8% 13%);
+  --sidebar-foreground: hsl(0 0% 94%);
+  --sidebar-primary: hsl(224.3 70% 62%);
+  --sidebar-primary-foreground: hsl(0 0% 98%);
+  --sidebar-accent: hsl(220 7% 21%);
+  --sidebar-accent-foreground: hsl(0 0% 94%);
+  --sidebar-border: hsl(220 7% 28%);
+  --sidebar-ring: hsl(220 15% 62%);
 }
 
 @theme inline {
@@ -152,11 +152,11 @@
 
 .dark {
   ::-webkit-scrollbar-thumb {
-    background-color: hsl(0 0% 90%);
+    background-color: hsl(0 0% 70%);
   }
 
   ::-webkit-scrollbar-track {
-    background-color: hsl(0 0% 0%);
+    background-color: hsl(220 8% 18%);
   }
 }
 

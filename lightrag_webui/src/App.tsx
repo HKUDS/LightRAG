@@ -63,7 +63,7 @@ function App() {
         if (isMountedRef.current) {
           const status = await useBackendState.getState().check();
           if (status && 'status' in status && status.status === 'healthy' && status.configuration) {
-             useSettingsStore.getState().setStorageConfig(status.configuration);
+            useSettingsStore.getState().setStorageConfig(status.configuration);
           }
         }
       } catch (error) {
