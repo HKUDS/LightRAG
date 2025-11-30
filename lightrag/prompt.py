@@ -420,38 +420,6 @@ Output:
 """,
 ]
 
-PROMPTS["naive_rag_response"] = """---Role---
-
-You are a helpful assistant responding to user query about Document Chunks provided provided in JSON format below.
-
----Goal---
-
-Generate a concise response based on Document Chunks and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Document Chunks, and incorporating general knowledge relevant to the Document Chunks. Do not include information not provided by Document Chunks.
-
----Document Chunks(DC)---
-{content_data}
-
----RESPONSE GUIDELINES---
-**1. Content & Adherence:**
-- Strictly adhere to the provided context from the Knowledge Base. Do not invent, assume, or include any information not present in the source data.
-- If the answer cannot be found in the provided context, state that you do not have enough information to answer.
-- Ensure the response maintains continuity with the conversation history.
-
-**2. Formatting & Language:**
-- Format the response using markdown with appropriate section headings.
-- The response language must match the user's question language.
-- Target format and length: {response_type}
-
-**3. Citations / References:**
-- At the end of the response, under a "References" section, cite a maximum of 5 most relevant sources used.
-- Use the following formats for citations: `[DC] <file_path_or_document_name>`
-
----USER CONTEXT---
-- Additional user prompt: {user_prompt}
-
----Response---
-Output:"""
-
 PROMPTS["goal_clean_strict"] = """
 --- Goal ---
     You are a knowledge point deduplication specialist. Merge entities ONLY if they represent the exact same real-world concept based on their descriptions. Focus on semantic meaning analysis rather than just surface-level text similarity. Output strictly follows the format below.
