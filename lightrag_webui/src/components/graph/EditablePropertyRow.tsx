@@ -1,31 +1,31 @@
-import { useState, useEffect } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
+import { checkEntityNameExists, updateEntity, updateRelation } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
 import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
-import { PropertyName, EditIcon, PropertyValue } from './PropertyRowComponents'
-import PropertyEditDialog from './PropertyEditDialog'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import MergeDialog from './MergeDialog'
+import PropertyEditDialog from './PropertyEditDialog'
+import { EditIcon, PropertyName, PropertyValue } from './PropertyRowComponents'
 
 /**
  * Interface for the EditablePropertyRow component props
  */
 interface EditablePropertyRowProps {
-  name: string                  // Property name to display and edit
-  value: any                    // Initial value of the property
-  onClick?: () => void          // Optional click handler for the property value
-  nodeId?: string               // ID of the node (for node type)
-  entityId?: string             // ID of the entity (for node type)
-  edgeId?: string               // ID of the edge (for edge type)
+  name: string // Property name to display and edit
+  value: any // Initial value of the property
+  onClick?: () => void // Optional click handler for the property value
+  nodeId?: string // ID of the node (for node type)
+  entityId?: string // ID of the entity (for node type)
+  edgeId?: string // ID of the edge (for edge type)
   dynamicId?: string
-  entityType?: 'node' | 'edge'  // Type of graph entity
-  sourceId?: string            // Source node ID (for edge type)
-  targetId?: string            // Target node ID (for edge type)
-  onValueChange?: (newValue: any) => void  // Optional callback when value changes
-  isEditable?: boolean         // Whether this property can be edited
-  tooltip?: string             // Optional tooltip to display on hover
+  entityType?: 'node' | 'edge' // Type of graph entity
+  sourceId?: string // Source node ID (for edge type)
+  targetId?: string // Target node ID (for edge type)
+  onValueChange?: (newValue: any) => void // Optional callback when value changes
+  isEditable?: boolean // Whether this property can be edited
+  tooltip?: string // Optional tooltip to display on hover
 }
 
 /**
@@ -45,7 +45,7 @@ const EditablePropertyRow = ({
   targetId,
   onValueChange,
   isEditable = false,
-  tooltip
+  tooltip,
 }: EditablePropertyRowProps) => {
   const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
@@ -99,7 +99,7 @@ const EditablePropertyRow = ({
               return
             }
           }
-          updatedData = { 'entity_name': value }
+          updatedData = { entity_name: value }
         }
 
         const response = await updateEntity(entityId, updatedData, true, allowMerge)
@@ -127,9 +127,7 @@ const EditablePropertyRow = ({
             // Node was updated/renamed normally
             try {
               const graphValue = name === 'entity_id' ? finalValue : value
-              await useGraphStore
-                .getState()
-                .updateNodeAndSelect(nodeId, entityId, name, graphValue)
+              await useGraphStore.getState().updateNodeAndSelect(nodeId, entityId, name, graphValue)
             } catch (error) {
               console.error('Error updating node in graph:', error)
               throw new Error('Failed to update node in graph')
@@ -160,20 +158,18 @@ const EditablePropertyRow = ({
           const valueToSet = name === 'entity_id' ? finalValue : value
           setCurrentValue(valueToSet)
           onValueChange?.(valueToSet)
-
         } else if (operationStatus === 'partial_success') {
           // Partial success: update succeeded but merge failed
           // Do NOT update graph data to keep frontend in sync with backend
           const mergeError = operationSummary?.merge_error || 'Unknown error'
 
           const errorMsg = t('graphPanel.propertiesView.errors.updateSuccessButMergeFailed', {
-            error: mergeError
+            error: mergeError,
           })
           setErrorMessage(errorMsg)
           toast.error(errorMsg)
           // Do not update currentValue or call onValueChange
           return
-
         } else {
           // Complete failure or unknown status
           // Check if this was a merge attempt or just a regular update
@@ -181,7 +177,7 @@ const EditablePropertyRow = ({
             // Merge operation was attempted but failed
             const mergeError = operationSummary?.merge_error || 'Unknown error'
             const errorMsg = t('graphPanel.propertiesView.errors.mergeFailed', {
-              error: mergeError
+              error: mergeError,
             })
             setErrorMessage(errorMsg)
             toast.error(errorMsg)
@@ -198,7 +194,9 @@ const EditablePropertyRow = ({
         const updatedData = { [name]: value }
         await updateRelation(sourceId, targetId, updatedData)
         try {
-          await useGraphStore.getState().updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
+          await useGraphStore
+            .getState()
+            .updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
         } catch (error) {
           console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
           throw new Error('Failed to update edge in graph')
@@ -211,7 +209,8 @@ const EditablePropertyRow = ({
       setIsEditing(false)
     } catch (error) {
       console.error('Error updating property:', error)
-      const errorMsg = error instanceof Error ? error.message : t('graphPanel.propertiesView.errors.updateFailed')
+      const errorMsg =
+        error instanceof Error ? error.message : t('graphPanel.propertiesView.errors.updateFailed')
       setErrorMessage(errorMsg)
       toast.error(errorMsg)
       return
@@ -258,7 +257,10 @@ const EditablePropertyRow = ({
       <PropertyValue
         value={currentValue}
         onClick={onClick}
-        tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
+        tooltip={
+          tooltip ||
+          (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))
+        }
       />
       <PropertyEditDialog
         isOpen={isEditing}
@@ -269,7 +271,6 @@ const EditablePropertyRow = ({
         isSubmitting={isSubmitting}
         errorMessage={errorMessage}
       />
-
       <MergeDialog
         mergeDialogOpen={mergeDialogOpen}
         mergeDialogInfo={mergeDialogInfo}

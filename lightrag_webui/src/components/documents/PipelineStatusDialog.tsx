@@ -1,17 +1,17 @@
-import { useState, useEffect, useRef } from 'react'
+import { AlignCenter, AlignLeft, AlignRight } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { AlignLeft, AlignCenter, AlignRight } from 'lucide-react'
 
+import { type PipelineStatusResponse, cancelPipeline, getPipelineStatus } from '@/api/lightrag'
+import Button from '@/components/ui/Button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription
 } from '@/components/ui/Dialog'
-import Button from '@/components/ui/Button'
-import { getPipelineStatus, cancelPipeline, PipelineStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
@@ -22,10 +22,7 @@ interface PipelineStatusDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-export default function PipelineStatusDialog({
-  open,
-  onOpenChange
-}: PipelineStatusDialogProps) {
+export default function PipelineStatusDialog({ open, onOpenChange }: PipelineStatusDialogProps) {
   const { t } = useTranslation()
   const [status, setStatus] = useState<PipelineStatusResponse | null>(null)
   const [position, setPosition] = useState<DialogPosition>('center')
@@ -56,9 +53,8 @@ export default function PipelineStatusDialog({
     const container = historyRef.current
     if (!container) return
 
-    const isAtBottom = Math.abs(
-      (container.scrollHeight - container.scrollTop) - container.clientHeight
-    ) < 1
+    const isAtBottom =
+      Math.abs(container.scrollHeight - container.scrollTop - container.clientHeight) < 1
 
     if (isAtBottom) {
       setIsUserScrolled(false)
@@ -76,7 +72,9 @@ export default function PipelineStatusDialog({
         const data = await getPipelineStatus()
         setStatus(data)
       } catch (err) {
-        toast.error(t('documentPanel.pipelineStatus.errors.fetchFailed', { error: errorMessage(err) }))
+        toast.error(
+          t('documentPanel.pipelineStatus.errors.fetchFailed', { error: errorMessage(err) })
+        )
       }
     }
 
@@ -116,13 +114,10 @@ export default function PipelineStatusDialog({
         <DialogDescription className="sr-only">
           {status?.job_name
             ? `${t('documentPanel.pipelineStatus.jobName')}: ${status.job_name}, ${t('documentPanel.pipelineStatus.progress')}: ${status.cur_batch}/${status.batchs}`
-            : t('documentPanel.pipelineStatus.noActiveJob')
-          }
+            : t('documentPanel.pipelineStatus.noActiveJob')}
         </DialogDescription>
         <DialogHeader className="flex flex-row items-center">
-          <DialogTitle className="flex-1">
-            {t('documentPanel.pipelineStatus.title')}
-          </DialogTitle>
+          <DialogTitle className="flex-1">{t('documentPanel.pipelineStatus.title')}</DialogTitle>
 
           {/* Position control buttons */}
           <div className="flex items-center gap-2 mr-8">
@@ -131,7 +126,8 @@ export default function PipelineStatusDialog({
               size="icon"
               className={cn(
                 'h-6 w-6',
-                position === 'left' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
+                position === 'left' &&
+                  'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('left')}
             >
@@ -142,7 +138,8 @@ export default function PipelineStatusDialog({
               size="icon"
               className={cn(
                 'h-6 w-6',
-                position === 'center' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
+                position === 'center' &&
+                  'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('center')}
             >
@@ -153,7 +150,8 @@ export default function PipelineStatusDialog({
               size="icon"
               className={cn(
                 'h-6 w-6',
-                position === 'right' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
+                position === 'right' &&
+                  'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('right')}
             >
@@ -170,16 +168,24 @@ export default function PipelineStatusDialog({
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
-                <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
+                <div
+                  className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`}
+                />
               </div>
               <div className="flex items-center gap-2">
-                <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
-                <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
+                <div className="text-sm font-medium">
+                  {t('documentPanel.pipelineStatus.requestPending')}:
+                </div>
+                <div
+                  className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`}
+                />
               </div>
               {/* Only show cancellation status when it's requested */}
               {status?.cancellation_requested && (
                 <div className="flex items-center gap-2">
-                  <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.cancellationRequested')}:</div>
+                  <div className="text-sm font-medium">
+                    {t('documentPanel.pipelineStatus.cancellationRequested')}:
+                  </div>
                   <div className="h-2 w-2 rounded-full bg-red-500" />
                 </div>
               )}
@@ -205,35 +211,49 @@ export default function PipelineStatusDialog({
 
           {/* Job Information */}
           <div className="rounded-md border p-3 space-y-2">
-            <div>{t('documentPanel.pipelineStatus.jobName')}: {status?.job_name || '-'}</div>
+            <div>
+              {t('documentPanel.pipelineStatus.jobName')}: {status?.job_name || '-'}
+            </div>
             <div className="flex justify-between">
-              <span>{t('documentPanel.pipelineStatus.startTime')}: {status?.job_start
-                ? new Date(status.job_start).toLocaleString(undefined, {
-                  year: 'numeric',
-                  month: 'numeric',
-                  day: 'numeric',
-                  hour: 'numeric',
-                  minute: 'numeric',
-                  second: 'numeric'
-                })
-                : '-'}</span>
-              <span>{t('documentPanel.pipelineStatus.progress')}: {status ? `${status.cur_batch}/${status.batchs} ${t('documentPanel.pipelineStatus.unit')}` : '-'}</span>
+              <span>
+                {t('documentPanel.pipelineStatus.startTime')}:{' '}
+                {status?.job_start
+                  ? new Date(status.job_start).toLocaleString(undefined, {
+                      year: 'numeric',
+                      month: 'numeric',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: 'numeric',
+                      second: 'numeric',
+                    })
+                  : '-'}
+              </span>
+              <span>
+                {t('documentPanel.pipelineStatus.progress')}:{' '}
+                {status
+                  ? `${status.cur_batch}/${status.batchs} ${t('documentPanel.pipelineStatus.unit')}`
+                  : '-'}
+              </span>
             </div>
           </div>
 
           {/* History Messages */}
           <div className="space-y-2">
-            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.pipelineMessages')}:</div>
+            <div className="text-sm font-medium">
+              {t('documentPanel.pipelineStatus.pipelineMessages')}:
+            </div>
             <div
               ref={historyRef}
               onScroll={handleScroll}
               className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto overflow-x-hidden min-h-[7.5em] max-h-[40vh]"
             >
-              {status?.history_messages?.length ? (
-                status.history_messages.map((msg, idx) => (
-                  <div key={idx} className="whitespace-pre-wrap break-all">{msg}</div>
-                ))
-              ) : '-'}
+              {status?.history_messages?.length
+                ? status.history_messages.map((msg, idx) => (
+                    <div key={idx} className="whitespace-pre-wrap break-all">
+                      {msg}
+                    </div>
+                  ))
+                : '-'}
             </div>
           </div>
         </div>
@@ -249,16 +269,10 @@ export default function PipelineStatusDialog({
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-3 mt-4">
-            <Button
-              variant="outline"
-              onClick={() => setShowCancelConfirm(false)}
-            >
+            <Button variant="outline" onClick={() => setShowCancelConfirm(false)}>
               {t('common.cancel')}
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleConfirmCancel}
-            >
+            <Button variant="destructive" onClick={handleConfirmCancel}>
               {t('documentPanel.pipelineStatus.cancelConfirmButton')}
             </Button>
           </div>

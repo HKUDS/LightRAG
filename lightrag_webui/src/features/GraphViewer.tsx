@@ -1,30 +1,30 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
-import { Settings as SigmaSettings } from 'sigma/settings'
-import { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
-import { EdgeArrowProgram, NodePointProgram, NodeCircleProgram } from 'sigma/rendering'
-import { NodeBorderProgram } from '@sigma/node-border'
+import type { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
 import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
+import { NodeBorderProgram } from '@sigma/node-border'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { EdgeArrowProgram, NodeCircleProgram, NodePointProgram } from 'sigma/rendering'
+import type { Settings as SigmaSettings } from 'sigma/settings'
 
 import FocusOnNode from '@/components/graph/FocusOnNode'
-import LayoutsControl from '@/components/graph/LayoutsControl'
-import GraphControl from '@/components/graph/GraphControl'
-// import ThemeToggle from '@/components/ThemeToggle'
-import ZoomControl from '@/components/graph/ZoomControl'
 import FullScreenControl from '@/components/graph/FullScreenControl'
-import Settings from '@/components/graph/Settings'
-import GraphSearch from '@/components/graph/GraphSearch'
+import GraphControl from '@/components/graph/GraphControl'
 import GraphLabels from '@/components/graph/GraphLabels'
-import PropertiesView from '@/components/graph/PropertiesView'
-import SettingsDisplay from '@/components/graph/SettingsDisplay'
+import GraphSearch from '@/components/graph/GraphSearch'
+import LayoutsControl from '@/components/graph/LayoutsControl'
 import Legend from '@/components/graph/Legend'
 import LegendButton from '@/components/graph/LegendButton'
 import OrphanConnectionControl from '@/components/graph/OrphanConnectionControl'
+import PropertiesView from '@/components/graph/PropertiesView'
+import Settings from '@/components/graph/Settings'
+import SettingsDisplay from '@/components/graph/SettingsDisplay'
+// import ThemeToggle from '@/components/ThemeToggle'
+import ZoomControl from '@/components/graph/ZoomControl'
 
-import { useSettingsStore } from '@/stores/settings'
-import { useGraphStore } from '@/stores/graph'
 import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
+import { useGraphStore } from '@/stores/graph'
+import { useSettingsStore } from '@/stores/settings'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -38,26 +38,26 @@ const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   edgeProgramClasses: {
     arrow: EdgeArrowProgram,
     curvedArrow: EdgeCurvedArrowProgram,
-    curvedNoArrow: createEdgeCurveProgram()
+    curvedNoArrow: createEdgeCurveProgram(),
   },
   nodeProgramClasses: {
     default: NodeBorderProgram,
     circel: NodeCircleProgram,
-    point: NodePointProgram
+    point: NodePointProgram,
   },
   labelGridCellSize: 60,
   labelRenderedSizeThreshold: 12,
   enableEdgeEvents: true,
   labelColor: {
     color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
-    attribute: 'labelColor'
+    attribute: 'labelColor',
   },
   edgeLabelColor: {
     color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
-    attribute: 'labelColor'
+    attribute: 'labelColor',
   },
   edgeLabelSize: 8,
-  labelSize: 12
+  labelSize: 12,
   // minEdgeThickness: 2
   // labelFont: 'Lato, sans-serif'
 })
@@ -76,7 +76,7 @@ const FocusSync = () => {
 // Keep GraphSearch value derivation local to avoid bubbling re-renders
 const GraphSearchWithSelection = ({
   onFocus,
-  onSelect
+  onSelect,
 }: {
   onFocus: (value: GraphSearchOption | null) => void
   onSelect: (value: GraphSearchOption | null) => void
@@ -88,13 +88,7 @@ const GraphSearchWithSelection = ({
     [selectedNode]
   )
 
-  return (
-    <GraphSearch
-      value={searchInitSelectedNode}
-      onFocus={onFocus}
-      onChange={onSelect}
-    />
-  )
+  return <GraphSearch value={searchInitSelectedNode} onFocus={onFocus} onChange={onSelect} />
 }
 
 const GraphEvents = () => {
@@ -132,11 +126,11 @@ const GraphEvents = () => {
       // Disable the autoscale at the first down interaction
       mousedown: (e) => {
         // Only set custom BBox if it's a drag operation (mouse button is pressed)
-        const mouseEvent = e.original as MouseEvent;
+        const mouseEvent = e.original as MouseEvent
         if (mouseEvent.buttons !== 0 && !sigma.getCustomBBox()) {
           sigma.setCustomBBox(sigma.getBBox())
         }
-      }
+      },
     })
   }, [registerEvents, sigma, draggedNode])
 
@@ -187,19 +181,19 @@ const GraphViewer = () => {
     return () => {
       // TAB is mount twice in vite dev mode, this is a workaround
 
-      const sigma = useGraphStore.getState().sigmaInstance;
+      const sigma = useGraphStore.getState().sigmaInstance
       if (sigma) {
         try {
           // Destroy sigma，and clear WebGL context
-          sigma.kill();
-          useGraphStore.getState().setSigmaInstance(null);
-          console.log('Cleared sigma instance on Graphviewer unmount');
+          sigma.kill()
+          useGraphStore.getState().setSigmaInstance(null)
+          console.log('Cleared sigma instance on Graphviewer unmount')
         } catch (error) {
-          console.error('Error cleaning up sigma instance:', error);
+          console.error('Error cleaning up sigma instance:', error)
         }
       }
-    };
-  }, []);
+    }
+  }, [])
 
   // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
   // but testing showed it wasn't executing or having any effect, while the backup mechanism
@@ -235,10 +229,7 @@ const GraphViewer = () => {
         <div className="absolute top-2 left-2 flex items-start gap-2">
           <GraphLabels />
           {showNodeSearchBar && !isThemeSwitching && (
-            <GraphSearchWithSelection
-              onFocus={onSearchFocus}
-              onSelect={onSearchSelect}
-            />
+            <GraphSearchWithSelection onFocus={onSearchFocus} onSelect={onSearchSelect} />
           )}
         </div>
 

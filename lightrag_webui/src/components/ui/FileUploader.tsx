@@ -2,17 +2,17 @@
  * @see https://github.com/sadmann7/file-uploader
  */
 
-import * as React from 'react'
 import { FileText, Upload, X } from 'lucide-react'
+import * as React from 'react'
 import Dropzone, { type DropzoneProps, type FileRejection } from 'react-dropzone'
-import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
-import { cn } from '@/lib/utils'
-import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import Button from '@/components/ui/Button'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { supportedFileTypes } from '@/lib/constants'
+import { cn } from '@/lib/utils'
+import { useControllableState } from '@radix-ui/react-use-controllable-state'
 
 interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
   /**
@@ -148,7 +148,7 @@ function FileUploader(props: FileUploaderProps) {
 
   const [files, setFiles] = useControllableState({
     prop: valueProp,
-    onChange: onValueChange
+    onChange: onValueChange,
   })
 
   const onDrop = React.useCallback(
@@ -157,13 +157,15 @@ function FileUploader(props: FileUploaderProps) {
       const totalFileCount = (files?.length ?? 0) + acceptedFiles.length + rejectedFiles.length
 
       // Check file count limits
-      if (!multiple && maxFileCount === 1 && (acceptedFiles.length + rejectedFiles.length) > 1) {
+      if (!multiple && maxFileCount === 1 && acceptedFiles.length + rejectedFiles.length > 1) {
         toast.error(t('documentPanel.uploadDocuments.fileUploader.singleFileLimit'))
         return
       }
 
       if (totalFileCount > maxFileCount) {
-        toast.error(t('documentPanel.uploadDocuments.fileUploader.maxFilesLimit', { count: maxFileCount }))
+        toast.error(
+          t('documentPanel.uploadDocuments.fileUploader.maxFilesLimit', { count: maxFileCount })
+        )
         return
       }
 
@@ -175,7 +177,9 @@ function FileUploader(props: FileUploaderProps) {
         } else {
           // Fall back to toast notifications if no callback is provided
           rejectedFiles.forEach(({ file }) => {
-            toast.error(t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name }))
+            toast.error(
+              t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name })
+            )
           })
         }
       }
@@ -183,7 +187,7 @@ function FileUploader(props: FileUploaderProps) {
       // Process accepted files
       const newAcceptedFiles = acceptedFiles.map((file) =>
         Object.assign(file, {
-          preview: URL.createObjectURL(file)
+          preview: URL.createObjectURL(file),
         })
       )
 
@@ -191,7 +195,7 @@ function FileUploader(props: FileUploaderProps) {
       const newRejectedFiles = rejectedFiles.map(({ file }) =>
         Object.assign(file, {
           preview: URL.createObjectURL(file),
-          rejected: true
+          rejected: true,
         })
       )
 
@@ -205,26 +209,28 @@ function FileUploader(props: FileUploaderProps) {
       // Only upload accepted files - make sure we're not uploading rejected files
       if (onUpload && acceptedFiles.length > 0) {
         // Filter out any files that might have been rejected by our custom validator
-        const validFiles = acceptedFiles.filter(file => {
+        const validFiles = acceptedFiles.filter((file) => {
           // Skip files without a name
           if (!file.name) {
-            return false;
+            return false
           }
 
           // Check if file type is accepted
-          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
-            return file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt));
-          });
+            return (
+              file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt))
+            )
+          })
 
           // Check file size
-          const isSizeValid = file.size <= maxSize;
+          const isSizeValid = file.size <= maxSize
 
-          return isAccepted && isSizeValid;
-        });
+          return isAccepted && isSizeValid
+        })
 
         if (validFiles.length > 0) {
-          onUpload(validFiles);
+          onUpload(validFiles)
         }
       }
     },
@@ -269,25 +275,28 @@ function FileUploader(props: FileUploaderProps) {
           if (!file.name) {
             return {
               code: 'invalid-file-name',
-              message: t('documentPanel.uploadDocuments.fileUploader.invalidFileName',
-                { fallback: 'Invalid file name' })
-            };
+              message: t('documentPanel.uploadDocuments.fileUploader.invalidFileName', {
+                fallback: 'Invalid file name',
+              }),
+            }
           }
 
           // Safely extract file extension
-          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`
 
           // Ensure accept object exists and has correct format
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
             // Ensure extensions is an array before calling includes
-            return file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt));
-          });
+            return (
+              file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt))
+            )
+          })
 
           if (!isAccepted) {
             return {
               code: 'file-invalid-type',
-              message: t('documentPanel.uploadDocuments.fileUploader.unsupportedType')
-            };
+              message: t('documentPanel.uploadDocuments.fileUploader.unsupportedType'),
+            }
           }
 
           // Check file size
@@ -295,12 +304,12 @@ function FileUploader(props: FileUploaderProps) {
             return {
               code: 'file-too-large',
               message: t('documentPanel.uploadDocuments.fileUploader.fileTooLarge', {
-                maxSize: formatBytes(maxSize)
-              })
-            };
+                maxSize: formatBytes(maxSize),
+              }),
+            }
           }
 
-          return null;
+          return null
         }}
       >
         {({ getRootProps, getInputProps, isDragActive }) => (
@@ -321,7 +330,9 @@ function FileUploader(props: FileUploaderProps) {
                 <div className="rounded-full border border-dashed p-3">
                   <Upload className="text-muted-foreground size-7" aria-hidden="true" />
                 </div>
-                <p className="text-muted-foreground font-medium">{t('documentPanel.uploadDocuments.fileUploader.dropHere')}</p>
+                <p className="text-muted-foreground font-medium">
+                  {t('documentPanel.uploadDocuments.fileUploader.dropHere')}
+                </p>
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center gap-4 sm:px-5">
@@ -338,8 +349,8 @@ function FileUploader(props: FileUploaderProps) {
                     <p className="text-muted-foreground/70 text-sm">
                       {t('documentPanel.uploadDocuments.fileUploader.uploadDescription', {
                         count: maxFileCount,
-                        isMultiple: maxFileCount === Infinity,
-                        maxSize: formatBytes(maxSize)
+                        isMultiple: maxFileCount === Number.POSITIVE_INFINITY,
+                        maxSize: formatBytes(maxSize),
                       })}
                       {t('documentPanel.uploadDocuments.fileTypes')}
                     </p>
@@ -372,7 +383,7 @@ function FileUploader(props: FileUploaderProps) {
 interface ProgressProps {
   value: number
   error?: boolean
-  showIcon?: boolean  // New property to control icon display
+  showIcon?: boolean // New property to control icon display
 }
 
 function Progress({ value, error }: ProgressProps) {
@@ -380,10 +391,7 @@ function Progress({ value, error }: ProgressProps) {
     <div className="relative h-2 w-full">
       <div className="h-full w-full overflow-hidden rounded-full bg-secondary">
         <div
-          className={cn(
-            'h-full transition-all',
-            error ? 'bg-red-400' : 'bg-primary'
-          )}
+          className={cn('h-full transition-all', error ? 'bg-red-400' : 'bg-primary')}
           style={{ width: `${value}%` }}
         />
       </div>
@@ -405,9 +413,9 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
       <div className="flex flex-1 gap-2.5">
         {error ? (
           <FileText className="text-red-400 size-10" aria-hidden="true" />
-        ) : (
-          isFileWithPreview(file) ? <FilePreview file={file} /> : null
-        )}
+        ) : isFileWithPreview(file) ? (
+          <FilePreview file={file} />
+        ) : null}
         <div className="flex w-full flex-col gap-2">
           <div className="flex flex-col gap-px">
             <p className="text-foreground/80 line-clamp-1 text-sm font-medium">{file.name}</p>
@@ -420,15 +428,17 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
               </div>
               <p>{error}</p>
             </div>
-          ) : (
-            progress ? <Progress value={progress} /> : null
-          )}
+          ) : progress ? (
+            <Progress value={progress} />
+          ) : null}
         </div>
       </div>
       <div className="flex items-center gap-2">
         <Button type="button" variant="outline" size="icon" className="size-7" onClick={onRemove}>
           <X className="size-4" aria-hidden="true" />
-          <span className="sr-only">{t('documentPanel.uploadDocuments.fileUploader.removeFile')}</span>
+          <span className="sr-only">
+            {t('documentPanel.uploadDocuments.fileUploader.removeFile')}
+          </span>
         </Button>
       </div>
     </div>

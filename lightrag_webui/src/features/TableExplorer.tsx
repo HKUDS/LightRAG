@@ -1,13 +1,25 @@
-import { useState, useMemo, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { getTableList, getTableSchema, getTableData } from '@/api/lightrag'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/Dialog'
-import DataTable from '@/components/ui/DataTable'
-import { ColumnDef } from '@tanstack/react-table'
+import { getTableData, getTableList, getTableSchema } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
-import { ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon, CopyIcon, CheckIcon } from 'lucide-react'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import DataTable from '@/components/ui/DataTable'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/Dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select'
+import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, RefreshCwIcon } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
 const HIDDEN_COLUMNS = ['meta']
@@ -93,17 +105,8 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
   }
 
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="h-6 w-6 p-0"
-      onClick={handleCopy}
-    >
-      {copied ? (
-        <CheckIcon className="h-3 w-3 text-green-500" />
-      ) : (
-        <CopyIcon className="h-3 w-3" />
-      )}
+    <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={handleCopy}>
+      {copied ? <CheckIcon className="h-3 w-3 text-green-500" /> : <CopyIcon className="h-3 w-3" />}
     </Button>
   )
 }
@@ -112,7 +115,7 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
 function RowDetailModal({
   row,
   open,
-  onOpenChange
+  onOpenChange,
 }: {
   row: Record<string, any> | null
   open: boolean
@@ -155,9 +158,7 @@ function RowDetailModal({
                     {formatValue(value)}
                   </pre>
                 ) : (
-                  <div className="whitespace-pre-wrap break-all">
-                    {formatValue(value)}
-                  </div>
+                  <div className="whitespace-pre-wrap break-all">{formatValue(value)}</div>
                 )}
               </div>
             </div>
@@ -198,7 +199,13 @@ export default function TableExplorer() {
   })
 
   // Fetch data
-  const { data: tableData, isLoading, isError, error, refetch } = useQuery({
+  const {
+    data: tableData,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['tables', effectiveSelectedTable, 'data', page],
     queryFn: () => getTableData(effectiveSelectedTable, page, pageSize),
     enabled: !!effectiveSelectedTable,
@@ -216,34 +223,37 @@ export default function TableExplorer() {
     if (tableData?.data && tableData.data.length > 0) {
       const allKeys = new Set<string>()
       tableData.data.forEach((row: any) => {
-        Object.keys(row).forEach(key => allKeys.add(key))
+        Object.keys(row).forEach((key) => allKeys.add(key))
       })
 
-      Array.from(allKeys).sort().forEach((key) => {
-        if (HIDDEN_COLUMNS.includes(key)) return // Skip hidden columns
-        cols.push({
-          accessorKey: key,
-          header: () => (
-            <div className="font-semibold text-xs truncate max-w-[150px]" title={key}>
-              {key}
-            </div>
-          ),
-          cell: ({ row }) => {
-            const value = row.getValue(key)
-            const displayValue = truncateValue(value, 50)
-            const isLong = typeof value === 'object' || (typeof value === 'string' && value.length > 50)
-
-            return (
-              <div
-                className={`text-xs max-w-[200px] truncate ${isLong ? 'cursor-pointer hover:text-primary' : ''}`}
-                title={isLong ? 'Click row to see full value' : displayValue}
-              >
-                {displayValue}
+      Array.from(allKeys)
+        .sort()
+        .forEach((key) => {
+          if (HIDDEN_COLUMNS.includes(key)) return // Skip hidden columns
+          cols.push({
+            accessorKey: key,
+            header: () => (
+              <div className="font-semibold text-xs truncate max-w-[150px]" title={key}>
+                {key}
               </div>
-            )
-          },
+            ),
+            cell: ({ row }) => {
+              const value = row.getValue(key)
+              const displayValue = truncateValue(value, 50)
+              const isLong =
+                typeof value === 'object' || (typeof value === 'string' && value.length > 50)
+
+              return (
+                <div
+                  className={`text-xs max-w-[200px] truncate ${isLong ? 'cursor-pointer hover:text-primary' : ''}`}
+                  title={isLong ? 'Click row to see full value' : displayValue}
+                >
+                  {displayValue}
+                </div>
+              )
+            },
+          })
         })
-      })
     }
     return cols
   }, [tableData?.data])
@@ -259,7 +269,11 @@ export default function TableExplorer() {
             <div className="flex items-center gap-2">
               <Select value={effectiveSelectedTable} onValueChange={handleTableChange}>
                 <SelectTrigger className="w-[250px]">
-                  <SelectValue placeholder={tableList && tableList.length > 0 ? 'Select a table' : 'No tables available'} />
+                  <SelectValue
+                    placeholder={
+                      tableList && tableList.length > 0 ? 'Select a table' : 'No tables available'
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   {tableList && tableList.length > 0 ? (
@@ -302,7 +316,9 @@ export default function TableExplorer() {
           ) : isError ? (
             <div className="flex flex-col items-center justify-center h-full text-destructive gap-2">
               <p className="font-medium">Failed to load table data</p>
-              <p className="text-sm text-muted-foreground">{error instanceof Error ? error.message : 'Unknown error'}</p>
+              <p className="text-sm text-muted-foreground">
+                {error instanceof Error ? error.message : 'Unknown error'}
+              </p>
               <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-2">
                 Retry
               </Button>
@@ -322,7 +338,8 @@ export default function TableExplorer() {
           <div className="text-sm text-muted-foreground">
             {tableData?.total ? (
               <>
-                Showing {((page - 1) * pageSize) + 1} to {Math.min(page * pageSize, tableData.total)} of {tableData.total} rows
+                Showing {(page - 1) * pageSize + 1} to {Math.min(page * pageSize, tableData.total)}{' '}
+                of {tableData.total} rows
               </>
             ) : (
               'No results'
@@ -332,7 +349,7 @@ export default function TableExplorer() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPage(p => Math.max(1, p - 1))}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page <= 1 || isLoading}
             >
               <ChevronLeftIcon className="h-4 w-4 mr-1" />
@@ -344,7 +361,7 @@ export default function TableExplorer() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages || isLoading}
             >
               Next
@@ -354,11 +371,7 @@ export default function TableExplorer() {
         </div>
       </Card>
 
-      <RowDetailModal
-        row={selectedRow}
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-      />
+      <RowDetailModal row={selectedRow} open={modalOpen} onOpenChange={setModalOpen} />
     </div>
   )
 }

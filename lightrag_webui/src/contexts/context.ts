@@ -1,12 +1,12 @@
-import { createContext } from 'react';
-import { TabVisibilityContextType } from './types';
+import { createContext } from 'react'
+import type { TabVisibilityContextType } from './types'
 
 // Default context value
 const defaultContext: TabVisibilityContextType = {
   visibleTabs: {},
   setTabVisibility: () => {},
   isTabVisible: () => false,
-};
+}
 
 // Create the context
-export const TabVisibilityContext = createContext<TabVisibilityContextType>(defaultContext);
+export const TabVisibilityContext = createContext<TabVisibilityContextType>(defaultContext)

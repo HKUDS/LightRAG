@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { TabVisibilityContext } from './context';
-import { TabVisibilityContextType } from './types';
-import { useSettingsStore } from '@/stores/settings';
+import { useSettingsStore } from '@/stores/settings'
+import type React from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { TabVisibilityContext } from './context'
+import type { TabVisibilityContextType } from './types'
 
 interface TabVisibilityProviderProps {
-  children: React.ReactNode;
+  children: React.ReactNode
 }
 
 /**
@@ -13,26 +14,26 @@ interface TabVisibilityProviderProps {
  */
 export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ children }) => {
   // Get current tab from settings store
-  const currentTab = useSettingsStore.use.currentTab();
+  const currentTab = useSettingsStore.use.currentTab()
 
   // Initialize visibility state with all tabs visible
   const [visibleTabs, setVisibleTabs] = useState<Record<string, boolean>>(() => ({
-    'documents': true,
+    documents: true,
     'knowledge-graph': true,
-    'retrieval': true,
-    'api': true
-  }));
+    retrieval: true,
+    api: true,
+  }))
 
   // Keep all tabs visible because we use CSS to control TAB visibility instead of React
   useEffect(() => {
     setVisibleTabs((prev) => ({
       ...prev,
-      'documents': true,
+      documents: true,
       'knowledge-graph': true,
-      'retrieval': true,
-      'api': true
-    }));
-  }, [currentTab]);
+      retrieval: true,
+      api: true,
+    }))
+  }, [currentTab])
 
   // Create the context value with memoization to prevent unnecessary re-renders
   const contextValue = useMemo<TabVisibilityContextType>(
@@ -42,18 +43,16 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
         setVisibleTabs((prev) => ({
           ...prev,
           [tabId]: isVisible,
-        }));
+        }))
       },
       isTabVisible: (tabId: string) => !!visibleTabs[tabId],
     }),
     [visibleTabs]
-  );
+  )
 
   return (
-    <TabVisibilityContext.Provider value={contextValue}>
-      {children}
-    </TabVisibilityContext.Provider>
-  );
-};
+    <TabVisibilityContext.Provider value={contextValue}>{children}</TabVisibilityContext.Provider>
+  )
+}
 
-export default TabVisibilityProvider;
+export default TabVisibilityProvider

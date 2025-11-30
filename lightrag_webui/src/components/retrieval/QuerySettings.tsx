@@ -1,22 +1,22 @@
-import { useCallback, useMemo } from 'react'
-import { QueryMode, QueryRequest } from '@/api/lightrag'
+import type { QueryMode, QueryRequest } from '@/api/lightrag'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
-import UserPromptInputWithHistory from '@/components/ui/UserPromptInputWithHistory'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
   SelectContent,
   SelectGroup,
   SelectItem,
   SelectTrigger,
-  SelectValue
+  SelectValue,
 } from '@/components/ui/Select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import UserPromptInputWithHistory from '@/components/ui/UserPromptInputWithHistory'
 import { useSettingsStore } from '@/stores/settings'
-import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
+import { useCallback, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 export default function QuerySettings() {
   const { t } = useTranslation()
@@ -27,29 +27,41 @@ export default function QuerySettings() {
     useSettingsStore.getState().updateQuerySettings({ [key]: value })
   }, [])
 
-  const handleSelectFromHistory = useCallback((prompt: string) => {
-    handleChange('user_prompt', prompt)
-  }, [handleChange])
+  const handleSelectFromHistory = useCallback(
+    (prompt: string) => {
+      handleChange('user_prompt', prompt)
+    },
+    [handleChange]
+  )
 
-  const handleDeleteFromHistory = useCallback((index: number) => {
-    const newHistory = [...userPromptHistory]
-    newHistory.splice(index, 1)
-    useSettingsStore.getState().setUserPromptHistory(newHistory)
-  }, [userPromptHistory])
+  const handleDeleteFromHistory = useCallback(
+    (index: number) => {
+      const newHistory = [...userPromptHistory]
+      newHistory.splice(index, 1)
+      useSettingsStore.getState().setUserPromptHistory(newHistory)
+    },
+    [userPromptHistory]
+  )
 
   // Default values for reset functionality
-  const defaultValues = useMemo(() => ({
-    mode: 'mix' as QueryMode,
-    top_k: 40,
-    chunk_top_k: 20,
-    max_entity_tokens: 6000,
-    max_relation_tokens: 8000,
-    max_total_tokens: 30000
-  }), [])
+  const defaultValues = useMemo(
+    () => ({
+      mode: 'mix' as QueryMode,
+      top_k: 40,
+      chunk_top_k: 20,
+      max_entity_tokens: 6000,
+      max_relation_tokens: 8000,
+      max_total_tokens: 30000,
+    }),
+    []
+  )
 
-  const handleReset = useCallback((key: keyof typeof defaultValues) => {
-    handleChange(key, defaultValues[key])
-  }, [handleChange, defaultValues])
+  const handleReset = useCallback(
+    (key: keyof typeof defaultValues) => {
+      handleChange(key, defaultValues[key])
+    },
+    [handleChange, defaultValues]
+  )
 
   // Reset button component
   const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
@@ -76,7 +88,9 @@ export default function QuerySettings() {
     <Card className="flex shrink-0 flex-col w-[280px]">
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
-        <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
+        <CardDescription className="sr-only">
+          {t('retrievePanel.querySettings.parametersDescription')}
+        </CardDescription>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
@@ -136,19 +150,28 @@ export default function QuerySettings() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
-                      <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
-                      <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
-                      <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
-                      <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
-                      <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
+                      <SelectItem value="naive">
+                        {t('retrievePanel.querySettings.queryModeOptions.naive')}
+                      </SelectItem>
+                      <SelectItem value="local">
+                        {t('retrievePanel.querySettings.queryModeOptions.local')}
+                      </SelectItem>
+                      <SelectItem value="global">
+                        {t('retrievePanel.querySettings.queryModeOptions.global')}
+                      </SelectItem>
+                      <SelectItem value="hybrid">
+                        {t('retrievePanel.querySettings.queryModeOptions.hybrid')}
+                      </SelectItem>
+                      <SelectItem value="mix">
+                        {t('retrievePanel.querySettings.queryModeOptions.mix')}
+                      </SelectItem>
+                      <SelectItem value="bypass">
+                        {t('retrievePanel.querySettings.queryModeOptions.bypass')}
+                      </SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-                <ResetButton
-                  onClick={() => handleReset('mode')}
-                  title="Reset to default (Mix)"
-                />
+                <ResetButton onClick={() => handleReset('mode')} title="Reset to default (Mix)" />
               </div>
             </>
 
@@ -173,11 +196,11 @@ export default function QuerySettings() {
                   value={querySettings.top_k ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    handleChange('top_k', value === '' ? '' : parseInt(value) || 0)
+                    handleChange('top_k', value === '' ? '' : Number.parseInt(value) || 0)
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
+                    if (value === '' || isNaN(Number.parseInt(value))) {
                       handleChange('top_k', 40)
                     }
                   }}
@@ -185,10 +208,7 @@ export default function QuerySettings() {
                   placeholder={t('retrievePanel.querySettings.topKPlaceholder')}
                   className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
                 />
-                <ResetButton
-                  onClick={() => handleReset('top_k')}
-                  title="Reset to default"
-                />
+                <ResetButton onClick={() => handleReset('top_k')} title="Reset to default" />
               </div>
             </>
 
@@ -213,11 +233,11 @@ export default function QuerySettings() {
                   value={querySettings.chunk_top_k ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    handleChange('chunk_top_k', value === '' ? '' : parseInt(value) || 0)
+                    handleChange('chunk_top_k', value === '' ? '' : Number.parseInt(value) || 0)
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
+                    if (value === '' || isNaN(Number.parseInt(value))) {
                       handleChange('chunk_top_k', 20)
                     }
                   }}
@@ -225,10 +245,7 @@ export default function QuerySettings() {
                   placeholder={t('retrievePanel.querySettings.chunkTopKPlaceholder')}
                   className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
                 />
-                <ResetButton
-                  onClick={() => handleReset('chunk_top_k')}
-                  title="Reset to default"
-                />
+                <ResetButton onClick={() => handleReset('chunk_top_k')} title="Reset to default" />
               </div>
             </>
 
@@ -253,11 +270,14 @@ export default function QuerySettings() {
                   value={querySettings.max_entity_tokens ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    handleChange('max_entity_tokens', value === '' ? '' : parseInt(value) || 0)
+                    handleChange(
+                      'max_entity_tokens',
+                      value === '' ? '' : Number.parseInt(value) || 0
+                    )
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
+                    if (value === '' || isNaN(Number.parseInt(value))) {
                       handleChange('max_entity_tokens', 6000)
                     }
                   }}
@@ -293,11 +313,14 @@ export default function QuerySettings() {
                   value={querySettings.max_relation_tokens ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    handleChange('max_relation_tokens', value === '' ? '' : parseInt(value) || 0)
+                    handleChange(
+                      'max_relation_tokens',
+                      value === '' ? '' : Number.parseInt(value) || 0
+                    )
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
+                    if (value === '' || isNaN(Number.parseInt(value))) {
                       handleChange('max_relation_tokens', 8000)
                     }
                   }}
@@ -333,11 +356,14 @@ export default function QuerySettings() {
                   value={querySettings.max_total_tokens ?? ''}
                   onChange={(e) => {
                     const value = e.target.value
-                    handleChange('max_total_tokens', value === '' ? '' : parseInt(value) || 0)
+                    handleChange(
+                      'max_total_tokens',
+                      value === '' ? '' : Number.parseInt(value) || 0
+                    )
                   }}
                   onBlur={(e) => {
                     const value = e.target.value
-                    if (value === '' || isNaN(parseInt(value))) {
+                    if (value === '' || isNaN(Number.parseInt(value))) {
                       handleChange('max_total_tokens', 30000)
                     }
                   }}
@@ -448,7 +474,6 @@ export default function QuerySettings() {
                 />
               </div>
             </>
-
           </div>
         </div>
       </CardContent>

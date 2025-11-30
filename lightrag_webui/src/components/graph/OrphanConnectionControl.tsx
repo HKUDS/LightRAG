@@ -1,11 +1,11 @@
-import { useState } from 'react'
 import { Link } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import Button from '@/components/ui/Button'
-import OrphanConnectionDialog from './OrphanConnectionDialog'
 import { controlButtonVariant } from '@/lib/constants'
 import { useBackendState } from '@/stores/state'
+import OrphanConnectionDialog from './OrphanConnectionDialog'
 
 /**
  * Control button for orphan entity connection.
@@ -31,10 +31,7 @@ export default function OrphanConnectionControl() {
       >
         <Link />
       </Button>
-      <OrphanConnectionDialog
-        open={showDialog}
-        onOpenChange={setShowDialog}
-      />
+      <OrphanConnectionDialog open={showDialog} onOpenChange={setShowDialog} />
     </>
   )
 }

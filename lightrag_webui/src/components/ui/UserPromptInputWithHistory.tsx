@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronDown, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ChevronDown, X } from 'lucide-react'
+import type React from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Input from './Input'
 
 interface UserPromptInputWithHistoryProps {
@@ -22,7 +23,7 @@ export default function UserPromptInputWithHistory({
   id,
   history,
   onSelectFromHistory,
-  onDeleteFromHistory
+  onDeleteFromHistory,
 }: UserPromptInputWithHistoryProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(-1)
@@ -46,46 +47,47 @@ export default function UserPromptInputWithHistory({
   }, [])
 
   // Handle keyboard navigation
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!isOpen) {
-      if (e.key === 'ArrowDown' && history.length > 0) {
-        e.preventDefault()
-        setIsOpen(true)
-        setSelectedIndex(0)
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (!isOpen) {
+        if (e.key === 'ArrowDown' && history.length > 0) {
+          e.preventDefault()
+          setIsOpen(true)
+          setSelectedIndex(0)
+        }
+        return
       }
-      return
-    }
 
-    switch (e.key) {
-    case 'ArrowDown':
-      e.preventDefault()
-      setSelectedIndex(prev =>
-        prev < history.length - 1 ? prev + 1 : prev
-      )
-      break
-    case 'ArrowUp':
-      e.preventDefault()
-      setSelectedIndex(prev => prev > 0 ? prev - 1 : -1)
-      if (selectedIndex === 0) {
-        setSelectedIndex(-1)
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault()
+          setSelectedIndex((prev) => (prev < history.length - 1 ? prev + 1 : prev))
+          break
+        case 'ArrowUp':
+          e.preventDefault()
+          setSelectedIndex((prev) => (prev > 0 ? prev - 1 : -1))
+          if (selectedIndex === 0) {
+            setSelectedIndex(-1)
+          }
+          break
+        case 'Enter':
+          if (selectedIndex >= 0 && selectedIndex < history.length) {
+            e.preventDefault()
+            const selectedPrompt = history[selectedIndex]
+            onSelectFromHistory(selectedPrompt)
+            setIsOpen(false)
+            setSelectedIndex(-1)
+          }
+          break
+        case 'Escape':
+          e.preventDefault()
+          setIsOpen(false)
+          setSelectedIndex(-1)
+          break
       }
-      break
-    case 'Enter':
-      if (selectedIndex >= 0 && selectedIndex < history.length) {
-        e.preventDefault()
-        const selectedPrompt = history[selectedIndex]
-        onSelectFromHistory(selectedPrompt)
-        setIsOpen(false)
-        setSelectedIndex(-1)
-      }
-      break
-    case 'Escape':
-      e.preventDefault()
-      setIsOpen(false)
-      setSelectedIndex(-1)
-      break
-    }
-  }, [isOpen, selectedIndex, history, onSelectFromHistory])
+    },
+    [isOpen, selectedIndex, history, onSelectFromHistory]
+  )
 
   const handleInputClick = () => {
     if (history.length > 0) {
@@ -114,26 +116,34 @@ export default function UserPromptInputWithHistory({
   }
 
   // Handle delete history item with boundary cases
-  const handleDeleteHistoryItem = useCallback((index: number, e: React.MouseEvent) => {
-    e.stopPropagation() // Prevent triggering item selection
-    onDeleteFromHistory?.(index)
+  const handleDeleteHistoryItem = useCallback(
+    (index: number, e: React.MouseEvent) => {
+      e.stopPropagation() // Prevent triggering item selection
+      onDeleteFromHistory?.(index)
 
-    // Handle boundary cases
-    if (history.length === 1) {
-      // Deleting the last item, close dropdown
-      setIsOpen(false)
-      setSelectedIndex(-1)
-    } else if (selectedIndex === index) {
-      // Deleting currently selected item, adjust selection
-      setSelectedIndex(prev => prev > 0 ? prev - 1 : -1)
-    } else if (selectedIndex > index) {
-      // Deleting item before selected item, adjust index
-      setSelectedIndex(prev => prev - 1)
-    }
-  }, [onDeleteFromHistory, history.length, selectedIndex])
+      // Handle boundary cases
+      if (history.length === 1) {
+        // Deleting the last item, close dropdown
+        setIsOpen(false)
+        setSelectedIndex(-1)
+      } else if (selectedIndex === index) {
+        // Deleting currently selected item, adjust selection
+        setSelectedIndex((prev) => (prev > 0 ? prev - 1 : -1))
+      } else if (selectedIndex > index) {
+        // Deleting item before selected item, adjust index
+        setSelectedIndex((prev) => prev - 1)
+      }
+    },
+    [onDeleteFromHistory, history.length, selectedIndex]
+  )
 
   return (
-    <div className="relative" ref={dropdownRef} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+    <div
+      className="relative"
+      ref={dropdownRef}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
       <div className="relative">
         <Input
           ref={inputRef}

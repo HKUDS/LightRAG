@@ -1,15 +1,15 @@
-import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/stores/state'
-import { useSettingsStore } from '@/stores/settings'
-import { loginToServer, getAuthStatus } from '@/api/lightrag'
-import { toast } from 'sonner'
-import { useTranslation } from 'react-i18next'
+import { getAuthStatus, loginToServer } from '@/api/lightrag'
+import AppSettings from '@/components/AppSettings'
+import Button from '@/components/ui/Button'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
-import Button from '@/components/ui/Button'
+import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/state'
 import { ZapIcon } from 'lucide-react'
-import AppSettings from '@/components/AppSettings'
+import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 
 const LoginPage = () => {
   const navigate = useNavigate()
@@ -19,21 +19,20 @@ const LoginPage = () => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
-  const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
+  const authCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
 
   useEffect(() => {
     console.log('LoginPage mounted')
-  }, []);
+  }, [])
 
   // Check if authentication is configured, skip login if not
   useEffect(() => {
-
     const checkAuthConfig = async () => {
       // Prevent duplicate calls in Vite dev mode
       if (authCheckRef.current) {
-        return;
+        return
       }
-      authCheckRef.current = true;
+      authCheckRef.current = true
 
       try {
         // If already authenticated, redirect to home
@@ -47,12 +46,19 @@ const LoginPage = () => {
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
-          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
         }
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
-          login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
+          login(
+            status.access_token,
+            true,
+            status.core_version,
+            status.api_version,
+            status.webui_title || null,
+            status.webui_description || null
+          )
           if (status.message) {
             toast.info(status.message)
           }
@@ -61,12 +67,11 @@ const LoginPage = () => {
         }
 
         // Only set checkingAuth to false if we need to show the login page
-        setCheckingAuth(false);
-
+        setCheckingAuth(false)
       } catch (error) {
         console.error('Failed to check auth configuration:', error)
         // Also set checkingAuth to false in case of error
-        setCheckingAuth(false);
+        setCheckingAuth(false)
       }
       // Removed finally block as we're setting checkingAuth earlier
     }
@@ -75,8 +80,7 @@ const LoginPage = () => {
     checkAuthConfig()
 
     // Cleanup function to prevent state updates after unmount
-    return () => {
-    }
+    return () => {}
   }, [isAuthenticated, login, navigate])
 
   // Don't render anything while checking auth
@@ -115,16 +119,26 @@ const LoginPage = () => {
 
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
-      login(response.access_token, isGuestMode, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null)
+      login(
+        response.access_token,
+        isGuestMode,
+        response.core_version,
+        response.api_version,
+        response.webui_title || null,
+        response.webui_description || null
+      )
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
       }
 
       if (isGuestMode) {
         // Show authentication disabled notification
-        toast.info(response.message || t('login.authDisabled', 'Authentication is disabled. Using guest access.'))
+        toast.info(
+          response.message ||
+            t('login.authDisabled', 'Authentication is disabled. Using guest access.')
+        )
       } else {
         toast.success(t('login.successMessage'))
       }
@@ -158,9 +172,7 @@ const LoginPage = () => {
             </div>
             <div className="text-center space-y-2">
               <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
-              <p className="text-muted-foreground text-sm">
-                {t('login.description')}
-              </p>
+              <p className="text-muted-foreground text-sm">{t('login.description')}</p>
             </div>
           </div>
         </CardHeader>

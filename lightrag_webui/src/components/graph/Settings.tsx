@@ -1,17 +1,17 @@
-import { useState, useCallback, useEffect} from 'react'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
-import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
-import Separator from '@/components/ui/Separator'
+import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
+import Separator from '@/components/ui/Separator'
+import { useCallback, useEffect, useState } from 'react'
 
-import { controlButtonVariant } from '@/lib/constants'
-import { useSettingsStore } from '@/stores/settings'
-import { useGraphStore } from '@/stores/graph'
 import useRandomGraph from '@/hooks/useRandomGraph'
+import { controlButtonVariant } from '@/lib/constants'
+import { useGraphStore } from '@/stores/graph'
+import { useSettingsStore } from '@/stores/settings'
 
-import { SettingsIcon, Undo2, Shuffle } from 'lucide-react'
-import { useTranslation } from 'react-i18next';
+import { SettingsIcon, Shuffle, Undo2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 /**
  * Component that displays a checkbox with a label.
@@ -19,14 +19,14 @@ import { useTranslation } from 'react-i18next';
 const LabeledCheckBox = ({
   checked,
   onCheckedChange,
-  label
+  label,
 }: {
   checked: boolean
   onCheckedChange: () => void
   label: string
 }) => {
   // Create unique ID using the label text converted to lowercase with spaces removed
-  const id = `checkbox-${label.toLowerCase().replace(/\s+/g, '-')}`;
+  const id = `checkbox-${label.toLowerCase().replace(/\s+/g, '-')}`
 
   return (
     <div className="flex items-center gap-2">
@@ -50,7 +50,7 @@ const LabeledNumberInput = ({
   label,
   min,
   max,
-  defaultValue
+  defaultValue,
 }: {
   value: number
   onEditFinished: (value: number) => void
@@ -59,10 +59,10 @@ const LabeledNumberInput = ({
   max?: number
   defaultValue?: number
 }) => {
-  const { t } = useTranslation();
+  const { t } = useTranslation()
   const [currentValue, setCurrentValue] = useState<number | null>(value)
   // Create unique ID using the label text converted to lowercase with spaces removed
-  const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
+  const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`
 
   useEffect(() => {
     setCurrentValue(value)
@@ -182,14 +182,14 @@ export default function Settings() {
   const setEnableHideUnselectedEdges = useCallback(
     () =>
       useSettingsStore.setState((pre) => ({
-        enableHideUnselectedEdges: !pre.enableHideUnselectedEdges
+        enableHideUnselectedEdges: !pre.enableHideUnselectedEdges,
       })),
     []
   )
   const setShowEdgeLabel = useCallback(
     () =>
       useSettingsStore.setState((pre) => ({
-        showEdgeLabel: !pre.showEdgeLabel
+        showEdgeLabel: !pre.showEdgeLabel,
       })),
     []
   )
@@ -225,11 +225,14 @@ export default function Settings() {
     }, 300)
   }, [])
 
-  const setGraphMaxNodes = useCallback((nodes: number) => {
-    const maxLimit = backendMaxGraphNodes || 1000
-    if (nodes < 1 || nodes > maxLimit) return
-    useSettingsStore.getState().setGraphMaxNodes(nodes, true)
-  }, [backendMaxGraphNodes])
+  const setGraphMaxNodes = useCallback(
+    (nodes: number) => {
+      const maxLimit = backendMaxGraphNodes || 1000
+      if (nodes < 1 || nodes > maxLimit) return
+      useSettingsStore.getState().setGraphMaxNodes(nodes, true)
+    },
+    [backendMaxGraphNodes]
+  )
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
     if (iterations < 1) return
@@ -255,9 +258,9 @@ export default function Settings() {
     useGraphStore.getState().setSigmaGraph(graph)
   }, [randomGraph])
 
-  const { t } = useTranslation();
+  const { t } = useTranslation()
 
-  const saveSettings = () => setOpened(false);
+  const saveSettings = () => setOpened(false)
 
   return (
     <>
@@ -331,7 +334,10 @@ export default function Settings() {
             />
 
             <div className="flex flex-col gap-2">
-              <label htmlFor="edge-size-min" className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+              <label
+                htmlFor="edge-size-min"
+                className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
                 {t('graphPanel.sideBar.settings.edgeSizeRange')}
               </label>
               <div className="flex items-center gap-2">
@@ -340,9 +346,9 @@ export default function Settings() {
                   type="number"
                   value={minEdgeSize}
                   onChange={(e) => {
-                    const newValue = Number(e.target.value);
+                    const newValue = Number(e.target.value)
                     if (!isNaN(newValue) && newValue >= 1 && newValue <= maxEdgeSize) {
-                      useSettingsStore.setState({ minEdgeSize: newValue });
+                      useSettingsStore.setState({ minEdgeSize: newValue })
                     }
                   }}
                   className="h-6 w-16 min-w-0 pr-1"
@@ -356,9 +362,14 @@ export default function Settings() {
                     type="number"
                     value={maxEdgeSize}
                     onChange={(e) => {
-                      const newValue = Number(e.target.value);
-                      if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1 && newValue <= 10) {
-                        useSettingsStore.setState({ maxEdgeSize: newValue });
+                      const newValue = Number(e.target.value)
+                      if (
+                        !isNaN(newValue) &&
+                        newValue >= minEdgeSize &&
+                        newValue >= 1 &&
+                        newValue <= 10
+                      ) {
+                        useSettingsStore.setState({ maxEdgeSize: newValue })
                       }
                     }}
                     className="h-6 w-16 min-w-0 pr-1"
@@ -451,15 +462,9 @@ export default function Settings() {
                 <Separator />
               </>
             )}
-            <Button
-              onClick={saveSettings}
-              variant="outline"
-              size="sm"
-              className="ml-auto px-4"
-            >
+            <Button onClick={saveSettings} variant="outline" size="sm" className="ml-auto px-4">
               {t('graphPanel.sideBar.settings.save')}
             </Button>
-
           </div>
         </PopoverContent>
       </Popover>

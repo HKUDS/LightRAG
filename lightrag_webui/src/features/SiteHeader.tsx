@@ -1,15 +1,15 @@
-import Button from '@/components/ui/Button'
-import { webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
 import StatusIndicator from '@/components/status/StatusIndicator'
+import Button from '@/components/ui/Button'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import { webuiPrefix } from '@/lib/constants'
+import { cn } from '@/lib/utils'
+import { navigationService } from '@/services/navigation'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
-import { cn } from '@/lib/utils'
+import { BrainIcon, LogOutIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { navigationService } from '@/services/navigation'
-import { LogOutIcon, BrainIcon } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 interface NavigationTabProps {
   value: string
@@ -81,7 +81,7 @@ export default function SiteHeader() {
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
 
   const handleLogout = () => {
-    navigationService.navigateToLogin();
+    navigationService.navigateToLogin()
   }
 
   return (
@@ -96,14 +96,10 @@ export default function SiteHeader() {
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="font-medium text-sm cursor-default">
-                    {webuiTitle}
-                  </span>
+                  <span className="font-medium text-sm cursor-default">{webuiTitle}</span>
                 </TooltipTrigger>
                 {webuiDescription && (
-                  <TooltipContent side="bottom">
-                    {webuiDescription}
-                  </TooltipContent>
+                  <TooltipContent side="bottom">{webuiDescription}</TooltipContent>
                 )}
               </Tooltip>
             </TooltipProvider>

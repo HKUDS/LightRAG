@@ -1,8 +1,8 @@
 import Button from '@/components/ui/Button'
-import { useCallback } from 'react'
 import { controlButtonVariant } from '@/lib/constants'
-import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
+import { useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 
 /**
  * Component that toggles the language between English and Chinese.

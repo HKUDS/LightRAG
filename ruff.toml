@@ -1,0 +1,34 @@
+# Ruff configuration for local lint runs
+
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+  "lightrag_webui",   # frontend (TS/JS)
+  "node_modules",
+  ".venv",
+  "build",
+  "dist",
+]
+
+[lint]
+# Start with core errors + imports, then add a small set of safety/style checks.
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "I",  # import sorting
+  "B",  # bugbear
+  "UP", # pyupgrade
+  "C4", # comprehensions
+  "SIM",# simplify
+  "TID",# tidy imports
+  "RUF" # ruff-specific
+]
+ignore = [
+  "E402", # allow imports after other statements (mirrors pre-commit hook)
+]
+fixable = ["ALL"]
+
+[format]
+quote-style = "single"
+indent-style = "space"
+line-ending = "lf"

@@ -1,4 +1,4 @@
-import { ButtonVariantType } from '@/components/ui/Button'
+import type { ButtonVariantType } from '@/components/ui/Button'
 
 export const backendBaseUrl = ''
 export const webuiPrefix = '/webui/'
@@ -45,7 +45,7 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
-    '.rtf',  //# Rich Text Format
+    '.rtf', //# Rich Text Format
     '.odt', // # OpenDocument Text
     '.tex', // # LaTeX
     '.epub', // # Electronic Publication
@@ -74,17 +74,17 @@ export const supportedFileTypes = {
     '.rb', // # Ruby source code
     '.php', // # PHP source code
     '.css', // # Cascading Style Sheets
-    '.scss',  //# Sassy CSS
-    '.less'
+    '.scss', //# Sassy CSS
+    '.less',
   ],
   'application/pdf': ['.pdf'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
 }
 
 export const SiteInfo = {
   name: 'LightRAG',
   home: '/',
-  github: 'https://github.com/HKUDS/LightRAG'
+  github: 'https://github.com/HKUDS/LightRAG',
 }

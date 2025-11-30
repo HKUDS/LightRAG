@@ -1,8 +1,8 @@
 import { cn } from '@/lib/utils'
 import { useBackendState } from '@/stores/state'
 import { useEffect, useState } from 'react'
-import StatusDialog from './StatusDialog'
 import { useTranslation } from 'react-i18next'
+import StatusDialog from './StatusDialog'
 
 const StatusIndicator = ({ className }: { className?: string }) => {
   const { t } = useTranslation()
@@ -21,10 +21,7 @@ const StatusIndicator = ({ className }: { className?: string }) => {
 
   return (
     <div className={cn('flex items-center gap-2 opacity-80 select-none', className)}>
-      <div
-        className="flex cursor-pointer items-center gap-2"
-        onClick={() => setDialogOpen(true)}
-      >
+      <div className="flex cursor-pointer items-center gap-2" onClick={() => setDialogOpen(true)}>
         <div
           className={cn(
             'h-3 w-3 rounded-full transition-all duration-300',
@@ -36,15 +33,13 @@ const StatusIndicator = ({ className }: { className?: string }) => {
           )}
         />
         <span className="text-muted-foreground text-xs">
-          {health ? t('graphPanel.statusIndicator.connected') : t('graphPanel.statusIndicator.disconnected')}
+          {health
+            ? t('graphPanel.statusIndicator.connected')
+            : t('graphPanel.statusIndicator.disconnected')}
         </span>
       </div>
 
-      <StatusDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        status={status}
-      />
+      <StatusDialog open={dialogOpen} onOpenChange={setDialogOpen} status={status} />
     </div>
   )
 }

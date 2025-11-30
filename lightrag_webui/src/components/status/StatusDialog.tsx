@@ -1,12 +1,12 @@
-import { LightragStatus } from '@/api/lightrag'
-import { useTranslation } from 'react-i18next'
+import type { LightragStatus } from '@/api/lightrag'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from '@/components/ui/Dialog'
+import { useTranslation } from 'react-i18next'
 import StatusCard from './StatusCard'
 
 interface StatusDialogProps {
@@ -23,9 +23,7 @@ const StatusDialog = ({ open, onOpenChange, status }: StatusDialogProps) => {
       <DialogContent className="sm:max-w-[700px]">
         <DialogHeader>
           <DialogTitle>{t('graphPanel.statusDialog.title')}</DialogTitle>
-          <DialogDescription>
-            {t('graphPanel.statusDialog.description')}
-          </DialogDescription>
+          <DialogDescription>{t('graphPanel.statusDialog.description')}</DialogDescription>
         </DialogHeader>
         <StatusCard status={status} />
       </DialogContent>

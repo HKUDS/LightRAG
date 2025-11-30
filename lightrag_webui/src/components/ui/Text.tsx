@@ -7,7 +7,7 @@ const Text = ({
   tooltipClassName,
   tooltip,
   side,
-  onClick
+  onClick,
 }: {
   text: string
   className?: string

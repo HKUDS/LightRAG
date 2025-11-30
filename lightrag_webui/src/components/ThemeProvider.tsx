@@ -1,5 +1,5 @@
+import { type Theme, useSettingsStore } from '@/stores/settings'
 import { createContext, useEffect } from 'react'
-import { Theme, useSettingsStore } from '@/stores/settings'
 
 type ThemeProviderProps = {
   children: React.ReactNode
@@ -12,7 +12,7 @@ type ThemeProviderState = {
 
 const initialState: ThemeProviderState = {
   theme: 'system',
-  setTheme: () => null
+  setTheme: () => null,
 }
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
@@ -46,7 +46,7 @@ export default function ThemeProvider({ children, ...props }: ThemeProviderProps
 
   const value = {
     theme,
-    setTheme
+    setTheme,
   }
 
   return (

@@ -1,4 +1,4 @@
-import { ColumnDef, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table'
+import { type ColumnDef, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table'
 
 import {
   Table,
@@ -6,7 +6,7 @@ import {
   TableCell,
   TableHead,
   TableHeader,
-  TableRow
+  TableRow,
 } from '@/components/ui/Table'
 
 interface DataTableProps<TData, TValue> {
@@ -15,11 +15,15 @@ interface DataTableProps<TData, TValue> {
   onRowClick?: (row: TData) => void
 }
 
-export default function DataTable<TData, TValue>({ columns, data, onRowClick }: DataTableProps<TData, TValue>) {
+export default function DataTable<TData, TValue>({
+  columns,
+  data,
+  onRowClick,
+}: DataTableProps<TData, TValue>) {
   const table = useReactTable({
     data,
     columns,
-    getCoreRowModel: getCoreRowModel()
+    getCoreRowModel: getCoreRowModel(),
   })
 
   return (

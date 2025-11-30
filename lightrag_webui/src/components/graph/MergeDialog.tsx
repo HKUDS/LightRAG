@@ -1,14 +1,14 @@
-import { useTranslation } from 'react-i18next'
-import { useSettingsStore } from '@/stores/settings'
+import Button from '@/components/ui/Button'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
+  DialogTitle,
 } from '@/components/ui/Dialog'
-import Button from '@/components/ui/Button'
+import { useSettingsStore } from '@/stores/settings'
+import { useTranslation } from 'react-i18next'
 
 interface MergeDialogProps {
   mergeDialogOpen: boolean
@@ -28,7 +28,7 @@ const MergeDialog = ({
   mergeDialogOpen,
   mergeDialogInfo,
   onOpenChange,
-  onRefresh
+  onRefresh,
 }: MergeDialogProps) => {
   const { t } = useTranslation()
   const currentQueryLabel = useSettingsStore.use.queryLabel()
@@ -50,11 +50,7 @@ const MergeDialog = ({
         </p>
         <DialogFooter className="mt-4 flex-col gap-2 sm:flex-row sm:justify-end">
           {currentQueryLabel !== mergeDialogInfo?.sourceEntity && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onRefresh(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => onRefresh(false)}>
               {t('graphPanel.propertiesView.mergeDialog.keepCurrentStart')}
             </Button>
           )}

@@ -1,10 +1,15 @@
-import { useState, useEffect, useCallback } from 'react'
+import { cn } from '@/lib/utils'
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronsLeftIcon,
+  ChevronsRightIcon,
+} from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Button from './Button'
 import Input from './Input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './Select'
-import { cn } from '@/lib/utils'
-import { ChevronLeftIcon, ChevronRightIcon, ChevronsLeftIcon, ChevronsRightIcon } from 'lucide-react'
 
 export type PaginationControlsProps = {
   currentPage: number
@@ -23,7 +28,7 @@ const PAGE_SIZE_OPTIONS = [
   { value: 20, label: '20' },
   { value: 50, label: '50' },
   { value: 100, label: '100' },
-  { value: 200, label: '200' }
+  { value: 200, label: '200' },
 ]
 
 export default function PaginationControls({
@@ -35,7 +40,7 @@ export default function PaginationControls({
   onPageSizeChange,
   isLoading = false,
   compact = false,
-  className
+  className,
 }: PaginationControlsProps) {
   const { t } = useTranslation()
   const [inputPage, setInputPage] = useState(currentPage.toString())
@@ -52,7 +57,7 @@ export default function PaginationControls({
 
   // Handle page input submit
   const handlePageInputSubmit = useCallback(() => {
-    const pageNum = parseInt(inputPage, 10)
+    const pageNum = Number.parseInt(inputPage, 10)
     if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
       onPageChange(pageNum)
     } else {
@@ -62,19 +67,25 @@ export default function PaginationControls({
   }, [inputPage, totalPages, onPageChange, currentPage])
 
   // Handle page input key press
-  const handlePageInputKeyPress = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handlePageInputSubmit()
-    }
-  }, [handlePageInputSubmit])
+  const handlePageInputKeyPress = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        handlePageInputSubmit()
+      }
+    },
+    [handlePageInputSubmit]
+  )
 
   // Handle page size change
-  const handlePageSizeChange = useCallback((value: string) => {
-    const newPageSize = parseInt(value, 10)
-    if (!isNaN(newPageSize)) {
-      onPageSizeChange(newPageSize)
-    }
-  }, [onPageSizeChange])
+  const handlePageSizeChange = useCallback(
+    (value: string) => {
+      const newPageSize = Number.parseInt(value, 10)
+      if (!isNaN(newPageSize)) {
+        onPageSizeChange(newPageSize)
+      }
+    },
+    [onPageSizeChange]
+  )
 
   // Navigation handlers
   const goToFirstPage = useCallback(() => {
@@ -169,7 +180,7 @@ export default function PaginationControls({
         {t('pagination.showing', {
           start: Math.min((currentPage - 1) * pageSize + 1, totalCount),
           end: Math.min(currentPage * pageSize, totalCount),
-          total: totalCount
+          total: totalCount,
         })}
       </div>
 

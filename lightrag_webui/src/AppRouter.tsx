@@ -1,13 +1,13 @@
-import '@/lib/extensions'; // Import all global extensions
-import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
-import { useEffect, useState } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useAuthStore } from '@/stores/state'
+import '@/lib/extensions' // Import all global extensions
+import ThemeProvider from '@/components/ThemeProvider'
+import LoginPage from '@/features/LoginPage'
 import { navigationService } from '@/services/navigation'
+import { useAuthStore } from '@/stores/state'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { Route, HashRouter as Router, Routes, useNavigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import App from './App'
-import LoginPage from '@/features/LoginPage'
-import ThemeProvider from '@/components/ThemeProvider'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -32,14 +32,13 @@ const AppContent = () => {
 
   // Token validity check
   useEffect(() => {
-
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
 
         if (token && isAuthenticated) {
-          setInitializing(false);
-          return;
+          setInitializing(false)
+          return
         }
 
         if (!token) {
@@ -57,20 +56,19 @@ const AppContent = () => {
 
     checkAuth()
 
-    return () => {
-    }
+    return () => {}
   }, [isAuthenticated])
 
   // Redirect effect for protected routes
   useEffect(() => {
     if (!initializing && !isAuthenticated) {
-      const currentPath = window.location.hash.slice(1);
+      const currentPath = window.location.hash.slice(1)
       if (currentPath !== '/login') {
-        console.log('Not authenticated, redirecting to login');
-        navigate('/login');
+        console.log('Not authenticated, redirecting to login')
+        navigate('/login')
       }
     }
-  }, [initializing, isAuthenticated, navigate]);
+  }, [initializing, isAuthenticated, navigate])
 
   // Show nothing while initializing
   if (initializing) {
@@ -80,10 +78,7 @@ const AppContent = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/*"
-        element={isAuthenticated ? <App /> : null}
-      />
+      <Route path="/*" element={isAuthenticated ? <App /> : null} />
     </Routes>
   )
 }
@@ -94,12 +89,7 @@ const AppRouter = () => {
       <ThemeProvider>
         <Router>
           <AppContent />
-          <Toaster
-            position="bottom-center"
-            theme="system"
-            closeButton
-            richColors
-          />
+          <Toaster position="bottom-center" theme="system" closeButton richColors />
         </Router>
       </ThemeProvider>
     </QueryClientProvider>

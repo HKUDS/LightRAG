@@ -1,20 +1,20 @@
-import { useState, useCallback, useEffect } from 'react'
+import { deleteDocuments } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-  DialogFooter
 } from '@/components/ui/Dialog'
 import Input from '@/components/ui/Input'
-import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
-import { deleteDocuments } from '@/api/lightrag'
+import { useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
 
-import { TrashIcon, AlertTriangleIcon } from 'lucide-react'
+import { AlertTriangleIcon, TrashIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 // Simple Label component
@@ -24,11 +24,7 @@ const Label = ({
   children,
   ...props
 }: React.LabelHTMLAttributes<HTMLLabelElement>) => (
-  <label
-    htmlFor={htmlFor}
-    className={className}
-    {...props}
-  >
+  <label htmlFor={htmlFor} className={className} {...props}>
     {children}
   </label>
 )
@@ -38,7 +34,10 @@ interface DeleteDocumentsDialogProps {
   onDocumentsDeleted?: () => Promise<void>
 }
 
-export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDeleted }: DeleteDocumentsDialogProps) {
+export default function DeleteDocumentsDialog({
+  selectedDocIds,
+  onDocumentsDeleted,
+}: DeleteDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
@@ -107,7 +106,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
           tooltip={t('documentPanel.deleteDocuments.tooltip', { count: selectedDocIds.length })}
           size="sm"
         >
-          <TrashIcon/> {t('documentPanel.deleteDocuments.button')}
+          <TrashIcon /> {t('documentPanel.deleteDocuments.button')}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
@@ -177,12 +176,10 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
           <Button variant="outline" onClick={() => setOpen(false)} disabled={isDeleting}>
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="destructive"
-            onClick={handleDelete}
-            disabled={!isConfirmEnabled}
-          >
-            {isDeleting ? t('documentPanel.deleteDocuments.deleting') : t('documentPanel.deleteDocuments.confirmButton')}
+          <Button variant="destructive" onClick={handleDelete} disabled={!isConfirmEnabled}>
+            {isDeleting
+              ? t('documentPanel.deleteDocuments.deleting')
+              : t('documentPanel.deleteDocuments.confirmButton')}
           </Button>
         </DialogFooter>
       </DialogContent>

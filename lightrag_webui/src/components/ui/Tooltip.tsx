@@ -1,6 +1,6 @@
-import * as React from 'react'
-import * as TooltipPrimitive from '@radix-ui/react-tooltip'
 import { cn } from '@/lib/utils'
+import * as TooltipPrimitive from '@radix-ui/react-tooltip'
+import * as React from 'react'
 
 const TooltipProvider = TooltipPrimitive.Provider
 
@@ -10,11 +10,7 @@ const TooltipTrigger = TooltipPrimitive.Trigger
 
 const processTooltipContent = (content: string) => {
   if (typeof content !== 'string') return content
-  return (
-    <div className="relative top-0 pt-1 whitespace-pre-wrap break-words">
-      {content}
-    </div>
-  )
+  return <div className="relative top-0 pt-1 whitespace-pre-wrap break-words">{content}</div>
 }
 
 const TooltipContent = React.forwardRef<
@@ -24,13 +20,13 @@ const TooltipContent = React.forwardRef<
     align?: 'start' | 'center' | 'end'
   }
 >(({ className, side = 'left', align = 'start', children, ...props }, ref) => {
-  const contentRef = React.useRef<HTMLDivElement>(null);
+  const contentRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     if (contentRef.current) {
-      contentRef.current.scrollTop = 0;
+      contentRef.current.scrollTop = 0
     }
-  }, [children]);
+  }, [children])
 
   return (
     <TooltipPrimitive.Content
@@ -45,7 +41,7 @@ const TooltipContent = React.forwardRef<
     >
       {typeof children === 'string' ? processTooltipContent(children) : children}
     </TooltipPrimitive.Content>
-  );
+  )
 })
 TooltipContent.displayName = TooltipPrimitive.Content.displayName
 

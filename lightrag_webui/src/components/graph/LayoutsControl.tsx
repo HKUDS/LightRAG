@@ -1,21 +1,25 @@
 import { useSigma } from '@react-sigma/core'
-import { animateNodes } from 'sigma/utils'
 import { useLayoutCirclepack } from '@react-sigma/layout-circlepack'
 import { useLayoutCircular } from '@react-sigma/layout-circular'
-import { LayoutHook, LayoutWorkerHook, WorkerLayoutControlProps } from '@react-sigma/layout-core'
+import type {
+  LayoutHook,
+  LayoutWorkerHook,
+  WorkerLayoutControlProps,
+} from '@react-sigma/layout-core'
 import { useLayoutForce, useWorkerLayoutForce } from '@react-sigma/layout-force'
 import { useLayoutForceAtlas2, useWorkerLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
 import { useLayoutNoverlap, useWorkerLayoutNoverlap } from '@react-sigma/layout-noverlap'
 import { useLayoutRandom } from '@react-sigma/layout-random'
-import { useCallback, useMemo, useState, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { animateNodes } from 'sigma/utils'
 
 import Button from '@/components/ui/Button'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/Command'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
 
-import { GripIcon, PlayIcon, PauseIcon } from 'lucide-react'
+import { GripIcon, PauseIcon, PlayIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 type LayoutName =
@@ -28,10 +32,14 @@ type LayoutName =
 
 // Extend WorkerLayoutControlProps to include mainLayout
 interface ExtendedWorkerLayoutControlProps extends WorkerLayoutControlProps {
-  mainLayout: LayoutHook;
+  mainLayout: LayoutHook
 }
 
-const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerLayoutControlProps) => {
+const WorkerLayoutControl = ({
+  layout,
+  autoRunFor,
+  mainLayout,
+}: ExtendedWorkerLayoutControlProps) => {
   const sigma = useSigma()
   // Use local state to track animation running status
   const [isRunning, setIsRunning] = useState(false)
@@ -181,7 +189,11 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
     <Button
       size="icon"
       onClick={handleClick}
-      tooltip={isRunning ? t('graphPanel.sideBar.layoutsControl.stopAnimation') : t('graphPanel.sideBar.layoutsControl.startAnimation')}
+      tooltip={
+        isRunning
+          ? t('graphPanel.sideBar.layoutsControl.stopAnimation')
+          : t('graphPanel.sideBar.layoutsControl.startAnimation')
+      }
       variant={controlButtonVariant}
     >
       {isRunning ? <PauseIcon /> : <PlayIcon />}
@@ -211,18 +223,18 @@ const LayoutsControl = () => {
       gridSize: 1,
       ratio: 1,
       speed: 3,
-    }
+    },
   })
   // Add parameters for Force Directed layout to improve convergence
   const layoutForce = useLayoutForce({
     maxIterations: maxIterations,
     settings: {
-      attraction: 0.0003,  // Lower attraction force to reduce oscillation
-      repulsion: 0.02,     // Lower repulsion force to reduce oscillation
-      gravity: 0.02,      // Increase gravity to make nodes converge to center faster
-      inertia: 0.4,        // Lower inertia to add damping effect
-      maxMove: 100         // Limit maximum movement per step to prevent large jumps
-    }
+      attraction: 0.0003, // Lower attraction force to reduce oscillation
+      repulsion: 0.02, // Lower repulsion force to reduce oscillation
+      gravity: 0.02, // Increase gravity to make nodes converge to center faster
+      inertia: 0.4, // Lower inertia to add damping effect
+      maxMove: 100, // Limit maximum movement per step to prevent large jumps
+    },
   })
   const layoutForceAtlas2 = useLayoutForceAtlas2({ iterations: maxIterations })
   const workerNoverlap = useWorkerLayoutNoverlap()
@@ -232,26 +244,26 @@ const LayoutsControl = () => {
   const layouts = useMemo(() => {
     return {
       Circular: {
-        layout: layoutCircular
+        layout: layoutCircular,
       },
       Circlepack: {
-        layout: layoutCirclepack
+        layout: layoutCirclepack,
       },
       Random: {
-        layout: layoutRandom
+        layout: layoutRandom,
       },
       Noverlaps: {
         layout: layoutNoverlap,
-        worker: workerNoverlap
+        worker: workerNoverlap,
       },
       'Force Directed': {
         layout: layoutForce,
-        worker: workerForce
+        worker: workerForce,
       },
       'Force Atlas': {
         layout: layoutForceAtlas2,
-        worker: workerForceAtlas2
-      }
+        worker: workerForceAtlas2,
+      },
     } as { [key: string]: { layout: LayoutHook; worker?: LayoutWorkerHook } }
   }, [
     layoutCirclepack,
@@ -262,7 +274,7 @@ const LayoutsControl = () => {
     layoutRandom,
     workerForce,
     workerNoverlap,
-    workerForceAtlas2
+    workerForceAtlas2,
   ])
 
   const runLayout = useCallback(

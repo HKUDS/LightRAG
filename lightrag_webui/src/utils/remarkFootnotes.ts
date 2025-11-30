@@ -1,6 +1,6 @@
-import { visit } from 'unist-util-visit'
-import type { Plugin } from 'unified'
 import type { Root, Text } from 'mdast'
+import type { Plugin } from 'unified'
+import { visit } from 'unist-util-visit'
 
 // Simple footnote plugin for remark - only renders inline citations
 export const remarkFootnotes: Plugin<[], Root> = () => {
@@ -23,7 +23,7 @@ export const remarkFootnotes: Plugin<[], Root> = () => {
         if (startIndex > lastIndex) {
           replacements.push({
             type: 'text',
-            value: text.slice(lastIndex, startIndex)
+            value: text.slice(lastIndex, startIndex),
           })
         }
 
@@ -36,13 +36,11 @@ export const remarkFootnotes: Plugin<[], Root> = () => {
         const footnoteHtml = `<sup><a href="#footnote-${id}" class="footnote-ref">${id}</a></sup>`
 
         // Add spacing if there's a consecutive footnote
-        const htmlWithSpacing = hasConsecutiveFootnote
-          ? footnoteHtml + '&nbsp;'
-          : footnoteHtml
+        const htmlWithSpacing = hasConsecutiveFootnote ? footnoteHtml + '&nbsp;' : footnoteHtml
 
         replacements.push({
           type: 'html',
-          value: htmlWithSpacing
+          value: htmlWithSpacing,
         })
 
         lastIndex = startIndex + fullMatch.length
@@ -52,7 +50,7 @@ export const remarkFootnotes: Plugin<[], Root> = () => {
       if (lastIndex < text.length) {
         replacements.push({
           type: 'text',
-          value: text.slice(lastIndex)
+          value: text.slice(lastIndex),
         })
       }
 

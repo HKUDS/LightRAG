@@ -1,30 +1,40 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import {
+  AlertCircle,
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  CheckCircle2,
+  Link,
+  Loader2,
+  Play,
+  Square,
+} from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { AlignLeft, AlignCenter, AlignRight, Link, Loader2, CheckCircle2, AlertCircle, Play, Square } from 'lucide-react'
 
+import {
+  type OrphanConnectionStatus,
+  cancelOrphanConnection,
+  getOrphanConnectionStatus,
+  startOrphanConnection,
+} from '@/api/lightrag'
+import Button from '@/components/ui/Button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription
 } from '@/components/ui/Dialog'
-import Button from '@/components/ui/Button'
 import Progress from '@/components/ui/Progress'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue
+  SelectValue,
 } from '@/components/ui/Select'
-import {
-  getOrphanConnectionStatus,
-  startOrphanConnection,
-  cancelOrphanConnection,
-  OrphanConnectionStatus
-} from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
@@ -37,7 +47,7 @@ interface OrphanConnectionDialogProps {
 
 export default function OrphanConnectionDialog({
   open,
-  onOpenChange
+  onOpenChange,
 }: OrphanConnectionDialogProps) {
   const { t } = useTranslation()
   const [position, setPosition] = useState<DialogPosition>('center')
@@ -147,9 +157,7 @@ export default function OrphanConnectionDialog({
           {t('graphPanel.orphanConnection.description')}
         </DialogDescription>
         <DialogHeader className="flex flex-row items-center">
-          <DialogTitle className="flex-1">
-            {t('graphPanel.orphanConnection.title')}
-          </DialogTitle>
+          <DialogTitle className="flex-1">{t('graphPanel.orphanConnection.title')}</DialogTitle>
 
           {/* Position control buttons */}
           <div className="flex items-center gap-2 mr-8">
@@ -158,7 +166,8 @@ export default function OrphanConnectionDialog({
               size="icon"
               className={cn(
                 'h-6 w-6',
-                position === 'left' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
+                position === 'left' &&
+                  'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('left')}
             >
@@ -169,7 +178,8 @@ export default function OrphanConnectionDialog({
               size="icon"
               className={cn(
                 'h-6 w-6',
-                position === 'center' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
+                position === 'center' &&
+                  'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('center')}
             >
@@ -180,7 +190,8 @@ export default function OrphanConnectionDialog({
               size="icon"
               className={cn(
                 'h-6 w-6',
-                position === 'right' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
+                position === 'right' &&
+                  'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('right')}
             >
@@ -203,7 +214,7 @@ export default function OrphanConnectionDialog({
             </label>
             <Select
               value={maxDegree.toString()}
-              onValueChange={(value) => setMaxDegree(parseInt(value, 10))}
+              onValueChange={(value) => setMaxDegree(Number.parseInt(value, 10))}
               disabled={status?.busy}
             >
               <SelectTrigger className="w-[220px]">
@@ -222,14 +233,16 @@ export default function OrphanConnectionDialog({
           {status && (
             <div className="space-y-3">
               {/* Status indicator */}
-              <div className={cn(
-                'flex items-center gap-3 p-3 rounded-md border',
-                status.busy
-                  ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800'
-                  : status.connections_made > 0
-                    ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800'
-                    : 'bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-700'
-              )}>
+              <div
+                className={cn(
+                  'flex items-center gap-3 p-3 rounded-md border',
+                  status.busy
+                    ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800'
+                    : status.connections_made > 0
+                      ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800'
+                      : 'bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-700'
+                )}
+              >
                 {status.busy ? (
                   <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
                 ) : status.connections_made > 0 ? (
@@ -243,8 +256,7 @@ export default function OrphanConnectionDialog({
                       ? status.job_name || t('graphPanel.orphanConnection.running')
                       : status.total_orphans > 0
                         ? t('graphPanel.orphanConnection.completed')
-                        : t('graphPanel.orphanConnection.ready')
-                    }
+                        : t('graphPanel.orphanConnection.ready')}
                   </p>
                   {status.busy && status.cancellation_requested && (
                     <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -259,7 +271,8 @@ export default function OrphanConnectionDialog({
                 <div className="space-y-2">
                   <div className="flex justify-between text-xs text-muted-foreground">
                     <span>
-                      {t('graphPanel.orphanConnection.progress')}: {status.processed_orphans}/{status.total_orphans}
+                      {t('graphPanel.orphanConnection.progress')}: {status.processed_orphans}/
+                      {status.total_orphans}
                     </span>
                     <span>{progress}%</span>
                   </div>
@@ -272,15 +285,23 @@ export default function OrphanConnectionDialog({
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="p-2 rounded-md bg-zinc-100 dark:bg-zinc-800">
                     <p className="text-lg font-semibold">{status.total_orphans}</p>
-                    <p className="text-xs text-muted-foreground">{t('graphPanel.orphanConnection.totalOrphans')}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t('graphPanel.orphanConnection.totalOrphans')}
+                    </p>
                   </div>
                   <div className="p-2 rounded-md bg-zinc-100 dark:bg-zinc-800">
                     <p className="text-lg font-semibold">{status.processed_orphans}</p>
-                    <p className="text-xs text-muted-foreground">{t('graphPanel.orphanConnection.processed')}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t('graphPanel.orphanConnection.processed')}
+                    </p>
                   </div>
                   <div className="p-2 rounded-md bg-green-100 dark:bg-green-900">
-                    <p className="text-lg font-semibold text-green-700 dark:text-green-300">{status.connections_made}</p>
-                    <p className="text-xs text-muted-foreground">{t('graphPanel.orphanConnection.connectionsMade')}</p>
+                    <p className="text-lg font-semibold text-green-700 dark:text-green-300">
+                      {status.connections_made}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t('graphPanel.orphanConnection.connectionsMade')}
+                    </p>
                   </div>
                 </div>
               )}
@@ -302,7 +323,8 @@ export default function OrphanConnectionDialog({
                           'py-0.5',
                           msg.includes('Error') && 'text-red-600 dark:text-red-400',
                           msg.includes('Connected:') && 'text-green-600 dark:text-green-400',
-                          msg.includes('Completed') && 'text-blue-600 dark:text-blue-400 font-semibold'
+                          msg.includes('Completed') &&
+                            'text-blue-600 dark:text-blue-400 font-semibold'
                         )}
                       >
                         {msg}
@@ -317,10 +339,7 @@ export default function OrphanConnectionDialog({
 
           {/* Action Buttons */}
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
               {t('common.close')}
             </Button>
 
@@ -349,11 +368,7 @@ export default function OrphanConnectionDialog({
                 )}
               </Button>
             ) : (
-              <Button
-                onClick={handleStart}
-                disabled={isStarting}
-                className="min-w-[140px]"
-              >
+              <Button onClick={handleStart} disabled={isStarting} className="min-w-[140px]">
                 {isStarting ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />

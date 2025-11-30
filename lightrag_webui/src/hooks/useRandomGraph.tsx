@@ -1,11 +1,12 @@
+import * as Constants from '@/lib/constants'
+import { randomColor } from '@/lib/utils'
+import { useGraphStore } from '@/stores/graph'
 import { Faker, en, faker as fak } from '@faker-js/faker'
-import Graph, { UndirectedGraph } from 'graphology'
+import type Graph from 'graphology'
+import { UndirectedGraph } from 'graphology'
 import erdosRenyi from 'graphology-generators/random/erdos-renyi'
 import { useCallback, useEffect, useState } from 'react'
 import seedrandom from 'seedrandom'
-import { randomColor } from '@/lib/utils'
-import * as Constants from '@/lib/constants'
-import { useGraphStore } from '@/stores/graph'
 
 export type NodeType = {
   x: number
@@ -60,7 +61,7 @@ const useRandomGraph = () => {
         borderSize: faker.number.float({ min: 0, max: 1, multipleOf: 0.1 }),
         // for node-image
         pictoColor: randomColor(),
-        image: faker.image.urlLoremFlickr()
+        image: faker.image.urlLoremFlickr(),
       })
     })
 
@@ -69,7 +70,7 @@ const useRandomGraph = () => {
       graph.mergeEdgeAttributes(edge, {
         label: faker.lorem.words(faker.number.int({ min: 1, max: 3 })),
         size: faker.number.float({ min: 1, max: 5 }),
-        color: randomColor()
+        color: randomColor(),
       })
     })
 

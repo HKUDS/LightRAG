@@ -1,15 +1,17 @@
-import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
-import { createSelectors } from '@/lib/utils'
+import type { Message, QueryRequest } from '@/api/lightrag'
 import { defaultQueryLabel } from '@/lib/constants'
-import { Message, QueryRequest } from '@/api/lightrag'
+import { createSelectors } from '@/lib/utils'
+import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
 
-const DEV_STORAGE_CONFIG = import.meta.env.DEV ? {
-  kv_storage: 'PGKVStorage',
-  doc_status_storage: 'PGDocStatusStorage',
-  graph_storage: 'PGGraphStorage',
-  vector_storage: 'PGVectorStorage'
-} : null
+const DEV_STORAGE_CONFIG = import.meta.env.DEV
+  ? {
+      kv_storage: 'PGKVStorage',
+      doc_status_storage: 'PGDocStatusStorage',
+      graph_storage: 'PGGraphStorage',
+      vector_storage: 'PGVectorStorage',
+    }
+  : null
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW'
@@ -158,7 +160,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -169,39 +171,39 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setGraphLayoutMaxIterations: (iterations: number) =>
         set({
-          graphLayoutMaxIterations: iterations
+          graphLayoutMaxIterations: iterations,
         }),
 
       setQueryLabel: (queryLabel: string) =>
         set({
-          queryLabel
+          queryLabel,
         }),
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
 
-      setGraphMaxNodes: (nodes: number, triggerRefresh: boolean = false) => {
-        const state = useSettingsStore.getState();
+      setGraphMaxNodes: (nodes: number, triggerRefresh = false) => {
+        const state = useSettingsStore.getState()
         if (state.graphMaxNodes === nodes) {
-          return;
+          return
         }
 
         if (triggerRefresh) {
-          const currentLabel = state.queryLabel;
+          const currentLabel = state.queryLabel
           // Atomically update both the node count and the query label to trigger a refresh.
-          set({ graphMaxNodes: nodes, queryLabel: '' });
+          set({ graphMaxNodes: nodes, queryLabel: '' })
 
           // Restore the label after a short delay.
           setTimeout(() => {
-            set({ queryLabel: currentLabel });
-          }, 300);
+            set({ queryLabel: currentLabel })
+          }, 300)
         } else {
-          set({ graphMaxNodes: nodes });
+          set({ graphMaxNodes: nodes })
         }
       },
 
       setBackendMaxGraphNodes: (maxNodes: number | null) => set({ backendMaxGraphNodes: maxNodes }),
 
-      setGraphMinDegree: (degree: number, triggerRefresh: boolean = false) => {
+      setGraphMinDegree: (degree: number, triggerRefresh = false) => {
         const state = useSettingsStore.getState()
         if (state.graphMinDegree === degree) {
           return
@@ -218,7 +220,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
       },
 
-      setGraphIncludeOrphans: (include: boolean, triggerRefresh: boolean = false) => {
+      setGraphIncludeOrphans: (include: boolean, triggerRefresh = false) => {
         const state = useSettingsStore.getState()
         if (state.graphIncludeOrphans === include) {
           return
@@ -256,7 +258,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         const filteredSettings = { ...settings }
         delete filteredSettings.history_turns
         set((state) => ({
-          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 }
+          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 },
         }))
       },
 
@@ -295,8 +297,8 @@ const useSettingsStoreBase = create<SettingsState>()(
       searchLabelDropdownRefreshTrigger: 0,
       triggerSearchLabelDropdownRefresh: () =>
         set((state) => ({
-          searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1
-        }))
+          searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1,
+        })),
     }),
     {
       name: 'settings-storage',
@@ -332,7 +334,7 @@ const useSettingsStoreBase = create<SettingsState>()(
             stream: true,
             history_turns: 0,
             hl_keywords: [],
-            ll_keywords: []
+            ll_keywords: [],
           }
           state.retrievalHistory = []
         }
@@ -349,7 +351,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 10) {
           delete state.graphMinDegree // 删除废弃参数
-          state.graphMaxNodes = 1000  // 添加新参数
+          state.graphMaxNodes = 1000 // 添加新参数
         }
         if (version < 11) {
           state.minEdgeSize = 1
@@ -427,7 +429,7 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.graphExpandDepth = 1
         }
         return state
-      }
+      },
     }
   )
 )

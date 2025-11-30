@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Check, ChevronsUpDown, Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
+import { Check, ChevronsUpDown, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 
-import { cn } from '@/lib/utils'
 import Button from '@/components/ui/Button'
 import {
   Command,
@@ -10,9 +9,10 @@ import {
   CommandGroup,
   CommandInput,
   CommandItem,
-  CommandList
+  CommandList,
 } from '@/components/ui/Command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
+import { cn } from '@/lib/utils'
 
 export interface Option {
   value: string
@@ -93,7 +93,7 @@ export function AsyncSelect<T>({
   noResultsMessage,
   triggerTooltip,
   clearable = true,
-  debounceTime = 150
+  debounceTime = 150,
 }: AsyncSelectProps<T>) {
   const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
@@ -226,7 +226,13 @@ export function AsyncSelect<T>({
           tooltip={triggerTooltip}
           side="bottom"
         >
-          {value === '*' ? <div>*</div> : (selectedOption ? getDisplayValue(selectedOption) : (initialValueDisplay || placeholder))}
+          {value === '*' ? (
+            <div>*</div>
+          ) : selectedOption ? (
+            getDisplayValue(selectedOption)
+          ) : (
+            initialValueDisplay || placeholder
+          )}
           <ChevronsUpDown className="opacity-50" size={10} />
         </Button>
       </PopoverTrigger>
@@ -259,24 +265,20 @@ export function AsyncSelect<T>({
             {!loading &&
               !error &&
               options.length === 0 &&
-              (notFound || (
-                <CommandEmpty>
-                  {noResultsMessage || 'No results found.'}
-                </CommandEmpty>
-              ))}
+              (notFound || <CommandEmpty>{noResultsMessage || 'No results found.'}</CommandEmpty>)}
             <CommandGroup>
               {options.map((option) => {
-                const optionValue = getOptionValue(option);
+                const optionValue = getOptionValue(option)
                 // Fix cmdk filtering issue: use empty string when search is empty
                 // This ensures all items are shown when searchTerm is empty
-                const itemValue = searchTerm.trim() === '' ? '' : optionValue;
+                const itemValue = searchTerm.trim() === '' ? '' : optionValue
 
                 return (
                   <CommandItem
                     key={optionValue}
                     value={itemValue}
                     onSelect={() => {
-                      handleSelect(optionValue);
+                      handleSelect(optionValue)
                     }}
                     className="truncate"
                   >
@@ -288,7 +290,7 @@ export function AsyncSelect<T>({
                       )}
                     />
                   </CommandItem>
-                );
+                )
               })}
             </CommandGroup>
           </CommandList>

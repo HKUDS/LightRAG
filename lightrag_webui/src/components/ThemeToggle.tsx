@@ -1,8 +1,8 @@
 import Button from '@/components/ui/Button'
 import useTheme from '@/hooks/useTheme'
+import { controlButtonVariant } from '@/lib/constants'
 import { MoonIcon, SunIcon } from 'lucide-react'
 import { useCallback } from 'react'
-import { controlButtonVariant } from '@/lib/constants'
 import { useTranslation } from 'react-i18next'
 
 /**

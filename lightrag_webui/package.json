@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bunx --bun vite",
     "build": "bunx --bun vite build",
-    "lint": "eslint .",
+    "lint": "bunx --bun @biomejs/biome check src",
     "preview": "bunx --bun vite preview",
     "test": "bun test",
     "test:watch": "bun test --watch",
@@ -88,6 +88,7 @@
     "@types/bun": "^1.2.23",
     "@types/katex": "^0.16.7",
     "@types/node": "^22.18.9",
+    "@biomejs/biome": "^1.9.3",
     "@tailwindcss/typography": "^0.5.15",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.1",

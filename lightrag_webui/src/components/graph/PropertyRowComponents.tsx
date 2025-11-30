@@ -1,5 +1,5 @@
-import { PencilIcon } from 'lucide-react'
 import Text from '@/components/ui/Text'
+import { PencilIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 interface PropertyNameProps {
