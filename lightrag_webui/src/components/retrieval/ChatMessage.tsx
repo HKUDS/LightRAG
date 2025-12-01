@@ -144,7 +144,8 @@ export const ChatMessage = ({
         ? displayContent
         : message.content || ''
 
-  // Load KaTeX dynamically
+  // Load KaTeX rehype plugin dynamically
+  // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
