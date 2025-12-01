@@ -23,12 +23,13 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
-    "future",
+    "google-api-core>=2.0.0,<3.0.0",
+    "google-genai>=1.0.0,<2.0.0",
     "json_repair",
     "nano-vectordb",
     "networkx",
-    "numpy",
-    "pandas>=2.0.0,<2.3.0",
+    "numpy>=1.24.0,<2.0.0",
+    "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -40,17 +41,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Test framework dependencies (for CI/CD and testing)
+pytest = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pre-commit",
+    "ruff",
+]
+
 api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
-    "numpy",
-    "openai>=1.0.0,<2.0.0",
-    "pandas>=2.0.0,<2.3.0",
+    "numpy>=1.24.0,<2.0.0",
+    "openai>=2.0.0,<3.0.0",
+    "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -59,6 +67,8 @@ api = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "google-api-core>=2.0.0,<3.0.0",
+    "google-genai>=1.0.0,<2.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
@@ -68,56 +78,80 @@ api = [
     "httpcore",
     "httpx",
     "jiter",
-    "passlib[bcrypt]",
+    "bcrypt>=4.0.0",
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
     "python-multipart",
     "pytz",
     "uvicorn",
+    "gunicorn",
+    # Document processing dependencies (required for API document upload functionality)
+    "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
+    "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
+    "pypdf>=6.1.0",                 # PDF processing
+    "python-docx>=0.8.11,<2.0.0",  # DOCX processing
+    "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+]
+
+# Advanced document processing engine (optional)
+docling = [
+    # On macOS, pytorch and frameworks use Objective-C are not fork-safe,
+    # and not compatible to gunicorn multi-worker mode
+    "docling>=2.0.0,<3.0.0; sys_platform != 'darwin'",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
-offline-docs = [
-    # Document processing dependencies
-    "pypdf2>=3.0.0",
-    "python-docx>=0.8.11,<2.0.0",
-    "python-pptx>=0.6.21,<2.0.0",
-    "openpyxl>=3.0.0,<4.0.0",
-]
-
 offline-storage = [
     # Storage backend dependencies
-    "redis>=5.0.0,<7.0.0",
+    "redis>=5.0.0,<8.0.0",
     "neo4j>=5.0.0,<7.0.0",
     "pymilvus>=2.6.2,<3.0.0",
     "pymongo>=4.0.0,<5.0.0",
     "asyncpg>=0.29.0,<1.0.0",
-    "qdrant-client>=1.7.0,<2.0.0",
+    "qdrant-client>=1.11.0,<2.0.0",
 ]
 
 offline-llm = [
     # LLM provider dependencies
-    "openai>=1.0.0,<2.0.0",
+    "openai>=2.0.0,<3.0.0",
     "anthropic>=0.18.0,<1.0.0",
     "ollama>=0.1.0,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
     "llama-index>=0.9.0,<1.0.0",
-    "transformers>=4.30.0,<5.0.0",
-    "torch>=2.0.0,<2.3.0",
+    "google-api-core>=2.0.0,<3.0.0",
+    "google-genai>=1.0.0,<2.0.0",
 ]
 
 offline = [
-    # Complete offline package (includes all offline dependencies)
-    "lightrag-hku[offline-docs,offline-storage,offline-llm]",
+    # Complete offline package (includes api for document processing, plus storage and LLM)
+    "lightrag-hku[api,offline-storage,offline-llm]",
+]
+
+evaluation = [
+    # Test framework dependencies
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pre-commit",
+    "ruff",
+    # RAG evaluation dependencies (RAGAS framework)
+    "ragas>=0.3.7",
+    "datasets>=4.3.0",
+    "httpx>=0.28.1",
+]
+
+observability = [
+    # LLM observability and tracing dependencies
+    "langfuse>=3.8.1",
 ]
 
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
+lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
@@ -136,7 +170,15 @@ include-package-data = true
 version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
-lightrag = ["api/webui/**/*"]
+lightrag = ["api/webui/**/*", "api/static/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
 [tool.ruff]
 target-version = "py310"
