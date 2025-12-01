@@ -82,7 +82,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.37.0",
-    "@stylistic/eslint-plugin-js": "^3.1.0",
+    "@stylistic/eslint-plugin-js": "^4.4.1",
     "@tailwindcss/vite": "^4.1.14",
     "@types/bun": "^1.2.23",
     "@types/katex": "^0.16.7",
