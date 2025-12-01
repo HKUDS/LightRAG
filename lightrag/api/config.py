@@ -454,6 +454,19 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
     )
 
+    # Multi-workspace configuration
+    # LIGHTRAG_DEFAULT_WORKSPACE takes precedence, falls back to WORKSPACE for backward compat
+    args.default_workspace = get_env_value(
+        "LIGHTRAG_DEFAULT_WORKSPACE",
+        get_env_value("WORKSPACE", ""),  # Fallback to existing WORKSPACE env var
+    )
+    args.allow_default_workspace = get_env_value(
+        "LIGHTRAG_ALLOW_DEFAULT_WORKSPACE", True, bool
+    )
+    args.max_workspaces_in_pool = get_env_value(
+        "LIGHTRAG_MAX_WORKSPACES_IN_POOL", 50, int
+    )
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 

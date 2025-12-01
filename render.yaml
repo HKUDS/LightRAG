@@ -1,0 +1,74 @@
+# Render Blueprint for LightRAG Server with Multi-Workspace Support
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: lightrag
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+
+    # Health check
+    healthCheckPath: /health
+
+    # Auto-scaling (adjust based on your plan)
+    autoDeploy: true
+
+    # Disk for persistent storage (required for file-based storage)
+    disk:
+      name: lightrag-data
+      mountPath: /app/data
+      sizeGB: 10  # Adjust based on your needs
+
+    # Environment variables
+    envVars:
+      # Server configuration
+      - key: PORT
+        value: 9621
+      - key: HOST
+        value: 0.0.0.0
+
+      # Multi-workspace configuration
+      - key: LIGHTRAG_DEFAULT_WORKSPACE
+        value: default
+      - key: LIGHTRAG_ALLOW_DEFAULT_WORKSPACE
+        value: "true"  # Set to "false" for strict multi-tenant mode
+      - key: LIGHTRAG_MAX_WORKSPACES_IN_POOL
+        value: "50"
+
+      # Storage paths (using persistent disk)
+      - key: WORKING_DIR
+        value: /app/data/rag_storage
+      - key: INPUT_DIR
+        value: /app/data/inputs
+
+      # LLM Configuration (set these in Render dashboard as secrets)
+      - key: LLM_BINDING
+        sync: false  # Configure in dashboard
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_BINDING_HOST
+        sync: false
+      - key: LLM_BINDING_API_KEY
+        sync: false
+
+      # Embedding Configuration (set these in Render dashboard as secrets)
+      - key: EMBEDDING_BINDING
+        sync: false
+      - key: EMBEDDING_MODEL
+        sync: false
+      - key: EMBEDDING_DIM
+        sync: false
+      - key: EMBEDDING_BINDING_HOST
+        sync: false
+      - key: EMBEDDING_BINDING_API_KEY
+        sync: false
+
+      # Optional: API Key protection (set in dashboard as secret)
+      - key: LIGHTRAG_API_KEY
+        sync: false
+
+      # Optional: JWT Auth (set in dashboard as secrets)
+      - key: AUTH_ACCOUNTS
+        sync: false
+      - key: TOKEN_SECRET
+        sync: false
