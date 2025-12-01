@@ -54,7 +54,7 @@ services:
         value: "/app/data/inputs"
 
       #############################
-      # Storage Backends (Full PostgreSQL)
+      # Storage Backends (PostgreSQL + NetworkX)
       #############################
       - key: LIGHTRAG_KV_STORAGE
         value: "PGKVStorage"
@@ -63,7 +63,7 @@ services:
       - key: LIGHTRAG_VECTOR_STORAGE
         value: "PGVectorStorage"
       - key: LIGHTRAG_GRAPH_STORAGE
-        value: "PGGraphStorage"
+        value: "NetworkXStorage"
 
       #############################
       # PostgreSQL (Supabase)
