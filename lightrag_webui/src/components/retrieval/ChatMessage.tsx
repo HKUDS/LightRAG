@@ -76,13 +76,15 @@ export const ChatMessage = ({
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
-  // Load KaTeX dynamically with mhchem extension for chemistry formulas
+  // Load KaTeX dynamically with extensions
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
-        // First load mhchem extension (must be loaded before rehype-katex)
-        // This enables \ce and \pu commands for chemistry formulas
+        // Load KaTeX extensions (must be loaded before rehype-katex)
+        // 1. mhchem: enables \ce and \pu commands for chemistry formulas
         await import('katex/contrib/mhchem');
+        // 2. copy-tex: allows users to copy rendered formulas as LaTeX source code
+        await import('katex/contrib/copy-tex');
         // Then load rehype-katex
         const { default: rehypeKatex } = await import('rehype-katex');
         setKatexPlugin(() => rehypeKatex);
