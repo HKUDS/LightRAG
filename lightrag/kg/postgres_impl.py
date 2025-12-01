@@ -383,7 +383,7 @@ class PostgreSQLDB:
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
         """Create AGE extension if it doesn't exist for graph operations."""
         try:
-            await connection.execute("CREATE EXTENSION IF NOT EXISTS age")  # type: ignore
+            await connection.execute("CREATE EXTENSION IF NOT EXISTS AGE CASCADE")  # type: ignore
             logger.info("PostgreSQL, AGE extension enabled")
         except Exception as e:
             logger.warning(f"Could not create AGE extension: {e}")
