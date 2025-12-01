@@ -57,7 +57,7 @@ updates:
       # Data processing and ML
       data-processing:
         patterns:
-          # - "numpy"
+          - "numpy"
           - "scipy"
           - "pandas"
           - "tiktoken"
@@ -95,9 +95,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    ignore:
-      # numpy updates are disabled due to potential breaking changes
-      - dependency-name: "numpy"
     labels:
       - "dependencies"
       - "python"
