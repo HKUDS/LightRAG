@@ -76,10 +76,14 @@ export const ChatMessage = ({
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
-  // Load KaTeX dynamically
+  // Load KaTeX dynamically with mhchem extension for chemistry formulas
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
+        // First load mhchem extension (must be loaded before rehype-katex)
+        // This enables \ce and \pu commands for chemistry formulas
+        await import('katex/contrib/mhchem');
+        // Then load rehype-katex
         const { default: rehypeKatex } = await import('rehype-katex');
         setKatexPlugin(() => rehypeKatex);
       } catch (error) {
