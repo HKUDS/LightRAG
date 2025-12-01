@@ -10,6 +10,7 @@ on:
 
 jobs:
     lint-and-format:
+        name: Linting and Formatting
         runs-on: ubuntu-latest
 
         steps:
