@@ -11,6 +11,7 @@ import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import TiktokenTokenizer
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.workspace_manager import get_rag
 from fastapi import Depends
 
 
@@ -218,9 +219,21 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
 
 
 class OllamaAPI:
-    def __init__(self, rag: LightRAG, top_k: int = 60, api_key: Optional[str] = None):
-        self.rag = rag
-        self.ollama_server_infos = rag.ollama_server_infos
+    def __init__(
+        self, ollama_server_infos, top_k: int = 60, api_key: Optional[str] = None
+    ):
+        """
+        Initialize OllamaAPI routes.
+
+        Routes use the get_rag dependency to resolve the workspace-specific
+        LightRAG instance per request based on workspace headers.
+
+        Args:
+            ollama_server_infos: Static server info for Ollama compatibility
+            top_k: Default top_k value for queries
+            api_key: Optional API key for authentication
+        """
+        self.ollama_server_infos = ollama_server_infos
         self.top_k = top_k
         self.api_key = api_key
         self.router = APIRouter(tags=["ollama"])
@@ -285,7 +298,7 @@ class OllamaAPI:
         @self.router.post(
             "/generate", dependencies=[Depends(combined_auth)], include_in_schema=True
         )
-        async def generate(raw_request: Request):
+        async def generate(raw_request: Request, rag: LightRAG = Depends(get_rag)):
             """Handle generate completion requests acting as an Ollama model
             For compatibility purpose, the request is not processed by LightRAG,
             and will be handled by underlying LLM model.
@@ -300,11 +313,11 @@ class OllamaAPI:
                 prompt_tokens = estimate_tokens(query)
 
                 if request.system:
-                    self.rag.llm_model_kwargs["system_prompt"] = request.system
+                    rag.llm_model_kwargs["system_prompt"] = request.system
 
                 if request.stream:
-                    response = await self.rag.llm_model_func(
-                        query, stream=True, **self.rag.llm_model_kwargs
+                    response = await rag.llm_model_func(
+                        query, stream=True, **rag.llm_model_kwargs
                     )
 
                     async def stream_generator():
@@ -428,8 +441,8 @@ class OllamaAPI:
                     )
                 else:
                     first_chunk_time = time.time_ns()
-                    response_text = await self.rag.llm_model_func(
-                        query, stream=False, **self.rag.llm_model_kwargs
+                    response_text = await rag.llm_model_func(
+                        query, stream=False, **rag.llm_model_kwargs
                     )
                     last_chunk_time = time.time_ns()
 
@@ -462,7 +475,7 @@ class OllamaAPI:
         @self.router.post(
             "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
         )
-        async def chat(raw_request: Request):
+        async def chat(raw_request: Request, rag: LightRAG = Depends(get_rag)):
             """Process chat completion requests by acting as an Ollama model.
             Routes user queries through LightRAG by selecting query mode based on query prefix.
             Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
@@ -516,15 +529,15 @@ class OllamaAPI:
                     # Determine if the request is prefix with "/bypass"
                     if mode == SearchMode.bypass:
                         if request.system:
-                            self.rag.llm_model_kwargs["system_prompt"] = request.system
-                        response = await self.rag.llm_model_func(
+                            rag.llm_model_kwargs["system_prompt"] = request.system
+                        response = await rag.llm_model_func(
                             cleaned_query,
                             stream=True,
                             history_messages=conversation_history,
-                            **self.rag.llm_model_kwargs,
+                            **rag.llm_model_kwargs,
                         )
                     else:
-                        response = await self.rag.aquery(
+                        response = await rag.aquery(
                             cleaned_query, param=query_param
                         )
 
@@ -678,16 +691,16 @@ class OllamaAPI:
                     )
                     if match_result or mode == SearchMode.bypass:
                         if request.system:
-                            self.rag.llm_model_kwargs["system_prompt"] = request.system
+                            rag.llm_model_kwargs["system_prompt"] = request.system
 
-                        response_text = await self.rag.llm_model_func(
+                        response_text = await rag.llm_model_func(
                             cleaned_query,
                             stream=False,
                             history_messages=conversation_history,
-                            **self.rag.llm_model_kwargs,
+                            **rag.llm_model_kwargs,
                         )
                     else:
-                        response_text = await self.rag.aquery(
+                        response_text = await rag.aquery(
                             cleaned_query, param=query_param
                         )
 

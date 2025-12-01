@@ -183,6 +183,69 @@ The command-line `workspace` argument and the `WORKSPACE` environment variable i
 
 To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`.
 
+### Multi-Workspace Server (Multi-Tenant Support)
+
+LightRAG Server supports serving multiple isolated workspaces from a single server instance via HTTP header-based routing. This enables multi-tenant deployments where each tenant's data is completely isolated.
+
+**How It Works:**
+
+Clients specify which workspace to use via HTTP headers:
+- `LIGHTRAG-WORKSPACE` (primary header)
+- `X-Workspace-ID` (fallback header)
+
+The server maintains a pool of LightRAG instances, one per workspace. Instances are created on-demand when a workspace is first accessed and cached for subsequent requests.
+
+**Configuration:**
+
+```bash
+# Default workspace when no header is provided (falls back to WORKSPACE env var)
+LIGHTRAG_DEFAULT_WORKSPACE=default
+
+# When false, requests without workspace header return 400 error (strict mode)
+# When true (default), uses default workspace as fallback
+LIGHTRAG_ALLOW_DEFAULT_WORKSPACE=true
+
+# Maximum workspace instances in memory pool (LRU eviction when exceeded)
+LIGHTRAG_MAX_WORKSPACES_IN_POOL=50
+```
+
+**Usage Example:**
+
+```bash
+# Query workspace "tenant-a"
+curl -X POST 'http://localhost:9621/query' \
+  -H 'Content-Type: application/json' \
+  -H 'LIGHTRAG-WORKSPACE: tenant-a' \
+  -d '{"query": "What is LightRAG?"}'
+
+# Upload document to workspace "tenant-b"
+curl -X POST 'http://localhost:9621/documents/upload' \
+  -H 'LIGHTRAG-WORKSPACE: tenant-b' \
+  -F 'file=@document.pdf'
+```
+
+**Workspace Identifier Rules:**
+- Must start with alphanumeric character
+- Can contain alphanumeric, hyphens, and underscores
+- Length: 1-64 characters
+- Examples: `tenant1`, `workspace-a`, `my_workspace_2`
+
+**Backward Compatibility:**
+
+Existing single-workspace deployments work unchanged:
+- Without multi-workspace headers, the server uses `LIGHTRAG_DEFAULT_WORKSPACE` (or `WORKSPACE` env var)
+- All existing API routes and response formats remain identical
+- No configuration changes required for existing deployments
+
+**Strict Multi-Tenant Mode:**
+
+For deployments requiring explicit workspace identification:
+```bash
+LIGHTRAG_ALLOW_DEFAULT_WORKSPACE=false
+```
+
+In this mode, requests without workspace headers receive a 400 error with a clear message indicating the missing header.
+
 ### Multiple workers for Gunicorn + Uvicorn
 
 The LightRAG Server can operate in the `Gunicorn + Uvicorn` preload mode. Gunicorn's multiple worker (multiprocess) capability prevents document indexing tasks from blocking RAG queries. Using CPU-exhaustive document extraction tools, such as docling, can lead to the entire system being blocked in pure Uvicorn mode.

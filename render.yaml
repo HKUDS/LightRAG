@@ -1,0 +1,118 @@
+# Render Blueprint for LightRAG Server with Multi-Workspace Support
+# https://render.com/docs/blueprint-spec
+#
+# Deploy: Connect repo on Render Dashboard → New Blueprint
+# All secrets (API keys, passwords) should be set in Render Dashboard
+
+services:
+  - type: web
+    name: lightrag-mt
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+
+    # Health check endpoint
+    healthCheckPath: /health
+
+    # Auto-deploy on push
+    autoDeploy: true
+
+    # Disk for local file storage (NetworkX graphs, inputs)
+    disk:
+      name: lightrag-data
+      mountPath: /app/data
+      sizeGB: 10
+
+    envVars:
+      #############################
+      # Server Configuration
+      #############################
+      - key: PORT
+        value: "9621"
+      - key: HOST
+        value: "0.0.0.0"
+      - key: WHITELIST_PATHS
+        value: "/health"
+
+      #############################
+      # Multi-Workspace Configuration
+      #############################
+      - key: LIGHTRAG_DEFAULT_WORKSPACE
+        value: "default"
+      - key: LIGHTRAG_ALLOW_DEFAULT_WORKSPACE
+        value: "true"
+      - key: LIGHTRAG_MAX_WORKSPACES_IN_POOL
+        value: "50"
+
+      #############################
+      # Storage Paths
+      #############################
+      - key: WORKING_DIR
+        value: "/app/data/rag_storage"
+      - key: INPUT_DIR
+        value: "/app/data/inputs"
+
+      #############################
+      # Storage Backends (PostgreSQL + NetworkX)
+      #############################
+      - key: LIGHTRAG_KV_STORAGE
+        value: "PGKVStorage"
+      - key: LIGHTRAG_DOC_STATUS_STORAGE
+        value: "PGDocStatusStorage"
+      - key: LIGHTRAG_VECTOR_STORAGE
+        value: "PGVectorStorage"
+      - key: LIGHTRAG_GRAPH_STORAGE
+        value: "NetworkXStorage"
+
+      #############################
+      # PostgreSQL (Supabase)
+      #############################
+      - key: POSTGRES_HOST
+        value: "db.apmyydkiuvrvvhuwsbmp.supabase.co"
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_USER
+        value: "postgres"
+      - key: POSTGRES_DATABASE
+        value: "postgres"
+      - key: POSTGRES_PASSWORD
+        sync: false  # Set in Render Dashboard as secret
+
+      #############################
+      # LLM Configuration (Anthropic Claude)
+      #############################
+      - key: LLM_BINDING
+        value: "openai"
+      - key: LLM_BINDING_HOST
+        value: "https://api.anthropic.com/v1"
+      - key: LLM_MODEL
+        value: "claude-sonnet-4-20250514"
+      - key: LLM_BINDING_API_KEY
+        sync: false  # Set in Render Dashboard as secret
+
+      #############################
+      # Embedding Configuration (OpenAI)
+      #############################
+      - key: EMBEDDING_BINDING
+        value: "openai"
+      - key: EMBEDDING_BINDING_HOST
+        value: "https://api.openai.com/v1"
+      - key: EMBEDDING_MODEL
+        value: "text-embedding-3-small"
+      - key: EMBEDDING_DIM
+        value: "1536"
+      - key: EMBEDDING_BINDING_API_KEY
+        sync: false  # Set in Render Dashboard as secret
+
+      #############################
+      # Performance Configuration
+      #############################
+      - key: MAX_ASYNC
+        value: "16"
+      - key: MAX_PARALLEL_INSERT
+        value: "10"
+
+      #############################
+      # API Security
+      #############################
+      - key: LIGHTRAG_API_KEY
+        sync: false  # Set in Render Dashboard as secret

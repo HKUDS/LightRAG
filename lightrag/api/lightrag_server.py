@@ -52,6 +52,13 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.workspace_manager import (
+    WorkspaceConfig,
+    WorkspacePool,
+    init_workspace_pool,
+    get_workspace_pool,
+    get_rag,
+)
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -365,7 +372,11 @@ def create_app(args):
             yield
 
         finally:
-            # Clean up database connections
+            # Clean up workspace pool (finalize all workspace instances)
+            pool = get_workspace_pool()
+            await pool.finalize_all()
+
+            # Clean up default RAG instance's database connections
             await rag.finalize_storages()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
@@ -1069,19 +1080,83 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Initialize workspace pool for multi-tenant support
+    # Create a factory function that creates LightRAG instances per workspace
+    async def create_rag_for_workspace(workspace_id: str) -> LightRAG:
+        """Factory function to create a LightRAG instance for a specific workspace."""
+        workspace_rag = LightRAG(
+            working_dir=args.working_dir,
+            workspace=workspace_id,  # Use the workspace from the request
+            llm_model_func=create_llm_model_func(args.llm_binding),
+            llm_model_name=args.llm_model,
+            llm_model_max_async=args.max_async,
+            summary_max_tokens=args.summary_max_tokens,
+            summary_context_size=args.summary_context_size,
+            chunk_token_size=int(args.chunk_size),
+            chunk_overlap_token_size=int(args.chunk_overlap_size),
+            llm_model_kwargs=create_llm_model_kwargs(
+                args.llm_binding, args, llm_timeout
+            ),
+            embedding_func=embedding_func,
+            default_llm_timeout=llm_timeout,
+            default_embedding_timeout=embedding_timeout,
+            kv_storage=args.kv_storage,
+            graph_storage=args.graph_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
+            vector_db_storage_cls_kwargs={
+                "cosine_better_than_threshold": args.cosine_threshold
+            },
+            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+            enable_llm_cache=args.enable_llm_cache,
+            rerank_model_func=rerank_model_func,
+            max_parallel_insert=args.max_parallel_insert,
+            max_graph_nodes=args.max_graph_nodes,
+            addon_params={
+                "language": args.summary_language,
+                "entity_types": args.entity_types,
+            },
+            ollama_server_infos=ollama_server_infos,
+        )
+        await workspace_rag.initialize_storages()
+        return workspace_rag
+
+    # Configure workspace pool
+    workspace_config = WorkspaceConfig(
+        default_workspace=args.default_workspace or args.workspace or "",
+        allow_default_workspace=args.allow_default_workspace,
+        max_workspaces_in_pool=args.max_workspaces_in_pool,
+    )
+    workspace_pool = init_workspace_pool(workspace_config, create_rag_for_workspace)
+
+    # Pre-populate pool with default workspace instance if configured
+    if workspace_config.default_workspace:
+        # We'll add the already-created rag instance to the pool
+        # This avoids re-initializing the default workspace
+        from lightrag.api.workspace_manager import WorkspaceInstance
+        import time
+        workspace_pool._instances[workspace_config.default_workspace] = WorkspaceInstance(
+            workspace_id=workspace_config.default_workspace,
+            rag_instance=rag,
+            created_at=time.time(),
+            last_accessed_at=time.time(),
+        )
+        workspace_pool._lru_order.append(workspace_config.default_workspace)
+        logger.info(f"Pre-populated workspace pool with default workspace: {workspace_config.default_workspace}")
+
     # Add routes
+    # Routes use get_rag dependency to resolve workspace-specific RAG instances
     app.include_router(
         create_document_routes(
-            rag,
             doc_manager,
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_query_routes(api_key, args.top_k))
+    app.include_router(create_graph_routes(api_key))
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
+    ollama_api = OllamaAPI(rag.ollama_server_infos, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
     # Custom Swagger UI endpoint for offline support
