@@ -23,7 +23,6 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
-    "future",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
@@ -54,7 +53,6 @@ api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
@@ -80,7 +78,7 @@ api = [
     "httpcore",
     "httpx",
     "jiter",
-    "passlib[bcrypt]",
+    "bcrypt>=4.0.0",
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
