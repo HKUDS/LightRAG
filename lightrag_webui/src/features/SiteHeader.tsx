@@ -7,8 +7,10 @@ import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
+import { ZapIcon, GithubIcon, LogOutIcon, CheckIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import {useState, useEffect} from "react";
+import {toast} from 'sonner';
 
 interface NavigationTabProps {
   value: string
@@ -57,6 +59,7 @@ function TabsNavigation() {
 export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const [workspace, setWorkspace] = useState('');
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -70,6 +73,26 @@ export default function SiteHeader() {
 
   const handleLogout = () => {
     navigationService.navigateToLogin();
+  }
+
+  useEffect(() => {
+    const ws = localStorage.getItem('LIGHTRAG-WORKSPACE') || '';
+    setWorkspace(ws);
+  }, []);
+
+  const handleWorkspaceUpdate = () => {
+    const trimed = workspace.trim();
+    if (trimed) {
+      localStorage.setItem('LIGHTRAG-WORKSPACE', trimed);
+      toast.success(t('Workspace set. Reloading page...'));
+    } else {
+      localStorage.removeItem('LIGHTRAG-WORKSPACE');
+      toast.success(t('Workspace cleared. Reloading page...'));
+    }
+
+    setTimeout(() => {
+      window.location.reload();
+    }, 500);
   }
 
   return (
@@ -111,6 +134,10 @@ export default function SiteHeader() {
 
       <nav className="w-[200px] flex items-center justify-end">
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <input type="text" value={workspace} onChange={(e) => setWorkspace(e.target.value)} placeholder="workspace" className="h-6 w-20 px-1 text-xs border rounded bg-background text-foreground"/>
+            <Button variant="ghost" size="icon" className="h-6 w-6" side="bottom" tooltip={t('header.updateWorkspace', 'Update Workspace')} onClick={handleWorkspaceUpdate}><CheckIcon className="size-3" aria-hidden="true" /></Button>
+          </div>
           {versionDisplay && (
             <TooltipProvider>
               <Tooltip>
