@@ -9,6 +9,8 @@ services:
     name: lightrag-mt
     runtime: docker
     dockerfilePath: ./Dockerfile
+    region: frankfurt  # EU region for lower latency
+    plan: standard     # 2GB RAM, 1 CPU - better for multi-workspace workloads
 
     # Health check endpoint
     healthCheckPath: /health
