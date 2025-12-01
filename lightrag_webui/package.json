@@ -59,7 +59,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-dropzone": "^14.3.8",
-    "react-error-boundary": "^5.0.0",
+    "react-error-boundary": "^6.0.0",
     "react-i18next": "^15.7.4",
     "react-markdown": "^9.1.0",
     "react-number-format": "^5.4.4",
