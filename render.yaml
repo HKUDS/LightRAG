@@ -1,74 +1,118 @@
 # Render Blueprint for LightRAG Server with Multi-Workspace Support
 # https://render.com/docs/blueprint-spec
+#
+# Deploy: Connect repo on Render Dashboard → New Blueprint
+# All secrets (API keys, passwords) should be set in Render Dashboard
 
 services:
   - type: web
-    name: lightrag
+    name: lightrag-mt
     runtime: docker
     dockerfilePath: ./Dockerfile
 
-    # Health check
+    # Health check endpoint
     healthCheckPath: /health
 
-    # Auto-scaling (adjust based on your plan)
+    # Auto-deploy on push
     autoDeploy: true
 
-    # Disk for persistent storage (required for file-based storage)
+    # Disk for local file storage (NetworkX graphs, inputs)
     disk:
       name: lightrag-data
       mountPath: /app/data
-      sizeGB: 10  # Adjust based on your needs
+      sizeGB: 10
 
-    # Environment variables
     envVars:
-      # Server configuration
+      #############################
+      # Server Configuration
+      #############################
       - key: PORT
-        value: 9621
+        value: "9621"
       - key: HOST
-        value: 0.0.0.0
+        value: "0.0.0.0"
+      - key: WHITELIST_PATHS
+        value: "/health"
 
-      # Multi-workspace configuration
+      #############################
+      # Multi-Workspace Configuration
+      #############################
       - key: LIGHTRAG_DEFAULT_WORKSPACE
-        value: default
+        value: "default"
       - key: LIGHTRAG_ALLOW_DEFAULT_WORKSPACE
-        value: "true"  # Set to "false" for strict multi-tenant mode
+        value: "true"
       - key: LIGHTRAG_MAX_WORKSPACES_IN_POOL
         value: "50"
 
-      # Storage paths (using persistent disk)
+      #############################
+      # Storage Paths
+      #############################
       - key: WORKING_DIR
-        value: /app/data/rag_storage
+        value: "/app/data/rag_storage"
       - key: INPUT_DIR
-        value: /app/data/inputs
+        value: "/app/data/inputs"
 
-      # LLM Configuration (set these in Render dashboard as secrets)
+      #############################
+      # Storage Backends (PostgreSQL + NetworkX)
+      #############################
+      - key: LIGHTRAG_KV_STORAGE
+        value: "PGKVStorage"
+      - key: LIGHTRAG_DOC_STATUS_STORAGE
+        value: "PGDocStatusStorage"
+      - key: LIGHTRAG_VECTOR_STORAGE
+        value: "PGVectorStorage"
+      - key: LIGHTRAG_GRAPH_STORAGE
+        value: "NetworkXStorage"
+
+      #############################
+      # PostgreSQL (Supabase)
+      #############################
+      - key: POSTGRES_HOST
+        value: "db.apmyydkiuvrvvhuwsbmp.supabase.co"
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_USER
+        value: "postgres"
+      - key: POSTGRES_DATABASE
+        value: "postgres"
+      - key: POSTGRES_PASSWORD
+        sync: false  # Set in Render Dashboard as secret
+
+      #############################
+      # LLM Configuration (Anthropic Claude)
+      #############################
       - key: LLM_BINDING
-        sync: false  # Configure in dashboard
-      - key: LLM_MODEL
-        sync: false
+        value: "openai"
       - key: LLM_BINDING_HOST
-        sync: false
+        value: "https://api.anthropic.com/v1"
+      - key: LLM_MODEL
+        value: "claude-sonnet-4-20250514"
       - key: LLM_BINDING_API_KEY
-        sync: false
+        sync: false  # Set in Render Dashboard as secret
 
-      # Embedding Configuration (set these in Render dashboard as secrets)
+      #############################
+      # Embedding Configuration (OpenAI)
+      #############################
       - key: EMBEDDING_BINDING
-        sync: false
-      - key: EMBEDDING_MODEL
-        sync: false
-      - key: EMBEDDING_DIM
-        sync: false
+        value: "openai"
       - key: EMBEDDING_BINDING_HOST
-        sync: false
+        value: "https://api.openai.com/v1"
+      - key: EMBEDDING_MODEL
+        value: "text-embedding-3-small"
+      - key: EMBEDDING_DIM
+        value: "1536"
       - key: EMBEDDING_BINDING_API_KEY
-        sync: false
+        sync: false  # Set in Render Dashboard as secret
 
-      # Optional: API Key protection (set in dashboard as secret)
+      #############################
+      # Performance Configuration
+      #############################
+      - key: MAX_ASYNC
+        value: "16"
+      - key: MAX_PARALLEL_INSERT
+        value: "10"
+
+      #############################
+      # API Security
+      #############################
       - key: LIGHTRAG_API_KEY
-        sync: false
-
-      # Optional: JWT Auth (set in dashboard as secrets)
-      - key: AUTH_ACCOUNTS
-        sync: false
-      - key: TOKEN_SECRET
-        sync: false
+        sync: false  # Set in Render Dashboard as secret
