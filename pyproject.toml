@@ -76,7 +76,7 @@ api = [
     "distro",
     "fastapi",
     "httpcore",
-    "httpx",
+    "httpx>=0.28.1",
     "jiter",
     "bcrypt>=4.0.0",
     "psutil",
@@ -130,16 +130,18 @@ offline = [
     "lightrag-hku[api,offline-storage,offline-llm]",
 ]
 
-evaluation = [
-    # Test framework dependencies
+test = [
+    "lightrag-hku[api]",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
-    # RAG evaluation dependencies (RAGAS framework)
+]
+
+evaluation = [
+    "lightrag-hku[api]",
     "ragas>=0.3.7",
     "datasets>=4.3.0",
-    "httpx>=0.28.1",
 ]
 
 observability = [
