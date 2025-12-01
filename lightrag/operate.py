@@ -5,6 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import os
 import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
@@ -78,17 +79,47 @@ import time
 import hashlib
 from dotenv import load_dotenv
 
-# Query embedding cache for avoiding redundant API calls
+# Query embedding cache configuration (configurable via environment variables)
+QUERY_EMBEDDING_CACHE_TTL = int(os.getenv("QUERY_EMBEDDING_CACHE_TTL", "3600"))  # 1 hour
+QUERY_EMBEDDING_CACHE_MAX_SIZE = int(os.getenv("QUERY_EMBEDDING_CACHE_SIZE", "10000"))
+
+# Redis cache configuration
+REDIS_EMBEDDING_CACHE_ENABLED = os.getenv("REDIS_EMBEDDING_CACHE", "false").lower() == "true"
+REDIS_URI = os.getenv("REDIS_URI", "redis://localhost:6379")
+
+# Local in-memory cache with LRU eviction
 # Structure: {query_hash: (embedding, timestamp)}
 _query_embedding_cache: dict[str, tuple[list[float], float]] = {}
-QUERY_EMBEDDING_CACHE_TTL = 3600  # 1 hour TTL
-QUERY_EMBEDDING_CACHE_MAX_SIZE = 1000  # Maximum cache entries
+
+# Global Redis client (lazy initialized)
+_redis_client = None
 
 
-async def get_cached_query_embedding(
-    query: str, embedding_func
-) -> list[float] | None:
+async def _get_redis_client():
+    """Lazy initialize Redis client."""
+    global _redis_client
+    if _redis_client is None and REDIS_EMBEDDING_CACHE_ENABLED:
+        try:
+            import redis.asyncio as redis
+
+            _redis_client = redis.from_url(REDIS_URI, decode_responses=True)
+            # Test connection
+            await _redis_client.ping()
+            logger.info(f"Redis embedding cache connected: {REDIS_URI}")
+        except ImportError:
+            logger.warning("Redis package not installed. Install with: pip install redis")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to connect to Redis: {e}. Falling back to local cache.")
+            return None
+    return _redis_client
+
+
+async def get_cached_query_embedding(query: str, embedding_func) -> list[float] | None:
     """Get query embedding with caching to avoid redundant API calls.
+
+    Supports both local in-memory cache and Redis for cross-worker sharing.
+    Redis is used when REDIS_EMBEDDING_CACHE=true environment variable is set.
 
     Args:
         query: The query string to embed
@@ -99,11 +130,27 @@ async def get_cached_query_embedding(
     """
     query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
     current_time = time.time()
+    redis_key = f"lightrag:emb:{query_hash}"
 
-    # Check cache
+    # Try Redis cache first (if enabled)
+    if REDIS_EMBEDDING_CACHE_ENABLED:
+        try:
+            redis_client = await _get_redis_client()
+            if redis_client:
+                cached_json = await redis_client.get(redis_key)
+                if cached_json:
+                    embedding = json.loads(cached_json)
+                    logger.debug(f"Redis embedding cache hit for hash {query_hash[:8]}")
+                    # Also update local cache
+                    _query_embedding_cache[query_hash] = (embedding, current_time)
+                    return embedding
+        except Exception as e:
+            logger.debug(f"Redis cache read error: {e}")
+
+    # Check local cache
     cached = _query_embedding_cache.get(query_hash)
     if cached and (current_time - cached[1]) < QUERY_EMBEDDING_CACHE_TTL:
-        logger.debug(f"Query embedding cache hit for hash {query_hash[:8]}")
+        logger.debug(f"Local embedding cache hit for hash {query_hash[:8]}")
         return cached[0]
 
     # Cache miss - compute embedding
@@ -111,7 +158,7 @@ async def get_cached_query_embedding(
         embedding = await embedding_func([query])
         embedding_result = embedding[0]  # Extract first from batch
 
-        # Manage cache size - simple eviction of oldest entries
+        # Manage local cache size - LRU eviction of oldest entries
         if len(_query_embedding_cache) >= QUERY_EMBEDDING_CACHE_MAX_SIZE:
             # Remove oldest 10% of entries
             sorted_entries = sorted(
@@ -120,12 +167,29 @@ async def get_cached_query_embedding(
             for old_key, _ in sorted_entries[: QUERY_EMBEDDING_CACHE_MAX_SIZE // 10]:
                 del _query_embedding_cache[old_key]
 
+        # Store in local cache
         _query_embedding_cache[query_hash] = (embedding_result, current_time)
-        logger.debug(f"Query embedding cached for hash {query_hash[:8]}")
+
+        # Store in Redis (if enabled)
+        if REDIS_EMBEDDING_CACHE_ENABLED:
+            try:
+                redis_client = await _get_redis_client()
+                if redis_client:
+                    await redis_client.setex(
+                        redis_key,
+                        QUERY_EMBEDDING_CACHE_TTL,
+                        json.dumps(embedding_result),
+                    )
+                    logger.debug(f"Embedding cached in Redis for hash {query_hash[:8]}")
+            except Exception as e:
+                logger.debug(f"Redis cache write error: {e}")
+
+        logger.debug(f"Query embedding computed and cached for hash {query_hash[:8]}")
         return embedding_result
     except Exception as e:
         logger.warning(f"Failed to compute query embedding: {e}")
         return None
+
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -1843,8 +1907,13 @@ async def _merge_nodes_then_upsert(
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
     pre_resolution_map: dict[str, str] | None = None,
+    prefetched_nodes: dict[str, dict] | None = None,
 ) -> tuple[dict, str | None]:
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert.
+
+    Args:
+        prefetched_nodes: Optional dict mapping entity names to their existing node data.
+            If provided, avoids individual get_node() calls for better performance.
 
     Returns:
         Tuple of (node_data, original_entity_name). original_entity_name is set if
@@ -1969,8 +2038,12 @@ async def _merge_nodes_then_upsert(
     already_description = []
     already_file_paths = []
 
-    # 1. Get existing node data from knowledge graph
-    already_node = await knowledge_graph_inst.get_node(entity_name)
+    # 1. Get existing node data from knowledge graph (use prefetched if available)
+    if prefetched_nodes is not None and entity_name in prefetched_nodes:
+        already_node = prefetched_nodes[entity_name]
+    else:
+        # Fallback to individual fetch if not prefetched (e.g., after VDB resolution)
+        already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node:
         already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
@@ -2922,6 +2995,28 @@ async def merge_nodes_and_edges(
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
 
+    # ===== Batch Prefetch: Load existing entity data in single query =====
+    # Build list of entity names to prefetch (apply pre-resolution where applicable)
+    prefetch_entity_names = []
+    for entity_name in all_nodes.keys():
+        resolved_name = pre_resolution_map.get(entity_name, entity_name)
+        prefetch_entity_names.append(resolved_name)
+
+    # Batch fetch existing nodes to avoid N+1 query pattern during parallel processing
+    prefetched_nodes: dict[str, dict] = {}
+    if prefetch_entity_names:
+        try:
+            prefetched_nodes = await knowledge_graph_inst.get_nodes_batch(
+                prefetch_entity_names
+            )
+            logger.debug(
+                f"Prefetched {len(prefetched_nodes)}/{len(prefetch_entity_names)} "
+                f"existing entities for merge"
+            )
+        except Exception as e:
+            logger.warning(f"Batch entity prefetch failed: {e}. Falling back to individual fetches.")
+            prefetched_nodes = {}
+
     # Resolution map to track original→resolved entity names (e.g., "Dupixant"→"Dupixent")
     # This will be used to remap edge endpoints in Phase 2
     entity_resolution_map: dict[str, str] = {}
@@ -2955,6 +3050,7 @@ async def merge_nodes_and_edges(
                         llm_response_cache,
                         entity_chunks_storage,
                         pre_resolution_map,
+                        prefetched_nodes,
                     )
 
                     # Track resolution mapping for edge remapping in Phase 2
@@ -3941,7 +4037,7 @@ async def _perform_kg_search(
             query_embedding = await get_cached_query_embedding(
                 query, actual_embedding_func
             )
-            if query_embedding:
+            if query_embedding is not None:
                 logger.debug("Pre-computed query embedding for all vector operations")
 
     # Handle local and global modes

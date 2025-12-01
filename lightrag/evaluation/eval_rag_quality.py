@@ -115,7 +115,7 @@ def _is_nan(value: Any) -> bool:
 class RAGEvaluator:
     """Evaluate RAG system quality using RAGAS metrics"""
 
-    def __init__(self, test_dataset_path: str = None, rag_api_url: str = None):
+    def __init__(self, test_dataset_path: str = None, rag_api_url: str = None, query_mode: str = "mix"):
         """
         Initialize evaluator with test dataset
 
@@ -123,6 +123,7 @@ class RAGEvaluator:
             test_dataset_path: Path to test dataset JSON file
             rag_api_url: Base URL of LightRAG API (e.g., http://localhost:9621)
                         If None, will try to read from environment or use default
+            query_mode: Query mode for retrieval (local, global, hybrid, mix, naive)
 
         Environment Variables:
             EVAL_LLM_MODEL: LLM model for evaluation (default: gpt-4o-mini)
@@ -219,6 +220,7 @@ class RAGEvaluator:
 
         self.test_dataset_path = Path(test_dataset_path)
         self.rag_api_url = rag_api_url.rstrip("/")
+        self.query_mode = query_mode
         self.results_dir = Path(__file__).parent / "results"
         self.results_dir.mkdir(exist_ok=True)
 
@@ -275,6 +277,7 @@ class RAGEvaluator:
         logger.info("  • Total Test Cases:     %s", len(self.test_cases))
         logger.info("  • Test Dataset:         %s", self.test_dataset_path.name)
         logger.info("  • LightRAG API:         %s", self.rag_api_url)
+        logger.info("  • Query Mode:           %s", self.query_mode)
         logger.info("  • Results Directory:    %s", self.results_dir.name)
 
     def _load_test_dataset(self) -> List[Dict[str, str]]:
@@ -309,7 +312,7 @@ class RAGEvaluator:
         try:
             payload = {
                 "query": question,
-                "mode": "mix",
+                "mode": self.query_mode,
                 "include_references": True,
                 "include_chunk_content": True,  # NEW: Request chunk content in references
                 "response_type": "Multiple Paragraphs",
@@ -997,6 +1000,15 @@ Examples:
             help="LightRAG API endpoint URL (default: http://localhost:9621 or $LIGHTRAG_API_URL environment variable)",
         )
 
+        parser.add_argument(
+            "--mode",
+            "-m",
+            type=str,
+            default="mix",
+            choices=["local", "global", "hybrid", "mix", "naive"],
+            help="Query mode for retrieval (default: mix). 'local' for entity-specific questions, 'mix' for comprehensive retrieval.",
+        )
+
         args = parser.parse_args()
 
         logger.info("%s", "=" * 70)
@@ -1004,7 +1016,7 @@ Examples:
         logger.info("%s", "=" * 70)
 
         evaluator = RAGEvaluator(
-            test_dataset_path=args.dataset, rag_api_url=args.ragendpoint
+            test_dataset_path=args.dataset, rag_api_url=args.ragendpoint, query_mode=args.mode
         )
         await evaluator.run()
     except Exception as e:

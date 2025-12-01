@@ -218,9 +218,11 @@ class LightRAG:
         )
     )
 
-    entity_resolution_config: EntityResolutionConfig | None = field(default=None)
+    entity_resolution_config: EntityResolutionConfig = field(
+        default_factory=EntityResolutionConfig
+    )
     """Configuration for entity resolution (deduplication).
-    Set to EntityResolutionConfig() to enable, or None to disable.
+    Now enabled by default. Set to None to disable.
     Resolves entities like 'FDA' → 'US Food and Drug Administration'."""
 
     # Orphan connection

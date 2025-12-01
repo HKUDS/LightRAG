@@ -365,7 +365,16 @@ async def openai_complete_if_cache(
 
                     delta = chunk.choices[0].delta
                     content = getattr(delta, "content", None)
-                    reasoning_content = getattr(delta, "reasoning_content", "")
+                    # Support both OpenAI's reasoning_content and OpenRouter's reasoning field
+                    reasoning_content = getattr(delta, "reasoning_content", "") or getattr(delta, "reasoning", "")
+                    # Also handle OpenRouter's reasoning_details array format
+                    if not reasoning_content:
+                        reasoning_details = getattr(delta, "reasoning_details", None)
+                        if reasoning_details and isinstance(reasoning_details, list):
+                            for detail in reasoning_details:
+                                if isinstance(detail, dict) and detail.get("text"):
+                                    reasoning_content = detail.get("text", "")
+                                    break
 
                     # Handle COT logic for streaming (only if enabled)
                     if enable_cot:
@@ -527,7 +536,18 @@ async def openai_complete_if_cache(
             else:
                 # Handle regular content responses
                 content = getattr(message, "content", None)
-                reasoning_content = getattr(message, "reasoning_content", "")
+                # Support both OpenAI's reasoning_content and OpenRouter's reasoning field
+                reasoning_content = getattr(message, "reasoning_content", "") or getattr(message, "reasoning", "")
+                # Also handle OpenRouter's reasoning_details array format
+                if not reasoning_content:
+                    reasoning_details = getattr(message, "reasoning_details", None)
+                    if reasoning_details and isinstance(reasoning_details, list):
+                        # Concatenate all reasoning text for non-streaming
+                        reasoning_parts = []
+                        for detail in reasoning_details:
+                            if isinstance(detail, dict) and detail.get("text"):
+                                reasoning_parts.append(detail.get("text", ""))
+                        reasoning_content = "".join(reasoning_parts)
 
                 # Handle COT logic for non-streaming responses (only if enabled)
                 final_content = ""

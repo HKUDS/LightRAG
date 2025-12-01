@@ -54,13 +54,14 @@ services:
     volumes:
       - ./data/rag_storage_test:/app/data/rag_storage
       - ./data/inputs_test:/app/data/inputs
+      - ./lightrag:/app/lightrag  # Mount source for live reload
     environment:
       # Server
       - HOST=0.0.0.0
       - PORT=9621
       - LOG_LEVEL=DEBUG
 
-      # LLM (OpenAI)
+      # LLM (OpenAI - gpt-4o-mini for reliable fast extraction)
       - LLM_BINDING=openai
       - LLM_MODEL=gpt-4o-mini
       - LLM_BINDING_HOST=https://api.openai.com/v1
@@ -85,8 +86,8 @@ services:
       - POSTGRES_PASSWORD=lightrag_pass
       - POSTGRES_DATABASE=lightrag
 
-      # Entity Resolution - ENABLED!
-      - ENTITY_RESOLUTION_ENABLED=true
+      # Entity Resolution - DISABLED for faster ingestion (testing Context Precision changes)
+      - ENTITY_RESOLUTION_ENABLED=false
       - ENTITY_RESOLUTION_FUZZY_THRESHOLD=0.85
       - ENTITY_RESOLUTION_VECTOR_THRESHOLD=0.5
       - ENTITY_RESOLUTION_MAX_CANDIDATES=3
@@ -94,20 +95,19 @@ services:
       # Orphan Connection - MANUAL (use UI button instead of auto)
       - AUTO_CONNECT_ORPHANS=false
 
-      # Processing - Aggressive settings from agent-sdk
+      # Processing - Matching agent-sdk working settings
       - MAX_ASYNC=96
       - MAX_PARALLEL_INSERT=10
-      - EMBEDDING_FUNC_MAX_ASYNC=16
+      - EMBEDDING_FUNC_MAX_ASYNC=2             # Match llamacpp parallel slots (prevent queue backlog)
       - EMBEDDING_BATCH_NUM=48
 
       # Gunicorn - 8 workers x 4 threads = 32 concurrent handlers
       - GUNICORN_CMD_ARGS=--workers=8 --worker-class=gthread --threads=4 --worker-connections=1000 --timeout=120 --keep-alive=5 --graceful-timeout=30
 
-      # Extraction Optimization - Reduce Orphan Nodes
-      - CHUNK_SIZE=800                         # Smaller chunks for focused extraction
-      - CHUNK_OVERLAP_SIZE=400                 # 50% overlap captures cross-boundary relationships
-      - MAX_GLEANING=1                         # Enable gleaning refinement pass
-      - FORCE_LLM_SUMMARY_ON_MERGE=4           # More aggressive entity consolidation
+      # Extraction - Using agent-sdk defaults for reliable ingestion
+      - CHUNK_SIZE=1200                        # Default chunk size (agent-sdk default)
+      - CHUNK_OVERLAP_SIZE=100                 # Default overlap
+      # MAX_GLEANING defaults to 1 (removed override of 2)
 
       # Orphan Connection - Use UI button for manual triggering
       # AUTO_CONNECT_ORPHANS is set to false above (manual mode)

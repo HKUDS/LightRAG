@@ -1,5 +1,5 @@
 import { queryText, queryTextStream } from '@/api/lightrag'
-import type { QueryMode } from '@/api/lightrag'
+import type { CitationsMetadata, QueryMode } from '@/api/lightrag'
 import { ChatMessage, type MessageWithError } from '@/components/retrieval/ChatMessage'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import Button from '@/components/ui/Button'
@@ -231,6 +231,7 @@ export default function RetrievalTesting() {
         thinkingContent: undefined, // Explicitly initialize to undefined
         displayContent: undefined, // Explicitly initialize to undefined
         isThinking: false, // Explicitly initialize to false
+        citationsProcessed: false, // Prevent finally block from overwriting citation content
       }
 
       const prevMessages = [...messages]
@@ -373,9 +374,66 @@ export default function RetrievalTesting() {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          })
+          await queryTextStream(
+            queryParams,
+            updateAssistantMessage,
+            (error) => {
+              errorMessage += error
+            },
+            // Citation callback - use position markers to insert citations client-side
+            // NEW: No longer receives annotated_response (which duplicated payload)
+            // Instead receives position metadata for client-side marker insertion
+            (() => {
+              let citationsApplied = false
+              return (metadata: CitationsMetadata) => {
+                // Guard against multiple invocations
+                if (citationsApplied || !metadata.markers || metadata.markers.length === 0) return
+                citationsApplied = true
+
+                // Insert markers into the accumulated response using position data
+                // Sort by position descending so we can insert from end to start (preserves positions)
+                const sortedMarkers = [...metadata.markers].sort(
+                  (a, b) => b.insert_position - a.insert_position
+                )
+
+                let annotatedContent = assistantMessage.content
+                for (const marker of sortedMarkers) {
+                  // Insert marker at the specified position
+                  if (marker.insert_position <= annotatedContent.length) {
+                    annotatedContent =
+                      annotatedContent.slice(0, marker.insert_position) +
+                      marker.marker +
+                      annotatedContent.slice(marker.insert_position)
+                  }
+                }
+
+                // Append footnotes if provided
+                let finalContent = annotatedContent
+                if (metadata.footnotes && metadata.footnotes.length > 0) {
+                  finalContent += '\n\n---\n\n**References:**\n' + metadata.footnotes.join('\n')
+                }
+
+                // Update message with annotated content and store citation metadata for HoverCards
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantMessage.id
+                      ? {
+                          ...msg,
+                          content: finalContent,
+                          displayContent: finalContent,
+                          citationsProcessed: true,
+                          citationsMetadata: metadata, // Store for HoverCard rendering
+                        }
+                      : msg
+                  )
+                )
+                // Also update the local reference for final cleanup operations
+                assistantMessage.content = finalContent
+                assistantMessage.displayContent = finalContent
+                assistantMessage.citationsProcessed = true
+              }
+            })()
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -413,7 +471,8 @@ export default function RetrievalTesting() {
           }
 
           // Ensure display content is correctly set based on final parsing
-          if (finalCotResult.displayContent !== undefined) {
+          // BUT skip if citations were processed (they already set displayContent)
+          if (!assistantMessage.citationsProcessed && finalCotResult.displayContent !== undefined) {
             assistantMessage.displayContent = finalCotResult.displayContent
           }
         } catch (error) {

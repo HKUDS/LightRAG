@@ -161,6 +161,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         history_turns: 0,
         user_prompt: '',
         enable_rerank: true,
+        citation_mode: 'none',
+        citation_threshold: 0.7,
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -303,7 +305,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 23,
+      version: 24,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -427,6 +429,13 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 23) {
           // Add expand depth setting for Load Connections
           state.graphExpandDepth = 1
+        }
+        if (version < 24) {
+          // Add citation settings for post-processing citations
+          if (state.querySettings) {
+            state.querySettings.citation_mode = 'none'
+            state.querySettings.citation_threshold = 0.7
+          }
         }
         return state
       },

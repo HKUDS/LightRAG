@@ -101,12 +101,47 @@ export type LightragDocumentsScanProgress = {
  */
 export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
 
+/**
+ * Citation marker with position data for frontend insertion
+ */
+export type CitationMarker = {
+  marker: string              // e.g., "[1]" or "[1,2]"
+  insert_position: number     // Character position to insert marker
+  reference_ids: string[]     // Reference IDs this marker cites
+  confidence: number          // Match confidence (0.0-1.0)
+  text_preview: string        // Preview of the cited text
+}
+
+/**
+ * Enhanced source metadata for hover cards
+ */
+export type CitationSource = {
+  reference_id: string
+  file_path: string
+  document_title: string | null
+  section_title: string | null
+  page_range: string | null
+  excerpt: string | null
+}
+
+/**
+ * Consolidated citation metadata from backend
+ */
+export type CitationsMetadata = {
+  markers: CitationMarker[]   // Position-based markers for insertion
+  sources: CitationSource[]   // Enhanced reference metadata
+  footnotes: string[]         // Pre-formatted footnote strings
+  uncited_count: number       // Number of claims without citations
+}
+
 export type Message = {
   role: 'user' | 'assistant' | 'system'
   content: string
   thinkingContent?: string
   displayContent?: string
   thinkingTime?: number | null
+  citationsProcessed?: boolean
+  citationsMetadata?: CitationsMetadata  // New consolidated citation data
 }
 
 export type QueryRequest = {
@@ -142,6 +177,10 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Citation mode for post-processing citations. 'none' = no citations, 'inline' = [n] markers only, 'footnotes' = full footnotes with document titles */
+  citation_mode?: 'none' | 'inline' | 'footnotes'
+  /** Minimum similarity threshold (0.0-1.0) for matching response sentences to source chunks. Higher = stricter matching. Default is 0.7 */
+  citation_threshold?: number
 }
 
 export type QueryResponse = {
@@ -409,7 +448,8 @@ export const queryText = async (request: QueryRequest): Promise<QueryResponse> =
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  onCitations?: (metadata: CitationsMetadata) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
@@ -486,7 +526,11 @@ export const queryTextStream = async (
               onChunk(parsed.response)
             } else if (parsed.error && onError) {
               onError(parsed.error)
+            } else if (parsed.citations_metadata && onCitations) {
+              // NEW: Handle consolidated citations_metadata object
+              onCitations(parsed.citations_metadata as CitationsMetadata)
             }
+            // Silently ignore references and other events
           } catch (error) {
             console.error('Error parsing stream chunk:', line, error)
             if (onError) onError(`Error parsing server response: ${line}`)
@@ -503,6 +547,8 @@ export const queryTextStream = async (
           onChunk(parsed.response)
         } else if (parsed.error && onError) {
           onError(parsed.error)
+        } else if (parsed.citations_metadata && onCitations) {
+          onCitations(parsed.citations_metadata as CitationsMetadata)
         }
       } catch (error) {
         console.error('Error parsing final chunk:', buffer, error)

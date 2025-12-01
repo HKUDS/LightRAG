@@ -18,7 +18,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Configuration
-CITATION_MIN_SIMILARITY = float(os.getenv("CITATION_MIN_SIMILARITY", "0.7"))
+CITATION_MIN_SIMILARITY = float(os.getenv("CITATION_MIN_SIMILARITY", "0.5"))
 CITATION_MAX_PER_SENTENCE = int(os.getenv("CITATION_MAX_PER_SENTENCE", "3"))
 
 

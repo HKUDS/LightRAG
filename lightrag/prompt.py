@@ -41,6 +41,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   Look for implicit categorical or thematic connections to other entities.
         *   Consider whether the entity belongs to a broader group or domain represented by other entities.
         *   Extract comparative relationships if the entity is mentioned alongside others.
+    *   **Attribution Verification:** When extracting relationships, ensure the source and target entities are correctly identified from the text. Do not conflate similar entities or transfer attributes from one entity to another.
 
 3.  **Delimiter Usage Protocol:**
     *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
@@ -227,7 +228,43 @@ PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )
 
-PROMPTS["rag_response"] = """---Role---
+# Default RAG response prompt - cite-ready (no LLM-generated citations)
+# Citations are added by post-processing. This gives cleaner, more accurate results.
+PROMPTS["rag_response"] = """You're helping someone understand a topic. Write naturally, like explaining to a curious friend.
+
+STYLE RULES:
+- Flowing paragraphs, NOT bullets or numbered lists
+- Connect sentences with transitions (however, this means, for example)
+- Combine related facts into sentences rather than listing separately
+- Vary sentence length - mix short and long
+
+GOOD EXAMPLE:
+"Machine learning is a branch of AI that enables computers to learn from data without explicit programming. The field includes several approaches: supervised learning uses labeled data, while unsupervised learning finds hidden patterns. Deep learning, using multi-layer neural networks, has proven especially effective for image recognition and language processing."
+
+BAD EXAMPLE:
+"- Machine learning: branch of AI
+- Learns from data
+- Types: supervised, unsupervised
+- Deep learning uses neural networks"
+
+Answer using ONLY the context below. Do NOT include [1], [2] citations - they're added automatically.
+
+{user_prompt}
+
+Context:
+{context_data}
+"""
+
+# Strict mode suffix - append when response_type="strict"
+PROMPTS["rag_response_strict_suffix"] = """
+STRICT GROUNDING:
+- NEVER state specific numbers/dates unless they appear EXACTLY in context
+- If information isn't in context, say "not specified in available information"
+- Entity summaries for overview, Source Excerpts for precision
+"""
+
+# Legacy prompt with LLM-generated citations (for backward compatibility)
+PROMPTS["rag_response_with_llm_citations"] = """---Role---
 
 You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.
 
@@ -250,6 +287,8 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - CRITICAL FOR FACTS: When stating specific facts (dates, numbers, names, statistics), you MUST verify each fact appears EXACTLY in the provided context. If a specific date or number is not explicitly stated in the context, say "the exact [year/number/date] is not specified in the available information" rather than guessing.
+  - When the question asks "which" or "who" or "how many", provide ONLY the direct answer with facts from context. Do not elaborate with information not explicitly in the context.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
@@ -281,7 +320,44 @@ Consider the conversation history if provided to maintain conversational flow an
 {context_data}
 """
 
+# Default naive RAG response prompt - cite-ready (no LLM-generated citations)
 PROMPTS["naive_rag_response"] = """---Role---
+
+You are an expert AI assistant synthesizing information from a knowledge base.
+
+---Goal---
+
+Generate a comprehensive, well-structured answer to the user query using ONLY information from the provided Document Chunks.
+
+---Instructions---
+
+1. **Cite-Ready Writing Style**:
+   - Write each factual claim as a distinct, complete sentence
+   - DO NOT include citation markers like [1], [2], or footnote references
+   - DO NOT add a References section - citations will be added automatically by the system
+   - Each sentence should be traceable to specific information in the context
+
+2. **Content & Grounding**:
+   - Use ONLY information from the provided context
+   - DO NOT invent, assume, or infer any information not explicitly stated
+   - If the answer cannot be found in the context, state that clearly
+   - CRITICAL: Verify each fact appears EXACTLY in the provided context before stating it
+
+3. **Formatting**:
+   - The response MUST be in the same language as the user query
+   - Use Markdown formatting for clarity (headings, bullet points, bold)
+   - The response should be presented in {response_type}
+
+4. Additional Instructions: {user_prompt}
+
+
+---Context---
+
+{content_data}
+"""
+
+# Legacy naive RAG prompt with LLM-generated citations (for backward compatibility)
+PROMPTS["naive_rag_response_with_llm_citations"] = """---Role---
 
 You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.
 
@@ -304,6 +380,8 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - CRITICAL FOR FACTS: When stating specific facts (dates, numbers, names, statistics), you MUST verify each fact appears EXACTLY in the provided context. If a specific date or number is not explicitly stated in the context, say "the exact [year/number/date] is not specified in the available information" rather than guessing.
+  - When the question asks "which" or "who" or "how many", provide ONLY the direct answer with facts from context. Do not elaborate with information not explicitly in the context.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
@@ -335,30 +413,31 @@ Consider the conversation history if provided to maintain conversational flow an
 {content_data}
 """
 
+# Backward compatibility aliases - the default prompts are now cite-ready
+PROMPTS["cite_ready_rag_response"] = PROMPTS["rag_response"]
+PROMPTS["cite_ready_naive_rag_response"] = PROMPTS["naive_rag_response"]
+
 PROMPTS["kg_query_context"] = """
-Knowledge Graph Data (Entity):
+## Entity Summaries (use for definitions and general facts)
 
 ```json
 {entities_str}
 ```
 
-Knowledge Graph Data (Relationship):
+## Relationships (use to explain connections between concepts)
 
 ```json
 {relations_str}
 ```
 
-Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+## Source Excerpts (use for specific facts, numbers, quotes)
 
 ```json
 {text_chunks_str}
 ```
 
-Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
-
-```
+## References
 {reference_list_str}
-```
 
 """
 

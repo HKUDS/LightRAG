@@ -494,7 +494,16 @@
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
       "enableRerank": "Enable Rerank",
-      "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
+      "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
+      "citationMode": "Citation Mode",
+      "citationModeTooltip": "Add source citations to responses:\n• None: No citations (fastest)\n• Inline: [n] markers in text only\n• Footnotes: Full footnotes with document titles",
+      "citationModeOptions": {
+        "none": "None",
+        "inline": "Inline [n]",
+        "footnotes": "Footnotes"
+      },
+      "citationThreshold": "Citation Threshold",
+      "citationThresholdTooltip": "Minimum similarity score (0-1) for matching sentences to sources. Higher = stricter matching, fewer citations. Default: 0.7"
     }
   },
   "apiSite": {

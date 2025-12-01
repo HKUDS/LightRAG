@@ -1,7 +1,7 @@
-import type { Message } from '@/api/lightrag'
+import type { CitationsMetadata, Message } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
-import { type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react' // Import useMemo
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { remarkFootnotes } from '@/utils/remarkFootnotes'
 import mermaid from 'mermaid'
@@ -14,8 +14,9 @@ import remarkMath from 'remark-math'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
-import { ChevronDownIcon, LoaderIcon } from 'lucide-react'
+import { BrainIcon, ChevronDownIcon, LoaderIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { CitationMarker } from './CitationMarker'
 
 // KaTeX configuration options interface
 interface KaTeXOptions {
@@ -41,6 +42,71 @@ export type MessageWithError = Message & {
    * Used to prevent red error text during streaming of incomplete LaTeX formulas.
    */
   latexRendered?: boolean
+}
+
+/**
+ * Helper component to render text with citation markers as interactive HoverCards.
+ * Parses [n] and [n,m] patterns and replaces them with CitationMarker components.
+ */
+function TextWithCitations({
+  children,
+  citationsMetadata,
+}: {
+  children: ReactNode
+  citationsMetadata?: CitationsMetadata
+}) {
+  // If no citation metadata or children is not a string, render as-is
+  if (!citationsMetadata || typeof children !== 'string') {
+    return <>{children}</>
+  }
+
+  const text = children
+  // Match citation patterns like [1], [2], [1,2], etc.
+  const citationPattern = /\[(\d+(?:,\d+)*)\]/g
+  const parts: ReactNode[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  let keyIndex = 0
+
+  while ((match = citationPattern.exec(text)) !== null) {
+    // Add text before the citation
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index))
+    }
+
+    // Parse reference IDs from the marker
+    const markerText = match[0]
+    const refIds = match[1].split(',').map((id) => id.trim())
+
+    // Find matching marker data for confidence
+    const markerData = citationsMetadata.markers?.find((m) => m.marker === markerText)
+    const confidence = markerData?.confidence ?? 0.5
+
+    // Add the citation marker component
+    parts.push(
+      <CitationMarker
+        key={`citation-${keyIndex++}`}
+        marker={markerText}
+        referenceIds={refIds}
+        confidence={confidence}
+        sources={citationsMetadata.sources || []}
+      />
+    )
+
+    lastIndex = match.index + match[0].length
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex))
+  }
+
+  // If no citations found, return original text
+  if (parts.length === 0) {
+    return <>{children}</>
+  }
+
+  return <>{parts}</>
 }
 
 // Restore original component definition and export
@@ -94,6 +160,9 @@ export const ChatMessage = ({
     loadKaTeX()
   }, [])
 
+  // Get citationsMetadata from message for use in markdown components
+  const citationsMetadata = message.citationsMetadata
+
   const mainMarkdownComponents = useMemo(
     () => ({
       code: (props: any) => {
@@ -132,6 +201,11 @@ export const ChatMessage = ({
           </CodeHighlight>
         )
       },
+      // Custom text renderer that handles citation markers [n]
+      // Transforms plain text [1], [2], [1,2] into interactive CitationMarker components
+      text: ({ children }: { children?: ReactNode }) => (
+        <TextWithCitations citationsMetadata={citationsMetadata}>{children}</TextWithCitations>
+      ),
       p: ({ children }: { children?: ReactNode }) => <div className="my-2">{children}</div>,
       h1: ({ children }: { children?: ReactNode }) => (
         <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>
@@ -153,7 +227,7 @@ export const ChatMessage = ({
       ),
       li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>,
     }),
-    [message.mermaidRendered, message.role]
+    [message.mermaidRendered, message.role, citationsMetadata]
   )
 
   const thinkingMarkdownComponents = useMemo(
@@ -179,48 +253,67 @@ export const ChatMessage = ({
             : 'w-[95%] bg-muted'
       } rounded-lg px-4 py-2`}
     >
-      {/* Thinking process display - only for assistant messages */}
-      {/* Always render to prevent layout shift when switching tabs */}
+      {/* Thinking Pill - collapsible bubble UI */}
       {message.role === 'assistant' && (isThinking || thinkingTime !== null) && (
-        <div
-          className={cn(
-            'mb-2',
-            // Reduce visual priority in inactive tabs while maintaining layout
-            !isTabActive && 'opacity-50'
-          )}
-        >
-          <div
-            className="flex items-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-200 text-sm cursor-pointer select-none"
+        <div className={cn('mb-3', !isTabActive && 'opacity-50')}>
+          {/* Pill Header - always visible */}
+          <button
+            type="button"
             onClick={() => {
-              // Allow expansion when there's thinking content, even during thinking process
               if (finalThinkingContent && finalThinkingContent.trim() !== '') {
                 setIsThinkingExpanded(!isThinkingExpanded)
               }
             }}
+            className={cn(
+              'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+              'border shadow-sm select-none',
+              isThinking
+                ? 'bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/50 dark:border-amber-800 dark:text-amber-300'
+                : 'bg-slate-100 border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300',
+              finalThinkingContent?.trim() && 'cursor-pointer hover:shadow-md'
+            )}
           >
             {isThinking ? (
               <>
-                {/* Only show spinner animation in active tab to save resources */}
-                {isTabActive && <LoaderIcon className="mr-2 size-4 animate-spin" />}
+                {isTabActive && (
+                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+                )}
                 <span>{t('retrievePanel.chatMessage.thinking')}</span>
               </>
             ) : (
               typeof thinkingTime === 'number' && (
-                <span>{t('retrievePanel.chatMessage.thinkingTime', { time: thinkingTime })}</span>
+                <>
+                  <BrainIcon className="w-3.5 h-3.5" />
+                  <span>{t('retrievePanel.chatMessage.thinkingTime', { time: thinkingTime })}</span>
+                </>
               )
             )}
-            {/* Show chevron when there's thinking content, even during thinking process */}
             {finalThinkingContent && finalThinkingContent.trim() !== '' && (
               <ChevronDownIcon
-                className={`ml-2 size-4 shrink-0 transition-transform ${isThinkingExpanded ? 'rotate-180' : ''}`}
+                className={cn(
+                  'w-3.5 h-3.5 transition-transform',
+                  isThinkingExpanded && 'rotate-180'
+                )}
               />
             )}
-          </div>
-          {/* Show thinking content when expanded and content exists, even during thinking process */}
+          </button>
+
+          {/* Expandable Content */}
           {isThinkingExpanded && finalThinkingContent && finalThinkingContent.trim() !== '' && (
-            <div className="mt-2 pl-4 border-l-2 border-primary/20 dark:border-primary/40 text-sm prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2 [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-6 [&_.footnotes]:pt-3 [&_.footnotes]:border-t [&_.footnotes]:border-border [&_.footnotes_ol]:text-xs [&_.footnotes_li]:my-0.5 [&_a[href^='#fn']]:text-primary [&_a[href^='#fn']]:no-underline [&_a[href^='#fn']]:hover:underline [&_a[href^='#fnref']]:text-primary [&_a[href^='#fnref']]:no-underline [&_a[href^='#fnref']]:hover:underline text-foreground">
+            <div
+              className={cn(
+                'mt-2 ml-2 p-3 rounded-lg text-sm',
+                'bg-slate-50 border border-slate-200 dark:bg-slate-900 dark:border-slate-700',
+                'max-h-[400px] overflow-y-auto',
+                'prose dark:prose-invert max-w-none break-words prose-p:my-1 prose-headings:my-2',
+                '[&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0]',
+                '[&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0]',
+                '[&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800',
+                'text-foreground'
+              )}
+            >
               {isThinking && (
-                <div className="mb-2 text-xs text-gray-400 dark:text-gray-300 italic">
+                <div className="mb-2 text-xs text-amber-600 dark:text-amber-400 italic">
                   {t('retrievePanel.chatMessage.thinkingInProgress', 'Thinking in progress...')}
                 </div>
               )}
@@ -238,16 +331,9 @@ export const ChatMessage = ({
                             displayMode: false,
                             strict: false,
                             trust: true,
-                            // Add silent error handling to avoid console noise
                             errorCallback: (error: string, latex: string) => {
-                              // Only show detailed errors in development environment
                               if (process.env.NODE_ENV === 'development') {
-                                console.warn(
-                                  'KaTeX rendering error in thinking content:',
-                                  error,
-                                  'for LaTeX:',
-                                  latex
-                                )
+                                console.warn('KaTeX error in thinking:', error, latex)
                               }
                             },
                           },

@@ -5,18 +5,19 @@ export const webuiPrefix = '/webui/'
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
-export const labelColorDarkTheme = '#FFFFFF'
-export const LabelColorHighlightedDarkTheme = '#000000'
+// Dark theme graph palette tuned for contrast on charcoal backgrounds
+export const labelColorDarkTheme = '#E5ECFF'
+export const LabelColorHighlightedDarkTheme = '#0F172A'
 export const labelColorLightTheme = '#000'
 
-export const nodeColorDisabled = '#E2E2E2'
-export const nodeBorderColor = '#EEEEEE'
-export const nodeBorderColorSelected = '#F57F17'
+export const nodeColorDisabled = '#9CA3AF'
+export const nodeBorderColor = '#CBD5E1'
+export const nodeBorderColorSelected = '#F97316'
 export const nodeBorderColorHiddenConnections = '#F59E0B' // Amber color for nodes with hidden connections
 
-export const edgeColorDarkTheme = '#888888'
-export const edgeColorSelected = '#F57F17'
-export const edgeColorHighlightedDarkTheme = '#F57F17'
+export const edgeColorDarkTheme = '#4B5563'
+export const edgeColorSelected = '#F97316'
+export const edgeColorHighlightedDarkTheme = '#F59E0B'
 export const edgeColorHighlightedLightTheme = '#F57F17'
 
 export const searchResultLimit = 50

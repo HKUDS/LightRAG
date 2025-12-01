@@ -52,6 +52,8 @@ export default function QuerySettings() {
       max_entity_tokens: 6000,
       max_relation_tokens: 8000,
       max_total_tokens: 30000,
+      citation_mode: 'none' as 'none' | 'inline' | 'footnotes',
+      citation_threshold: 0.7,
     }),
     []
   )
@@ -473,6 +475,87 @@ export default function QuerySettings() {
                   onCheckedChange={(checked) => handleChange('stream', checked)}
                 />
               </div>
+            </>
+
+            {/* Citation Settings */}
+            <>
+              <div className="pt-2 mt-2 border-t border-gray-200 dark:border-gray-700">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="citation_mode_select" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.citationMode')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.citationModeTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <div className="flex items-center gap-1">
+                <Select
+                  value={querySettings.citation_mode || 'none'}
+                  onValueChange={(v) => handleChange('citation_mode', v as 'none' | 'inline' | 'footnotes')}
+                >
+                  <SelectTrigger
+                    id="citation_mode_select"
+                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="none">
+                        {t('retrievePanel.querySettings.citationModeOptions.none')}
+                      </SelectItem>
+                      <SelectItem value="inline">
+                        {t('retrievePanel.querySettings.citationModeOptions.inline')}
+                      </SelectItem>
+                      <SelectItem value="footnotes">
+                        {t('retrievePanel.querySettings.citationModeOptions.footnotes')}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <ResetButton onClick={() => handleReset('citation_mode')} title="Reset to default (None)" />
+              </div>
+
+              {/* Citation Threshold - only show when citation mode is not 'none' */}
+              {querySettings.citation_mode && querySettings.citation_mode !== 'none' && (
+                <>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <label htmlFor="citation_threshold" className="ml-1 cursor-help">
+                          {t('retrievePanel.querySettings.citationThreshold')}
+                        </label>
+                      </TooltipTrigger>
+                      <TooltipContent side="left">
+                        <p>{t('retrievePanel.querySettings.citationThresholdTooltip')}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <div className="flex items-center gap-1">
+                    <Input
+                      id="citation_threshold"
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      value={querySettings.citation_threshold ?? 0.7}
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value)
+                        if (!isNaN(value) && value >= 0 && value <= 1) {
+                          handleChange('citation_threshold', value)
+                        }
+                      }}
+                      className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                    />
+                    <ResetButton onClick={() => handleReset('citation_threshold')} title="Reset to default (0.7)" />
+                  </div>
+                </>
+              )}
             </>
           </div>
         </div>

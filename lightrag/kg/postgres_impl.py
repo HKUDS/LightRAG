@@ -62,6 +62,7 @@ class PostgreSQLDB:
         self.database = config["database"]
         self.workspace = config["workspace"]
         self.max = int(config["max_connections"])
+        self.min = int(config.get("min_connections", 5))
         self.increment = 1
         self.pool: Pool | None = None
 
@@ -200,7 +201,7 @@ class PostgreSQLDB:
             "database": self.database,
             "host": self.host,
             "port": self.port,
-            "min_size": 1,
+            "min_size": self.min,  # Configurable via POSTGRES_MIN_CONNECTIONS
             "max_size": self.max,
         }
 
@@ -1184,6 +1185,28 @@ class PostgreSQLDB:
                 ("idx_lightrag_doc_status_workspace_path", "LIGHTRAG_DOC_STATUS", "(workspace, file_path)"),
             ]
 
+            # GIN indexes for array membership queries (chunk_ids lookups)
+            gin_indexes = [
+                ("idx_lightrag_vdb_entity_chunk_ids_gin", "LIGHTRAG_VDB_ENTITY", "USING gin (chunk_ids)"),
+                ("idx_lightrag_vdb_relation_chunk_ids_gin", "LIGHTRAG_VDB_RELATION", "USING gin (chunk_ids)"),
+            ]
+
+            # Create GIN indexes separately (different syntax)
+            for index_name, table_name, index_type in gin_indexes:
+                if index_name not in existing_indexes:
+                    try:
+                        create_gin_sql = (
+                            f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {index_type}"
+                        )
+                        logger.info(
+                            f"PostgreSQL, Creating GIN index {index_name} on {table_name}"
+                        )
+                        await self.execute(create_gin_sql)
+                    except Exception as e:
+                        logger.warning(
+                            f"PostgreSQL, Failed to create GIN index {index_name}: {e}"
+                        )
+
             for index_name, table_name, columns in performance_indexes:
                 if index_name not in existing_indexes:
                     try:
@@ -1679,6 +1702,39 @@ class PostgreSQLDB:
             logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
+    async def executemany(
+        self,
+        sql: str,
+        data_list: list[tuple],
+        batch_size: int = 500,
+    ) -> None:
+        """Execute SQL with multiple parameter sets using asyncpg's executemany.
+
+        This is significantly faster than calling execute() in a loop because it
+        reduces database round-trips by batching multiple rows in a single operation.
+
+        Args:
+            sql: The SQL statement with positional parameters ($1, $2, etc.)
+            data_list: List of tuples, each containing parameters for one row
+            batch_size: Number of rows to process per batch (default 500)
+        """
+        if not data_list:
+            return
+
+        async def _operation(connection: asyncpg.Connection) -> None:
+            for i in range(0, len(data_list), batch_size):
+                batch = data_list[i : i + batch_size]
+                await connection.executemany(sql, batch)
+
+        try:
+            await self._run_with_retry(_operation)
+            logger.debug(
+                f"PostgreSQL executemany: inserted {len(data_list)} rows in batches of {batch_size}"
+            )
+        except Exception as e:
+            logger.error(f"PostgreSQL executemany error: {e}, sql: {sql[:100]}...")
+            raise
+
 
 class ClientManager:
     _instances: dict[str, Any] = {"db": None, "ref_count": 0}
@@ -1712,9 +1768,17 @@ class ClientManager:
                 "POSTGRES_WORKSPACE",
                 config.get("postgres", "workspace", fallback=None),
             ),
-            "max_connections": os.environ.get(
-                "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=50),
+            "max_connections": int(
+                os.environ.get(
+                    "POSTGRES_MAX_CONNECTIONS",
+                    config.get("postgres", "max_connections", fallback=50),
+                )
+            ),
+            "min_connections": int(
+                os.environ.get(
+                    "POSTGRES_MIN_CONNECTIONS",
+                    config.get("postgres", "min_connections", fallback=5),
+                )
             ),
             # SSL configuration
             "ssl_mode": os.environ.get(
@@ -2161,108 +2225,117 @@ class PGKVStorage(BaseKVStorage):
         if not data:
             return
 
-        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "tokens": v["tokens"],
-                    "chunk_order_index": v["chunk_order_index"],
-                    "full_doc_id": v["full_doc_id"],
-                    "content": v["content"],
-                    "file_path": v["file_path"],
-                    "llm_cache_list": json.dumps(v.get("llm_cache_list", [])),
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-                _data = {
-                    "id": k,
-                    "content": v["content"],
-                    "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
-                    "workspace": self.workspace,
-                }
-                await self.db.execute(upsert_sql, _data)
-        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,  # Use flattened key as id
-                    "original_prompt": v["original_prompt"],
-                    "return_value": v["return"],
-                    "chunk_id": v.get("chunk_id"),
-                    "cache_type": v.get(
-                        "cache_type", "extract"
-                    ),  # Get cache_type from data
-                    "queryparam": json.dumps(v.get("queryparam"))
-                    if v.get("queryparam")
-                    else None,
-                }
+        # Get current UTC time and convert to naive datetime for database storage
+        current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
 
-                await self.db.execute(upsert_sql, _data)
+        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
+            # Collect all rows as tuples for batch insert
+            batch_data = [
+                (
+                    self.workspace,
+                    k,
+                    v["tokens"],
+                    v["chunk_order_index"],
+                    v["full_doc_id"],
+                    v["content"],
+                    v["file_path"],
+                    json.dumps(v.get("llm_cache_list", [])),
+                    current_time,
+                    current_time,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
+
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
+            batch_data = [
+                (
+                    k,
+                    v["content"],
+                    v.get("file_path", ""),  # Map file_path to doc_name
+                    self.workspace,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
+
+        elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+            upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
+            batch_data = [
+                (
+                    self.workspace,
+                    k,  # Use flattened key as id
+                    v["original_prompt"],
+                    v["return"],
+                    v.get("chunk_id"),
+                    v.get("cache_type", "extract"),
+                    json.dumps(v.get("queryparam")) if v.get("queryparam") else None,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_ENTITIES):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "entity_names": json.dumps(v["entity_names"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+            upsert_sql = SQL_TEMPLATES["upsert_full_entities"]
+            batch_data = [
+                (
+                    self.workspace,
+                    k,
+                    json.dumps(v["entity_names"]),
+                    v["count"],
+                    current_time,
+                    current_time,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_RELATIONS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "relation_pairs": json.dumps(v["relation_pairs"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+            upsert_sql = SQL_TEMPLATES["upsert_full_relations"]
+            batch_data = [
+                (
+                    self.workspace,
+                    k,
+                    json.dumps(v["relation_pairs"]),
+                    v["count"],
+                    current_time,
+                    current_time,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_ENTITY_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+            upsert_sql = SQL_TEMPLATES["upsert_entity_chunks"]
+            batch_data = [
+                (
+                    self.workspace,
+                    k,
+                    json.dumps(v["chunk_ids"]),
+                    v["count"],
+                    current_time,
+                    current_time,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
+
         elif is_namespace(self.namespace, NameSpace.KV_STORE_RELATION_CHUNKS):
-            # Get current UTC time and convert to naive datetime for database storage
-            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-            for k, v in data.items():
-                upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
-                _data = {
-                    "workspace": self.workspace,
-                    "id": k,
-                    "chunk_ids": json.dumps(v["chunk_ids"]),
-                    "count": v["count"],
-                    "create_time": current_time,
-                    "update_time": current_time,
-                }
-                await self.db.execute(upsert_sql, _data)
+            upsert_sql = SQL_TEMPLATES["upsert_relation_chunks"]
+            batch_data = [
+                (
+                    self.workspace,
+                    k,
+                    json.dumps(v["chunk_ids"]),
+                    v["count"],
+                    current_time,
+                    current_time,
+                )
+                for k, v in data.items()
+            ]
+            await self.db.executemany(upsert_sql, batch_data)
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -2376,77 +2449,73 @@ class PGVectorStorage(BaseVectorStorage):
             await ClientManager.release_client(self.db)
             self.db = None
 
-    def _upsert_chunks(
+    def _prepare_chunk_tuple(
         self, item: dict[str, Any], current_time: datetime.datetime
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple:
+        """Prepare a tuple for batch chunk upsert."""
         try:
-            upsert_sql = SQL_TEMPLATES["upsert_chunk"]
-            data: dict[str, Any] = {
-                "workspace": self.workspace,
-                "id": item["__id__"],
-                "tokens": item["tokens"],
-                "chunk_order_index": item["chunk_order_index"],
-                "full_doc_id": item["full_doc_id"],
-                "content": item["content"],
-                "content_vector": json.dumps(item["__vector__"].tolist()),
-                "file_path": item["file_path"],
-                "create_time": current_time,
-                "update_time": current_time,
-            }
+            return (
+                self.workspace,
+                item["__id__"],
+                item["tokens"],
+                item["chunk_order_index"],
+                item["full_doc_id"],
+                item["content"],
+                json.dumps(item["__vector__"].tolist()),
+                item["file_path"],
+                current_time,
+                current_time,
+            )
         except Exception as e:
             logger.error(
-                f"[{self.workspace}] Error to prepare upsert,\nsql: {e}\nitem: {item}"
+                f"[{self.workspace}] Error to prepare upsert,\nerror: {e}\nitem: {item}"
             )
             raise
 
-        return upsert_sql, data
-
-    def _upsert_entities(
+    def _prepare_entity_tuple(
         self, item: dict[str, Any], current_time: datetime.datetime
-    ) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_entity"]
+    ) -> tuple:
+        """Prepare a tuple for batch entity upsert."""
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
         else:
             chunk_ids = [source_id]
 
-        data: dict[str, Any] = {
-            "workspace": self.workspace,
-            "id": item["__id__"],
-            "entity_name": item["entity_name"],
-            "content": item["content"],
-            "content_vector": json.dumps(item["__vector__"].tolist()),
-            "chunk_ids": chunk_ids,
-            "file_path": item.get("file_path", None),
-            "create_time": current_time,
-            "update_time": current_time,
-        }
-        return upsert_sql, data
+        return (
+            self.workspace,
+            item["__id__"],
+            item["entity_name"],
+            item["content"],
+            json.dumps(item["__vector__"].tolist()),
+            chunk_ids,
+            item.get("file_path", None),
+            current_time,
+            current_time,
+        )
 
-    def _upsert_relationships(
+    def _prepare_relationship_tuple(
         self, item: dict[str, Any], current_time: datetime.datetime
-    ) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+    ) -> tuple:
+        """Prepare a tuple for batch relationship upsert."""
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
         else:
             chunk_ids = [source_id]
 
-        data: dict[str, Any] = {
-            "workspace": self.workspace,
-            "id": item["__id__"],
-            "source_id": item["src_id"],
-            "target_id": item["tgt_id"],
-            "content": item["content"],
-            "content_vector": json.dumps(item["__vector__"].tolist()),
-            "chunk_ids": chunk_ids,
-            "file_path": item.get("file_path", None),
-            "create_time": current_time,
-            "update_time": current_time,
-        }
-        return upsert_sql, data
+        return (
+            self.workspace,
+            item["__id__"],
+            item["src_id"],
+            item["tgt_id"],
+            item["content"],
+            json.dumps(item["__vector__"].tolist()),
+            chunk_ids,
+            item.get("file_path", None),
+            current_time,
+            current_time,
+        )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
@@ -2462,29 +2531,42 @@ class PGVectorStorage(BaseVectorStorage):
             }
             for k, v in data.items()
         ]
+
+        # Batch compute embeddings (already optimized)
         contents = [v["content"] for v in data.values()]
         batches = [
             contents[i : i + self._max_batch_size]
             for i in range(0, len(contents), self._max_batch_size)
         ]
-
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
-
         embeddings = np.concatenate(embeddings_list)
+
+        # Assign embeddings to items
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
-        for item in list_data:
-            if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
-                upsert_sql, data = self._upsert_chunks(item, current_time)
-            elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
-                upsert_sql, data = self._upsert_entities(item, current_time)
-            elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
-                upsert_sql, data = self._upsert_relationships(item, current_time)
-            else:
-                raise ValueError(f"{self.namespace} is not supported")
 
-            await self.db.execute(upsert_sql, data)
+        # Prepare batch data based on namespace and execute in single batch
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
+            upsert_sql = SQL_TEMPLATES["upsert_chunk"]
+            batch_data = [
+                self._prepare_chunk_tuple(item, current_time) for item in list_data
+            ]
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
+            upsert_sql = SQL_TEMPLATES["upsert_entity"]
+            batch_data = [
+                self._prepare_entity_tuple(item, current_time) for item in list_data
+            ]
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
+            upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+            batch_data = [
+                self._prepare_relationship_tuple(item, current_time)
+                for item in list_data
+            ]
+        else:
+            raise ValueError(f"{self.namespace} is not supported")
+
+        await self.db.executemany(upsert_sql, batch_data)
 
     #################### query method ###############
     async def query(

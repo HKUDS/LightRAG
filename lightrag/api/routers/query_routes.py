@@ -3,14 +3,75 @@ This module contains all query-related routes for the LightRAG API.
 """
 
 import json
+import re
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
+from lightrag.constants import DEFAULT_TOP_K
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(tags=["query"])
+
+# Pattern to match reasoning tags like <think>...</think>
+REASONING_TAG_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_reasoning_tags(text: str) -> str:
+    """Strip LLM reasoning tags like <think>...</think> from response text."""
+    if not text:
+        return text
+    return REASONING_TAG_PATTERN.sub("", text).strip()
+
+
+async def filter_reasoning_stream(response_stream):
+    """Filter <think>...</think> blocks from streaming response in real-time.
+
+    This is a state machine that buffers chunks and filters out reasoning blocks
+    as they stream in, preventing <think> tags from appearing to the user.
+    """
+    buffer = ""
+    in_think_block = False
+
+    async for chunk in response_stream:
+        buffer += chunk
+
+        while buffer:
+            if in_think_block:
+                # Look for </think> to exit reasoning block
+                end_idx = buffer.find("</think>")
+                if end_idx != -1:
+                    buffer = buffer[end_idx + 8:]  # Skip past </think>
+                    in_think_block = False
+                else:
+                    break  # Need more data to find closing tag
+            else:
+                # Look for <think> to enter reasoning block
+                start_idx = buffer.find("<think>")
+                if start_idx != -1:
+                    # Emit everything before <think>
+                    if start_idx > 0:
+                        yield buffer[:start_idx]
+                    buffer = buffer[start_idx + 7:]  # Skip past <think>
+                    in_think_block = True
+                else:
+                    # Check for partial "<think>" match at buffer end
+                    # This prevents emitting incomplete tags
+                    for i in range(min(7, len(buffer)), 0, -1):
+                        if "<think>"[:i] == buffer[-i:]:
+                            if len(buffer) > i:
+                                yield buffer[:-i]
+                            buffer = buffer[-i:]
+                            break
+                    else:
+                        yield buffer
+                        buffer = ""
+                    break
+
+    # Emit any remaining buffer (only if not inside a think block)
+    if buffer and not in_think_block:
+        yield buffer
 
 
 class QueryRequest(BaseModel):
@@ -110,6 +171,18 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
 
+    citation_mode: Optional[Literal["none", "inline", "footnotes"]] = Field(
+        default="none",
+        description="Citation extraction mode: 'none' (no post-processing), 'inline' (add [n] markers in text), 'footnotes' (add markers and formatted footnotes). When enabled, citations are computed asynchronously after response completes.",
+    )
+
+    citation_threshold: Optional[float] = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity threshold for citation matching (0.0-1.0). Higher values mean stricter matching.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
@@ -134,7 +207,14 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True,
+            exclude={
+                "query",
+                "include_chunk_content",
+                "include_references",
+                "citation_mode",
+                "citation_threshold",
+            },
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -190,7 +270,118 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+class CitationSpanModel(BaseModel):
+    """A span in the response with citation attribution."""
+
+    start_char: int = Field(description="Start character position in response")
+    end_char: int = Field(description="End character position in response")
+    text: str = Field(description="The text span being cited")
+    reference_ids: List[str] = Field(description="Reference IDs supporting this span")
+    confidence: float = Field(description="Citation confidence score (0.0-1.0)")
+
+
+class EnhancedReferenceItem(BaseModel):
+    """Enhanced reference with full metadata for footnotes."""
+
+    reference_id: str = Field(description="Unique reference identifier")
+    file_path: str = Field(description="Path to the source file")
+    document_title: Optional[str] = Field(
+        default=None, description="Human-readable document title"
+    )
+    section_title: Optional[str] = Field(
+        default=None, description="Section or chapter title"
+    )
+    page_range: Optional[str] = Field(default=None, description="Page range (e.g., pp. 45-67)")
+    excerpt: Optional[str] = Field(
+        default=None, description="Brief excerpt from the source"
+    )
+
+
+async def _extract_and_stream_citations(
+    response: str,
+    chunks: List[Dict[str, Any]],
+    references: List[Dict[str, str]],
+    rag,
+    min_similarity: float,
+    citation_mode: str,
+):
+    """Extract citations from response and yield NDJSON lines.
+
+    NEW PROTOCOL (eliminates duplicate payload):
+    - Does NOT send full annotated_response (that would duplicate the streamed response)
+    - Instead sends citation positions + metadata for frontend marker insertion
+    - Frontend uses character positions to insert [n] markers client-side
+
+    Args:
+        response: The full LLM response text
+        chunks: List of chunk dictionaries from retrieval
+        references: List of reference dicts
+        rag: The RAG instance (for embedding function)
+        min_similarity: Minimum similarity threshold
+        citation_mode: 'inline' or 'footnotes'
+
+    Yields:
+        NDJSON lines for citation metadata (no duplicate text)
+    """
+    try:
+        from lightrag.citation import extract_citations_from_response
+
+        # Extract citations using the citation module
+        citation_result = await extract_citations_from_response(
+            response=response,
+            chunks=chunks,
+            references=references,
+            embedding_func=rag.embedding_func,
+            min_similarity=min_similarity,
+        )
+
+        # Build citation markers with positions for frontend insertion
+        # Each marker tells frontend where to insert [n] without sending full text
+        citation_markers = []
+        for citation in citation_result.citations:
+            citation_markers.append({
+                "marker": "[" + ",".join(citation.reference_ids) + "]",
+                "insert_position": citation.end_char,  # Insert after sentence
+                "reference_ids": citation.reference_ids,
+                "confidence": citation.confidence,
+                "text_preview": citation.text[:50] + "..." if len(citation.text) > 50 else citation.text,
+            })
+
+        # Build enhanced sources with metadata
+        sources = []
+        for ref in citation_result.references:
+            sources.append({
+                "reference_id": ref.reference_id,
+                "file_path": ref.file_path,
+                "document_title": ref.document_title,
+                "section_title": ref.section_title,
+                "page_range": ref.page_range,
+                "excerpt": ref.excerpt,
+            })
+
+        # Format footnotes if requested
+        footnotes = citation_result.footnotes if citation_mode == "footnotes" else []
+
+        # Send single consolidated citations_metadata object
+        # Frontend uses this to insert markers without needing the full text again
+        yield json.dumps({
+            "citations_metadata": {
+                "markers": citation_markers,  # Position-based markers for insertion
+                "sources": sources,           # Enhanced reference metadata
+                "footnotes": footnotes,       # Pre-formatted footnote strings
+                "uncited_count": len(citation_result.uncited_claims),
+            }
+        }) + "\n"
+
+    except ImportError:
+        logger.warning("Citation module not available. Skipping citation extraction.")
+        yield json.dumps({"citation_error": "Citation module not available"}) + "\n"
+    except Exception as e:
+        logger.error(f"Citation extraction error: {str(e)}")
+        yield json.dumps({"citation_error": str(e)}) + "\n"
+
+
+def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT_TOP_K):
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
@@ -420,6 +611,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             response_content = llm_response.get("content", "")
             if not response_content:
                 response_content = "No relevant context found for the query."
+
+            # Strip reasoning tags like <think>...</think>
+            response_content = strip_reasoning_tags(response_content)
 
             # Enrich references with chunk content if requested
             if request.include_references and request.include_chunk_content:
@@ -672,12 +866,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             async def stream_generator():
                 # Extract references and LLM response from unified result
                 references = result.get("data", {}).get("references", [])
+                chunks = result.get("data", {}).get("chunks", [])
                 llm_response = result.get("llm_response", {})
 
                 # Enrich references with chunk content if requested
                 if request.include_references and request.include_chunk_content:
-                    data = result.get("data", {})
-                    chunks = data.get("chunks", [])
                     # Create a mapping from reference_id to chunk content
                     ref_id_to_content = {}
                     for chunk in chunks:
@@ -698,6 +891,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         enriched_references.append(ref_copy)
                     references = enriched_references
 
+                # Track collected response for citation extraction
+                collected_response = []
+                citation_mode = request.citation_mode or "none"
+
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
                     if request.include_references:
@@ -706,17 +903,35 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response_stream = llm_response.get("response_iterator")
                     if response_stream:
                         try:
-                            async for chunk in response_stream:
+                            # Filter <think>...</think> blocks in real-time
+                            async for chunk in filter_reasoning_stream(response_stream):
                                 if chunk:  # Only send non-empty content
                                     yield f"{json.dumps({'response': chunk})}\n"
+                                    collected_response.append(chunk)
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
+
+                    # After streaming completes, extract citations if enabled
+                    if citation_mode in ["inline", "footnotes"] and collected_response:
+                        full_response = strip_reasoning_tags("".join(collected_response))
+                        async for line in _extract_and_stream_citations(
+                            full_response,
+                            chunks,
+                            references,
+                            rag,
+                            request.citation_threshold or 0.7,
+                            citation_mode,
+                        ):
+                            yield line
                 else:
                     # Non-streaming mode: send complete response in one message
                     response_content = llm_response.get("content", "")
                     if not response_content:
                         response_content = "No relevant context found for the query."
+
+                    # Strip reasoning tags like <think>...</think>
+                    response_content = strip_reasoning_tags(response_content)
 
                     # Create complete response object
                     complete_response = {"response": response_content}
@@ -724,6 +939,18 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         complete_response["references"] = references
 
                     yield f"{json.dumps(complete_response)}\n"
+
+                    # Extract citations for non-streaming mode too
+                    if citation_mode in ["inline", "footnotes"] and response_content:
+                        async for line in _extract_and_stream_citations(
+                            response_content,
+                            chunks,
+                            references,
+                            rag,
+                            request.citation_threshold or 0.7,
+                            citation_mode,
+                        ):
+                            yield line
 
             return StreamingResponse(
                 stream_generator(),
