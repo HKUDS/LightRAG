@@ -9,6 +9,7 @@ services:
     name: lightrag-mt
     runtime: docker
     dockerfilePath: ./Dockerfile
+    region: frankfurt  # EU region for lower latency
 
     # Health check endpoint
     healthCheckPath: /health
