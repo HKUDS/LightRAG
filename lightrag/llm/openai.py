@@ -887,7 +887,7 @@ async def azure_openai_complete(
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536)
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
 async def azure_openai_embed(
     texts: list[str],
     model: str | None = None,

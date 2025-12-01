@@ -1335,15 +1335,6 @@ http = [
 ]
 
 [[package]]
-name = "future"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05", size = 1228490, upload-time = "2024-02-21T11:52:38.461Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216", size = 491326, upload-time = "2024-02-21T11:52:35.956Z" },
-]
-
-[[package]]
 name = "gitdb"
 version = "4.0.12"
 source = { registry = "https://pypi.org/simple" }
@@ -2542,7 +2533,6 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "configparser" },
-    { name = "future" },
     { name = "google-api-core" },
     { name = "google-genai" },
     { name = "json-repair" },
@@ -2567,10 +2557,10 @@ api = [
     { name = "aiohttp" },
     { name = "ascii-colors" },
     { name = "asyncpg" },
+    { name = "bcrypt" },
     { name = "configparser" },
     { name = "distro" },
     { name = "fastapi" },
-    { name = "future" },
     { name = "google-api-core" },
     { name = "google-genai" },
     { name = "gunicorn" },
@@ -2585,7 +2575,6 @@ api = [
     { name = "openai" },
     { name = "openpyxl" },
     { name = "pandas" },
-    { name = "passlib", extra = ["bcrypt"] },
     { name = "pipmaster" },
     { name = "psutil" },
     { name = "pycryptodome" },
@@ -2627,10 +2616,10 @@ offline = [
     { name = "anthropic" },
     { name = "ascii-colors" },
     { name = "asyncpg" },
+    { name = "bcrypt" },
     { name = "configparser" },
     { name = "distro" },
     { name = "fastapi" },
-    { name = "future" },
     { name = "google-api-core" },
     { name = "google-genai" },
     { name = "gunicorn" },
@@ -2648,7 +2637,6 @@ offline = [
     { name = "openai" },
     { name = "openpyxl" },
     { name = "pandas" },
-    { name = "passlib", extra = ["bcrypt"] },
     { name = "pipmaster" },
     { name = "psutil" },
     { name = "pycryptodome" },
@@ -2714,14 +2702,13 @@ requires-dist = [
     { name = "ascii-colors", marker = "extra == 'api'" },
     { name = "asyncpg", marker = "extra == 'api'" },
     { name = "asyncpg", marker = "extra == 'offline-storage'", specifier = ">=0.29.0,<1.0.0" },
+    { name = "bcrypt", marker = "extra == 'api'", specifier = ">=4.0.0" },
     { name = "configparser" },
     { name = "configparser", marker = "extra == 'api'" },
     { name = "datasets", marker = "extra == 'evaluation'", specifier = ">=4.3.0" },
     { name = "distro", marker = "extra == 'api'" },
     { name = "docling", marker = "sys_platform != 'darwin' and extra == 'docling'", specifier = ">=2.0.0,<3.0.0" },
     { name = "fastapi", marker = "extra == 'api'" },
-    { name = "future" },
-    { name = "future", marker = "extra == 'api'" },
     { name = "google-api-core", specifier = ">=2.0.0,<3.0.0" },
     { name = "google-api-core", marker = "extra == 'api'", specifier = ">=2.0.0,<3.0.0" },
     { name = "google-api-core", marker = "extra == 'offline-llm'", specifier = ">=2.0.0,<3.0.0" },
@@ -2751,7 +2738,6 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'api'", specifier = ">=3.0.0,<4.0.0" },
     { name = "pandas", specifier = ">=2.0.0,<2.4.0" },
     { name = "pandas", marker = "extra == 'api'", specifier = ">=2.0.0,<2.4.0" },
-    { name = "passlib", extras = ["bcrypt"], marker = "extra == 'api'" },
     { name = "pipmaster" },
     { name = "pipmaster", marker = "extra == 'api'" },
     { name = "pre-commit", marker = "extra == 'evaluation'" },
@@ -4108,20 +4094,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/25/b0/98d6ae2e1abac4f35230aa756005e8654649d305df9a28b16b9ae4353bff/pandas-2.2.3-cp313-cp313t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1db71525a1538b30142094edb9adc10be3f3e176748cd7acc2240c2f2e5aa3a4", size = 11871013, upload-time = "2024-09-20T13:09:44.39Z" },
     { url = "https://files.pythonhosted.org/packages/cc/57/0f72a10f9db6a4628744c8e8f0df4e6e21de01212c7c981d31e50ffc8328/pandas-2.2.3-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:15c0e1e02e93116177d29ff83e8b1619c93ddc9c49083f237d4312337a61165d", size = 15711620, upload-time = "2024-09-20T19:02:20.639Z" },
     { url = "https://files.pythonhosted.org/packages/ab/5f/b38085618b950b79d2d9164a711c52b10aefc0ae6833b96f626b7021b2ed/pandas-2.2.3-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:ad5b65698ab28ed8d7f18790a0dc58005c7629f227be9ecc1072aa74c0c1d43a", size = 13098436, upload-time = "2024-09-20T13:09:48.112Z" },
-]
-
-[[package]]
-name = "passlib"
-version = "1.7.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b6/06/9da9ee59a67fae7761aab3ccc84fa4f3f33f125b370f1ccdb915bf967c11/passlib-1.7.4.tar.gz", hash = "sha256:defd50f72b65c5402ab2c573830a6978e5f202ad0d984793c8dde2c4152ebe04", size = 689844, upload-time = "2020-10-08T19:00:52.121Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/a4/ab6b7589382ca3df236e03faa71deac88cae040af60c071a78d254a62172/passlib-1.7.4-py2.py3-none-any.whl", hash = "sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1", size = 525554, upload-time = "2020-10-08T19:00:49.856Z" },
-]
-
-[package.optional-dependencies]
-bcrypt = [
-    { name = "bcrypt" },
 ]
 
 [[package]]
