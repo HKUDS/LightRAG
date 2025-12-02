@@ -169,7 +169,18 @@ updates:
           - "typescript"
           - "eslint*"
           - "@eslint/*"
+          - "typescript-eslint"
           - "prettier"
+          - "prettier-*"
+          - "@types/bun"
+        update-types:
+          - "minor"
+          - "patch"
+      # Content rendering libraries (math, diagrams, etc.)
+      content-rendering:
+        patterns:
+          - "katex"
+          - "mermaid"
         update-types:
           - "minor"
           - "patch"
