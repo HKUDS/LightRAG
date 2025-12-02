@@ -309,16 +309,16 @@ async def openai_complete_if_cache(
             response = await openai_async_client.chat.completions.create(
                 model=api_model, messages=messages, **kwargs
             )
+    except APITimeoutError as e:
+        logger.error(f"OpenAI API Timeout Error: {e}")
+        await openai_async_client.close()  # Ensure client is closed
+        raise
     except APIConnectionError as e:
         logger.error(f"OpenAI API Connection Error: {e}")
         await openai_async_client.close()  # Ensure client is closed
         raise
     except RateLimitError as e:
         logger.error(f"OpenAI API Rate Limit Error: {e}")
-        await openai_async_client.close()  # Ensure client is closed
-        raise
-    except APITimeoutError as e:
-        logger.error(f"OpenAI API Timeout Error: {e}")
         await openai_async_client.close()  # Ensure client is closed
         raise
     except Exception as e:
@@ -867,7 +867,7 @@ async def azure_openai_complete(
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536)
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
 async def azure_openai_embed(
     texts: list[str],
     model: str | None = None,

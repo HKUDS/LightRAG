@@ -23,7 +23,6 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
-    "future",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
@@ -54,7 +53,6 @@ api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
@@ -78,9 +76,9 @@ api = [
     "distro",
     "fastapi",
     "httpcore",
-    "httpx",
+    "httpx>=0.28.1",
     "jiter",
-    "passlib[bcrypt]",
+    "bcrypt>=4.0.0",
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
@@ -132,16 +130,18 @@ offline = [
     "lightrag-hku[api,offline-storage,offline-llm]",
 ]
 
-evaluation = [
-    # Test framework dependencies
+test = [
+    "lightrag-hku[api]",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
-    # RAG evaluation dependencies (RAGAS framework)
+]
+
+evaluation = [
+    "lightrag-hku[api]",
     "ragas>=0.3.7",
     "datasets>=4.3.0",
-    "httpx>=0.28.1",
 ]
 
 observability = [
