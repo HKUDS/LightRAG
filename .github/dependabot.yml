@@ -3,8 +3,11 @@
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#package-ecosystem
 version: 2
 updates:
-  # Enable version updates for GitHub Actions
-  # Workflow files stored in the default location of `.github/workflows`
+  # ============================================================
+  # GitHub Actions
+  # PR Strategy:
+  #   - All updates (major/minor/patch): Grouped into a single PR
+  # ============================================================
   - package-ecosystem: github-actions
     directory: /
     groups:
@@ -18,7 +21,13 @@ updates:
       - "github-actions"
     open-pull-requests-limit: 5
 
-  # Configuration for pip (Python dependencies)
+  # ============================================================
+  # Python (pip) Dependencies
+  # PR Strategy:
+  #   - Major updates: Individual PR per package (except numpy which is ignored)
+  #   - Minor updates: Grouped by category (llm-providers, storage, etc.)
+  #   - Patch updates: Grouped by category
+  # ============================================================
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -95,12 +104,22 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      - dependency-name: "numpy"
+        update-types:
+          - "version-update:semver-major"
     labels:
       - "dependencies"
       - "python"
     open-pull-requests-limit: 10
 
-  # Configuration for bun (Frontend dependencies)
+  # ============================================================
+  # Frontend (bun) Dependencies
+  # PR Strategy:
+  #   - Major updates: Individual PR per package
+  #   - Minor updates: Grouped by category (react, ui-components, etc.)
+  #   - Patch updates: Grouped by category
+  # ============================================================
   - package-ecosystem: "bun"
     directory: "/lightrag_webui"
     schedule:
