@@ -8,6 +8,17 @@ import { navigationService } from '@/services/navigation'
 import { useSettingsStore } from '@/stores/settings'
 import axios, { AxiosError } from 'axios'
 
+const getUserIdFromToken = (token: string): string | null => {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const payload = JSON.parse(atob(parts[1]))
+    return payload.user_id || payload.sub || null
+  } catch (e) {
+    return null
+  }
+}
+
 // Types
 export type LightragNodeType = {
   id: string
@@ -299,6 +310,10 @@ axiosInstance.interceptors.request.use((config) => {
   // Always include token if it exists, regardless of path
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`
+    const userId = getUserIdFromToken(token)
+    if (userId) {
+      config.headers['X-User-ID'] = userId
+    }
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
@@ -418,6 +433,10 @@ export const queryTextStream = async (
   }
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
+    const userId = getUserIdFromToken(token)
+    if (userId) {
+      headers['X-User-ID'] = userId
+    }
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey

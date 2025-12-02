@@ -34,7 +34,7 @@ class HistoryManager:
             
         return list(reversed(context))
 
-    def create_session(self, user_id: uuid.UUID, title: str = None, rag_config: dict = None) -> ChatSession:
+    def create_session(self, user_id: str, title: str = None, rag_config: dict = None) -> ChatSession:
         session = ChatSession(
             user_id=user_id,
             title=title,
@@ -48,7 +48,7 @@ class HistoryManager:
     def get_session(self, session_id: uuid.UUID) -> Optional[ChatSession]:
         return self.db.query(ChatSession).filter(ChatSession.id == session_id).first()
 
-    def list_sessions(self, user_id: uuid.UUID, skip: int = 0, limit: int = 100) -> List[ChatSession]:
+    def list_sessions(self, user_id: str, skip: int = 0, limit: int = 100) -> List[ChatSession]:
         return (
             self.db.query(ChatSession)
             .filter(ChatSession.user_id == user_id)
@@ -80,11 +80,12 @@ class HistoryManager:
 
     def save_citations(self, message_id: uuid.UUID, citations: List[Dict]):
         for cit in citations:
+            content = "\n".join(cit.get("content", []))
             citation = MessageCitation(
                 message_id=message_id,
-                source_doc_id=cit.get("source_doc_id", "unknown"),
+                source_doc_id=cit.get("reference_id", "unknown"),
                 file_path=cit.get("file_path", "unknown"),
-                chunk_content=cit.get("chunk_content"),
+                chunk_content=content,
                 relevance_score=cit.get("relevance_score")
             )
             self.db.add(citation)

@@ -1161,7 +1161,8 @@ def create_app(args):
                 "webui_description": webui_description,
             }
         username = form_data.username
-        if auth_handler.accounts.get(username) != form_data.password:
+        account = auth_handler.accounts.get(username)
+        if not account or account["password"] != form_data.password:
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login

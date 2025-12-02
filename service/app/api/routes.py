@@ -32,17 +32,13 @@ def create_session(session_in: SessionCreate, db: Session = Depends(get_db)):
     # Actually, let's just create a user on the fly for this session if we don't have auth.
     
     manager = HistoryManager(db)
-    # Check if we have any user, if not create one.
-    from app.models.models import User
-    user = db.query(User).first()
-    if not user:
-        user = User(username="default_user", email="default@example.com")
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    # User logic removed
+    # Using a fixed UUID for demonstration purposes. In a real application,
+    # this would come from an authenticated user.
+    fixed_user_id = UUID("00000000-0000-0000-0000-000000000001")
     
     session = manager.create_session(
-        user_id=user.id,
+        user_id=fixed_user_id,
         title=session_in.title,
         rag_config=session_in.rag_config
     )
@@ -51,13 +47,13 @@ def create_session(session_in: SessionCreate, db: Session = Depends(get_db)):
 @router.get("/sessions", response_model=List[SessionResponse])
 def list_sessions(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     manager = HistoryManager(db)
-    # Again, need user_id. Using the default user strategy.
-    from app.models.models import User
-    user = db.query(User).first()
-    if not user:
-        return []
+    # User logic removed
+    pass
+    # Using a fixed UUID for demonstration purposes. In a real application,
+    # this would come from an authenticated user.
+    fixed_user_id = UUID("00000000-0000-0000-0000-000000000001")
         
-    sessions = manager.list_sessions(user_id=user.id, skip=skip, limit=limit)
+    sessions = manager.list_sessions(user_id=fixed_user_id, skip=skip, limit=limit)
     return sessions
 
 @router.get("/sessions/{session_id}/history")

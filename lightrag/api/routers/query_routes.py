@@ -3,17 +3,19 @@ This module contains all query-related routes for the LightRAG API.
 """
 
 import json
-from typing import Any, Dict, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
+import logging
+import os
+import sys
+import time
+import uuid
+from typing import Any, Dict, List, Literal, Optional, Union
+
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import QueryParam
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
-import sys
-import os
-import uuid
-import time
-import json
 
 # Add the project root to sys.path to allow importing 'service'
 # Assuming this file is at lightrag/api/routers/query_routes.py
@@ -28,13 +30,17 @@ if service_dir not in sys.path:
 try:
     from app.core.database import SessionLocal
     from app.services.history_manager import HistoryManager
-    from app.models.models import User
+    from app.models.schemas import ChatMessageResponse
 except ImportError as e:
-    # Fallback or handle error if service module is not found
-    print(f"Warning: Could not import service module. History logging will be disabled. Error: {e}")
+    logger.error(f"Warning: Could not import service module. History logging will be disabled. Error: {e}")
+    print(f"CRITICAL ERROR: Could not import service module: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
     SessionLocal = None
     HistoryManager = None
-    User = None
+    QueryRequest = None
+    QueryResponse = None
+    ChatMessageResponse = None
 
 
 router = APIRouter(tags=["query"])
@@ -354,7 +360,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text(request: QueryRequest):
+    async def query_text(
+        request: QueryRequest,
+        x_user_id: Optional[str] = Header(None, alias="X-User-ID")
+    ):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
@@ -441,6 +450,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             param.stream = False
 
             # Unified approach: always use aquery_llm for both cases
+            start_time = time.time()
             result = await rag.aquery_llm(request.query, param=param)
 
             # Extract LLM response and references from unified result
@@ -484,67 +494,81 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 final_response = QueryResponse(response=response_content, references=None)
 
             # --- LOGGING START ---
+            logger.info(f"DEBUG: SessionLocal={SessionLocal}, HistoryManager={HistoryManager}")
             if SessionLocal and HistoryManager:
                 try:
+                    logger.info("DEBUG: Entering logging block")
                     db = SessionLocal()
                     manager = HistoryManager(db)
                     
-                    # 1. Get or Create User (Default)
-                    user = db.query(User).filter(User.username == "default_user").first()
-                    if not user:
-                        user = User(username="default_user", email="default@example.com")
-                        db.add(user)
-                        db.commit()
-                        db.refresh(user)
+                    # 1. Get User ID from Header (or default)
+                    current_user_id = x_user_id or "default_user"
                     
                     # 2. Handle Session
                     session_uuid = None
                     if request.session_id:
                         try:
-                            session_uuid = uuid.UUID(request.session_id)
+                            temp_uuid = uuid.UUID(request.session_id)
                             # Verify session exists
-                            if not manager.get_session(session_uuid):
-                                # If provided ID doesn't exist, create it with that ID if possible or just create new
-                                # For simplicity, let's create a new one if it doesn't exist but we can't force ID easily with current manager
-                                # Let's just create a new session if not found or use the provided one if we trust it.
-                                # Actually, manager.create_session generates ID. 
-                                # Let's just create a new session if the provided one is invalid/not found, 
-                                # OR we can just create a new session if session_id is NOT provided.
-                                # If session_id IS provided, we assume it exists. 
-                                pass
+                            if manager.get_session(temp_uuid):
+                                session_uuid = temp_uuid
+                            else:
+                                logger.warning(f"Session {request.session_id} not found. Creating new session.")
                         except ValueError:
-                            pass
+                            logger.warning(f"Invalid session ID format: {request.session_id}")
                     
                     if not session_uuid:
                         # Create new session
-                        session = manager.create_session(user_id=user.id, title=request.query[:50])
+                        session = manager.create_session(user_id=current_user_id, title=request.query[:50])
                         session_uuid = session.id
                     
+                    # Calculate processing time
+                    end_time = time.time()
+                    processing_time = end_time - start_time
+
+                    # Calculate token counts
+                    try:
+                        import tiktoken
+                        enc = tiktoken.get_encoding("cl100k_base")
+                        query_tokens = len(enc.encode(request.query))
+                        response_tokens = len(enc.encode(response_content))
+                    except ImportError:
+                        # Fallback approximation
+                        query_tokens = len(request.query) // 4
+                        response_tokens = len(response_content) // 4
+                    except Exception as e:
+                        logger.warning(f"Error calculating tokens: {e}")
+                        query_tokens = len(request.query) // 4
+                        response_tokens = len(response_content) // 4
+
                     # 3. Log User Message
                     manager.save_message(
                         session_id=session_uuid,
                         role="user",
-                        content=request.query
+                        content=request.query,
+                        token_count=query_tokens,
+                        processing_time=None # User message processing time is negligible/not applicable in this context
                     )
                     
                     # 4. Log Assistant Message
                     ai_msg = manager.save_message(
                         session_id=session_uuid,
                         role="assistant",
-                        content=response_content
+                        content=response_content,
+                        token_count=response_tokens,
+                        processing_time=processing_time
                     )
                     
                     # 5. Log Citations
                     if references:
-                        # Convert references to dict format expected by save_citations
-                        # references is a list of ReferenceItem (pydantic) or dicts?
-                        # In the code above: references = data.get("references", []) which are dicts.
-                        # Then enriched_references are also dicts.
                         manager.save_citations(ai_msg.id, references)
                         
                     db.close()
                 except Exception as log_exc:
-                    print(f"Error logging history: {log_exc}")
+                    print(f"Error logging history: {log_exc}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc()
+                    logger.error(f"Error logging history: {log_exc}", exc_info=True)
                     # Don't fail the request if logging fails
             # --- LOGGING END ---
 
@@ -633,7 +657,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text_stream(request: QueryRequest):
+    async def query_text_stream(
+        request: QueryRequest,
+        x_user_id: Optional[str] = Header(None, alias="X-User-ID")
+    ):
         """
         Advanced RAG query endpoint with flexible streaming response.
 
@@ -848,26 +875,25 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         db = SessionLocal()
                         manager = HistoryManager(db)
                         
-                        # 1. Get or Create User
-                        user = db.query(User).filter(User.username == "default_user").first()
-                        if not user:
-                            user = User(username="default_user", email="default@example.com")
-                            db.add(user)
-                            db.commit()
-                            db.refresh(user)
+                        # 1. Get User ID
+                        current_user_id = x_user_id or "default_user" 
                         
                         # 2. Handle Session
                         session_uuid = None
                         if request.session_id:
                             try:
-                                session_uuid = uuid.UUID(request.session_id)
+                                temp_uuid = uuid.UUID(request.session_id)
+                                if manager.get_session(temp_uuid):
+                                    session_uuid = temp_uuid
+                                else:
+                                    logger.warning(f"Session {request.session_id} not found. Creating new session.")
                             except ValueError:
-                                pass
+                                logger.warning(f"Invalid session ID format: {request.session_id}")
                         
-                        if not session_uuid or not manager.get_session(session_uuid):
-                            session = manager.create_session(user_id=user.id, title=request.query[:50])
+                        if not session_uuid:
+                            session = manager.create_session(user_id=current_user_id, title=request.query[:50])
                             session_uuid = session.id
-                        
+                            
                         # 3. Log User Message
                         manager.save_message(
                             session_id=session_uuid,

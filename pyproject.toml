@@ -44,6 +44,8 @@ dependencies = [
     "psycopg2-binary",
     "openai",
     "httpx",
+    "redis",
+    "pydantic-settings",
 ]
 
 [project.optional-dependencies]
@@ -99,6 +101,8 @@ api = [
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
     "sqlalchemy>=2.0.0,<3.0.0",
+    "pydantic_settings",
+    "neo4j>=5.0.0,<7.0.0",
 ]
 
 # Advanced document processing engine (optional)
