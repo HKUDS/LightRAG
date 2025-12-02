@@ -24,7 +24,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.utils import generate_track_id
+from lightrag.utils import (
+    generate_track_id,
+    compute_mdhash_id,
+    sanitize_text_for_encoding,
+)
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -2021,6 +2025,20 @@ def create_document_routes(
                         track_id="",
                     )
 
+            # Check if content already exists by computing content hash (doc_id)
+            sanitized_text = sanitize_text_for_encoding(request.text)
+            content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
+            existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+            if existing_doc:
+                # Content already exists, return duplicated with existing track_id
+                status = existing_doc.get("status", "unknown")
+                existing_track_id = existing_doc.get("track_id") or ""
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                    track_id=existing_track_id,
+                )
+
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
@@ -2086,6 +2104,21 @@ def create_document_routes(
                                 message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
                                 track_id="",
                             )
+
+            # Check if any content already exists by computing content hash (doc_id)
+            for text in request.texts:
+                sanitized_text = sanitize_text_for_encoding(text)
+                content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
+                existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+                if existing_doc:
+                    # Content already exists, return duplicated with existing track_id
+                    status = existing_doc.get("status", "unknown")
+                    existing_track_id = existing_doc.get("track_id") or ""
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                        track_id=existing_track_id,
+                    )
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
