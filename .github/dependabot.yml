@@ -16,6 +16,9 @@ updates:
           - "*"  # Group all Actions updates into a single larger pull request
     schedule:
       interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: "Asia/Shanghai"
     labels:
       - "dependencies"
       - "github-actions"
@@ -32,6 +35,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "02:00"
+      timezone: "Asia/Shanghai"
     cooldown:
       default-days: 5
       semver-major-days: 30
@@ -124,6 +130,9 @@ updates:
     directory: "/lightrag_webui"
     schedule:
       interval: "weekly"
+      day: "friday"
+      time: "02:00"
+      timezone: "Asia/Shanghai"
     cooldown:
       default-days: 5
       semver-major-days: 30
