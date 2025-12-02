@@ -65,7 +65,7 @@
     "react-number-format": "^5.4.4",
     "react-router-dom": "^7.9.6",
     "react-select": "^5.10.2",
-    "react-syntax-highlighter": "^15.6.6",
+    "react-syntax-highlighter": "^16.1.0",
     "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",
     "rehype-react": "^8.0.0",
