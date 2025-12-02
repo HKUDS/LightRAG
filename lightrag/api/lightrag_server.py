@@ -52,6 +52,7 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.history_routes import router as history_router
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -405,6 +406,7 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
+    app.include_router(history_router)
 
     # Add custom validation error handler for /query/data endpoint
     @app.exception_handler(RequestValidationError)

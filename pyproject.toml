@@ -38,6 +38,12 @@ dependencies = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "openai",
+    "httpx",
 ]
 
 [project.optional-dependencies]
@@ -92,6 +98,7 @@ api = [
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+    "sqlalchemy>=2.0.0,<3.0.0",
 ]
 
 # Advanced document processing engine (optional)

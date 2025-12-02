@@ -9,6 +9,33 @@ from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
+import sys
+import os
+import uuid
+import time
+import json
+
+# Add the project root to sys.path to allow importing 'service'
+# Assuming this file is at lightrag/api/routers/query_routes.py
+# We need to go up 3 levels to get to the root
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+service_dir = os.path.join(project_root, "service")
+if project_root not in sys.path:
+    sys.path.append(project_root)
+if service_dir not in sys.path:
+    sys.path.append(service_dir)
+
+try:
+    from app.core.database import SessionLocal
+    from app.services.history_manager import HistoryManager
+    from app.models.models import User
+except ImportError as e:
+    # Fallback or handle error if service module is not found
+    print(f"Warning: Could not import service module. History logging will be disabled. Error: {e}")
+    SessionLocal = None
+    HistoryManager = None
+    User = None
+
 
 router = APIRouter(tags=["query"])
 
@@ -110,6 +137,11 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
 
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session ID for conversation history tracking. If not provided, a new session may be created or it will be treated as a one-off query.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
@@ -134,7 +166,7 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True, exclude={"query", "include_chunk_content", "session_id"}
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -445,10 +477,79 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = enriched_references
 
             # Return response with or without references based on request
+            final_response = None
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                final_response = QueryResponse(response=response_content, references=references)
             else:
-                return QueryResponse(response=response_content, references=None)
+                final_response = QueryResponse(response=response_content, references=None)
+
+            # --- LOGGING START ---
+            if SessionLocal and HistoryManager:
+                try:
+                    db = SessionLocal()
+                    manager = HistoryManager(db)
+                    
+                    # 1. Get or Create User (Default)
+                    user = db.query(User).filter(User.username == "default_user").first()
+                    if not user:
+                        user = User(username="default_user", email="default@example.com")
+                        db.add(user)
+                        db.commit()
+                        db.refresh(user)
+                    
+                    # 2. Handle Session
+                    session_uuid = None
+                    if request.session_id:
+                        try:
+                            session_uuid = uuid.UUID(request.session_id)
+                            # Verify session exists
+                            if not manager.get_session(session_uuid):
+                                # If provided ID doesn't exist, create it with that ID if possible or just create new
+                                # For simplicity, let's create a new one if it doesn't exist but we can't force ID easily with current manager
+                                # Let's just create a new session if not found or use the provided one if we trust it.
+                                # Actually, manager.create_session generates ID. 
+                                # Let's just create a new session if the provided one is invalid/not found, 
+                                # OR we can just create a new session if session_id is NOT provided.
+                                # If session_id IS provided, we assume it exists. 
+                                pass
+                        except ValueError:
+                            pass
+                    
+                    if not session_uuid:
+                        # Create new session
+                        session = manager.create_session(user_id=user.id, title=request.query[:50])
+                        session_uuid = session.id
+                    
+                    # 3. Log User Message
+                    manager.save_message(
+                        session_id=session_uuid,
+                        role="user",
+                        content=request.query
+                    )
+                    
+                    # 4. Log Assistant Message
+                    ai_msg = manager.save_message(
+                        session_id=session_uuid,
+                        role="assistant",
+                        content=response_content
+                    )
+                    
+                    # 5. Log Citations
+                    if references:
+                        # Convert references to dict format expected by save_citations
+                        # references is a list of ReferenceItem (pydantic) or dicts?
+                        # In the code above: references = data.get("references", []) which are dicts.
+                        # Then enriched_references are also dicts.
+                        manager.save_citations(ai_msg.id, references)
+                        
+                    db.close()
+                except Exception as log_exc:
+                    print(f"Error logging history: {log_exc}")
+                    # Don't fail the request if logging fails
+            # --- LOGGING END ---
+
+            return final_response
+
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -725,8 +826,74 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
                     yield f"{json.dumps(complete_response)}\n"
 
+            async def stream_generator_wrapper():
+                full_response_content = []
+                final_references = []
+                
+                async for chunk in stream_generator():
+                    yield chunk
+                    # Accumulate data for logging
+                    try:
+                        data = json.loads(chunk)
+                        if "references" in data:
+                            final_references.extend(data["references"])
+                        if "response" in data:
+                            full_response_content.append(data["response"])
+                    except:
+                        pass
+                
+                # --- LOGGING START ---
+                if SessionLocal and HistoryManager:
+                    try:
+                        db = SessionLocal()
+                        manager = HistoryManager(db)
+                        
+                        # 1. Get or Create User
+                        user = db.query(User).filter(User.username == "default_user").first()
+                        if not user:
+                            user = User(username="default_user", email="default@example.com")
+                            db.add(user)
+                            db.commit()
+                            db.refresh(user)
+                        
+                        # 2. Handle Session
+                        session_uuid = None
+                        if request.session_id:
+                            try:
+                                session_uuid = uuid.UUID(request.session_id)
+                            except ValueError:
+                                pass
+                        
+                        if not session_uuid or not manager.get_session(session_uuid):
+                            session = manager.create_session(user_id=user.id, title=request.query[:50])
+                            session_uuid = session.id
+                        
+                        # 3. Log User Message
+                        manager.save_message(
+                            session_id=session_uuid,
+                            role="user",
+                            content=request.query
+                        )
+                        
+                        # 4. Log Assistant Message
+                        full_content = "".join(full_response_content)
+                        ai_msg = manager.save_message(
+                            session_id=session_uuid,
+                            role="assistant",
+                            content=full_content
+                        )
+                        
+                        # 5. Log Citations
+                        if final_references:
+                            manager.save_citations(ai_msg.id, final_references)
+                            
+                        db.close()
+                    except Exception as log_exc:
+                        print(f"Error logging history (stream): {log_exc}")
+                # --- LOGGING END ---
+
             return StreamingResponse(
-                stream_generator(),
+                stream_generator_wrapper(),
                 media_type="application/x-ndjson",
                 headers={
                     "Cache-Control": "no-cache",

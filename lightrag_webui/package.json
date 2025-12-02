@@ -45,6 +45,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "date-fns": "^4.1.0",
     "graphology": "^0.26.0",
     "graphology-generators": "^0.11.2",
     "graphology-layout": "^0.6.1",
