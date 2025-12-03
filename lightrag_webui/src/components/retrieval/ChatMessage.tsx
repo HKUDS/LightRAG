@@ -153,7 +153,6 @@ export const ChatMessage = ({
         setKatexPlugin(() => rehypeKatex)
       } catch (error) {
         console.error('Failed to load KaTeX plugin:', error)
-        // Set to null to ensure we don't try to use a failed plugin
         setKatexPlugin(null)
       }
     }
