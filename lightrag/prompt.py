@@ -62,14 +62,16 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 ---Real Data to be Processed---
 <Input>
 Entity_types: [{entity_types}]
+"""
+
+PROMPTS["entity_extraction_user_prompt"] = """---Task---
+Extract entities and relationships from the input text below.
+
+---Input Text---
 Text:
 ```
 {input_text}
 ```
-"""
-
-PROMPTS["entity_extraction_user_prompt"] = """---Task---
-Extract entities and relationships from the input text to be processed.
 
 ---Instructions---
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
