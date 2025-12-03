@@ -1036,15 +1036,12 @@ def create_app(args):
             # Add Cohere-specific parameters if using cohere binding
             if args.rerank_binding == "cohere":
                 # Enable chunking if configured (useful for models with token limits like ColBERT)
-                kwargs["enable_chunking"] = (
-                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+                kwargs["enable_chunking"] = get_env_value(
+                    "RERANK_ENABLE_CHUNKING", False, bool
                 )
-                try:
-                    kwargs["max_tokens_per_doc"] = int(
-                        os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
-                    )
-                except ValueError:
-                    kwargs["max_tokens_per_doc"] = 4096
+                kwargs["max_tokens_per_doc"] = get_env_value(
+                    "RERANK_MAX_TOKENS_PER_DOC", 4096, int
+                )
 
             return await selected_rerank_func(**kwargs, extra_body=extra_body)
 

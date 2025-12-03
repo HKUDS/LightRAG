@@ -2232,6 +2232,10 @@ def create_document_routes(
         This endpoint allows you to insert multiple text entries into the RAG system
         in a single request.
 
+        Note:
+            If any text content or file_source already exists in the system,
+            the entire batch will be rejected with status "duplicated".
+
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
             background_tasks: FastAPI BackgroundTasks for async processing

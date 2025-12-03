@@ -1,9 +1,17 @@
+# Node.js - THE BIG ONE (200MB+)
+**/node_modules
+
 # Python-related files and directories
 __pycache__
+**/__pycache__
+*.pyc
+*.pyo
 .cache
 
 # Virtual environment directories
 *.venv
+.venv
+venv/
 
 # Env
 env/

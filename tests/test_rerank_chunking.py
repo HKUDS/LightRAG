@@ -40,7 +40,7 @@ class TestChunkDocumentsForRerank:
         long_doc = "a" * 2000  # 2000 characters
         documents = [long_doc, "short doc"]
 
-        with patch("lightrag.utils.TiktokenTokenizer", side_effect=ImportError):
+        with patch("lightrag.rerank.TiktokenTokenizer", side_effect=ImportError):
             chunked_docs, doc_indices = chunk_documents_for_rerank(
                 documents,
                 max_tokens=100,  # 100 tokens = ~400 chars
