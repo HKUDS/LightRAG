@@ -54,8 +54,12 @@ services:
     volumes:
       - ./data/rag_storage_test:/app/data/rag_storage
       - ./data/inputs_test:/app/data/inputs
-      - ./lightrag:/app/lightrag  # Mount source for live reload
+      # Live reload: Use absolute host path for Docker-in-Docker compatibility (Coder)
+      - /var/lib/docker/volumes/coder-shared-projects-optimized/_data/LightRAG/lightrag:/app/lightrag
     environment:
+      # Live reload: PYTHONPATH makes mounted /app/lightrag take precedence over site-packages
+      - PYTHONPATH=/app
+
       # Server
       - HOST=0.0.0.0
       - PORT=9621
@@ -120,7 +124,8 @@ services:
     entrypoint: []
     command:
       - python
-      - /app/lightrag/api/run_with_gunicorn.py
+      - -m
+      - lightrag.api.run_with_gunicorn
       - --workers
       - "8"
       - --llm-binding

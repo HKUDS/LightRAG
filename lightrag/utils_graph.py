@@ -1332,6 +1332,8 @@ async def _merge_entities_impl(
                 {
                     "description": "concatenate",
                     "keywords": "join_unique_comma",
+                    "relationship": "join_unique_comma",
+                    "type": "join_unique_comma",
                     "source_id": "join_unique",
                     "file_path": "join_unique",
                     "weight": "max",

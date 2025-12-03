@@ -629,6 +629,9 @@ async def _handle_single_relationship_extraction(
         )
         edge_keywords = edge_keywords.replace("，", ",")
 
+        # Derive a relationship label from the first keyword (fallback to description later)
+        relationship_label = edge_keywords.split(",")[0].strip() if edge_keywords else ""
+
         # Process relationship description with same cleaning pipeline
         edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
 
@@ -645,6 +648,8 @@ async def _handle_single_relationship_extraction(
             weight=weight,
             description=edge_description,
             keywords=edge_keywords,
+            relationship=relationship_label,
+            type=relationship_label,
             source_id=edge_source_id,
             file_path=file_path,
             timestamp=timestamp,
@@ -2337,6 +2342,8 @@ async def _merge_edges_then_upsert(
     already_source_ids = []
     already_description = []
     already_keywords = []
+    already_relationships = []
+    already_types = []
     already_file_paths = []
 
     # 1. Get existing edge data from graph storage
@@ -2370,6 +2377,20 @@ async def _merge_edges_then_upsert(
                 already_keywords.extend(
                     split_string_by_multi_markers(
                         already_edge["keywords"], [GRAPH_FIELD_SEP]
+                    )
+                )
+
+            if already_edge.get("relationship") is not None:
+                already_relationships.extend(
+                    split_string_by_multi_markers(
+                        already_edge["relationship"], [GRAPH_FIELD_SEP, ","]
+                    )
+                )
+
+            if already_edge.get("type") is not None:
+                already_types.extend(
+                    split_string_by_multi_markers(
+                        already_edge["type"], [GRAPH_FIELD_SEP, ","]
                     )
                 )
 
@@ -2473,6 +2494,23 @@ async def _merge_edges_then_upsert(
             )
     # Join all unique keywords with commas
     keywords = ",".join(sorted(all_keywords))
+
+    # 6.3 Finalize relationship/type labels from explicit field or fallback to keywords
+    rel_labels = set()
+    for edge in edges_data:
+        if edge.get("relationship"):
+            rel_labels.update(k.strip() for k in edge["relationship"].split(",") if k.strip())
+    rel_labels.update(k.strip() for k in already_relationships if k.strip())
+    relationship_label = ",".join(sorted(rel_labels))
+    if not relationship_label and keywords:
+        relationship_label = keywords.split(",")[0]
+
+    type_labels = set()
+    for edge in edges_data:
+        if edge.get("type"):
+            type_labels.update(k.strip() for k in edge["type"].split(",") if k.strip())
+    type_labels.update(k.strip() for k in already_types if k.strip())
+    type_label = ",".join(sorted(type_labels)) or relationship_label
 
     # 7. Deduplicate by description, keeping first occurrence in the same document
     unique_edges = {}
@@ -2785,6 +2823,8 @@ async def _merge_edges_then_upsert(
             weight=weight,
             description=description,
             keywords=keywords,
+            relationship=relationship_label,
+            type=type_label,
             source_id=source_id,
             file_path=file_path,
             created_at=edge_created_at,
@@ -2797,6 +2837,8 @@ async def _merge_edges_then_upsert(
         tgt_id=tgt_id,
         description=description,
         keywords=keywords,
+        relationship=relationship_label,
+        type=type_label,
         source_id=source_id,
         file_path=file_path,
         created_at=edge_created_at,
@@ -2822,6 +2864,8 @@ async def _merge_edges_then_upsert(
             rel_vdb_id: {
                 "src_id": src_id,
                 "tgt_id": tgt_id,
+                "relationship": relationship_label,
+                "type": type_label,
                 "source_id": source_id,
                 "content": rel_content,
                 "keywords": keywords,

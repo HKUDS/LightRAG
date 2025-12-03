@@ -1266,6 +1266,9 @@ def create_app(args):
             else:
                 auth_mode = "enabled"
 
+            # Optional graph health probe (lightweight) - Using unified health_check interface
+            graph_health = await rag.chunk_entity_relation_graph.health_check()
+
             # Cleanup expired keyed locks and get status
             keyed_lock_info = cleanup_keyed_lock()
 
@@ -1319,6 +1322,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "graph": graph_health,
             }
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")

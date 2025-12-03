@@ -187,6 +187,14 @@ class StorageNameSpace(ABC):
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
 
+    async def health_check(self, max_retries: int = 3) -> dict[str, Any]:
+        """Check the health status of the storage
+
+        Returns:
+            dict[str, Any]: Health status dictionary with at least 'status' field
+        """
+        return {"status": "healthy"}
+
     @abstractmethod
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
@@ -526,6 +534,22 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges = await self.get_node_edges(node_id)
             result[node_id] = edges if edges is not None else []
         return result
+
+    async def upsert_nodes_bulk(
+        self, nodes: list[tuple[str, dict[str, str]]], batch_size: int = 500
+    ) -> None:
+        """Default bulk helper; storage backends can override for batching."""
+        for node_id, node_data in nodes:
+            await self.upsert_node(node_id, node_data)
+
+    async def upsert_edges_bulk(
+        self,
+        edges: list[tuple[str, str, dict[str, str]]],
+        batch_size: int = 500,
+    ) -> None:
+        """Default bulk helper; storage backends can override for batching."""
+        for src, tgt, edge_data in edges:
+            await self.upsert_edge(src, tgt, edge_data)
 
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
