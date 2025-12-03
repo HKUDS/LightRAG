@@ -16,18 +16,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def init_db():
-    logger.info("Creating database tables...")
+    logger.info("Checking database tables...")
     try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Tables created successfully!")
+        # Check if tables already exist
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        existing_tables = inspector.get_table_names()
         
-        # Create default users from AUTH_ACCOUNTS
-        # User table removed, so we don't need to create users anymore.
-        # Logic kept as comment or removed.
+        if existing_tables:
+            logger.info(f"Database tables already exist: {existing_tables}")
+            logger.info("Skipping table creation.")
+        else:
+            logger.info("Creating database tables...")
+            Base.metadata.create_all(bind=engine)
+            logger.info("Tables created successfully!")
+        
         logger.info("Database initialized.")
                 
     except Exception as e:
-        logger.error(f"Error creating tables: {e}")
+        logger.error(f"Error initializing database: {e}")
         raise
 
 if __name__ == "__main__":

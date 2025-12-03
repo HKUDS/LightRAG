@@ -160,6 +160,18 @@ observability = [
     "langfuse>=3.8.1",
 ]
 
+external = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "pydantic",
+    "python-dotenv",
+    "openai",
+    "tenacity",
+    "httpx",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
