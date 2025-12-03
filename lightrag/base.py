@@ -220,6 +220,45 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
+    def _generate_collection_suffix(self) -> str:
+        """Generates collection/table suffix from embedding_func.
+
+        Returns:
+            str: Suffix string, e.g. "text_embedding_3_large_3072d"
+        """
+        # Try to get model identifier from the embedding function
+        # If it's a wrapped function (doesn't have get_model_identifier),
+        # fallback to the original embedding_func from global_config
+        if hasattr(self.embedding_func, "get_model_identifier"):
+            return self.embedding_func.get_model_identifier()
+        elif "embedding_func" in self.global_config:
+            original_embedding_func = self.global_config["embedding_func"]
+            if original_embedding_func is not None and hasattr(
+                original_embedding_func, "get_model_identifier"
+            ):
+                return original_embedding_func.get_model_identifier()
+            else:
+                # Debug: log why we couldn't get model identifier
+                from lightrag.utils import logger
+
+                logger.debug(
+                    f"Could not get model_identifier: embedding_func is {type(original_embedding_func)}, has method={hasattr(original_embedding_func, 'get_model_identifier') if original_embedding_func else False}"
+                )
+
+        # Fallback: no model identifier available
+        return ""
+
+    def _get_legacy_collection_name(self) -> str:
+        """Get legacy collection/table name (without suffix).
+
+        Used for data migration detection.
+        """
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def _get_new_collection_name(self) -> str:
+        """Get new collection/table name (with suffix)."""
+        raise NotImplementedError("Subclasses must implement this method")
+
     @abstractmethod
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None

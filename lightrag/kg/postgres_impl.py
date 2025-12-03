@@ -1163,23 +1163,9 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to batch check/create indexes: {e}")
 
-        # Create vector indexs
-        if self.vector_index_type:
-            logger.info(
-                f"PostgreSQL, Create vector indexs, type: {self.vector_index_type}"
-            )
-            try:
-                if self.vector_index_type in ["HNSW", "IVFFLAT", "VCHORDRQ"]:
-                    await self._create_vector_indexes()
-                else:
-                    logger.warning(
-                        "Doesn't support this vector index type: {self.vector_index_type}. "
-                        "Supported types: HNSW, IVFFLAT, VCHORDRQ"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"PostgreSQL, Failed to create vector index, type: {self.vector_index_type}, Got: {e}"
-                )
+        # NOTE: Vector index creation moved to PGVectorStorage.setup_table()
+        # Each vector storage instance creates its own index with correct embedding_dim
+
         # After all tables are created, attempt to migrate timestamp fields
         try:
             await self._migrate_timestamp_columns()
@@ -1381,64 +1367,72 @@ class PostgreSQLDB:
             except Exception as e:
                 logger.warning(f"Failed to create index {index['name']}: {e}")
 
-    async def _create_vector_indexes(self):
-        vdb_tables = [
-            "LIGHTRAG_VDB_CHUNKS",
-            "LIGHTRAG_VDB_ENTITY",
-            "LIGHTRAG_VDB_RELATION",
-        ]
+    async def _create_vector_index(self, table_name: str, embedding_dim: int):
+        """
+        Create vector index for a specific table.
+
+        Args:
+            table_name: Name of the table to create index on
+            embedding_dim: Embedding dimension for the vector column
+        """
+        if not self.vector_index_type:
+            return
 
         create_sql = {
             "HNSW": f"""
                 CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING hnsw (content_vector vector_cosine_ops)
+                ON {{table_name}} USING hnsw (content_vector vector_cosine_ops)
                 WITH (m = {self.hnsw_m}, ef_construction = {self.hnsw_ef})
             """,
             "IVFFLAT": f"""
                 CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING ivfflat (content_vector vector_cosine_ops)
+                ON {{table_name}} USING ivfflat (content_vector vector_cosine_ops)
                 WITH (lists = {self.ivfflat_lists})
             """,
             "VCHORDRQ": f"""
                 CREATE INDEX {{vector_index_name}}
-                ON {{k}} USING vchordrq (content_vector vector_cosine_ops)
-                {f'WITH (options = $${self.vchordrq_build_options}$$)' if self.vchordrq_build_options else ''}
+                ON {{table_name}} USING vchordrq (content_vector vector_cosine_ops)
+                {f"WITH (options = $${self.vchordrq_build_options}$$)" if self.vchordrq_build_options else ""}
             """,
         }
 
-        embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
-        for k in vdb_tables:
-            vector_index_name = (
-                f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+        if self.vector_index_type not in create_sql:
+            logger.warning(
+                f"Unsupported vector index type: {self.vector_index_type}. "
+                "Supported types: HNSW, IVFFLAT, VCHORDRQ"
             )
-            check_vector_index_sql = f"""
-                    SELECT 1 FROM pg_indexes
-                    WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
-                """
-            try:
-                vector_index_exists = await self.query(check_vector_index_sql)
-                if not vector_index_exists:
-                    # Only set vector dimension when index doesn't exist
-                    alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
-                    await self.execute(alter_sql)
-                    logger.debug(f"Ensured vector dimension for {k}")
-                    logger.info(
-                        f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
+            return
+
+        k = table_name
+        vector_index_name = f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+        check_vector_index_sql = f"""
+            SELECT 1 FROM pg_indexes
+            WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
+        """
+        try:
+            vector_index_exists = await self.query(check_vector_index_sql)
+            if not vector_index_exists:
+                # Only set vector dimension when index doesn't exist
+                alter_sql = f"ALTER TABLE {k} ALTER COLUMN content_vector TYPE VECTOR({embedding_dim})"
+                await self.execute(alter_sql)
+                logger.debug(f"Ensured vector dimension for {k}")
+                logger.info(
+                    f"Creating {self.vector_index_type} index {vector_index_name} on table {k}"
+                )
+                await self.execute(
+                    create_sql[self.vector_index_type].format(
+                        vector_index_name=vector_index_name, table_name=k
                     )
-                    await self.execute(
-                        create_sql[self.vector_index_type].format(
-                            vector_index_name=vector_index_name, k=k
-                        )
-                    )
-                    logger.info(
-                        f"Successfully created vector index {vector_index_name} on table {k}"
-                    )
-                else:
-                    logger.info(
-                        f"{self.vector_index_type} vector index {vector_index_name} already exists on table {k}"
-                    )
-            except Exception as e:
-                logger.error(f"Failed to create vector index on table {k}, Got: {e}")
+                )
+                logger.info(
+                    f"Successfully created vector index {vector_index_name} on table {k}"
+                )
+            else:
+                logger.info(
+                    f"{self.vector_index_type} vector index {vector_index_name} already exists on table {k}"
+                )
+        except Exception as e:
+            logger.error(f"Failed to create vector index on table {k}, Got: {e}")
 
     async def query(
         self,
@@ -2175,6 +2169,90 @@ class PGKVStorage(BaseKVStorage):
             return {"status": "error", "message": str(e)}
 
 
+async def _pg_table_exists(db: PostgreSQLDB, table_name: str) -> bool:
+    """Check if a table exists in PostgreSQL database"""
+    query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = $1
+        )
+    """
+    result = await db.query(query, [table_name.lower()])
+    return result.get("exists", False) if result else False
+
+
+async def _pg_create_table(
+    db: PostgreSQLDB, table_name: str, base_table: str, embedding_dim: int
+) -> None:
+    """Create a new vector table by replacing the table name in DDL template"""
+    if base_table not in TABLES:
+        raise ValueError(f"No DDL template found for table: {base_table}")
+
+    ddl_template = TABLES[base_table]["ddl"]
+
+    # Replace embedding dimension placeholder if exists
+    ddl = ddl_template.replace(
+        f"VECTOR({os.environ.get('EMBEDDING_DIM', 1024)})", f"VECTOR({embedding_dim})"
+    )
+
+    # Replace table name
+    ddl = ddl.replace(base_table, table_name)
+
+    await db.execute(ddl)
+
+
+async def _pg_migrate_workspace_data(
+    db: PostgreSQLDB,
+    legacy_table_name: str,
+    new_table_name: str,
+    workspace: str,
+    expected_count: int,
+    embedding_dim: int,
+) -> int:
+    """Migrate workspace data from legacy table to new table"""
+    migrated_count = 0
+    offset = 0
+    batch_size = 500
+
+    while True:
+        if workspace:
+            select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 OFFSET $2 LIMIT $3"
+            rows = await db.query(
+                select_query, [workspace, offset, batch_size], multirows=True
+            )
+        else:
+            select_query = f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
+            rows = await db.query(select_query, [offset, batch_size], multirows=True)
+
+        if not rows:
+            break
+
+        for row in rows:
+            row_dict = dict(row)
+            columns = list(row_dict.keys())
+            columns_str = ", ".join(columns)
+            placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])
+            insert_query = f"""
+                INSERT INTO {new_table_name} ({columns_str})
+                VALUES ({placeholders})
+                ON CONFLICT (workspace, id) DO NOTHING
+            """
+            # Rebuild dict in columns order to ensure values() matches placeholders order
+            # Python 3.7+ dicts maintain insertion order, and execute() uses tuple(data.values())
+            values = {col: row_dict[col] for col in columns}
+            await db.execute(insert_query, values)
+
+        migrated_count += len(rows)
+        workspace_info = f" for workspace '{workspace}'" if workspace else ""
+        logger.info(
+            f"PostgreSQL: {migrated_count}/{expected_count} records migrated{workspace_info}"
+        )
+
+        offset += batch_size
+
+    return migrated_count
+
+
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
@@ -2189,6 +2267,412 @@ class PGVectorStorage(BaseVectorStorage):
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
             )
         self.cosine_better_than_threshold = cosine_threshold
+
+        # Generate model suffix for table isolation
+        self.model_suffix = self._generate_collection_suffix()
+
+        # Get base table name
+        base_table = namespace_to_table_name(self.namespace)
+        if not base_table:
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+
+        # New table name (with suffix)
+        # Ensure model_suffix is not empty before appending
+        if self.model_suffix:
+            self.table_name = f"{base_table}_{self.model_suffix}"
+        else:
+            # Fallback: use base table name if model_suffix is unavailable
+            self.table_name = base_table
+            logger.warning(
+                f"Model suffix unavailable, using base table name '{base_table}'. "
+                f"Ensure embedding_func has model_name for proper model isolation."
+            )
+
+        # Legacy table name (without suffix, for migration)
+        self.legacy_table_name = base_table
+
+        logger.debug(
+            f"PostgreSQL table naming: "
+            f"new='{self.table_name}', "
+            f"legacy='{self.legacy_table_name}', "
+            f"model_suffix='{self.model_suffix}'"
+        )
+
+    @staticmethod
+    async def setup_table(
+        db: PostgreSQLDB,
+        table_name: str,
+        legacy_table_name: str = None,
+        base_table: str = None,
+        embedding_dim: int = None,
+        workspace: str = None,
+    ):
+        """
+        Setup PostgreSQL table with migration support from legacy tables.
+
+        This method mirrors Qdrant's setup_collection approach to maintain consistency.
+
+        Args:
+            db: PostgreSQLDB instance
+            table_name: Name of the new table
+            legacy_table_name: Name of the legacy table (if exists)
+            base_table: Base table name for DDL template lookup
+            embedding_dim: Embedding dimension for vector column
+        """
+        new_table_exists = await _pg_table_exists(db, table_name)
+        legacy_exists = legacy_table_name and await _pg_table_exists(
+            db, legacy_table_name
+        )
+
+        # Case 1: Both new and legacy tables exist
+        if new_table_exists and legacy_exists:
+            if table_name.lower() == legacy_table_name.lower():
+                logger.debug(
+                    f"PostgreSQL: Table '{table_name}' already exists (no model suffix). Skipping Case 1 cleanup."
+                )
+                return
+
+            try:
+                workspace_info = f" for workspace '{workspace}'" if workspace else ""
+
+                if workspace:
+                    count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name} WHERE workspace = $1"
+                    count_result = await db.query(count_query, [workspace])
+                else:
+                    count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                    count_result = await db.query(count_query, [])
+
+                workspace_count = count_result.get("count", 0) if count_result else 0
+
+                if workspace_count > 0:
+                    logger.info(
+                        f"PostgreSQL: Found {workspace_count} records in legacy table{workspace_info}. Migrating..."
+                    )
+
+                    legacy_dim = None
+                    try:
+                        dim_query = """
+                        SELECT
+                            CASE
+                                WHEN typname = 'vector' THEN
+                                    COALESCE(atttypmod, -1)
+                                ELSE -1
+                            END as vector_dim
+                        FROM pg_attribute a
+                        JOIN pg_type t ON a.atttypid = t.oid
+                        WHERE a.attrelid = $1::regclass
+                        AND a.attname = 'content_vector'
+                        """
+                        dim_result = await db.query(dim_query, [legacy_table_name])
+                        legacy_dim = (
+                            dim_result.get("vector_dim", -1) if dim_result else -1
+                        )
+
+                        if legacy_dim <= 0:
+                            sample_query = f"SELECT content_vector FROM {legacy_table_name} LIMIT 1"
+                            sample_result = await db.query(sample_query, [])
+                            if sample_result and sample_result.get("content_vector"):
+                                vector_data = sample_result["content_vector"]
+                                if isinstance(vector_data, (list, tuple)):
+                                    legacy_dim = len(vector_data)
+                                elif isinstance(vector_data, str):
+                                    import json
+
+                                    vector_list = json.loads(vector_data)
+                                    legacy_dim = len(vector_list)
+
+                        if (
+                            legacy_dim > 0
+                            and embedding_dim
+                            and legacy_dim != embedding_dim
+                        ):
+                            logger.warning(
+                                f"PostgreSQL: Dimension mismatch - "
+                                f"legacy table has {legacy_dim}d vectors, "
+                                f"new embedding model expects {embedding_dim}d. "
+                                f"Skipping migration{workspace_info}."
+                            )
+                            await db._create_vector_index(table_name, embedding_dim)
+                            return
+
+                    except Exception as e:
+                        logger.warning(
+                            f"PostgreSQL: Could not verify vector dimension: {e}. Proceeding with caution..."
+                        )
+
+                    migrated_count = await _pg_migrate_workspace_data(
+                        db,
+                        legacy_table_name,
+                        table_name,
+                        workspace,
+                        workspace_count,
+                        embedding_dim,
+                    )
+
+                    if workspace:
+                        new_count_query = f"SELECT COUNT(*) as count FROM {table_name} WHERE workspace = $1"
+                        new_count_result = await db.query(new_count_query, [workspace])
+                    else:
+                        new_count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                        new_count_result = await db.query(new_count_query, [])
+
+                    new_count = (
+                        new_count_result.get("count", 0) if new_count_result else 0
+                    )
+
+                    if new_count < workspace_count:
+                        logger.warning(
+                            f"PostgreSQL: Expected {workspace_count} records, found {new_count}{workspace_info}. "
+                            f"Some records may have been skipped due to conflicts."
+                        )
+                    else:
+                        logger.info(
+                            f"PostgreSQL: Migration completed: {migrated_count} records migrated{workspace_info}"
+                        )
+
+                    if workspace:
+                        delete_query = (
+                            f"DELETE FROM {legacy_table_name} WHERE workspace = $1"
+                        )
+                        await db.execute(delete_query, {"workspace": workspace})
+                        logger.info(
+                            f"PostgreSQL: Deleted workspace '{workspace}' data from legacy table"
+                        )
+
+                total_count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                total_count_result = await db.query(total_count_query, [])
+                total_count = (
+                    total_count_result.get("count", 0) if total_count_result else 0
+                )
+
+                if total_count == 0:
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' is empty. Deleting..."
+                    )
+                    drop_query = f"DROP TABLE {legacy_table_name}"
+                    await db.execute(drop_query, None)
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' deleted successfully"
+                    )
+                else:
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' preserved "
+                        f"({total_count} records from other workspaces remain)"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"PostgreSQL: Error during Case 1 migration: {e}. Vector index will still be ensured."
+                )
+
+            await db._create_vector_index(table_name, embedding_dim)
+            return
+
+        # Case 2: Only new table exists - Already migrated or newly created
+        if new_table_exists:
+            logger.debug(f"PostgreSQL: Table '{table_name}' already exists")
+            # Ensure vector index exists with correct embedding dimension
+            await db._create_vector_index(table_name, embedding_dim)
+            return
+
+        # Case 3: Neither exists - Create new table
+        if not legacy_exists:
+            logger.info(f"PostgreSQL: Creating new table '{table_name}'")
+            await _pg_create_table(db, table_name, base_table, embedding_dim)
+            logger.info(f"PostgreSQL: Table '{table_name}' created successfully")
+            # Create vector index with correct embedding dimension
+            await db._create_vector_index(table_name, embedding_dim)
+            return
+
+        # Case 4: Only legacy exists - Migrate data
+        logger.info(
+            f"PostgreSQL: Migrating data from legacy table '{legacy_table_name}'"
+        )
+
+        try:
+            # Get legacy table count (with workspace filtering)
+            if workspace:
+                count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name} WHERE workspace = $1"
+                count_result = await db.query(count_query, [workspace])
+            else:
+                count_query = f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                count_result = await db.query(count_query, [])
+                logger.warning(
+                    "PostgreSQL: Migration without workspace filter - this may copy data from all workspaces!"
+                )
+
+            legacy_count = count_result.get("count", 0) if count_result else 0
+            workspace_info = f" for workspace '{workspace}'" if workspace else ""
+            logger.info(
+                f"PostgreSQL: Found {legacy_count} records in legacy table{workspace_info}"
+            )
+
+            if legacy_count == 0:
+                logger.info("PostgreSQL: Legacy table is empty, skipping migration")
+                await _pg_create_table(db, table_name, base_table, embedding_dim)
+                # Create vector index with correct embedding dimension
+                await db._create_vector_index(table_name, embedding_dim)
+                return
+
+            # Check vector dimension compatibility before migration
+            legacy_dim = None
+            try:
+                # Try to get vector dimension from pg_attribute metadata
+                dim_query = """
+                SELECT
+                    CASE
+                        WHEN typname = 'vector' THEN
+                            COALESCE(atttypmod, -1)
+                        ELSE -1
+                    END as vector_dim
+                FROM pg_attribute a
+                JOIN pg_type t ON a.atttypid = t.oid
+                WHERE a.attrelid = $1::regclass
+                AND a.attname = 'content_vector'
+                """
+                dim_result = await db.query(dim_query, [legacy_table_name])
+                legacy_dim = dim_result.get("vector_dim", -1) if dim_result else -1
+
+                if legacy_dim <= 0:
+                    # Alternative: Try to detect by sampling a vector
+                    logger.info(
+                        "PostgreSQL: Metadata dimension check failed, trying vector sampling..."
+                    )
+                    sample_query = (
+                        f"SELECT content_vector FROM {legacy_table_name} LIMIT 1"
+                    )
+                    sample_result = await db.query(sample_query, [])
+                    if sample_result and sample_result.get("content_vector"):
+                        vector_data = sample_result["content_vector"]
+                        # pgvector returns list directly
+                        if isinstance(vector_data, (list, tuple)):
+                            legacy_dim = len(vector_data)
+                        elif isinstance(vector_data, str):
+                            import json
+
+                            vector_list = json.loads(vector_data)
+                            legacy_dim = len(vector_list)
+
+                if legacy_dim > 0 and embedding_dim and legacy_dim != embedding_dim:
+                    logger.warning(
+                        f"PostgreSQL: Dimension mismatch detected! "
+                        f"Legacy table '{legacy_table_name}' has {legacy_dim}d vectors, "
+                        f"but new embedding model expects {embedding_dim}d. "
+                        f"Migration skipped to prevent data loss. "
+                        f"Legacy table preserved as '{legacy_table_name}'. "
+                        f"Creating new empty table '{table_name}' for new data."
+                    )
+
+                    # Create new table but skip migration
+                    await _pg_create_table(db, table_name, base_table, embedding_dim)
+                    await db._create_vector_index(table_name, embedding_dim)
+
+                    logger.info(
+                        f"PostgreSQL: New table '{table_name}' created. "
+                        f"To query legacy data, please use a {legacy_dim}d embedding model."
+                    )
+                    return
+
+            except Exception as e:
+                logger.warning(
+                    f"PostgreSQL: Could not verify legacy table vector dimension: {e}. "
+                    f"Proceeding with caution..."
+                )
+
+            logger.info(f"PostgreSQL: Creating new table '{table_name}'")
+            await _pg_create_table(db, table_name, base_table, embedding_dim)
+
+            migrated_count = await _pg_migrate_workspace_data(
+                db,
+                legacy_table_name,
+                table_name,
+                workspace,
+                legacy_count,
+                embedding_dim,
+            )
+
+            logger.info("PostgreSQL: Verifying migration...")
+            new_count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+            new_count_result = await db.query(new_count_query, [])
+            new_count = new_count_result.get("count", 0) if new_count_result else 0
+
+            if new_count != legacy_count:
+                error_msg = (
+                    f"PostgreSQL: Migration verification failed, "
+                    f"expected {legacy_count} records, got {new_count} in new table"
+                )
+                logger.error(error_msg)
+                raise PostgreSQLMigrationError(error_msg)
+
+            logger.info(
+                f"PostgreSQL: Migration completed successfully: {migrated_count} records migrated"
+            )
+            logger.info(
+                f"PostgreSQL: Migration from '{legacy_table_name}' to '{table_name}' completed successfully"
+            )
+
+            await db._create_vector_index(table_name, embedding_dim)
+
+            try:
+                if workspace:
+                    logger.info(
+                        f"PostgreSQL: Deleting migrated workspace '{workspace}' data from legacy table '{legacy_table_name}'..."
+                    )
+                    delete_query = (
+                        f"DELETE FROM {legacy_table_name} WHERE workspace = $1"
+                    )
+                    await db.execute(delete_query, {"workspace": workspace})
+                    logger.info(
+                        f"PostgreSQL: Deleted workspace '{workspace}' data from legacy table"
+                    )
+
+                    remaining_query = (
+                        f"SELECT COUNT(*) as count FROM {legacy_table_name}"
+                    )
+                    remaining_result = await db.query(remaining_query, [])
+                    remaining_count = (
+                        remaining_result.get("count", 0) if remaining_result else 0
+                    )
+
+                    if remaining_count == 0:
+                        logger.info(
+                            f"PostgreSQL: Legacy table '{legacy_table_name}' is empty, deleting..."
+                        )
+                        drop_query = f"DROP TABLE {legacy_table_name}"
+                        await db.execute(drop_query, None)
+                        logger.info(
+                            f"PostgreSQL: Legacy table '{legacy_table_name}' deleted successfully"
+                        )
+                    else:
+                        logger.info(
+                            f"PostgreSQL: Legacy table '{legacy_table_name}' preserved ({remaining_count} records from other workspaces remain)"
+                        )
+                else:
+                    logger.warning(
+                        f"PostgreSQL: No workspace specified, deleting entire legacy table '{legacy_table_name}'..."
+                    )
+                    drop_query = f"DROP TABLE {legacy_table_name}"
+                    await db.execute(drop_query, None)
+                    logger.info(
+                        f"PostgreSQL: Legacy table '{legacy_table_name}' deleted"
+                    )
+
+            except Exception as delete_error:
+                # If cleanup fails, log warning but don't fail migration
+                logger.warning(
+                    f"PostgreSQL: Failed to clean up legacy table '{legacy_table_name}': {delete_error}. "
+                    "Migration succeeded, but manual cleanup may be needed."
+                )
+
+        except PostgreSQLMigrationError:
+            # Re-raise migration errors without wrapping
+            raise
+        except Exception as e:
+            error_msg = f"PostgreSQL: Migration failed with error: {e}"
+            logger.error(error_msg)
+            # Mirror Qdrant behavior: no automatic rollback
+            # Reason: partial data can be continued by re-running migration
+            raise PostgreSQLMigrationError(error_msg) from e
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -2206,6 +2690,16 @@ class PGVectorStorage(BaseVectorStorage):
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
 
+            # Setup table (create if not exists and handle migration)
+            await PGVectorStorage.setup_table(
+                self.db,
+                self.table_name,
+                legacy_table_name=self.legacy_table_name,
+                base_table=self.legacy_table_name,  # base_table for DDL template lookup
+                embedding_dim=self.embedding_func.embedding_dim,
+                workspace=self.workspace,  # CRITICAL: Filter migration by workspace
+            )
+
     async def finalize(self):
         if self.db is not None:
             await ClientManager.release_client(self.db)
@@ -2215,7 +2709,9 @@ class PGVectorStorage(BaseVectorStorage):
         self, item: dict[str, Any], current_time: datetime.datetime
     ) -> tuple[str, dict[str, Any]]:
         try:
-            upsert_sql = SQL_TEMPLATES["upsert_chunk"]
+            upsert_sql = SQL_TEMPLATES["upsert_chunk"].format(
+                table_name=self.table_name
+            )
             data: dict[str, Any] = {
                 "workspace": self.workspace,
                 "id": item["__id__"],
@@ -2239,7 +2735,7 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_entities(
         self, item: dict[str, Any], current_time: datetime.datetime
     ) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_entity"]
+        upsert_sql = SQL_TEMPLATES["upsert_entity"].format(table_name=self.table_name)
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
@@ -2262,7 +2758,9 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_relationships(
         self, item: dict[str, Any], current_time: datetime.datetime
     ) -> tuple[str, dict[str, Any]]:
-        upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+        upsert_sql = SQL_TEMPLATES["upsert_relationship"].format(
+            table_name=self.table_name
+        )
         source_id = item["source_id"]
         if isinstance(source_id, str) and "<SEP>" in source_id:
             chunk_ids = source_id.split("<SEP>")
@@ -2335,7 +2833,9 @@ class PGVectorStorage(BaseVectorStorage):
 
         embedding_string = ",".join(map(str, embedding))
 
-        sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
+        sql = SQL_TEMPLATES[self.namespace].format(
+            embedding_string=embedding_string, table_name=self.table_name
+        )
         params = {
             "workspace": self.workspace,
             "closer_than_threshold": 1 - self.cosine_better_than_threshold,
@@ -2357,14 +2857,9 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return
 
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for vector deletion: {self.namespace}"
-            )
-            return
-
-        delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+        delete_sql = (
+            f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
+        )
 
         try:
             await self.db.execute(delete_sql, {"workspace": self.workspace, "ids": ids})
@@ -2383,8 +2878,8 @@ class PGVectorStorage(BaseVectorStorage):
             entity_name: The name of the entity to delete
         """
         try:
-            # Construct SQL to delete the entity
-            delete_sql = """DELETE FROM LIGHTRAG_VDB_ENTITY
+            # Construct SQL to delete the entity using dynamic table name
+            delete_sql = f"""DELETE FROM {self.table_name}
                             WHERE workspace=$1 AND entity_name=$2"""
 
             await self.db.execute(
@@ -2404,7 +2899,7 @@ class PGVectorStorage(BaseVectorStorage):
         """
         try:
             # Delete relations where the entity is either the source or target
-            delete_sql = """DELETE FROM LIGHTRAG_VDB_RELATION
+            delete_sql = f"""DELETE FROM {self.table_name}
                             WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"""
 
             await self.db.execute(
@@ -2427,14 +2922,7 @@ class PGVectorStorage(BaseVectorStorage):
         Returns:
             The vector data if found, or None if not found
         """
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for ID lookup: {self.namespace}"
-            )
-            return None
-
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {table_name} WHERE workspace=$1 AND id=$2"
+        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {self.table_name} WHERE workspace=$1 AND id=$2"
         params = {"workspace": self.workspace, "id": id}
 
         try:
@@ -2460,15 +2948,8 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for IDs lookup: {self.namespace}"
-            )
-            return []
-
         ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {self.table_name} WHERE workspace=$1 AND id IN ({ids_str})"
         params = {"workspace": self.workspace}
 
         try:
@@ -2509,15 +2990,8 @@ class PGVectorStorage(BaseVectorStorage):
         if not ids:
             return {}
 
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(
-                f"[{self.workspace}] Unknown namespace for vector lookup: {self.namespace}"
-            )
-            return {}
-
         ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT id, content_vector FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+        query = f"SELECT id, content_vector FROM {self.table_name} WHERE workspace=$1 AND id IN ({ids_str})"
         params = {"workspace": self.workspace}
 
         try:
@@ -2546,15 +3020,8 @@ class PGVectorStorage(BaseVectorStorage):
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:
-            table_name = namespace_to_table_name(self.namespace)
-            if not table_name:
-                return {
-                    "status": "error",
-                    "message": f"Unknown namespace: {self.namespace}",
-                }
-
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=table_name
+                table_name=self.table_name
             )
             await self.db.execute(drop_sql, {"workspace": self.workspace})
             return {"status": "success", "message": "data dropped"}
@@ -2592,6 +3059,9 @@ class PGDocStatusStorage(DocStatusStorage):
             else:
                 # Use "default" for compatibility (lowest priority)
                 self.workspace = "default"
+
+            # NOTE: Table creation is handled by PostgreSQLDB.initdb() during initialization
+            # No need to create table here as it's already created in the TABLES dict
 
     async def finalize(self):
         if self.db is not None:
@@ -3186,6 +3656,12 @@ class PGDocStatusStorage(DocStatusStorage):
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+
+class PostgreSQLMigrationError(Exception):
+    """Exception for PostgreSQL table migration errors."""
+
+    pass
 
 
 class PGGraphQueryException(Exception):
@@ -5047,7 +5523,7 @@ SQL_TEMPLATES = {
                       update_time = EXCLUDED.update_time
                      """,
     # SQL for VectorStorage
-    "upsert_chunk": """INSERT INTO LIGHTRAG_VDB_CHUNKS (workspace, id, tokens,
+    "upsert_chunk": """INSERT INTO {table_name} (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path,
                       create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -5060,7 +5536,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = EXCLUDED.update_time
                      """,
-    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
+    "upsert_entity": """INSERT INTO {table_name} (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path, create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, $8, $9)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -5071,7 +5547,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time=EXCLUDED.update_time
                      """,
-    "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
+    "upsert_relationship": """INSERT INTO {table_name} (workspace, id, source_id,
                       target_id, content, content_vector, chunk_ids, file_path, create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, $9, $10)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -5087,7 +5563,7 @@ SQL_TEMPLATES = {
                      SELECT r.source_id AS src_id,
                             r.target_id AS tgt_id,
                             EXTRACT(EPOCH FROM r.create_time)::BIGINT AS created_at
-                     FROM LIGHTRAG_VDB_RELATION r
+                     FROM {table_name} r
                      WHERE r.workspace = $1
                        AND r.content_vector <=> '[{embedding_string}]'::vector < $2
                      ORDER BY r.content_vector <=> '[{embedding_string}]'::vector
@@ -5096,7 +5572,7 @@ SQL_TEMPLATES = {
     "entities": """
                 SELECT e.entity_name,
                        EXTRACT(EPOCH FROM e.create_time)::BIGINT AS created_at
-                FROM LIGHTRAG_VDB_ENTITY e
+                FROM {table_name} e
                 WHERE e.workspace = $1
                   AND e.content_vector <=> '[{embedding_string}]'::vector < $2
                 ORDER BY e.content_vector <=> '[{embedding_string}]'::vector
@@ -5107,7 +5583,7 @@ SQL_TEMPLATES = {
                      c.content,
                      c.file_path,
                      EXTRACT(EPOCH FROM c.create_time)::BIGINT AS created_at
-              FROM LIGHTRAG_VDB_CHUNKS c
+              FROM {table_name} c
               WHERE c.workspace = $1
                 AND c.content_vector <=> '[{embedding_string}]'::vector < $2
               ORDER BY c.content_vector <=> '[{embedding_string}]'::vector

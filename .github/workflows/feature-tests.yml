@@ -1,0 +1,74 @@
+name: Feature Branch Tests
+
+on:
+  workflow_dispatch:  # Allow manual trigger
+  push:
+    branches:
+      - 'feature/**'
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  migration-tests:
+    name: Vector Storage Migration Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[api]"
+        pip install pytest pytest-asyncio
+
+    - name: Run Qdrant migration tests
+      run: |
+        pytest tests/test_qdrant_migration.py -v --tb=short
+      continue-on-error: false
+
+    - name: Run PostgreSQL migration tests
+      run: |
+        pytest tests/test_postgres_migration.py -v --tb=short
+      continue-on-error: false
+
+    - name: Run all unit tests (if exists)
+      run: |
+        # Run EmbeddingFunc tests
+        pytest tests/ -k "embedding" -v --tb=short || true
+      continue-on-error: true
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: migration-test-results-py${{ matrix.python-version }}
+        path: |
+          .pytest_cache/
+          test-results.xml
+        retention-days: 7
+
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- Python: ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
