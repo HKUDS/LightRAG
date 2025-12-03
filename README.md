@@ -125,7 +125,7 @@ source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
-cp env.example .env  # Update the .env with your LLM and embedding configurations
+#cp env.example .env  # Update the .env with your LLM and embedding configurations
 
 # Build front-end artifacts
 cd lightrag_webui
@@ -1551,6 +1551,80 @@ When switching between different embedding models, you must clear the data direc
 ## LightRAG API
 
 The LightRAG Server is designed to provide Web UI and API support.  **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
+
+## Session History Feature
+
+LightRAG includes a built-in session history feature that automatically tracks and manages conversation history across multiple chat sessions. This feature is always enabled and requires no configuration.
+
+### Features
+
+- **Session Management**: Create, list, and delete chat sessions
+- **Message History**: Store and retrieve conversation history
+- **Citation Tracking**: Track source documents and citations for each response
+- **User Isolation**: Sessions are isolated per user
+- **Always Available**: Automatically enabled when PostgreSQL is configured
+
+### How It Works
+
+Session history uses the same PostgreSQL instance as LightRAG. Session tables are automatically created in your database - no additional setup required!
+
+### Docker Deployment
+
+Session history uses the same PostgreSQL as LightRAG:
+
+```bash
+# Start LightRAG - session tables created automatically
+docker compose up -d
+
+# View logs
+docker compose logs -f lightrag
+```
+
+### API Endpoints
+
+The session history feature provides the following REST API endpoints:
+
+- `POST /history/sessions` - Create a new chat session
+- `GET /history/sessions` - List all sessions for current user
+- `GET /history/sessions/{session_id}/history` - Get message history for a session
+- `DELETE /history/sessions/{session_id}` - Delete a session and its messages
+
+### Example Usage
+
+```python
+import requests
+
+# Create a new session
+response = requests.post(
+    "http://localhost:9621/history/sessions",
+    json={"title": "My Research Session"},
+    headers={"X-User-ID": "user123"}
+)
+session_id = response.json()["id"]
+
+# Query with session context
+response = requests.post(
+    "http://localhost:9621/query",
+    json={
+        "query": "What are the main findings?",
+        "mode": "hybrid",
+        "session_id": session_id
+    }
+)
+
+# Get session history
+response = requests.get(
+    f"http://localhost:9621/history/sessions/{session_id}/history"
+)
+messages = response.json()
+```
+
+### Troubleshooting
+
+If session history endpoints are not available, check:
+1. PostgreSQL is running and accessible
+2. `POSTGRES_*` environment variables are correctly configured
+3. Server logs for initialization errors
 
 ## Graph Visualization
 

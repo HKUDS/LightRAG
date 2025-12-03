@@ -14,6 +14,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
     && bun install --frozen-lockfile \
     && bun run build
 
+
+
 # Python build stage - using uv for faster package installation
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
@@ -44,7 +46,7 @@ COPY uv.lock .
 
 # Install base, API, and offline extras without the project to improve caching
 RUN --mount=type=cache,target=/root/.local/share/uv \
-    uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
+    uv sync --frozen --no-dev --extra api --extra offline --extra external --no-install-project --no-editable
 
 # Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
@@ -54,7 +56,7 @@ COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
 # Sync project in non-editable mode and ensure pip is available for runtime installs
 RUN --mount=type=cache,target=/root/.local/share/uv \
-    uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    uv sync --frozen --no-dev --extra api --extra offline --extra external --no-editable \
     && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Prepare offline cache directory and pre-populate tiktoken data
@@ -81,13 +83,16 @@ COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
 
+
+
+
 # Ensure the installed scripts are on PATH
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
 # Install dependencies with uv sync (uses locked versions from uv.lock)
 # And ensure pip is available for runtime installs
 RUN --mount=type=cache,target=/root/.local/share/uv \
-    uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    uv sync --frozen --no-dev --extra api --extra offline --extra external --no-editable \
     && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Create persistent data directories AFTER package installation
@@ -96,6 +101,7 @@ RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken /app/ligh
 
 # Copy offline cache into the newly created directory
 COPY --from=builder /app/data/tiktoken /app/data/tiktoken
+
 
 # Point to the prepared cache
 ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken

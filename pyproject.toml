@@ -38,6 +38,14 @@ dependencies = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "openai",
+    "httpx",
+    "redis",
+    "pydantic-settings",
 ]
 
 [project.optional-dependencies]
@@ -92,6 +100,9 @@ api = [
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+    "sqlalchemy>=2.0.0,<3.0.0",
+    "pydantic_settings",
+    "neo4j>=5.0.0,<7.0.0",
 ]
 
 # Advanced document processing engine (optional)
@@ -147,6 +158,18 @@ evaluation = [
 observability = [
     # LLM observability and tracing dependencies
     "langfuse>=3.8.1",
+]
+
+external = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "pydantic",
+    "python-dotenv",
+    "openai",
+    "tenacity",
+    "httpx",
 ]
 
 [project.scripts]

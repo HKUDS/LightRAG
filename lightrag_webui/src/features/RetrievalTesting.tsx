@@ -1,19 +1,19 @@
-import Textarea from '@/components/ui/Textarea'
-import Input from '@/components/ui/Input'
-import Button from '@/components/ui/Button'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { throttle } from '@/lib/utils'
-import { queryText, queryTextStream } from '@/api/lightrag'
-import { errorMessage } from '@/lib/utils'
-import { useSettingsStore } from '@/stores/settings'
-import { useDebounce } from '@/hooks/useDebounce'
-import QuerySettings from '@/components/retrieval/QuerySettings'
+import type { QueryMode } from '@/api/lightrag'
+import { createSession, getSessionHistory, queryText, queryTextStream } from '@/api/lightrag'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
+import QuerySettings from '@/components/retrieval/QuerySettings'
+import SessionManager from '@/components/retrieval/SessionManager'
+import Button from '@/components/ui/Button'
+import Input from '@/components/ui/Input'
+import Textarea from '@/components/ui/Textarea'
+import { useDebounce } from '@/hooks/useDebounce'
+import { errorMessage, throttle } from '@/lib/utils'
+import { useSettingsStore } from '@/stores/settings'
+import { copyToClipboard } from '@/utils/clipboard'
+import { CopyIcon, EraserIcon, SendIcon } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { copyToClipboard } from '@/utils/clipboard'
-import type { QueryMode } from '@/api/lightrag'
 
 // Helper function to generate unique IDs with browser compatibility
 const generateUniqueId = () => {
@@ -141,6 +141,52 @@ export default function RetrievalTesting() {
   const [isLoading, setIsLoading] = useState(false)
   const [inputError, setInputError] = useState('') // Error message for input
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
+  
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+
+  // Scroll to bottom function - restored smooth scrolling with better handling
+  const scrollToBottom = useCallback(() => {
+    // Set flag to indicate this is a programmatic scroll
+    programmaticScrollRef.current = true
+    // Use requestAnimationFrame for better performance
+    requestAnimationFrame(() => {
+      if (messagesEndRef.current) {
+        // Use smooth scrolling for better user experience
+        messagesEndRef.current.scrollIntoView({ behavior: 'auto' })
+      }
+    })
+  }, [])
+
+  const handleSessionSelect = useCallback(async (sessionId: string) => {
+    setCurrentSessionId(sessionId)
+    setIsLoading(true)
+    try {
+      const history = await getSessionHistory(sessionId)
+      // Convert history to messages format
+      const historyMessages: MessageWithError[] = history.map((msg, index) => ({
+        id: msg.id || `hist-${Date.now()}-${index}`,
+        role: msg.role,
+        content: msg.content,
+        mermaidRendered: true, // Assume rendered for history
+        latexRendered: true
+      }))
+      setMessages(historyMessages)
+      useSettingsStore.getState().setRetrievalHistory(historyMessages)
+    } catch (error) {
+      console.error('Failed to load session history:', error)
+      toast.error('Failed to load history')
+    } finally {
+      setIsLoading(false)
+      setTimeout(scrollToBottom, 100)
+    }
+  }, [scrollToBottom])
+
+  const handleNewSession = useCallback(() => {
+    setCurrentSessionId(null)
+    setMessages([])
+    useSettingsStore.getState().setRetrievalHistory([])
+    setInputValue('')
+  }, [])
 
   // Smart switching logic: use Input for single line, Textarea for multi-line
   const hasMultipleLines = inputValue.includes('\n')
@@ -159,18 +205,6 @@ export default function RetrievalTesting() {
     })
   }, [])
 
-  // Scroll to bottom function - restored smooth scrolling with better handling
-  const scrollToBottom = useCallback(() => {
-    // Set flag to indicate this is a programmatic scroll
-    programmaticScrollRef.current = true
-    // Use requestAnimationFrame for better performance
-    requestAnimationFrame(() => {
-      if (messagesEndRef.current) {
-        // Use smooth scrolling for better user experience
-        messagesEndRef.current.scrollIntoView({ behavior: 'auto' })
-      }
-    })
-  }, [])
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -354,9 +388,24 @@ export default function RetrievalTesting() {
         ? 3
         : configuredHistoryTurns
 
+      // Create session if not exists
+      let sessionId = currentSessionId
+      if (!sessionId) {
+        try {
+          // Create a new session with the first query as title (truncated)
+          const title = actualQuery.slice(0, 30) + (actualQuery.length > 30 ? '...' : '')
+          const newSession = await createSession(title)
+          sessionId = newSession.id
+          setCurrentSessionId(sessionId)
+        } catch (error) {
+          console.error('Failed to create session:', error)
+        }
+      }
+
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
+        session_id: sessionId || undefined,
         response_type: 'Multiple Paragraphs',
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
@@ -685,7 +734,13 @@ export default function RetrievalTesting() {
   }, [t])
 
   return (
-    <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
+    <div className="flex size-full overflow-hidden">
+      <SessionManager 
+        currentSessionId={currentSessionId}
+        onSessionSelect={handleSessionSelect}
+        onNewSession={handleNewSession}
+      />
+      <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
       <div className="flex grow flex-col gap-4">
         <div className="relative grow">
           <div
@@ -819,6 +874,7 @@ export default function RetrievalTesting() {
         </form>
       </div>
       <QuerySettings />
+      </div>
     </div>
   )
 }

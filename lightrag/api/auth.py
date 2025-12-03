@@ -15,6 +15,7 @@ load_dotenv(dotenv_path=".env", override=False)
 
 class TokenPayload(BaseModel):
     sub: str  # Username
+    user_id: str  # User ID
     exp: datetime  # Expiration time
     role: str = "user"  # User role, default is regular user
     metadata: dict = {}  # Additional metadata
@@ -30,8 +31,13 @@ class AuthHandler:
         auth_accounts = global_args.auth_accounts
         if auth_accounts:
             for account in auth_accounts.split(","):
-                username, password = account.split(":", 1)
-                self.accounts[username] = password
+                parts = account.split(":")
+                if len(parts) == 3:
+                    username, password, user_id = parts
+                else:
+                    username, password = parts
+                    user_id = username  # Default user_id to username if not provided
+                self.accounts[username] = {"password": password, "user_id": user_id}
 
     def create_token(
         self,
@@ -63,9 +69,14 @@ class AuthHandler:
 
         expire = datetime.utcnow() + timedelta(hours=expire_hours)
 
+        # Get user_id from accounts or use username
+        user_id = username
+        if username in self.accounts and isinstance(self.accounts[username], dict):
+            user_id = self.accounts[username].get("user_id", username)
+        
         # Create payload
         payload = TokenPayload(
-            sub=username, exp=expire, role=role, metadata=metadata or {}
+            sub=username, user_id=user_id, exp=expire, role=role, metadata=metadata or {}
         )
 
         return jwt.encode(payload.dict(), self.secret, algorithm=self.algorithm)
@@ -96,6 +107,7 @@ class AuthHandler:
             # Return complete payload instead of just username
             return {
                 "username": payload["sub"],
+                "user_id": payload.get("user_id", payload["sub"]),
                 "role": payload.get("role", "user"),
                 "metadata": payload.get("metadata", {}),
                 "exp": expire_time,

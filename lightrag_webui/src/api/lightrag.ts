@@ -1,8 +1,23 @@
-import axios, { AxiosError } from 'axios'
-import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
+import {
+  backendBaseUrl,
+  popularLabelsDefaultLimit,
+  searchLabelsDefaultLimit
+} from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
-import { useSettingsStore } from '@/stores/settings'
 import { navigationService } from '@/services/navigation'
+import { useSettingsStore } from '@/stores/settings'
+import axios, { AxiosError } from 'axios'
+
+const getUserIdFromToken = (token: string): string | null => {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const payload = JSON.parse(atob(parts[1]))
+    return payload.user_id || payload.sub || null
+  } catch (e) {
+    return null
+  }
+}
 
 // Types
 export type LightragNodeType = {
@@ -137,6 +152,8 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Optional session ID for tracking conversation history on the server. */
+  session_id?: string
 }
 
 export type QueryResponse = {
@@ -266,8 +283,8 @@ export type PipelineStatusResponse = {
 export type LoginResponse = {
   access_token: string
   token_type: string
-  auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
-  message?: string                    // Optional message
+  auth_mode?: 'enabled' | 'disabled' // Authentication mode identifier
+  message?: string // Optional message
   core_version?: string
   api_version?: string
   webui_title?: string
@@ -288,11 +305,15 @@ const axiosInstance = axios.create({
 // Interceptor: add api key and check authentication
 axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
 
   // Always include token if it exists, regardless of path
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`
+    const userId = getUserIdFromToken(token)
+    if (userId) {
+      config.headers['X-User-ID'] = userId
+    }
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
@@ -308,13 +329,13 @@ axiosInstance.interceptors.response.use(
       if (error.response?.status === 401) {
         // For login API, throw error directly
         if (error.config?.url?.includes('/login')) {
-          throw error;
+          throw error
         }
         // For other APIs, navigate to login page
-        navigationService.navigateToLogin();
+        navigationService.navigateToLogin()
 
         // return a reject Promise
-        return Promise.reject(new Error('Authentication required'));
+        return Promise.reject(new Error('Authentication required'))
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
@@ -332,7 +353,9 @@ export const queryGraphs = async (
   maxDepth: number,
   maxNodes: number
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  const response = await axiosInstance.get(
+    `/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`
+  )
   return response.data
 }
 
@@ -341,13 +364,20 @@ export const getGraphLabels = async (): Promise<string[]> => {
   return response.data
 }
 
-export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit): Promise<string[]> => {
+export const getPopularLabels = async (
+  limit: number = popularLabelsDefaultLimit
+): Promise<string[]> => {
   const response = await axiosInstance.get(`/graph/label/popular?limit=${limit}`)
   return response.data
 }
 
-export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+export const searchLabels = async (
+  query: string,
+  limit: number = searchLabelsDefaultLimit
+): Promise<string[]> => {
+  const response = await axiosInstance.get(
+    `/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`
+  )
   return response.data
 }
 
@@ -395,85 +425,89 @@ export const queryTextStream = async (
   onChunk: (chunk: string) => void,
   onError?: (error: string) => void
 ) => {
-  const apiKey = useSettingsStore.getState().apiKey;
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const apiKey = useSettingsStore.getState().apiKey
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
-    'Accept': 'application/x-ndjson',
-  };
+    Accept: 'application/x-ndjson'
+  }
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    headers['Authorization'] = `Bearer ${token}`
+    const userId = getUserIdFromToken(token)
+    if (userId) {
+      headers['X-User-ID'] = userId
+    }
   }
   if (apiKey) {
-    headers['X-API-Key'] = apiKey;
+    headers['X-API-Key'] = apiKey
   }
 
   try {
     const response = await fetch(`${backendBaseUrl}/query/stream`, {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify(request),
-    });
+      body: JSON.stringify(request)
+    })
 
     if (!response.ok) {
       // Handle 401 Unauthorized error specifically
       if (response.status === 401) {
         // For consistency with axios interceptor, navigate to login page
-        navigationService.navigateToLogin();
+        navigationService.navigateToLogin()
 
         // Create a specific authentication error
-        const authError = new Error('Authentication required');
-        throw authError;
+        const authError = new Error('Authentication required')
+        throw authError
       }
 
       // Handle other common HTTP errors with specific messages
-      let errorBody = 'Unknown error';
+      let errorBody = 'Unknown error'
       try {
-        errorBody = await response.text(); // Try to get error details from body
-      } catch { /* ignore */ }
+        errorBody = await response.text() // Try to get error details from body
+      } catch {
+        /* ignore */
+      }
 
       // Format error message similar to axios interceptor for consistency
-      const url = `${backendBaseUrl}/query/stream`;
+      const url = `${backendBaseUrl}/query/stream`
       throw new Error(
-        `${response.status} ${response.statusText}\n${JSON.stringify(
-          { error: errorBody }
-        )}\n${url}`
-      );
+        `${response.status} ${response.statusText}\n${JSON.stringify({ error: errorBody })}\n${url}`
+      )
     }
 
     if (!response.body) {
-      throw new Error('Response body is null');
+      throw new Error('Response body is null')
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read()
       if (done) {
-        break; // Stream finished
+        break // Stream finished
       }
 
       // Decode the chunk and add to buffer
-      buffer += decoder.decode(value, { stream: true }); // stream: true handles multi-byte chars split across chunks
+      buffer += decoder.decode(value, { stream: true }) // stream: true handles multi-byte chars split across chunks
 
       // Process complete lines (NDJSON)
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep potentially incomplete line in buffer
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || '' // Keep potentially incomplete line in buffer
 
       for (const line of lines) {
         if (line.trim()) {
           try {
-            const parsed = JSON.parse(line);
+            const parsed = JSON.parse(line)
             if (parsed.response) {
-              onChunk(parsed.response);
+              onChunk(parsed.response)
             } else if (parsed.error && onError) {
-              onError(parsed.error);
+              onError(parsed.error)
             }
           } catch (error) {
-            console.error('Error parsing stream chunk:', line, error);
-            if (onError) onError(`Error parsing server response: ${line}`);
+            console.error('Error parsing stream chunk:', line, error)
+            if (onError) onError(`Error parsing server response: ${line}`)
           }
         }
       }
@@ -482,98 +516,99 @@ export const queryTextStream = async (
     // Process any remaining data in the buffer after the stream ends
     if (buffer.trim()) {
       try {
-        const parsed = JSON.parse(buffer);
+        const parsed = JSON.parse(buffer)
         if (parsed.response) {
-          onChunk(parsed.response);
+          onChunk(parsed.response)
         } else if (parsed.error && onError) {
-          onError(parsed.error);
+          onError(parsed.error)
         }
       } catch (error) {
-        console.error('Error parsing final chunk:', buffer, error);
-        if (onError) onError(`Error parsing final server response: ${buffer}`);
+        console.error('Error parsing final chunk:', buffer, error)
+        if (onError) onError(`Error parsing final server response: ${buffer}`)
       }
     }
-
   } catch (error) {
-    const message = errorMessage(error);
+    const message = errorMessage(error)
 
     // Check if this is an authentication error
     if (message === 'Authentication required') {
       // Already navigated to login page in the response.status === 401 block
-      console.error('Authentication required for stream request');
+      console.error('Authentication required for stream request')
       if (onError) {
-        onError('Authentication required');
+        onError('Authentication required')
       }
-      return; // Exit early, no need for further error handling
+      return // Exit early, no need for further error handling
     }
 
     // Check for specific HTTP error status codes in the error message
-    const statusCodeMatch = message.match(/^(\d{3})\s/);
+    const statusCodeMatch = message.match(/^(\d{3})\s/)
     if (statusCodeMatch) {
-      const statusCode = parseInt(statusCodeMatch[1], 10);
+      const statusCode = parseInt(statusCodeMatch[1], 10)
 
       // Handle specific status codes with user-friendly messages
-      let userMessage = message;
+      let userMessage = message
 
       switch (statusCode) {
-      case 403:
-        userMessage = 'You do not have permission to access this resource (403 Forbidden)';
-        console.error('Permission denied for stream request:', message);
-        break;
-      case 404:
-        userMessage = 'The requested resource does not exist (404 Not Found)';
-        console.error('Resource not found for stream request:', message);
-        break;
-      case 429:
-        userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
-        console.error('Rate limited for stream request:', message);
-        break;
-      case 500:
-      case 502:
-      case 503:
-      case 504:
-        userMessage = `Server error, please try again later (${statusCode})`;
-        console.error('Server error for stream request:', message);
-        break;
-      default:
-        console.error('Stream request failed with status code:', statusCode, message);
+        case 403:
+          userMessage = 'You do not have permission to access this resource (403 Forbidden)'
+          console.error('Permission denied for stream request:', message)
+          break
+        case 404:
+          userMessage = 'The requested resource does not exist (404 Not Found)'
+          console.error('Resource not found for stream request:', message)
+          break
+        case 429:
+          userMessage = 'Too many requests, please try again later (429 Too Many Requests)'
+          console.error('Rate limited for stream request:', message)
+          break
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+          userMessage = `Server error, please try again later (${statusCode})`
+          console.error('Server error for stream request:', message)
+          break
+        default:
+          console.error('Stream request failed with status code:', statusCode, message)
       }
 
       if (onError) {
-        onError(userMessage);
+        onError(userMessage)
       }
-      return;
+      return
     }
 
     // Handle network errors (like connection refused, timeout, etc.)
-    if (message.includes('NetworkError') ||
-        message.includes('Failed to fetch') ||
-        message.includes('Network request failed')) {
-      console.error('Network error for stream request:', message);
+    if (
+      message.includes('NetworkError') ||
+      message.includes('Failed to fetch') ||
+      message.includes('Network request failed')
+    ) {
+      console.error('Network error for stream request:', message)
       if (onError) {
-        onError('Network connection error, please check your internet connection');
+        onError('Network connection error, please check your internet connection')
       }
-      return;
+      return
     }
 
     // Handle JSON parsing errors during stream processing
     if (message.includes('Error parsing') || message.includes('SyntaxError')) {
-      console.error('JSON parsing error in stream:', message);
+      console.error('JSON parsing error in stream:', message)
       if (onError) {
-        onError('Error processing response data');
+        onError('Error processing response data')
       }
-      return;
+      return
     }
 
     // Handle other errors
-    console.error('Unhandled stream error:', message);
+    console.error('Unhandled stream error:', message)
     if (onError) {
-      onError(message);
+      onError(message)
     } else {
-      console.error('No error handler provided for stream error:', message);
+      console.error('No error handler provided for stream error:', message)
     }
   }
-};
+}
 
 export const insertText = async (text: string): Promise<DocActionResponse> => {
   const response = await axiosInstance.post('/documents/text', { text })
@@ -651,54 +686,55 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     const response = await axiosInstance.get('/auth-status', {
       timeout: 5000, // 5 second timeout
       headers: {
-        'Accept': 'application/json' // Explicitly request JSON
+        Accept: 'application/json' // Explicitly request JSON
       }
-    });
+    })
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = response.headers['content-type'] || '';
+    const contentType = response.headers['content-type'] || ''
     if (contentType.includes('text/html')) {
-      console.warn('Received HTML response instead of JSON for auth-status endpoint');
+      console.warn('Received HTML response instead of JSON for auth-status endpoint')
       return {
         auth_configured: true,
         auth_mode: 'enabled'
-      };
+      }
     }
 
     // Strict validation of the response data
-    if (response.data &&
-        typeof response.data === 'object' &&
-        'auth_configured' in response.data &&
-        typeof response.data.auth_configured === 'boolean') {
-
+    if (
+      response.data &&
+      typeof response.data === 'object' &&
+      'auth_configured' in response.data &&
+      typeof response.data.auth_configured === 'boolean'
+    ) {
       // For unconfigured auth, ensure we have an access token
       if (!response.data.auth_configured) {
         if (response.data.access_token && typeof response.data.access_token === 'string') {
-          return response.data;
+          return response.data
         } else {
-          console.warn('Auth not configured but no valid access token provided');
+          console.warn('Auth not configured but no valid access token provided')
         }
       } else {
         // For configured auth, just return the data
-        return response.data;
+        return response.data
       }
     }
 
     // If response data is invalid but we got a response, log it
-    console.warn('Received invalid auth status response:', response.data);
+    console.warn('Received invalid auth status response:', response.data)
 
     // Default to auth configured if response is invalid
     return {
       auth_configured: true,
       auth_mode: 'enabled'
-    };
+    }
   } catch (error) {
     // If the request fails, assume authentication is configured
-    console.error('Failed to get auth status:', errorMessage(error));
+    console.error('Failed to get auth status:', errorMessage(error))
     return {
       auth_configured: true,
       auth_mode: 'enabled'
-    };
+    }
   }
 }
 
@@ -716,17 +752,17 @@ export const cancelPipeline = async (): Promise<{
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
-  const formData = new FormData();
-  formData.append('username', username);
-  formData.append('password', password);
+  const formData = new FormData()
+  formData.append('username', username)
+  formData.append('password', password)
 
   const response = await axiosInstance.post('/login', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
     }
-  });
+  })
 
-  return response.data;
+  return response.data
 }
 
 /**
@@ -779,7 +815,9 @@ export const updateRelation = async (
  */
 export const checkEntityNameExists = async (entityName: string): Promise<boolean> => {
   try {
-    const response = await axiosInstance.get(`/graph/entity/exists?name=${encodeURIComponent(entityName)}`)
+    const response = await axiosInstance.get(
+      `/graph/entity/exists?name=${encodeURIComponent(entityName)}`
+    )
     return response.data.exists
   } catch (error) {
     console.error('Error checking entity name:', error)
@@ -797,12 +835,51 @@ export const getTrackStatus = async (trackId: string): Promise<TrackStatusRespon
   return response.data
 }
 
+// History API
+
+export type ChatSession = {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ChatHistoryMessage {
+  id: string
+  content: string
+  role: 'user' | 'assistant'
+  created_at: string
+  citations?: Array<{
+    source_doc_id: string
+    file_path: string
+    chunk_content?: string
+    relevance_score?: number
+  }>
+}
+
+export const getSessions = async (): Promise<ChatSession[]> => {
+  const response = await axiosInstance.get('/sessions')
+  return response.data
+}
+
+export const getSessionHistory = async (sessionId: string): Promise<ChatHistoryMessage[]> => {
+  const response = await axiosInstance.get(`/sessions/${sessionId}/history`)
+  return response.data
+}
+
+export const createSession = async (title?: string): Promise<ChatSession> => {
+  const response = await axiosInstance.post('/sessions', { title })
+  return response.data
+}
+
 /**
  * Get documents with pagination support
  * @param request The pagination request parameters
  * @returns Promise with paginated documents response
  */
-export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
+export const getDocumentsPaginated = async (
+  request: DocumentsRequest
+): Promise<PaginatedDocsResponse> => {
   const response = await axiosInstance.post('/documents/paginated', request)
   return response.data
 }
@@ -815,3 +892,4 @@ export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> =
   const response = await axiosInstance.get('/documents/status_counts')
   return response.data
 }
+
