@@ -11,6 +11,7 @@ Supported graph storage types include:
 - MongoDBStorage
 - PGGraphStorage
 - MemgraphStorage
+- TigerGraphStorage
 """
 
 import asyncio
