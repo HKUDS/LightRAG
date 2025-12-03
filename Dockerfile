@@ -108,13 +108,6 @@ ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken
 ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 
-
-# Copy service code
-COPY service/ ./service/
-
-RUN python -m service.init_db
-RUN python -m service.main
-
 # Expose API port
 EXPOSE 9621
 
