@@ -17,30 +17,10 @@ from lightrag.base import QueryParam
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
-# Add the project root to sys.path to allow importing 'service'
-# Assuming this file is at lightrag/api/routers/query_routes.py
-# We need to go up 3 levels to get to the root
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
-service_dir = os.path.join(project_root, "service")
-if project_root not in sys.path:
-    sys.path.append(project_root)
-if service_dir not in sys.path:
-    sys.path.append(service_dir)
-
-try:
-    from app.core.database import SessionLocal
-    from app.services.history_manager import HistoryManager
-    from app.models.schemas import ChatMessageResponse
-except ImportError as e:
-    logger.error(f"Warning: Could not import service module. History logging will be disabled. Error: {e}")
-    print(f"CRITICAL ERROR: Could not import service module: {e}", file=sys.stderr)
-    import traceback
-    traceback.print_exc()
-    SessionLocal = None
-    HistoryManager = None
-    QueryRequest = None
-    QueryResponse = None
-    ChatMessageResponse = None
+# Import integrated session history modules
+from lightrag.api.session_database import SessionLocal, get_db
+from lightrag.api.session_manager import SessionHistoryManager
+from lightrag.api.session_schemas import ChatMessageResponse
 
 
 router = APIRouter(tags=["query"])
@@ -494,82 +474,77 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 final_response = QueryResponse(response=response_content, references=None)
 
             # --- LOGGING START ---
-            logger.info(f"DEBUG: SessionLocal={SessionLocal}, HistoryManager={HistoryManager}")
-            if SessionLocal and HistoryManager:
-                try:
-                    logger.info("DEBUG: Entering logging block")
-                    db = SessionLocal()
-                    manager = HistoryManager(db)
-                    
-                    # 1. Get User ID from Header (or default)
-                    current_user_id = x_user_id or "default_user"
-                    
-                    # 2. Handle Session
-                    session_uuid = None
-                    if request.session_id:
-                        try:
-                            temp_uuid = uuid.UUID(request.session_id)
-                            # Verify session exists
-                            if manager.get_session(temp_uuid):
-                                session_uuid = temp_uuid
-                            else:
-                                logger.warning(f"Session {request.session_id} not found. Creating new session.")
-                        except ValueError:
-                            logger.warning(f"Invalid session ID format: {request.session_id}")
-                    
-                    if not session_uuid:
-                        # Create new session
-                        session = manager.create_session(user_id=current_user_id, title=request.query[:50])
-                        session_uuid = session.id
-                    
-                    # Calculate processing time
-                    end_time = time.time()
-                    processing_time = end_time - start_time
-
-                    # Calculate token counts
+            try:
+                logger.info("DEBUG: Entering logging block")
+                db = SessionLocal()
+                manager = SessionHistoryManager(db)
+                
+                # 1. Get User ID from Header (or default)
+                current_user_id = x_user_id or "default_user"
+                
+                # 2. Handle Session
+                session_uuid = None
+                if request.session_id:
                     try:
-                        import tiktoken
-                        enc = tiktoken.get_encoding("cl100k_base")
-                        query_tokens = len(enc.encode(request.query))
-                        response_tokens = len(enc.encode(response_content))
-                    except ImportError:
-                        # Fallback approximation
-                        query_tokens = len(request.query) // 4
-                        response_tokens = len(response_content) // 4
-                    except Exception as e:
-                        logger.warning(f"Error calculating tokens: {e}")
-                        query_tokens = len(request.query) // 4
-                        response_tokens = len(response_content) // 4
+                        temp_uuid = uuid.UUID(request.session_id)
+                        # Verify session exists
+                        if manager.get_session(temp_uuid):
+                            session_uuid = temp_uuid
+                        else:
+                            logger.warning(f"Session {request.session_id} not found. Creating new session.")
+                    except ValueError:
+                        logger.warning(f"Invalid session ID format: {request.session_id}")
+                
+                if not session_uuid:
+                    # Create new session
+                    session = manager.create_session(user_id=current_user_id, title=request.query[:50])
+                    session_uuid = session.id
+                
+                # Calculate processing time
+                end_time = time.time()
+                processing_time = end_time - start_time
 
-                    # 3. Log User Message
-                    manager.save_message(
-                        session_id=session_uuid,
-                        role="user",
-                        content=request.query,
-                        token_count=query_tokens,
-                        processing_time=None # User message processing time is negligible/not applicable in this context
-                    )
+                # Calculate token counts
+                try:
+                    import tiktoken
+                    enc = tiktoken.get_encoding("cl100k_base")
+                    query_tokens = len(enc.encode(request.query))
+                    response_tokens = len(enc.encode(response_content))
+                except ImportError:
+                    # Fallback approximation
+                    query_tokens = len(request.query) // 4
+                    response_tokens = len(response_content) // 4
+                except Exception as e:
+                    logger.warning(f"Error calculating tokens: {e}")
+                    query_tokens = len(request.query) // 4
+                    response_tokens = len(response_content) // 4
+
+                # 3. Log User Message
+                manager.save_message(
+                    session_id=session_uuid,
+                    role="user",
+                    content=request.query,
+                    token_count=query_tokens,
+                    processing_time=None
+                )
+                
+                # 4. Log Assistant Message
+                ai_msg = manager.save_message(
+                    session_id=session_uuid,
+                    role="assistant",
+                    content=response_content,
+                    token_count=response_tokens,
+                    processing_time=processing_time
+                )
+                
+                # 5. Log Citations
+                if references:
+                    manager.save_citations(ai_msg.id, references)
                     
-                    # 4. Log Assistant Message
-                    ai_msg = manager.save_message(
-                        session_id=session_uuid,
-                        role="assistant",
-                        content=response_content,
-                        token_count=response_tokens,
-                        processing_time=processing_time
-                    )
-                    
-                    # 5. Log Citations
-                    if references:
-                        manager.save_citations(ai_msg.id, references)
-                        
-                    db.close()
-                except Exception as log_exc:
-                    print(f"Error logging history: {log_exc}", file=sys.stderr)
-                    import traceback
-                    traceback.print_exc()
-                    logger.error(f"Error logging history: {log_exc}", exc_info=True)
-                    # Don't fail the request if logging fails
+                db.close()
+            except Exception as log_exc:
+                logger.error(f"Error logging history: {log_exc}", exc_info=True)
+                # Don't fail the request if logging fails
             # --- LOGGING END ---
 
             return final_response
@@ -870,52 +845,51 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         pass
                 
                 # --- LOGGING START ---
-                if SessionLocal and HistoryManager:
-                    try:
-                        db = SessionLocal()
-                        manager = HistoryManager(db)
+                try:
+                    db = SessionLocal()
+                    manager = SessionHistoryManager(db)
+                    
+                    # 1. Get User ID
+                    current_user_id = x_user_id or "default_user" 
+                    
+                    # 2. Handle Session
+                    session_uuid = None
+                    if request.session_id:
+                        try:
+                            temp_uuid = uuid.UUID(request.session_id)
+                            if manager.get_session(temp_uuid):
+                                session_uuid = temp_uuid
+                            else:
+                                logger.warning(f"Session {request.session_id} not found. Creating new session.")
+                        except ValueError:
+                            logger.warning(f"Invalid session ID format: {request.session_id}")
+                    
+                    if not session_uuid:
+                        session = manager.create_session(user_id=current_user_id, title=request.query[:50])
+                        session_uuid = session.id
                         
-                        # 1. Get User ID
-                        current_user_id = x_user_id or "default_user" 
+                    # 3. Log User Message
+                    manager.save_message(
+                        session_id=session_uuid,
+                        role="user",
+                        content=request.query
+                    )
+                    
+                    # 4. Log Assistant Message
+                    full_content = "".join(full_response_content)
+                    ai_msg = manager.save_message(
+                        session_id=session_uuid,
+                        role="assistant",
+                        content=full_content
+                    )
+                    
+                    # 5. Log Citations
+                    if final_references:
+                        manager.save_citations(ai_msg.id, final_references)
                         
-                        # 2. Handle Session
-                        session_uuid = None
-                        if request.session_id:
-                            try:
-                                temp_uuid = uuid.UUID(request.session_id)
-                                if manager.get_session(temp_uuid):
-                                    session_uuid = temp_uuid
-                                else:
-                                    logger.warning(f"Session {request.session_id} not found. Creating new session.")
-                            except ValueError:
-                                logger.warning(f"Invalid session ID format: {request.session_id}")
-                        
-                        if not session_uuid:
-                            session = manager.create_session(user_id=current_user_id, title=request.query[:50])
-                            session_uuid = session.id
-                            
-                        # 3. Log User Message
-                        manager.save_message(
-                            session_id=session_uuid,
-                            role="user",
-                            content=request.query
-                        )
-                        
-                        # 4. Log Assistant Message
-                        full_content = "".join(full_response_content)
-                        ai_msg = manager.save_message(
-                            session_id=session_uuid,
-                            role="assistant",
-                            content=full_content
-                        )
-                        
-                        # 5. Log Citations
-                        if final_references:
-                            manager.save_citations(ai_msg.id, final_references)
-                            
-                        db.close()
-                    except Exception as log_exc:
-                        print(f"Error logging history (stream): {log_exc}")
+                    db.close()
+                except Exception as log_exc:
+                    logger.error(f"Error logging history (stream): {log_exc}", exc_info=True)
                 # --- LOGGING END ---
 
             return StreamingResponse(

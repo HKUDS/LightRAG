@@ -161,3 +161,7 @@ def get_db():
     finally:
         db.close()
 
+
+# Alias for backward compatibility
+SessionLocal = lambda: get_session_db_manager().get_session()
+

@@ -125,7 +125,7 @@ source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
-cp env.example .env  # Update the .env with your LLM and embedding configurations
+#cp env.example .env  # Update the .env with your LLM and embedding configurations
 
 # Build front-end artifacts
 cd lightrag_webui
