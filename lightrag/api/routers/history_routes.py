@@ -1,72 +1,154 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+"""
+Session History Routes for LightRAG API
+
+This module provides REST API endpoints for managing chat sessions
+and conversation history.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
-import sys
-import os
+import time
 
-# Ensure service module is in path (similar to query_routes.py)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
-service_dir = os.path.join(project_root, "service")
-if service_dir not in sys.path:
-    sys.path.append(service_dir)
+from lightrag.api.session_database import get_db
+from lightrag.api.session_manager import SessionHistoryManager
+from lightrag.api.session_schemas import (
+    SessionResponse,
+    SessionCreate,
+    ChatMessageResponse,
+    ChatMessageRequest,
+)
+from lightrag.utils import logger
 
-try:
-    from app.core.database import get_db
-    from app.services.history_manager import HistoryManager
-    from app.models.schemas import SessionResponse, SessionCreate, ChatMessageResponse
-except ImportError:
-    # Fallback if service not found (shouldn't happen if setup is correct)
-    get_db = None
-    HistoryManager = None
-    SessionResponse = None
-    SessionCreate = None
-    ChatMessageResponse = None
+router = APIRouter(prefix="/history", tags=["Session History"])
 
-router = APIRouter()
-
-def check_dependencies():
-    if not HistoryManager:
-        raise HTTPException(status_code=503, detail="History service not available")
 
 async def get_current_user_id(
     x_user_id: Optional[str] = Header(None, alias="X-User-ID")
 ) -> str:
-    # Prefer X-User-ID, default to default_user
-    uid = x_user_id
-    if not uid:
-        # Fallback to default user if no header provided (for backward compatibility or dev)
-        # Or raise error if strict
-        return "default_user"
-    return uid
+    """
+    Extract user ID from request header.
+    
+    Args:
+        x_user_id: User ID from X-User-ID header.
+        
+    Returns:
+        User ID string, defaults to 'default_user' if not provided.
+    """
+    return x_user_id or "default_user"
 
-@router.get("/sessions", response_model=List[SessionResponse], tags=["History"])
-def list_sessions(
-    skip: int = 0, 
-    limit: int = 20, 
+
+@router.get("/sessions", response_model=List[SessionResponse])
+async def list_sessions(
+    skip: int = 0,
+    limit: int = 20,
     db: Session = Depends(get_db),
-    current_user_id: str = Depends(get_current_user_id)
+    current_user_id: str = Depends(get_current_user_id),
 ):
-    check_dependencies()
-    manager = HistoryManager(db)
-    sessions = manager.list_sessions(user_id=current_user_id, skip=skip, limit=limit)
-    return sessions
+    """
+    List all chat sessions for the current user.
+    
+    Args:
+        skip: Number of sessions to skip (for pagination).
+        limit: Maximum number of sessions to return.
+        db: Database session.
+        current_user_id: Current user identifier.
+        
+    Returns:
+        List of session response objects.
+    """
+    try:
+        manager = SessionHistoryManager(db)
+        sessions = manager.list_sessions(user_id=current_user_id, skip=skip, limit=limit)
+        return sessions
+    except Exception as e:
+        logger.error(f"Error listing sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/sessions", response_model=SessionResponse, tags=["History"])
-def create_session(
-    session_in: SessionCreate, 
+
+@router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
+async def create_session(
+    session_in: SessionCreate,
     db: Session = Depends(get_db),
-    current_user_id: str = Depends(get_current_user_id)
+    current_user_id: str = Depends(get_current_user_id),
 ):
-    check_dependencies()
-    manager = HistoryManager(db)
-    return manager.create_session(user_id=current_user_id, title=session_in.title)
+    """
+    Create a new chat session.
+    
+    Args:
+        session_in: Session creation request.
+        db: Database session.
+        current_user_id: Current user identifier.
+        
+    Returns:
+        Created session response.
+    """
+    try:
+        manager = SessionHistoryManager(db)
+        session = manager.create_session(
+            user_id=current_user_id,
+            title=session_in.title,
+            rag_config=session_in.rag_config,
+        )
+        return session
+    except Exception as e:
+        logger.error(f"Error creating session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/sessions/{session_id}/history", response_model=List[ChatMessageResponse], tags=["History"])
-def get_session_history(
-    session_id: str, 
-    db: Session = Depends(get_db)
+
+@router.get("/sessions/{session_id}/history", response_model=List[ChatMessageResponse])
+async def get_session_history(
+    session_id: UUID,
+    db: Session = Depends(get_db),
 ):
-    check_dependencies()
-    manager = HistoryManager(db)
-    return manager.get_session_history(session_id)
+    """
+    Get all messages for a specific session.
+    
+    Args:
+        session_id: Session UUID.
+        db: Database session.
+        
+    Returns:
+        List of chat message responses with citations.
+    """
+    try:
+        manager = SessionHistoryManager(db)
+        messages = manager.get_session_history(session_id)
+        return messages
+    except Exception as e:
+        logger.error(f"Error getting session history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_session(
+    session_id: UUID,
+    db: Session = Depends(get_db),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """
+    Delete a chat session and all its messages.
+    
+    Args:
+        session_id: Session UUID.
+        db: Database session.
+        current_user_id: Current user identifier.
+    """
+    try:
+        manager = SessionHistoryManager(db)
+        
+        # Verify session belongs to user
+        session = manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        if session.user_id != current_user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this session")
+        
+        manager.delete_session(session_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

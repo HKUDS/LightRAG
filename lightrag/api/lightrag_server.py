@@ -406,7 +406,17 @@ def create_app(args):
     }
 
     app = FastAPI(**app_kwargs)
-    app.include_router(history_router)
+    
+    # Initialize session history database
+    try:
+        from lightrag.api.session_database import get_session_db_manager
+        logger.info("Initializing session history database...")
+        session_db_manager = get_session_db_manager()
+        logger.info("Session history database initialized successfully")
+        app.include_router(history_router)
+    except Exception as e:
+        logger.warning(f"Session history initialization failed: {e}")
+        logger.warning("Session history endpoints will be unavailable. Check PostgreSQL configuration.")
 
     # Add custom validation error handler for /query/data endpoint
     @app.exception_handler(RequestValidationError)
