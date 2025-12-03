@@ -21,7 +21,7 @@ from lightrag.api.session_schemas import (
 )
 from lightrag.utils import logger
 
-router = APIRouter(prefix="/history", tags=["Session History"])
+router = APIRouter(tags=["Session History"])
 
 
 async def get_current_user_id(
