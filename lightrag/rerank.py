@@ -221,6 +221,8 @@ async def generic_rerank_api(
     # Handle document chunking if enabled
     original_documents = documents
     doc_indices = None
+    original_top_n = top_n  # Save original top_n for post-aggregation limiting
+
     if enable_chunking:
         documents, doc_indices = chunk_documents_for_rerank(
             documents, max_tokens=max_tokens_per_doc
@@ -228,6 +230,14 @@ async def generic_rerank_api(
         logger.debug(
             f"Chunked {len(original_documents)} documents into {len(documents)} chunks"
         )
+        # When chunking is enabled, disable top_n at API level to get all chunk scores
+        # This ensures proper document-level coverage after aggregation
+        # We'll apply top_n to aggregated document results instead
+        if top_n is not None:
+            logger.debug(
+                f"Chunking enabled: disabled API-level top_n={top_n} to ensure complete document coverage"
+            )
+            top_n = None
 
     # Build request payload based on request format
     if request_format == "aliyun":
@@ -342,6 +352,13 @@ async def generic_rerank_api(
                     len(original_documents),
                     aggregation="max",
                 )
+                # Apply original top_n limit at document level (post-aggregation)
+                # This preserves document-level semantics: top_n limits documents, not chunks
+                if (
+                    original_top_n is not None
+                    and len(standardized_results) > original_top_n
+                ):
+                    standardized_results = standardized_results[:original_top_n]
 
             return standardized_results
 
