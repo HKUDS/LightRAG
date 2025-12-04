@@ -10,6 +10,8 @@ class NameSpace:
     KV_STORE_LLM_RESPONSE_CACHE = "llm_response_cache"
     KV_STORE_FULL_ENTITIES = "full_entities"
     KV_STORE_FULL_RELATIONS = "full_relations"
+    KV_STORE_TENANTS = "tenants"
+    KV_STORE_KNOWLEDGE_BASES = "knowledge_bases"
 
     VECTOR_STORE_ENTITIES = "entities"
     VECTOR_STORE_RELATIONSHIPS = "relationships"

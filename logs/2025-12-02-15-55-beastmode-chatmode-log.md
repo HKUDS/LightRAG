@@ -1,0 +1,4 @@
+Actions: Investigated login flow after user reported admin/admin123 failing — traced frontend call to /login and backend validation in lightrag_server.py (AuthHandler).  
+Findings: Backend expects credentials from AUTH_ACCOUNTS or AUTH_USER/AUTH_PASS; docker-compose sets AUTH_USER/AUTH_PASS=admin/admin123 but your local .env doesn't. The 401 means the running server has some configured accounts and the provided password didn't match.  
+Next steps: Check runtime status with GET /auth-status and test login using curl to reproduce and view server logs (docker logs or terminal). If credentials mismatch, add AUTH_ACCOUNTS or AUTH_USER/AUTH_PASS to your active .env or override container environment and restart the service.  
+Lessons/insights: Common causes for 401 in this project: incorrect/missing env configuration (different env used by container vs local .env), stale server process, or front-end contacting wrong backend URL.

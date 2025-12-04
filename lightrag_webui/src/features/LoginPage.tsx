@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
+import { useTenantState } from '@/stores/tenant'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
@@ -10,15 +11,18 @@ import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
+import TenantSelector from '@/components/TenantSelector'
 
 const LoginPage = () => {
   const navigate = useNavigate()
   const { login, isAuthenticated } = useAuthStore()
   const { t } = useTranslation()
+  const selectedTenant = useTenantState.use.selectedTenant()
   const [loading, setLoading] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
+  const [showFreeLoginForm, setShowFreeLoginForm] = useState(false)
   const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
 
   useEffect(() => {
@@ -51,12 +55,9 @@ const LoginPage = () => {
         }
 
         if (!status.auth_configured && status.access_token) {
-          // If auth is not configured, use the guest token and redirect
-          login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
-          if (status.message) {
-            toast.info(status.message)
-          }
-          navigate('/')
+          // If auth is not configured (free login mode), show tenant selector first
+          setShowFreeLoginForm(true)
+          setCheckingAuth(false)
           return
         }
 
@@ -88,6 +89,12 @@ const LoginPage = () => {
     e.preventDefault()
     if (!username || !password) {
       toast.error(t('login.errorEmptyFields'))
+      return
+    }
+
+    // Validate that a tenant is selected
+    if (!selectedTenant) {
+      toast.error(t('login.selectTenantError', 'Please select a tenant to continue'))
       return
     }
 
@@ -144,6 +151,73 @@ const LoginPage = () => {
     }
   }
 
+  const handleFreeLoginContinue = async () => {
+    // Validate that a tenant is selected
+    if (!selectedTenant) {
+      toast.error(t('login.selectTenantError', 'Please select a tenant to continue'))
+      return
+    }
+
+    try {
+      setLoading(true)
+      const status = await getAuthStatus()
+      if (status.access_token) {
+        login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
+        if (status.message) {
+          toast.info(status.message)
+        }
+        navigate('/')
+      }
+    } catch (error) {
+      console.error('Failed to proceed with free login:', error)
+      toast.error(t('login.errorInvalidCredentials'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Show tenant selection screen for free login
+  if (showFreeLoginForm) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
+        <div className="absolute top-4 right-4 flex items-center gap-2">
+          <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
+        </div>
+        <Card className="w-full max-w-[480px] shadow-lg mx-4">
+          <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
+            <div className="flex flex-col items-center space-y-4">
+              <div className="flex items-center gap-3">
+                <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
+                <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
+              </div>
+              <div className="text-center space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
+                <p className="text-muted-foreground text-sm">
+                  {t('login.selectTenant', 'Please select a tenant to continue')}
+                </p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="px-8 pb-8 space-y-6">
+            <div>
+              <label className="text-sm font-medium mb-2 block">
+                {t('login.tenant', 'Tenant')}
+              </label>
+              <TenantSelector hideKBSelect={true} />
+            </div>
+            <Button
+              onClick={handleFreeLoginContinue}
+              className="w-full h-11 text-base font-medium"
+              disabled={loading || !selectedTenant}
+            >
+              {loading ? t('login.loggingIn') : t('login.continue', 'Continue')}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
       <div className="absolute top-4 right-4 flex items-center gap-2">
@@ -166,6 +240,12 @@ const LoginPage = () => {
         </CardHeader>
         <CardContent className="px-8 pb-8">
           <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="text-sm font-medium mb-2 block">
+                {t('login.tenant', 'Tenant')}
+              </label>
+              <TenantSelector hideKBSelect={true} />
+            </div>
             <div className="flex items-center gap-4">
               <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
                 {t('login.username')}
@@ -196,7 +276,7 @@ const LoginPage = () => {
             <Button
               type="submit"
               className="w-full h-11 text-base font-medium mt-2"
-              disabled={loading}
+              disabled={loading || !selectedTenant}
             >
               {loading ? t('login.loggingIn') : t('login.loginButton')}
             </Button>

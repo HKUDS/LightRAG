@@ -916,22 +916,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
         if milvus_workspace and milvus_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
+            self.workspace = milvus_workspace.strip()
             logger.info(
-                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MILVUS_WORKSPACE environment variable: '{self.workspace}' (overriding passed workspace)"
             )
         else:
             # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
+            if self.workspace:
                 logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
+                    f"Using passed workspace parameter: '{self.workspace}'"
                 )
+
+        # Get composite workspace (supports multi-tenant isolation)
+        composite_workspace = self._get_composite_workspace()
+        
+        # Sanitize for Milvus (replace colons with underscores)
+        # Milvus collection names must start with a letter or underscore, and can only contain letters, numbers, and underscores
+        safe_composite_workspace = composite_workspace.replace(":", "_")
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
+        if safe_composite_workspace and safe_composite_workspace != "_":
+            self.final_namespace = f"{safe_composite_workspace}_{self.namespace}"
             logger.debug(
                 f"Final namespace with workspace prefix: '{self.final_namespace}'"
             )

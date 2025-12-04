@@ -1,0 +1,46 @@
+# docker-compose.dev-db.yml
+# Starts only PostgreSQL and Redis for local development
+# The API server and WebUI run natively on the host
+#
+# Uses ports from root .env file:
+#   - POSTGRES_PORT (default: 15432)
+#   - REDIS port from REDIS_URI (default: 16379)
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres-age
+    container_name: lightrag-dev-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lightrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lightrag123}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-lightrag_multitenant}
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - lightrag_dev_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag} -d ${POSTGRES_DATABASE:-lightrag_multitenant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: lightrag-dev-redis
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - lightrag_dev_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  lightrag_dev_postgres_data:
+  lightrag_dev_redis_data:

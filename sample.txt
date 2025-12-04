@@ -1,0 +1,1 @@
+LightRAG is a Retrieval-Augmented Generation system. It uses PostgreSQL and Redis. Ollama is used for embeddings.

@@ -259,6 +259,10 @@ export const useAuthStore = create<AuthState>(set => {
 
     logout: () => {
       localStorage.removeItem('LIGHTRAG-API-TOKEN');
+      
+      // WUI-001 FIX: Clear tenant context on logout to prevent data leakage
+      // localStorage.removeItem('SELECTED_TENANT');
+      // localStorage.removeItem('SELECTED_KB');
 
       const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
       const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');

@@ -1,0 +1,59 @@
+# Multi-stage build for PostgreSQL with pgvector and Apache AGE
+# Based on official Apache AGE Dockerfile from https://github.com/apache/age/tree/master/docker
+
+FROM postgres:15 AS build
+
+# Install all necessary build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bison \
+    build-essential \
+    flex \
+    postgresql-server-dev-15 \
+    git \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build pgvector
+WORKDIR /tmp/pgvector
+RUN git -c http.sslVerify=false clone --depth 1 https://github.com/pgvector/pgvector.git . && \
+    make && make install
+
+# Build Apache AGE
+WORKDIR /tmp/age
+RUN git -c http.sslVerify=false clone --branch PG15/v1.5.0-rc0 --depth 1 https://github.com/apache/age.git . && \
+    make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config && \
+    make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config install
+
+# Final stage: Create minimal image with both extensions
+FROM postgres:15
+
+# Install runtime locales (required for AGE)
+RUN apt-get update && apt-get install -y --no-install-recommends locales && \
+    rm -rf /var/lib/apt/lists/* && \
+    echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=en_US.UTF-8
+
+ENV LANG=en_US.UTF-8
+ENV LC_COLLATE=en_US.UTF-8
+ENV LC_CTYPE=en_US.UTF-8
+
+# Copy compiled pgvector extension
+COPY --from=build /usr/lib/postgresql/15/lib/vector.so /usr/lib/postgresql/15/lib/
+COPY --from=build /usr/share/postgresql/15/extension/vector* /usr/share/postgresql/15/extension/
+
+# Copy compiled Apache AGE extension
+COPY --from=build /usr/lib/postgresql/15/lib/age.so /usr/lib/postgresql/15/lib/
+COPY --from=build /usr/share/postgresql/15/extension/age--*.sql /usr/share/postgresql/15/extension/
+COPY --from=build /usr/share/postgresql/15/extension/age.control /usr/share/postgresql/15/extension/
+
+# Verify extensions are in place
+RUN ls -la /usr/lib/postgresql/15/lib/vector.so && \
+    ls -la /usr/lib/postgresql/15/lib/age.so && \
+    ls -la /usr/share/postgresql/15/extension/vector.control && \
+    ls -la /usr/share/postgresql/15/extension/age.control
+
+# Start PostgreSQL with AGE shared library loaded
+CMD ["postgres", "-c", "shared_preload_libraries=age"]
+

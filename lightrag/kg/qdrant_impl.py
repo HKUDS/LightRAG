@@ -89,22 +89,27 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
         if qdrant_workspace and qdrant_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = qdrant_workspace.strip()
+            self.workspace = qdrant_workspace.strip()
             logger.info(
-                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using QDRANT_WORKSPACE environment variable: '{self.workspace}' (overriding passed workspace)"
             )
         else:
             # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
+            if self.workspace:
                 logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
+                    f"Using passed workspace parameter: '{self.workspace}'"
                 )
+
+        # Get composite workspace (supports multi-tenant isolation)
+        composite_workspace = self._get_composite_workspace()
+        
+        # Sanitize for Qdrant (replace colons with underscores)
+        safe_composite_workspace = composite_workspace.replace(":", "_")
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
+        if safe_composite_workspace and safe_composite_workspace != "_":
+            self.final_namespace = f"{safe_composite_workspace}_{self.namespace}"
             logger.debug(
                 f"Final namespace with workspace prefix: '{self.final_namespace}'"
             )

@@ -148,6 +148,15 @@ async def ollama_model_complete(
 
 
 async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+    """
+    Generate embeddings using Ollama API.
+    
+    Uses httpx directly instead of ollama.AsyncClient to work around a bug in ollama SDK v0.6.1
+    where the host parameter is not properly used for the embed endpoint.
+    """
+    import httpx
+    import json
+    
     api_key = kwargs.pop("api_key", None)
     headers = {
         "Content-Type": "application/json",
@@ -158,27 +167,64 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
 
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
+    
+    # Ensure host has proper format
+    if host and not host.startswith("http"):
+        host = f"http://{host}"
+    if not host:
+        host = "http://localhost:11434"
+    
+    # Validate host format to catch any corruption
+    if not isinstance(host, str) or not host.startswith("http"):
+        logger.error(f"Invalid host format for Ollama embed: {host} (type: {type(host).__name__})")
+        raise ValueError(f"Invalid host format for Ollama: {host}")
 
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
-    try:
-        options = kwargs.pop("options", {})
-        data = await ollama_client.embed(
-            model=embed_model, input=texts, options=options
-        )
-        return np.array(data["embeddings"])
-    except Exception as e:
-        logger.error(f"Error in ollama_embed: {str(e)}")
+    logger.info(f"Ollama embed called with host: {host}, model: {embed_model}")
+
+    # Use httpx directly to avoid ollama SDK bug with embed endpoint
+    async with httpx.AsyncClient(timeout=timeout if timeout else 120.0) as client:
         try:
-            await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after exception in embed")
-        except Exception as close_error:
-            logger.warning(
-                f"Failed to close Ollama client after exception in embed: {close_error}"
+            options = kwargs.pop("options", {})
+            
+            # Construct the embed API endpoint
+            embed_url = f"{host}/api/embed"
+            
+            # Prepare request payload
+            payload = {
+                "model": embed_model,
+                "input": texts,
+            }
+            if options:
+                payload["options"] = options
+            
+            logger.debug(f"Sending embed request to {embed_url}")
+            
+            # Make the request
+            response = await client.post(
+                embed_url,
+                json=payload,
+                headers=headers
             )
-        raise e
-    finally:
-        try:
-            await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after embed")
-        except Exception as close_error:
-            logger.warning(f"Failed to close Ollama client after embed: {close_error}")
+            
+            # Check for errors
+            response.raise_for_status()
+            
+            # Parse response
+            data = response.json()
+            
+            if "embeddings" not in data:
+                raise ValueError(f"Invalid response from Ollama: {data}")
+            
+            return np.array(data["embeddings"])
+            
+        except httpx.HTTPStatusError as e:
+            error_msg = f"HTTP error from Ollama: {e.response.status_code} - {e.response.text}"
+            logger.error(error_msg)
+            raise Exception(error_msg) from e
+        except httpx.RequestError as e:
+            error_msg = f"Connection error to Ollama at {host}: {str(e)}"
+            logger.error(error_msg)
+            raise Exception(error_msg) from e
+        except Exception as e:
+            logger.error(f"Error in ollama_embed: {str(e)}")
+            raise

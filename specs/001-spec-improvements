@@ -1,0 +1,174 @@
+## Multi-tenant UX & Backend Improvements (v1)
+
+This document describes a set of concrete, testable improvements to multi-tenant behavior across UI, routing, backend APIs, ingestion pipeline, testing, and documentation. The goal is to make tenant switching predictable, bookmarkable, efficient, and well-tested.
+
+Scope / Goals
+- Provide a clear, improved multi-tenant selector UX for first-time users and returning users.
+- Keep UI state serializable for bookmarking and sharing, but do NOT expose tenant identifiers in the URL for security. Tenant context will be provided by the `X-Tenant-ID` header; share/bookmark behavior should use tenant-aware server-side snapshots or short-lived tokens for cross-user sharing within the same tenant.
+- Ensure backend APIs and data model support efficient tenant-scoped retrievals at scale.
+- Make the ingestion pipeline tenant-aware and robust, including logging and error handling.
+- Add automated tests (unit, integration, e2e) that cover tenant switching and state preservation.
+- Update developer and user documentation describing the behaviour and configuration.
+
+UX / Frontend Behaviour
+
+- Multi-tenant landing: refine the `Multi tenant selection` page (image `assets/multi_tenant-view.png`) with clearer tenant cards, a searchable list, and a persisted "last selected tenant" hint.
+
+- Per-tenant state preservation:
+	- For every major page (Documents, Knowledge Graph, Retrieval, Chat/Conversations, API) maintain a per-tenant state object containing: `currentKB`, `page`, `pageSize`, `filters`, `sort`, `viewMode` (list/card), and any UI-specific settings.
+	- When switching tenants in the UI, the application restores the previously saved state for that tenant and route.
+
+- Per-KB state:
+	- When a tenant has multiple KBs, switching KBs within a tab should preserve page/filter/sort for that KB as well. The currently selected KB must be persisted as part of the tenant+route state.
+
+ - URL encoding (bookmarkable & shareable):
+ 	- For security tenant identifiers MUST NOT be included in browser URLs or route paths. Tenant context is supplied by the `X-Tenant-ID` header and validated by the backend.
+ 	- Routes should therefore be tenant-agnostic and only describe UI state, e.g. `/documents?kb=:kbId&page=3&pageSize=25&filters=status:active,owner:me&sort=created_desc`.
+ 	- Examples (tenant provided via header):
+ 		- Documents tab for KB `backup`: `/documents?kb=backup&page=3&pageSize=25&filters=status:active` (valid when `X-Tenant-ID` header identifies the tenant)
+ 		- Knowledge Graph for KB `master`: `/graph?kb=master&view=graph&filters=entityType:company`
+ 	- Because URLs are tenant-agnostic, sharing a raw URL does not guarantee the same tenant-scoped view across users. To enable secure sharing/bookmarking across users in the same tenant, implement a server-side snapshot/share-token (opaque id) that is tenant-scoped and must be accessed with a matching `X-Tenant-ID` header.
+
+ - State storage strategy (frontend):
+ 	- Primary: URL (query parameters) — stores route-level UI settings (page, pageSize, filters, sort, viewMode) but MUST NOT include tenant-identifying data so URLs remain tenant-agnostic.
+	- Secondary: sessionStorage (per browser session) for quick restores when switching between tenants without navigation (faster UX). Key format: `lightrag:tenant:<tenantId>:route:<routeName>` storing a compact JSON of the last state.
+	- Tertiary: In-memory store for fast runtime access.
+ 	- Rules: URL overrides sessionStorage; sessionStorage only used when URL doesn't provide that particular state. When storing per-tenant state in sessionStorage, the key MUST include the tenant id sourced from `X-Tenant-ID` (opaque value), for example `lightrag:tenant:<tenantId>:route:<routeName>`. Never expose that tenant id in shared URLs.
+
+Frontend Implementation Notes
+- Centralize tenant+route state handling in a single client-side module (e.g., `tenantStateManager`) that exposes:
+	- `getState(tenantId, routeName)`
+	- `setState(tenantId, routeName, state)`
+	- `hydrateFromURL()` and `syncToURL(routeName)` — URL sync is intentionally tenant-agnostic. When reading/writing per-tenant session or in-memory storage, the runtime must provide the `tenantId` from `X-Tenant-ID` or auth claims to scope keys appropriately.
+	- `onTenantSwitch(oldTenant, newTenant)` hook to trigger restore and UI re-render.
+- Use debouncing when syncing heavy state to URL (e.g., typing in filters) to avoid flooding history.
+- When navigating programmatically (e.g., tenant card click), use `history.replace` for initial load and `history.push` for explicit user navigation.
+
+Routing / API Contract (Frontend <-> Backend)
+
+All APIs that return tenant-scoped resources must derive tenant context from a secure source: the `X-Tenant-ID` header or an Authorization token's tenant claim. The frontend must NOT encode tenant identifiers into the URL path or request body for normal user flows (server-side validation is required when admin operations accept tenant IDs in the body).
+- Suggested REST endpoints (examples):
+	- `GET /api/documents?kb=:kbId&page=3&pageSize=25&filters=...` — include header `X-Tenant-ID: <tenantId>`
+	- `GET /api/graph?kb=:kbId&query=...` — include header `X-Tenant-ID: <tenantId>`
+	- `POST /api/ingest` — include header `X-Tenant-ID: <tenantId>`; payloads must include `kb` and optional `external_id` for dedup/idempotency.
+- Ensure APIs return pagination metadata and any applied-filter echo to help the UI render consistent state.
+
+Reality check — what I found in the repo
+ - The project already implements header-based tenant scoping across the stack, so the `X-Tenant-ID` / `X-KB-ID` approach in this spec is consistent with the codebase.
+ - Frontend (WebUI): the client adds tenant and KB headers from localStorage using an Axios interceptor in `lightrag_webui/src/api/client.ts` (and built dist assets). The WebUI stores selection objects in `localStorage` keys like `SELECTED_TENANT` and `SELECTED_KB` and the interceptor injects `X-Tenant-ID` and `X-KB-ID` into requests.
+ - Hooks/API clients: `lightrag_webui/src/hooks/useTenantContext.ts` and `lightrag_webui/src/api/tenant.ts` call APIs with `X-Tenant-ID` headers when appropriate.
+ - Backend: `lightrag/api/dependencies.py` (and the built library under `build/lib/lightrag/api/dependencies.py`) already reads `X-Tenant-ID` and falls back to token/subdomain logic in some helper methods. There are explicit failure logs and behaviors when headers are missing.
+ - Ingestion & tests: e2e scripts and tests (e.g., `e2e/client.py`, `tests/e2e_real_service/test_api_isolation.py`) already call ingestion and queries with `X-Tenant-ID` and `X-KB-ID` headers. The project's starter docs and scripts also show curl examples with `X-Tenant-ID` usage.
+
+Pragmatic conclusions from the audit
+- This spec is realistic and practical: the codebase already uses header-based tenancy and local client-side tenant selection (X-Tenant-ID/X-KB-ID), so the required architectural changes are incremental rather than wholesale.
+- Minimal gaps to implement the spec:
+	- Frontend already injects headers via Axios interceptor. The main work is adding a structured, test-covered `tenantStateManager` that:
+		- Re-uses existing `localStorage` keys (SELECTED_TENANT / SELECTED_KB) in a secure way, or migrates to sessionStorage depending on retention needs.
+		- Serializes UI state to tenant-agnostic URLs (page, filters, sort) while persisting tenant-scoped state keyed by `X-Tenant-ID` in sessionStorage.
+		- Integrates with the existing Axios interceptor (`lightrag_webui/src/api/client.ts`) so requests continue to receive `X-Tenant-ID`/`X-KB-ID` automatically.
+	- Backend already supports header-based tenant resolution (see `lightrag/api/dependencies.py` and `lightrag/api/routers/tenant_routes.py`), so most API work will be validation + adding tests and any migration endpoints (snapshots/tokens).
+	- Ingestion already used in e2e tests — ensure that ingestion endpoints require/validate `X-Tenant-ID` and honor `external_id` dedup keys.
+- Security note: localStorage is currently used to hold selected tenant/KB objects. That is acceptable with opaque tenant IDs and server validation, but be mindful that localStorage is accessible to JS in the page — avoid putting sensitive info in it and never serialize tenant IDs into shareable URLs. Prefer server-side, tenant-scoped snapshot tokens for cross-user sharing/bookmarking.
+
+Low-effort next steps based on repository reality
+- Implement `tenantStateManager` in the WebUI that integrates with `lightrag_webui/src/api/client.ts` interceptor and `SELECTED_TENANT/SELECTED_KB` storage.
+- Add unit tests for the manager and end-to-end tests that simulate header swaps by changing `X-Tenant-ID` in test clients (`e2e/client.py`, tests/e2e_real_service/*).
+- Add server-side snapshot/share-token endpoints (tenant-scoped) and tests showing snapshot tokens only work when `X-Tenant-ID` is present and matches.
+
+
+Backend & Database Recommendations
+
+- Tenant isolation:
+	- Prefer logical isolation with a `tenant_id` column on tenant-scoped tables (documents, document_chunks, embeddings, graph_nodes, graph_edges). The `tenant_id` stored in DB can be an internal opaque id (UUID or numeric internal id) distinct from any user-facing identifier; do not expose internal tenant identifiers in URLs or client-side tokens.
+	- Consider partitioning or schema separation for very large tenants (sharding or separate DB per tenant) — document migration path in rollout plan.
+
+- Indexing & query optimizations:
+	- Indexes: `(tenant_id, kb_id, created_at)`, `(tenant_id, kb_id, status)`, and any filterable fields commonly used.
+	- Use covering indexes for frequent queries to avoid unnecessary lookups.
+	- For embedding search: keep tenant_id + kb_id as part of the vector index metadata for tenant-scoped nearest-neighbor searches.
+
+- API performance:
+	- Use LIMIT/OFFSET carefully; for deep pagination consider keyset pagination (cursor-based) for large result sets.
+	- Add a short server-side cache for tenant-scoped metadata (KB list, tenant settings) with invalidation on write.
+
+- Security & multi-tenancy:
+	- Enforce tenant authorization on every API endpoint. Never rely only on frontend-provided tenantId — validate against auth token.
+	- Audit logs for cross-tenant access attempts.
+
+Ingestion Pipeline (tenant-aware)
+
+- Contract:
+	- Ingestion API must NOT accept untrusted `tenant_id` values in the request body. Tenant context must be derived from the `X-Tenant-ID` header or an authenticated token claim. Only use `tenant_id` from the body in special admin paths with strict server-side validation.
+	- Each ingested object/document must be stored with `tenant_id` and `kb_id` metadata.
+
+- Validation & idempotency:
+	- Support an optional `external_id` for dedup / idempotency keys so re-sending the same document won't create duplicates.
+	- Validate ownership and size limits per tenant; reject with clear error codes (400, 409).
+
+- Error handling & logging:
+	- Structured logs must include `tenant_id`, `kb_id`, `ingestion_job_id`, and `step` to allow tracing; redact or obfuscate any tenant metadata when exporting logs to public destinations.
+	- Pipeline must surface per-tenant errors to a UI/inbox or to a retry queue; don't crash global pipeline.
+
+Tests (what to add)
+
+- Unit tests:
+	- `tenantStateManager` serialization/hydration to/from URL and sessionStorage. Verify sessionStorage keys are tenant-scoped using header-provided tenant ids and ensure URL remains tenant-agnostic.
+	- API layer ensures tenant_id is required and validated against token.
+
+- Integration tests:
+	- Backend endpoints: queries filtered by tenant derived from `X-Tenant-ID` header only return tenant data and reject requests where `X-Tenant-ID` is absent or mismatched with authenticated identity.
+	- Pagination & filters: verify results and metadata for various page sizes and deep pages.
+
+- E2E tests:
+	- Scenario: with `X-Tenant-ID=A` open the UI and set filters + go to page 3 -> switch context to `X-Tenant-ID=B` (or sign in as the other tenant) and set filters + page 1 -> switch back to `X-Tenant-ID=A` and verify state restored (page 3, filters active).
+	- Scenario: open a tenant-agnostic bookmarked URL under `X-Tenant-ID` header A and verify the UI loads the correct tenant-scoped state. Verify accessing the same URL under a different `X-Tenant-ID` returns data scoped to that new tenant.
+	- Scenario: ingest documents for multiple tenants and verify they appear in the correct tenant/KB only.
+
+Acceptance Criteria
+
+- UX: Tenant selector shows last selected tenant; tenant switch restores previously set page, filters and KB selection.
+- URL + Security: Browser URL must NOT contain tenant identifiers. URL changes reproduce view settings, but reproducing tenant-scoped data requires a matching `X-Tenant-ID` header. To enable secure cross-user sharing/bookmarks within the same tenant, implement server-side snapshot/share-token endpoints that generate an opaque token requiring `X-Tenant-ID` on access.
+- Backend: Tenant-scoped API endpoints enforce tenant isolation and return consistent pagination metadata.
+- Ingestion: Documents ingested with `tenant_id` are only visible to that tenant; pipeline logs include tenant info and provide idempotency.
+- Tests: Unit, integration, and e2e tests covering tenant switching, URL bookmarking, and ingestion behavior are added and passing.
+
+Developer Notes & Rollout
+
+- Backwards compatibility:
+	- For existing URLs that contain tenant identifiers, provide server-side redirects and a transition UI. Prefer moving away from route-based tenant identifiers and migrate toward header-based tenant context; log usage during the transition window to discover and convert bookmarks.
+
+- Migration steps:
+	- Add required DB indexes described above and monitor slow queries.
+	- Deploy backend changes behind feature flag; run e2e tests in staging.
+
+- Monitoring:
+	- Add dashboards for per-tenant request latency, ingestion failure rates, and cache hit ratios.
+
+Documentation
+
+- Update docs with:
+	- `docs/0001-multi-tenant-architecture.md` (or add new `0004`): architecture overview and tenant isolation recommendations.
+	- `docs/LOCAL_DEVELOPMENT.md` section describing how to run local multi-tenant ingestion tests and how to simulate multiple tenants.
+	- UI guide: how to bookmark and share tenant-scoped views without exposing tenant identifiers; document the server-side snapshot/share-token approach and how shared links are tenant-scoped and validated using `X-Tenant-ID`.
+
+Implementation checklist (developer friendly)
+
+- [ ] Implement `tenantStateManager` frontend module and integrate into router.
+- [ ] Update React/Vue components on Documents/Graph/Chat to serialize state to URL and sessionStorage.
+- [ ] Add/verify backend endpoints accept and validate `tenant_id` and `kb_id`.
+- [ ] Add DB indexes and consider partitioning plan for large tenants.
+- [ ] Update ingestion API to require/validate tenant context and add idempotency support.
+- [ ] Add unit/integration/e2e tests described above.
+- [ ] Update docs and add runbook for rollout.
+
+Open questions / decisions to make
+
+- URL length vs. complexity: how many filters do we serialize in the querystring? Consider compact encoding (base64 JSON) for complex filter payloads.
+- Deep pagination strategy: default to offset-based for small result sets, but enable cursor-based for large queries.
+
+Notes
+- Keep URL design consistent across all tabs and DO NOT include tenant identifiers in routes. Use `X-Tenant-ID` header for tenant context. Provide server-side snapshots for safe cross-user sharing and bookmarking.
+- Prioritize correctness and security (tenant validation) over saving developer time.
+
+If you want, I can now open a PR that implements the `tenantStateManager` skeleton and updates the Documents page routing to the new URL format.

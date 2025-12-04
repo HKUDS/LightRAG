@@ -41,6 +41,14 @@ from lightrag.constants import (
     DEFAULT_ENTITY_TYPES,
 )
 
+# Multi-tenant security configuration
+# When True, enforces tenant context on all data endpoints (SEC-001 fix)
+MULTI_TENANT_STRICT_MODE = get_env_value("LIGHTRAG_MULTI_TENANT_STRICT", True, bool)
+# When True, requires user authentication for tenant access (SEC-003 fix)
+REQUIRE_USER_AUTH = get_env_value("LIGHTRAG_REQUIRE_USER_AUTH", True, bool)
+# Comma-separated list of super-admin usernames (SEC-002 fix)
+SUPER_ADMIN_USERS = get_env_value("LIGHTRAG_SUPER_ADMIN_USERS", "admin")
+
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
@@ -69,6 +77,17 @@ def get_default_host(binding_type: str) -> str:
     )  # fallback to ollama if unknown
 
 
+def _is_running_under_test() -> bool:
+    """Check if we're running under pytest or other test framework."""
+    return (
+        "pytest" in sys.modules or
+        "py.test" in sys.modules or
+        "_pytest" in sys.modules or
+        os.getenv("PYTEST_CURRENT_TEST") is not None or
+        any("pytest" in arg for arg in sys.argv)
+    )
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
@@ -79,6 +98,8 @@ def parse_args() -> argparse.Namespace:
     Returns:
         argparse.Namespace: Parsed arguments
     """
+    # When running under pytest, use parse_known_args to avoid conflicts
+    use_known_args = _is_running_under_test()
 
     parser = argparse.ArgumentParser(description="LightRAG API Server")
 
@@ -218,7 +239,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm-binding",
         type=str,
-        default=get_env_value("LLM_BINDING", "ollama"),
+        default=get_env_value("LLM_BINDING", "openai"),
         choices=[
             "lollms",
             "ollama",
@@ -227,14 +248,14 @@ def parse_args() -> argparse.Namespace:
             "azure_openai",
             "aws_bedrock",
         ],
-        help="LLM binding type (default: from env or ollama)",
+        help="LLM binding type (default: from env or openai)",
     )
     parser.add_argument(
         "--embedding-binding",
         type=str,
-        default=get_env_value("EMBEDDING_BINDING", "ollama"),
+        default=get_env_value("EMBEDDING_BINDING", "openai"),
         choices=["lollms", "ollama", "openai", "azure_openai", "aws_bedrock", "jina"],
-        help="Embedding binding type (default: from env or ollama)",
+        help="Embedding binding type (default: from env or openai)",
     )
     parser.add_argument(
         "--rerank-binding",
@@ -281,7 +302,11 @@ def parse_args() -> argparse.Namespace:
     elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
         OpenAILLMOptions.add_args(parser)
 
-    args = parser.parse_args()
+    # Use parse_known_args under test frameworks to avoid argument conflicts
+    if use_known_args:
+        args, _ = parser.parse_known_args()
+    else:
+        args = parser.parse_args()
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
@@ -350,6 +375,11 @@ def parse_args() -> argparse.Namespace:
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
+    if not args.auth_accounts:
+        auth_user = get_env_value("AUTH_USER", "")
+        auth_pass = get_env_value("AUTH_PASS", "")
+        if auth_user and auth_pass:
+            args.auth_accounts = f"{auth_user}:{auth_pass}"
     args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)

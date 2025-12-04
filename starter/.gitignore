@@ -1,0 +1,122 @@
+# ============================================================================
+# LightRAG Starter Environment - Git Ignore
+# ============================================================================
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Data directories
+data/
+data/inputs/
+data/rag_storage/
+data/tiktoken/
+
+# Database backups
+backups/
+backups/*.sql
+backups/*.dump
+
+# Docker volumes (persistent data)
+postgres_data/
+redis_data/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.classpath
+.c9/
+*.sublime-workspace
+*.sublime-project
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node/JavaScript
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+build/
+
+# Logs
+logs/
+*.log
+*.logs
+
+# OS specific
+Thumbs.db
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.#*
+
+# Docker/Container specific
+.dockerignore
+docker-compose.override.yml
+.container-cache/
+
+# Development
+.env.development
+.env.test
+*.local
+
+# Sensitive files (keep these private!)
+*.key
+*.pem
+*.crt
+*.pfx
+*.p12
+secrets/
+.secrets/
+
+# Lock files for production (optional - keep for reproducibility)
+# Uncomment if you want to exclude package locks
+# package-lock.json
+# yarn.lock
+# poetry.lock
+
+# ============================================================================
+# Configuration specific
+# ============================================================================
+
+# Don't ignore:
+# - Makefile (keep this!)
+# - docker-compose.yml (keep this!)
+# - env.template.example (keep this!)
+# - init-postgres.sql (keep this!)
+# - README.md (keep this!)
+# - QUICK_REFERENCE.md (keep this!)

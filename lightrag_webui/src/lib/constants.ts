@@ -1,7 +1,26 @@
 import { ButtonVariantType } from '@/components/ui/Button'
 
-export const backendBaseUrl = ''
-export const webuiPrefix = '/webui/'
+// Get backend URL from environment variable, or construct it from window location
+const getBackendUrl = (): string => {
+  // First try environment variable
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL
+  }
+  
+  // Try to construct from current location if we're behind a reverse proxy
+  if (typeof window !== 'undefined') {
+    const protocol = window.location.protocol
+    const host = window.location.host
+    // Assume API is at :9621 on same host (standard dev port), or check if specified in environment
+    return `${protocol}//${host.split(':')[0]}:9621`
+  }
+  
+  // Fallback to localhost on port 9621 (standard development port)
+  return 'http://localhost:9621'
+}
+
+export const backendBaseUrl = getBackendUrl()
+export const webuiPrefix = '/'
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 

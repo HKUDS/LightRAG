@@ -6,6 +6,7 @@ import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useTenantState } from '@/stores/tenant'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
@@ -103,6 +104,8 @@ const parseCOTContent = (content: string) => {
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
+  const selectedTenant = useTenantState.use.selectedTenant()
+  const selectedKB = useTenantState.use.selectedKB()
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
     try {
       const history = useSettingsStore.getState().retrievalHistory || []
@@ -611,6 +614,17 @@ export default function RetrievalTesting() {
     }
   }, [debouncedMessages, scrollToBottom])
 
+  // Clear retrieval history when tenant or KB changes to prevent showing stale data
+  useEffect(() => {
+    // Clear messages and retrieval history to ensure we don't show results from other tenants/KBs
+    setMessages([])
+    useSettingsStore.getState().setRetrievalHistory([])
+    console.log('[RetrievalTesting] Cleared retrieval history due to tenant/KB change:', {
+      tenant_id: selectedTenant?.tenant_id,
+      kb_id: selectedKB?.kb_id
+    })
+  }, [selectedTenant?.tenant_id, selectedKB?.kb_id])
+
 
   const clearMessages = useCallback(() => {
     setMessages([])
@@ -678,6 +692,17 @@ export default function RetrievalTesting() {
       );
     }
   }, [t])
+
+  if (!selectedKB) {
+    return (
+      <div className="flex size-full items-center justify-center">
+        <div className="text-center text-muted-foreground">
+          <p className="text-lg font-medium">Please select a Knowledge Base to start chatting</p>
+          <p className="text-sm mt-2">Use the selector in the top header</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">

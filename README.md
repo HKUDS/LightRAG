@@ -137,6 +137,8 @@ pip install lightrag-hku
 
 ## Quick Start
 
+> 🚀 **Recommended for Most Users**: LightRAG uses **OpenAI by default** for optimal performance. See [OPENAI_CONFIGURATION.md](./OPENAI_CONFIGURATION.md) for a complete setup guide (5-minute quick start included).
+
 ### LLM and Technology Stack Requirements for LightRAG
 
 LightRAG's demands on the capabilities of Large Language Models (LLMs) are significantly higher than those of traditional RAG, as it requires the LLM to perform entity-relationship extraction tasks from documents. Configuring appropriate Embedding and Reranker models is also crucial for improving query performance.

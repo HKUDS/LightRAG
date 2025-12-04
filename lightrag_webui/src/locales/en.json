@@ -120,8 +120,11 @@
       "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
-      "emptyTitle": "No Documents",
-      "emptyDescription": "There are no uploaded documents yet.",
+      "loading": "Loading documents...",
+      "loadingHint": "Fetching document list from the knowledge base",
+      "emptyTitle": "No Documents Yet",
+      "emptyDescription": "This knowledge base doesn't have any documents. Upload documents or scan the input folder to get started.",
+      "emptyHint": "Use the 'Scan' button above to detect new documents in the input folder",
       "columns": {
         "id": "ID",
         "fileName": "File Name",
@@ -165,7 +168,9 @@
       "errors": {
         "fetchFailed": "Failed to get pipeline status\n{{error}}"
       }
-    }
+    },
+    "selectTenant": "Please Select a Tenant and Knowledge Base",
+    "selectTenantDescription": "Choose a tenant and knowledge base from the dropdowns above to view and manage documents."
   },
   "graphPanel": {
     "dataIsTruncated": "Graph data is truncated to Max Nodes",

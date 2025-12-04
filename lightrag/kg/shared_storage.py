@@ -1054,12 +1054,12 @@ def initialize_share_data(workers: int = 1):
     _initialized = True
 
 
-async def initialize_pipeline_status():
+async def initialize_pipeline_status(namespace: str = "pipeline_status"):
     """
     Initialize pipeline namespace with default values.
     This function is called during FASTAPI lifespan for each worker.
     """
-    pipeline_namespace = await get_namespace_data("pipeline_status", first_init=True)
+    pipeline_namespace = await get_namespace_data(namespace, first_init=True)
 
     async with get_internal_lock():
         # Check if already initialized by checking for required fields
@@ -1067,7 +1067,7 @@ async def initialize_pipeline_status():
             return
 
         # Create a shared list object for history_messages
-        history_messages = _manager.list() if _is_multiprocess else []
+        history_messages = _manager.list() if _is_multiprocess and _manager is not None else []
         pipeline_namespace.update(
             {
                 "autoscanned": False,  # Auto-scan started
@@ -1082,7 +1082,7 @@ async def initialize_pipeline_status():
                 "history_messages": history_messages,  # 使用共享列表对象
             }
         )
-        direct_log(f"Process {os.getpid()} Pipeline namespace initialized")
+        direct_log(f"Process {os.getpid()} Pipeline namespace initialized: [{namespace}]")
 
 
 async def get_update_flag(namespace: str):

@@ -120,8 +120,13 @@
       "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
+      "loading": "Chargement des documents...",
       "emptyTitle": "Aucun document",
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
+      "emptyWithPipelineTitle": "Documents en cours de traitement",
+      "emptyWithPipelineDescription": "Le pipeline est occupé. Des documents sont peut-être en cours de traitement.",
+      "scanForDocuments": "Scanner les documents",
+      "viewPipeline": "Voir le pipeline",
       "columns": {
         "id": "ID",
         "fileName": "Nom du fichier",

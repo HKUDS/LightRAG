@@ -1,0 +1,16 @@
+{
+  "chunk-aa817c0beac97b28c7c333fc98e4ab4d": {
+    "tokens": 40,
+    "content": "Alice Johnson is a Data Scientist at TechCorp.\n        She works on machine learning projects with Bob Smith, who is a Software Architect.\n        TechCorp is located in Seattle and specializes in AI solutions.",
+    "chunk_order_index": 0,
+    "full_doc_id": "doc-aa817c0beac97b28c7c333fc98e4ab4d",
+    "file_path": "unknown_source",
+    "llm_cache_list": [
+      "default:extract:ccf6dc292057df4be838f1f05b2e68bd",
+      "default:extract:eb816734e0590cbf772fd59409d12420"
+    ],
+    "create_time": 1764687035,
+    "update_time": 1764687050,
+    "_id": "chunk-aa817c0beac97b28c7c333fc98e4ab4d"
+  }
+}

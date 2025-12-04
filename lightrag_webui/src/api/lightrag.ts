@@ -1,8 +1,8 @@
-import axios, { AxiosError } from 'axios'
 import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { navigationService } from '@/services/navigation'
+import { axiosInstance } from './client'
 
 // Types
 export type LightragNodeType = {
@@ -255,55 +255,6 @@ export type LoginResponse = {
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
-// Axios instance
-const axiosInstance = axios.create({
-  baseURL: backendBaseUrl,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-})
-
-// Interceptor: add api key and check authentication
-axiosInstance.interceptors.request.use((config) => {
-  const apiKey = useSettingsStore.getState().apiKey
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
-
-  // Always include token if it exists, regardless of path
-  if (token) {
-    config.headers['Authorization'] = `Bearer ${token}`
-  }
-  if (apiKey) {
-    config.headers['X-API-Key'] = apiKey
-  }
-  return config
-})
-
-// Interceptor：hanle error
-axiosInstance.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError) => {
-    if (error.response) {
-      if (error.response?.status === 401) {
-        // For login API, throw error directly
-        if (error.config?.url?.includes('/login')) {
-          throw error;
-        }
-        // For other APIs, navigate to login page
-        navigationService.navigateToLogin();
-
-        // return a reject Promise
-        return Promise.reject(new Error('Authentication required'));
-      }
-      throw new Error(
-        `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
-          error.response.data
-        )}\n${error.config?.url}`
-      )
-    }
-    throw error
-  }
-)
-
 // API methods
 export const queryGraphs = async (
   label: string,
@@ -370,18 +321,64 @@ export const queryTextStream = async (
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
-  const headers: HeadersInit = {
+  
+  // Get tenant context from localStorage
+  const selectedTenantJson = localStorage.getItem('SELECTED_TENANT');
+  const selectedKBJson = localStorage.getItem('SELECTED_KB');
+  
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/x-ndjson',
   };
+  
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
   }
+  
+  // Add tenant context headers
+  if (selectedTenantJson) {
+    try {
+      const selectedTenant = JSON.parse(selectedTenantJson);
+      if (selectedTenant?.tenant_id) {
+        headers['X-Tenant-ID'] = selectedTenant.tenant_id;
+      } else {
+        console.warn('[queryTextStream] Tenant object missing tenant_id');
+      }
+    } catch (e) {
+      console.error('[queryTextStream] Failed to parse selected tenant:', e);
+    }
+  } else {
+    console.warn('[queryTextStream] No SELECTED_TENANT in localStorage');
+  }
+  
+  if (selectedKBJson) {
+    try {
+      const selectedKB = JSON.parse(selectedKBJson);
+      if (selectedKB?.kb_id) {
+        headers['X-KB-ID'] = selectedKB.kb_id;
+      }
+    } catch (e) {
+      console.error('[queryTextStream] Failed to parse selected KB:', e);
+    }
+  }
+
+  // Check if tenant context is missing (required for strict mode)
+  if (!headers['X-Tenant-ID']) {
+    const errorMsg = 'Tenant context required. Please select a tenant.';
+    console.error(errorMsg);
+    if (onError) {
+      onError(errorMsg);
+      return;
+    }
+    // If no onError provided, we let it fail or throw
+    throw new Error(errorMsg);
+  }
 
   try {
+    console.log('[queryTextStream] Sending request to', `${backendBaseUrl}/query/stream`);
     const response = await fetch(`${backendBaseUrl}/query/stream`, {
       method: 'POST',
       headers: headers,

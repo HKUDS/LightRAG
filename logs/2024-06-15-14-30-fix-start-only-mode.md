@@ -1,0 +1,4 @@
+- Actions: Verified `e2e/run_tests.sh` content, identified potential port conflict issue, modified `configure_environment` to enforce ports when using Docker, modified `run_start_only_mode` to check for configuration errors, verified fix by running script.
+- Decisions: Decided to enforce ports 15432/localhost when using Docker to prevent conflicts with local environment variables.
+- Next steps: None.
+- Lessons/insights: Even if code looks correct, environment variables can cause subtle failures (ConnectionRefused) if not strictly controlled in test scripts.

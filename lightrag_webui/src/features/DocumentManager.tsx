@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
+import { useTenantState } from '@/stores/tenant'
+import { useRouteState } from '@/hooks/useRouteState'
 import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import {
@@ -12,7 +14,6 @@ import {
   TableRow
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
-import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
@@ -32,7 +33,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, AlertCircle, Loader2, FilesIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -205,40 +206,72 @@ export default function DocumentManager() {
   // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
+  // Tenant context
+  const selectedTenant = useTenantState.use.selectedTenant()
+  const selectedKB = useTenantState.use.selectedKB()
+
+  // Route state for URL synchronization (tenant-agnostic URLs)
+  const routeState = useRouteState('documents')
+
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
   const documentsPageSize = useSettingsStore.use.documentsPageSize()
   const setDocumentsPageSize = useSettingsStore.use.setDocumentsPageSize()
 
-  // New pagination state
+  // New pagination state - initialize from route state if available
   const [currentPageDocs, setCurrentPageDocs] = useState<DocStatusResponse[]>([])
-  const [pagination, setPagination] = useState<PaginationInfo>({
-    page: 1,
-    page_size: documentsPageSize,
+  const [pagination, setPagination] = useState<PaginationInfo>(() => ({
+    page: routeState.page,
+    page_size: routeState.pageSize || documentsPageSize,
     total_count: 0,
     total_pages: 0,
     has_next: false,
     has_prev: false
-  })
+  }))
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
   const [isRefreshing, setIsRefreshing] = useState(false)
+  // Track if we've completed at least one successful load for the current tenant/KB
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
 
-  // Sort state
-  const [sortField, setSortField] = useState<SortField>('updated_at')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  // Sort state - initialize from route state if available
+  const [sortField, setSortField] = useState<SortField>(() => 
+    (routeState.sort as SortField) || 'updated_at'
+  )
+  const [sortDirection, setSortDirection] = useState<SortDirection>(() => 
+    routeState.sortDirection || 'desc'
+  )
 
-  // State for document status filter
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // State for document status filter - initialize from route state if available
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => {
+    const urlFilter = routeState.filters?.status as StatusFilter
+    return urlFilter && ['all', 'processed', 'processing', 'pending', 'failed'].includes(urlFilter)
+      ? urlFilter
+      : 'all'
+  });
 
   // State to store page number for each status filter
   const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
-    all: 1,
+    all: routeState.page,
     processed: 1,
     processing: 1,
     pending: 1,
     failed: 1,
   });
+  
+  // Sync state changes to URL (tenant-agnostic)
+  useEffect(() => {
+    if (!selectedTenant) return
+    
+    routeState.setState({
+      page: pagination.page,
+      pageSize: pagination.page_size,
+      sort: sortField,
+      sortDirection: sortDirection,
+      filters: statusFilter !== 'all' ? { status: statusFilter } : {},
+      currentKB: selectedKB?.kb_id,
+    })
+  }, [pagination.page, pagination.page_size, sortField, sortDirection, statusFilter, selectedKB?.kb_id])
 
   // State for document selection
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
@@ -545,6 +578,8 @@ export default function DocumentManager() {
     };
 
     setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
+    // Mark that we've successfully loaded at least once
+    setHasLoadedOnce(true);
   }, []);
 
   // Utility function to create timeout wrapper for API calls
@@ -562,6 +597,12 @@ export default function DocumentManager() {
 
   // Enhanced error classification
   const classifyError = useCallback((error: any) => {
+    // Handle axios Cancel errors (from context guards) - don't show toast
+    if (error.__CANCEL__ || error.name === 'CanceledError' || 
+        error.message?.includes('Please select a tenant')) {
+      return { type: 'context-missing', shouldRetry: false, shouldShowToast: false };
+    }
+
     if (error.name === 'AbortError') {
       return { type: 'cancelled', shouldRetry: false, shouldShowToast: false };
     }
@@ -639,6 +680,33 @@ export default function DocumentManager() {
     });
   }, []);
 
+  // Helper to check if tenant context is ready for API calls
+  // Uses localStorage as source of truth since axios interceptor reads from there
+  const isTenantContextReady = useCallback(() => {
+    try {
+      const storedTenant = localStorage.getItem('SELECTED_TENANT');
+      const storedKB = localStorage.getItem('SELECTED_KB');
+      
+      if (!storedTenant || !storedKB) {
+        console.log('[DocumentManager] localStorage tenant context not ready');
+        return false;
+      }
+      
+      const parsedTenant = JSON.parse(storedTenant);
+      const parsedKB = JSON.parse(storedKB);
+      
+      if (!parsedTenant?.tenant_id || !parsedKB?.kb_id) {
+        console.log('[DocumentManager] localStorage tenant/KB missing required fields');
+        return false;
+      }
+      
+      return true;
+    } catch (e) {
+      console.error('[DocumentManager] Error checking localStorage tenant context', e);
+      return false;
+    }
+  }, []);
+
   // Intelligent refresh function: handles all boundary cases
   const handleIntelligentRefresh = useCallback(async (
     targetPage?: number, // Optional target page, defaults to current page
@@ -646,6 +714,12 @@ export default function DocumentManager() {
   ) => {
     try {
       if (!isMountedRef.current) return;
+      
+      // Guard: Check tenant context before making API calls
+      if (!isTenantContextReady()) {
+        console.log('[DocumentManager] Skipping refresh - tenant context not ready');
+        return;
+      }
 
       setIsRefreshing(true);
 
@@ -712,6 +786,12 @@ export default function DocumentManager() {
 
         if (errorClassification.shouldRetry) {
           recordFailure(err as Error);
+        }
+        
+        // Mark as loaded even on error to stop infinite loading spinner
+        // This allows user to see the "No Documents" state and retry
+        if (errorClassification.type !== 'context-missing') {
+          setHasLoadedOnce(true);
         }
       }
     } finally {
@@ -854,6 +934,12 @@ export default function DocumentManager() {
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
+    // Guard: Check tenant context before making API calls
+    if (!isTenantContextReady()) {
+      console.log('[DocumentManager] Skipping manual refresh - tenant context not ready');
+      return;
+    }
+    
     try {
       setIsRefreshing(true);
 
@@ -899,14 +985,17 @@ export default function DocumentManager() {
 
     } catch (err) {
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+        const errorClassification = classifyError(err);
+        if (errorClassification.shouldShowToast) {
+          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+        }
       }
     } finally {
       if (isMountedRef.current) {
         setIsRefreshing(false);
       }
     }
-  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
+  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t, isTenantContextReady, classifyError]);
 
   // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
   useEffect(() => {
@@ -1053,11 +1142,90 @@ export default function DocumentManager() {
     setSelectedDocIds([])
   }, [pagination.page, statusFilter, sortField, sortDirection]);
 
-  // Central effect to handle all data fetching
+  // Reset document state when tenant or KB changes - clear old data immediately
   useEffect(() => {
-    if (currentTab === 'documents') {
-      fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
+    // Clear current documents to prevent showing stale data
+    setCurrentPageDocs([]);
+    setDocs(null);
+    setStatusCounts({ all: 0 });
+    setPagination(prev => ({
+      ...prev,
+      page: 1,
+      total_count: 0,
+      total_pages: 0,
+      has_next: false,
+      has_prev: false
+    }));
+    setSelectedDocIds([]);
+    // Reset page memory for all status filters
+    setPageByStatus({ all: 1, processed: 1, processing: 1, pending: 1, failed: 1 });
+    // Reset load tracking - we haven't loaded docs for this new context yet
+    setHasLoadedOnce(false);
+    console.log('[DocumentManager] Reset document state due to tenant/KB change:', {
+      tenant_id: selectedTenant?.tenant_id,
+      kb_id: selectedKB?.kb_id
+    });
+  }, [selectedTenant?.tenant_id, selectedKB?.kb_id]);
+
+  // Central effect to handle all data fetching - with debounce to avoid race conditions
+  useEffect(() => {
+    // Guard: Skip if not on documents tab
+    if (currentTab !== 'documents') {
+      console.log('[DocumentManager] Skipping fetch - not on documents tab');
+      return;
     }
+    
+    // Guard: Must have tenant selected
+    if (!selectedTenant?.tenant_id) {
+      console.log('[DocumentManager] Skipping fetch - no tenant');
+      return;
+    }
+    
+    // Verify localStorage is in sync before making API calls
+    // We need to check synchronously and retry a few times if needed
+    let attempts = 0;
+    const maxAttempts = 10;
+    const checkIntervalMs = 50;
+    
+    const checkAndFetch = () => {
+      attempts++;
+      
+      // Check localStorage directly - this is the source of truth
+      try {
+        const storedTenant = localStorage.getItem('SELECTED_TENANT');
+        const storedKB = localStorage.getItem('SELECTED_KB');
+        
+        if (storedTenant && storedKB) {
+          const parsedTenant = JSON.parse(storedTenant);
+          const parsedKB = JSON.parse(storedKB);
+          
+          // Verify tenant matches what we expect
+          if (parsedTenant?.tenant_id === selectedTenant.tenant_id && parsedKB?.kb_id) {
+            // Context is ready, proceed with fetch
+            console.log('[DocumentManager] Context ready, fetching documents for KB:', parsedKB.kb_id);
+            fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('[DocumentManager] Error checking localStorage', e);
+      }
+      
+      // If not ready yet and we haven't exceeded max attempts, try again
+      if (attempts < maxAttempts) {
+        console.log(`[DocumentManager] Context not ready yet, retry ${attempts}/${maxAttempts}`);
+        setTimeout(checkAndFetch, checkIntervalMs);
+      } else {
+        console.log('[DocumentManager] Max attempts reached, context still not ready');
+        // Set hasLoadedOnce to show empty state instead of infinite spinner
+        setHasLoadedOnce(true);
+      }
+    };
+    
+    // Start checking after a small initial delay
+    const timeoutId = setTimeout(checkAndFetch, 30);
+    
+    return () => clearTimeout(timeoutId);
   }, [
     currentTab,
     pagination.page,
@@ -1065,8 +1233,44 @@ export default function DocumentManager() {
     statusFilter,
     sortField,
     sortDirection,
-    fetchPaginatedDocuments
+    fetchPaginatedDocuments,
+    selectedTenant?.tenant_id, // Trigger fetch when tenant changes
+    selectedKB?.kb_id // Trigger fetch when KB changes
   ]);
+
+  // Guard: Check if tenant and KB are selected
+  // Also check localStorage as fallback since Zustand state may lag behind
+  const hasTenantContext = useMemo(() => {
+    if (selectedTenant && selectedKB) return true;
+    
+    // Check localStorage as fallback
+    try {
+      const storedTenant = localStorage.getItem('SELECTED_TENANT');
+      const storedKB = localStorage.getItem('SELECTED_KB');
+      return !!(storedTenant && storedKB);
+    } catch {
+      return false;
+    }
+  }, [selectedTenant, selectedKB]);
+  
+  if (!hasTenantContext) {
+    return (
+      <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
+        <CardHeader className="py-2 px-6">
+          <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex-1 flex flex-col min-h-0 items-center justify-center">
+          <div className="text-center">
+            <AlertCircle className="h-12 w-12 text-yellow-500 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold mb-2">{t('documentPanel.selectTenant')}</h3>
+            <p className="text-sm text-gray-500">
+              {t('documentPanel.selectTenantDescription')}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
@@ -1250,12 +1454,55 @@ export default function DocumentManager() {
           </CardHeader>
 
           <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
-            {!docs && (
-              <div className="absolute inset-0 p-0">
-                <EmptyCard
-                  title={t('documentPanel.documentManager.emptyTitle')}
-                  description={t('documentPanel.documentManager.emptyDescription')}
-                />
+            {!docs && !hasLoadedOnce && (
+              <div className="absolute inset-0 p-0 flex items-center justify-center">
+                <div className="text-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto mb-3" />
+                  <p className="text-sm font-medium text-foreground">{t('documentPanel.documentManager.loading')}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{t('documentPanel.documentManager.loadingHint')}</p>
+                </div>
+              </div>
+            )}
+            {!docs && hasLoadedOnce && pipelineBusy && (
+              <div className="absolute inset-0 p-0 flex items-center justify-center">
+                <div className="text-center max-w-md px-6">
+                  <div className="mx-auto w-16 h-16 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center mb-4">
+                    <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                  </div>
+                  <h3 className="text-lg font-semibold mb-2">{t('documentPanel.documentManager.emptyWithPipelineTitle')}</h3>
+                  <p className="text-sm text-muted-foreground mb-4">{t('documentPanel.documentManager.emptyWithPipelineDescription')}</p>
+                  <div className="flex gap-2 justify-center">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={scanDocuments}
+                      disabled={isRefreshing}
+                    >
+                      {t('documentPanel.documentManager.scanForDocuments')}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setShowPipelineStatus(true)}
+                    >
+                      {t('documentPanel.documentManager.viewPipeline')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {!docs && hasLoadedOnce && !pipelineBusy && (
+              <div className="absolute inset-0 p-0 flex items-center justify-center">
+                <div className="text-center max-w-md px-6">
+                  <div className="mx-auto w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center mb-4">
+                    <FilesIcon className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                  <h3 className="text-lg font-semibold mb-2">{t('documentPanel.documentManager.emptyTitle')}</h3>
+                  <p className="text-sm text-muted-foreground mb-4">{t('documentPanel.documentManager.emptyDescription')}</p>
+                  <div className="flex flex-col gap-2 items-center">
+                    <p className="text-xs text-muted-foreground">{t('documentPanel.documentManager.emptyHint')}</p>
+                  </div>
+                </div>
               </div>
             )}
             {docs && (

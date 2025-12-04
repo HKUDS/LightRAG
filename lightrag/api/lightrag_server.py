@@ -50,6 +50,12 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.tenant_routes import create_tenant_routes
+from lightrag.api.routers.admin_routes import create_admin_routes
+from lightrag.services.tenant_service import TenantService
+from lightrag.tenant_rag_manager import TenantRAGManager
+from lightrag.api.middleware.tenant import TenantMiddleware
+from lightrag.namespace import NameSpace
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -172,6 +178,11 @@ def create_app(args):
         "jina",
     ]:
         raise Exception("embedding binding not supported")
+    
+    # Log the configured embeddings binding for debugging
+    logger.info(f"Configured embedding binding: {args.embedding_binding}")
+    logger.info(f"Configured embedding model: {args.embedding_model}")
+    logger.info(f"Configured embedding host: {args.embedding_binding_host}")
 
     # Set default hosts if not provided
     if args.llm_binding_host is None:
@@ -208,6 +219,10 @@ def create_app(args):
             await rag.initialize_storages()
             await initialize_pipeline_status()
 
+            # Initialize tenant storage
+            if hasattr(tenant_storage, "initialize"):
+                await tenant_storage.initialize()
+
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
@@ -218,6 +233,10 @@ def create_app(args):
         finally:
             # Clean up database connections
             await rag.finalize_storages()
+
+            # Clean up tenant manager
+            if hasattr(rag_manager, "cleanup_all"):
+                await rag_manager.cleanup_all()
 
             # Clean up shared data
             finalize_share_data()
@@ -629,19 +648,46 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
-    # Add routes
+    # Initialize TenantService for multi-tenant support
+    tenant_storage = rag.key_string_value_json_storage_cls(
+        namespace=NameSpace.KV_STORE_TENANTS,
+        workspace=rag.workspace,
+        embedding_func=rag.embedding_func,
+    )
+    tenant_service = TenantService(kv_storage=tenant_storage)
+    
+    # Initialize TenantRAGManager for managing per-tenant RAG instances with caching
+    # This enables efficient multi-tenant deployments by caching RAG instances
+    # Pass the main RAG instance as a template for tenant-specific instances
+    rag_manager = TenantRAGManager(
+        base_working_dir=args.working_dir,
+        tenant_service=tenant_service,
+        template_rag=rag,
+        max_cached_instances=int(os.getenv("MAX_CACHED_RAG_INSTANCES", "100"))
+    )
+    
+    # Store rag_manager in app state for dependency injection
+    app.state.rag_manager = rag_manager
+    app.include_router(create_tenant_routes(tenant_service))
+    app.include_router(create_admin_routes(tenant_service))
+    
+    # Add membership management routes
+    from lightrag.api.routers import membership_routes
+    app.include_router(membership_routes.router)
+    
     app.include_router(
         create_document_routes(
             rag,
             doc_manager,
             api_key,
+            rag_manager,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, rag_manager))
+    app.include_router(create_graph_routes(rag, api_key, rag_manager))
 
-    # Add Ollama API routes
-    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
+    # Add Ollama API routes with tenant-scoped RAG support
+    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key, rag_manager=rag_manager)
     app.include_router(ollama_api.router, prefix="/api")
 
     @app.get("/")
@@ -701,8 +747,10 @@ def create_app(args):
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login
+        role = "admin" if username == "admin" else "user"
+        print(f"DEBUG: Login user={username}, role={role}")
         user_token = auth_handler.create_token(
-            username=username, role="user", metadata={"auth_mode": "enabled"}
+            username=username, role=role, metadata={"auth_mode": "enabled"}
         )
         return {
             "access_token": user_token,
@@ -818,6 +866,9 @@ def create_app(args):
         ),  # Use SmartStaticFiles
         name="webui",
     )
+
+    # Add Tenant middleware
+    app.add_middleware(TenantMiddleware)
 
     return app
 

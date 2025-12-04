@@ -127,7 +127,7 @@ async def initialize_graph_storage():
         return None
 
 
-async def test_graph_basic(storage):
+async def _test_graph_basic(storage):
     """
     测试图数据库的基本操作:
     1. 使用 upsert_node 插入两个节点
@@ -236,7 +236,7 @@ async def test_graph_basic(storage):
         return False
 
 
-async def test_graph_advanced(storage):
+async def _test_graph_advanced(storage):
     """
     测试图数据库的高级操作:
     1. 使用 node_degree 获取节点的度数
@@ -430,7 +430,7 @@ async def test_graph_advanced(storage):
         return False
 
 
-async def test_graph_batch_operations(storage):
+async def _test_graph_batch_operations(storage):
     """
     测试图数据库的批量操作:
     1. 使用 get_nodes_batch 批量获取多个节点的属性
@@ -838,7 +838,7 @@ async def test_graph_batch_operations(storage):
         return False
 
 
-async def test_graph_special_characters(storage):
+async def _test_graph_special_characters(storage):
     """
     测试图数据库对特殊字符的处理:
     1. 测试节点名称和描述中包含单引号、双引号和反斜杠
@@ -976,7 +976,7 @@ async def test_graph_special_characters(storage):
         return False
 
 
-async def test_graph_undirected_property(storage):
+async def _test_graph_undirected_property(storage):
     """
     专门测试图存储的无向图特性:
     1. 验证插入一个方向的边后，反向查询是否能获得相同的结果
@@ -1212,36 +1212,36 @@ async def main():
             ASCIIColors.green("数据清理完成\n")
 
         if choice == "1":
-            await test_graph_basic(storage)
+            await _test_graph_basic(storage)
         elif choice == "2":
-            await test_graph_advanced(storage)
+            await _test_graph_advanced(storage)
         elif choice == "3":
-            await test_graph_batch_operations(storage)
+            await _test_graph_batch_operations(storage)
         elif choice == "4":
-            await test_graph_undirected_property(storage)
+            await _test_graph_undirected_property(storage)
         elif choice == "5":
-            await test_graph_special_characters(storage)
+            await _test_graph_special_characters(storage)
         elif choice == "6":
             ASCIIColors.cyan("\n=== 开始基本测试 ===")
-            basic_result = await test_graph_basic(storage)
+            basic_result = await _test_graph_basic(storage)
 
             if basic_result:
                 ASCIIColors.cyan("\n=== 开始高级测试 ===")
-                advanced_result = await test_graph_advanced(storage)
+                advanced_result = await _test_graph_advanced(storage)
 
                 if advanced_result:
                     ASCIIColors.cyan("\n=== 开始批量操作测试 ===")
-                    batch_result = await test_graph_batch_operations(storage)
+                    batch_result = await _test_graph_batch_operations(storage)
 
                     if batch_result:
                         ASCIIColors.cyan("\n=== 开始无向图特性测试 ===")
-                        undirected_result = await test_graph_undirected_property(
+                        undirected_result = await _test_graph_undirected_property(
                             storage
                         )
 
                         if undirected_result:
                             ASCIIColors.cyan("\n=== 开始特殊字符测试 ===")
-                            await test_graph_special_characters(storage)
+                            await _test_graph_special_characters(storage)
         else:
             ASCIIColors.red("无效的选项")
 

@@ -53,7 +53,7 @@ class MemgraphStorage(BaseGraphStorage):
 
     def _get_workspace_label(self) -> str:
         """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        return self._get_composite_workspace()
 
     async def initialize(self):
         async with get_data_init_lock():

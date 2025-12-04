@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import logging
 
 import jwt
 from dotenv import load_dotenv
@@ -11,6 +12,9 @@ from .config import global_args
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+# Local logger for auth events
+logger = logging.getLogger(__name__)
 
 
 class TokenPayload(BaseModel):
@@ -100,7 +104,9 @@ class AuthHandler:
                 "metadata": payload.get("metadata", {}),
                 "exp": expire_time,
             }
-        except jwt.PyJWTError:
+        except jwt.PyJWTError as e:
+            # Log token error for easier debugging (don't log full tokens)
+            logger.warning(f"Token validation failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
             )

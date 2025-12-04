@@ -1,0 +1,14 @@
+{
+  "doc-aa817c0beac97b28c7c333fc98e4ab4d": {
+    "entity_names": [
+      "TechCorp",
+      "Seattle",
+      "Alice Johnson",
+      "Bob Smith"
+    ],
+    "count": 4,
+    "create_time": 1764687061,
+    "update_time": 1764687061,
+    "_id": "doc-aa817c0beac97b28c7c333fc98e4ab4d"
+  }
+}

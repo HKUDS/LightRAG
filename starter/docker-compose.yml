@@ -1,0 +1,322 @@
+
+# ============================================================================
+# LightRAG Multi-Tenant Stack with PostgreSQL Backend
+# 
+# This Docker Compose file sets up a complete multi-tenant RAG system with:
+#   • PostgreSQL database (with pgvector support)
+#   • Redis cache
+#   • LightRAG API server
+#   • Web UI interface
+#
+# Features:
+#   - Multi-tenant data isolation at database level
+#   - Composite key pattern (tenant_id, kb_id, id)
+#   - Automatic tenant context enforcement
+#   - Cross-tenant access prevention
+#
+# Quick Start:
+#   make up              # Start all services
+#   make init-db         # Initialize database schema
+#   make logs            # View logs
+#   http://localhost:3000    # WebUI
+#   http://localhost:9621    # API
+# ============================================================================
+
+services:
+  # =========================================================================
+  # PostgreSQL Database
+  # 
+  # Stores:
+  #   • Multi-tenant documents (with tenant_id + kb_id isolation)
+  #   • Knowledge graph entities and relationships
+  #   • Vector embeddings (using pgvector extension)
+  #   • Document status and metadata
+  # =========================================================================
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    container_name: lightrag-postgres
+    hostname: postgres
+    
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lightrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lightrag_secure_password}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-lightrag_multitenant}
+      PGTZ: UTC
+    
+    # Don't publish PostgreSQL port to the host. Keep it available only on the
+    # compose network for app-to-db communication (safer defaults).
+    # Use 'expose' so other services in the compose network can access it,
+    # but it won't be reachable from the host machine.
+    expose:
+      - "5432"
+    
+    volumes:
+      # Persist database data
+      - postgres_data:/var/lib/postgresql/data
+      # Custom initialization script (optional)
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    
+    networks:
+      - lightrag-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag} -d ${POSTGRES_DATABASE:-lightrag_multitenant}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    
+    restart: unless-stopped
+    
+    # Performance tuning
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=100"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+
+  # =========================================================================
+  # Redis Cache
+  # 
+  # Used for:
+  #   • Caching LLM responses (ENABLE_LLM_CACHE)
+  #   • Session management
+  #   • Rate limiting
+  #   • Temporary data with TTL
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: lightrag-redis
+    hostname: redis
+    
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    
+    volumes:
+      - redis_data:/data
+    
+    networks:
+      - lightrag-network
+    
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secure_password}
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secure_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    
+    restart: unless-stopped
+
+  # =========================================================================
+  # LightRAG API Server
+  # 
+  # Responsibilities:
+  #   • Handle multi-tenant requests
+  #   • Enforce tenant context (tenant_id, kb_id)
+  #   • Route queries to appropriate backends
+  #   • Manage document ingestion and processing
+  #   • Return multi-tenant isolated results
+  #
+  # Storage Configuration:
+  #   • KV Storage: PostgreSQL (PGKVStorage)
+  #   • Doc Status: PostgreSQL (PGDocStatusStorage)
+  #   • Graph: PostgreSQL (PGGraphStorage)
+  #   • Vector: PostgreSQL with pgvector (PGVectorStorage)
+  #   • Cache: Redis (LLM response caching)
+  # =========================================================================
+  lightrag-api:
+    image: lightrag-api:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: lightrag-api
+    hostname: lightrag-api
+    
+    environment:
+      # Server Configuration
+      HOST: 0.0.0.0
+      PORT: 8621
+      WORKERS: ${WORKERS:-2}
+      TIMEOUT: ${TIMEOUT:-150}
+      WEBUI_TITLE: ${WEBUI_TITLE:-"LightRAG Multi-Tenant"}
+      WEBUI_DESCRIPTION: ${WEBUI_DESCRIPTION:-"Graph RAG with Multi-Tenant Support"}
+      
+      # PostgreSQL Configuration
+      LIGHTRAG_KV_STORAGE: PGKVStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
+      LIGHTRAG_GRAPH_STORAGE: PGGraphStorage
+      LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
+      
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-lightrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lightrag_secure_password}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-lightrag_multitenant}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-20}
+      
+      # Vector Index Configuration
+      POSTGRES_VECTOR_INDEX_TYPE: ${POSTGRES_VECTOR_INDEX_TYPE:-HNSW}
+      POSTGRES_HNSW_M: ${POSTGRES_HNSW_M:-16}
+      POSTGRES_HNSW_EF: ${POSTGRES_HNSW_EF:-200}
+      
+      # Redis Configuration (for caching)
+      REDIS_URI: ${REDIS_URI:-redis://:redis_secure_password@redis:6379}
+      
+      # LLM Configuration
+      LLM_BINDING: ${LLM_BINDING:-openai}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o}
+      LLM_BINDING_HOST: ${LLM_BINDING_HOST:-https://api.openai.com/v1}
+      LLM_BINDING_API_KEY: ${LLM_BINDING_API_KEY:-your_api_key}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-180}
+      
+      # Embedding Configuration
+      EMBEDDING_BINDING: ${EMBEDDING_BINDING:-ollama}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3:latest}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      EMBEDDING_BINDING_HOST: ${EMBEDDING_BINDING_HOST:-http://host.docker.internal:11434}
+      
+      # Document Processing
+      ENABLE_LLM_CACHE: ${ENABLE_LLM_CACHE:-true}
+      ENABLE_LLM_CACHE_FOR_EXTRACT: ${ENABLE_LLM_CACHE_FOR_EXTRACT:-true}
+      SUMMARY_LANGUAGE: ${SUMMARY_LANGUAGE:-English}
+      CHUNK_SIZE: ${CHUNK_SIZE:-1200}
+      CHUNK_OVERLAP_SIZE: ${CHUNK_OVERLAP_SIZE:-100}
+      
+      # Concurrency Configuration
+      MAX_ASYNC: ${MAX_ASYNC:-1}
+      MAX_PARALLEL_INSERT: ${MAX_PARALLEL_INSERT:-1}
+      EMBEDDING_FUNC_MAX_ASYNC: ${EMBEDDING_FUNC_MAX_ASYNC:-1}
+      EMBEDDING_BATCH_NUM: ${EMBEDDING_BATCH_NUM:-1}
+      
+      # Query Configuration
+      TOP_K: ${TOP_K:-40}
+      CHUNK_TOP_K: ${CHUNK_TOP_K:-20}
+      MAX_ENTITY_TOKENS: ${MAX_ENTITY_TOKENS:-6000}
+      MAX_RELATION_TOKENS: ${MAX_RELATION_TOKENS:-8000}
+      MAX_TOTAL_TOKENS: ${MAX_TOTAL_TOKENS:-30000}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      VERBOSE: ${VERBOSE:-false}
+      
+      # Multi-Tenant Configuration
+      MULTITENANT_MODE: ${MULTITENANT_MODE:-demo}
+      DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+      DEFAULT_KB: ${DEFAULT_KB:-default}
+    
+    ports:
+      - "${API_PORT:-8000}:8621"
+    
+    volumes:
+      # Persist LightRAG data
+      - ./data/inputs:/app/data/inputs
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/tiktoken:/app/data/tiktoken
+      # Configuration files
+      - ./.env:/app/.env:ro
+      - ../config.ini:/app/config.ini:ro
+      # Mount source code for development
+      - ../lightrag:/app/lightrag
+    
+    networks:
+      - lightrag-network
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8621/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    
+    restart: unless-stopped
+    
+    # Limit resource usage
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # =========================================================================
+  # Web UI
+  # 
+  # Frontend interface for:
+  #   • Document upload and management
+  #   • Knowledge graph visualization
+  #   • Query interface
+  #   • Multi-tenant tenant/KB selection
+  #   • Results exploration
+  # =========================================================================
+  lightrag-webui:
+    image: lightrag-webui:local
+    build:
+      context: ../lightrag_webui
+      dockerfile: Dockerfile
+    container_name: lightrag-webui
+    hostname: lightrag-webui
+    
+    environment:
+      # API Backend Configuration
+      VITE_API_BASE_URL: ${WEBUI_API_BASE_URL:-http://localhost:8000}
+      
+      # WebUI Configuration
+      VITE_WEBUI_TITLE: ${WEBUI_TITLE:-"LightRAG Multi-Tenant"}
+      VITE_WEBUI_DESCRIPTION: ${WEBUI_DESCRIPTION:-"Graph RAG with Multi-Tenant Support"}
+    
+    ports:
+      - "${WEBUI_PORT:-3001}:3000"
+    
+    networks:
+      - lightrag-network
+    
+    depends_on:
+      lightrag-api:
+        condition: service_healthy
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    restart: unless-stopped
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  lightrag-network:
+    driver: bridge
+
+# ============================================================================
+# Volumes
+# 
+# postgres_data:   Persists PostgreSQL database files
+# redis_data:      Persists Redis snapshot data
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

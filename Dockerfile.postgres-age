@@ -1,0 +1,36 @@
+FROM postgres:16-bookworm
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    postgresql-server-dev-16 \
+    git \
+    ca-certificates \
+    flex \
+    bison \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build and install pgvector extension
+RUN cd /tmp && \
+    git clone --branch v0.7.4 https://github.com/pgvector/pgvector.git && \
+    cd pgvector && \
+    make && \
+    make install && \
+    cd / && \
+    rm -rf /tmp/pgvector
+
+# Build and install AGE extension
+RUN cd /tmp && \
+    git clone https://github.com/apache/age.git && \
+    cd age && \
+    git checkout release/PG16/1.6.0 && \
+    make && \
+    make install && \
+    cd / && \
+    rm -rf /tmp/age
+
+# Create initialization script for extensions
+COPY starter/init-postgres.sql /docker-entrypoint-initdb.d/01-schema.sql
+COPY starter/init-age.sql /docker-entrypoint-initdb.d/02-age.sql
+
+RUN chmod 644 /docker-entrypoint-initdb.d/*.sql

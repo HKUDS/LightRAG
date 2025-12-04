@@ -32,15 +32,21 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
-        if self.workspace:
-            # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
+        
+        # Get composite workspace (supports multi-tenant isolation)
+        composite_workspace = self._get_composite_workspace()
+        
+        if composite_workspace and composite_workspace != "_":
+            # Include composite workspace in the file path for data isolation
+            # For multi-tenant: tenant_id:kb_id:workspace
+            # For single-tenant: just workspace
+            workspace_dir = os.path.join(working_dir, composite_workspace)
+            self.final_namespace = f"{composite_workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
-            self.workspace = "_"
             workspace_dir = working_dir
+            self.final_namespace = self.namespace
+            composite_workspace = "_"
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
@@ -88,8 +94,21 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
-            for doc in self._data.values():
-                counts[doc["status"]] += 1
+            for doc_id, doc in self._data.items():
+                try:
+                    status = doc.get("status")
+                    if status in counts:
+                        counts[status] += 1
+                    else:
+                        # Log warning for unknown status but don't fail
+                        logger.warning(
+                            f"[{self.workspace}] Unknown status '{status}' for document {doc_id}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error counting status for document {doc_id}: {e}"
+                    )
+                    continue
         return counts
 
     async def get_docs_by_status(
@@ -226,6 +245,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         # For JSON storage, we load all data and sort/filter in memory
         all_docs = []
 
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
                 # Apply status filter
@@ -246,7 +268,12 @@ class JsonDocStatusStorage(DocStatusStorage):
                     if "error_msg" not in data:
                         data["error_msg"] = None
 
-                    doc_status = DocProcessingStatus(**data)
+                    # Filter data to only include valid fields for DocProcessingStatus
+                    # This prevents TypeError if extra fields are present in the JSON
+                    valid_fields = DocProcessingStatus.__dataclass_fields__.keys()
+                    filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+                    
+                    doc_status = DocProcessingStatus(**filtered_data)
 
                     # Add sort key for sorting
                     if sort_field == "id":
@@ -260,9 +287,14 @@ class JsonDocStatusStorage(DocStatusStorage):
 
                     all_docs.append((doc_id, doc_status))
 
-                except KeyError as e:
+                except (KeyError, TypeError, ValueError) as e:
                     logger.error(
                         f"[{self.workspace}] Error processing document {doc_id}: {e}"
+                    )
+                    continue
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Unexpected error processing document {doc_id}: {e}"
                     )
                     continue
 
@@ -340,6 +372,28 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 if doc_data.get("file_path") == file_path:
                     # Return complete document data, consistent with get_by_ids method
+                    return doc_data
+
+        return None
+
+    async def get_doc_by_external_id(
+        self, external_id: str
+    ) -> Union[dict[str, Any], None]:
+        """Get document by external ID for idempotency checks.
+
+        Args:
+            external_id: The external ID to search for (client-provided unique identifier)
+
+        Returns:
+            Union[dict[str, Any], None]: Document data if found, None otherwise
+            Returns the same format as get_by_id method
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                if doc_data.get("external_id") == external_id:
                     return doc_data
 
         return None

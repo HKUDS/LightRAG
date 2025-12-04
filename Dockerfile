@@ -37,6 +37,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Upgrade pip and setuptools
 RUN pip install --upgrade pip setuptools wheel
 
@@ -44,10 +49,15 @@ RUN pip install --upgrade pip setuptools wheel
 COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Copy scripts directory for demo tenant initialization
+COPY scripts/ /app/scripts/
 
 RUN pip install --use-pep517 ".[api]"
-# Make sure scripts in .local are usable
-ENV PATH=/root/.local/bin:$PATH
+# Make scripts executable
+RUN chmod +x /app/docker-entrypoint.sh && \
+    find /app/scripts -name "*.py" -type f -exec chmod +x {} \;
 
 # Create necessary directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs
@@ -59,5 +69,5 @@ ENV INPUT_DIR=/app/data/inputs
 # Expose the default port
 EXPOSE 9621
 
-# Set entrypoint
-ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
+# Set entrypoint to our script
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

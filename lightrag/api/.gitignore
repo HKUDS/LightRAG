@@ -1,2 +1,10 @@
 inputs
 rag_storage
+
+# Ignore generated webui assets (if we choose to build during packaging we can add them via CI)
+lightrag/api/webui/assets/*.js
+lightrag/api/webui/assets/*.js.map
+lightrag/api/webui/assets/*.css
+
+# Ignore the whole build assets directory
+lightrag/api/webui/assets/

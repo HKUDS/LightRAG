@@ -49,4 +49,10 @@ useSettingsStore.subscribe((state) => {
   }
 })
 
+export const initializeI18n = async () => {
+  return i18n.isInitialized ? Promise.resolve() : new Promise(resolve => {
+    i18n.on('initialized', resolve)
+  })
+}
+
 export default i18n

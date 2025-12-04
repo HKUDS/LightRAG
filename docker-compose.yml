@@ -10,6 +10,7 @@ services:
     ports:
       - "${PORT:-9621}:9621"
     volumes:
+      - ./lightrag:/app/lightrag
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
       - ./data/tiktoken:/app/data/tiktoken
@@ -19,6 +20,9 @@ services:
       - .env
     environment:
       - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
+      - INIT_DEMO_TENANTS=true
+      - AUTH_USER=admin
+      - AUTH_PASS=admin123
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

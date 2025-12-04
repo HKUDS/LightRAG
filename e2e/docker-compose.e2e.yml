@@ -1,0 +1,45 @@
+# Docker Compose for E2E Testing
+# Provides PostgreSQL with pgvector and Redis for LightRAG tests
+# Uses non-standard ports to avoid conflicts with local services
+
+services:
+  postgres:
+    build:
+      context: ..
+      dockerfile: Dockerfile.postgres-age
+    container_name: lightrag-e2e-postgres
+    environment:
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: lightrag123
+      POSTGRES_DB: lightrag_multitenant
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_e2e_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag_multitenant"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - lightrag-e2e
+
+  redis:
+    image: redis:7-alpine
+    container_name: lightrag-e2e-redis
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightrag-e2e
+
+networks:
+  lightrag-e2e:
+    driver: bridge
+
+volumes:
+  postgres_e2e_data:

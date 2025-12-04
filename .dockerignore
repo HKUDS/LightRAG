@@ -27,7 +27,6 @@ Makefile
 
 # Exclude other projects
 /tests
-/scripts
 
 # Python version manager file
 .python-version
@@ -61,3 +60,5 @@ TODO.md
 .github
 .gitignore
 .pre-commit-config.yaml
+
+data/

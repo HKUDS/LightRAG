@@ -40,10 +40,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
         working_dir = self.global_config["working_dir"]
-        if self.workspace:
-            # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
+        
+        # Get composite workspace (supports multi-tenant isolation)
+        composite_workspace = self._get_composite_workspace()
+        
+        if composite_workspace and composite_workspace != "_":
+            # Include composite workspace in the file path for data isolation
+            # For multi-tenant: tenant_id:kb_id:workspace
+            # For single-tenant: just workspace
+            workspace_dir = os.path.join(working_dir, composite_workspace)
+            self.final_namespace = f"{composite_workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace

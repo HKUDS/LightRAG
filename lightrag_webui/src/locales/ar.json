@@ -120,8 +120,13 @@
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
+      "loading": "جاري تحميل المستندات...",
       "emptyTitle": "لا توجد مستندات",
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
+      "emptyWithPipelineTitle": "مستندات قيد المعالجة",
+      "emptyWithPipelineDescription": "خط المعالجة مشغول. ربما هناك مستندات قيد المعالجة.",
+      "scanForDocuments": "مسح المستندات",
+      "viewPipeline": "عرض خط المعالجة",
       "columns": {
         "id": "المعرف",
         "fileName": "اسم الملف",

@@ -1,0 +1,4 @@
+- Actions: Modified `lightrag/services/tenant_service.py` to implement a robust fallback for super-admin checks.
+- Decisions: Added logic to default to "admin" if `SUPER_ADMIN_USERS` is not configured or import fails, ensuring the default admin user works out-of-the-box.
+- Next steps: None.
+- Lessons/insights: Relying solely on config imports can be fragile if environment variables or imports behave unexpectedly; explicit fallbacks in critical security paths improve robustness.

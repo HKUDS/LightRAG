@@ -57,6 +57,7 @@ from lightrag.kg.shared_storage import (
     get_pipeline_status_lock,
     get_graph_db_lock,
     get_data_init_lock,
+    initialize_pipeline_status,
 )
 
 from lightrag.base import (
@@ -383,6 +384,11 @@ class LightRAG:
     """Configuration for Ollama server information."""
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
+
+    @property
+    def pipeline_status_key(self) -> str:
+        """Get the namespaced pipeline status key for this instance."""
+        return f"pipeline_status_{compute_mdhash_id(self.working_dir)}"
 
     def __post_init__(self):
         from lightrag.kg.shared_storage import (
@@ -906,8 +912,9 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        tenant_context: Optional[Any] = None,
     ) -> str:
-        """Async Insert documents with checkpoint support
+        """Async Insert documents with checkpoint support and optional tenant context
 
         Args:
             input: Single document string or list of document strings
@@ -918,6 +925,8 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            tenant_context: Optional TenantContext for multi-tenant deployments. If provided, tenant_id and kb_id
+                from context will be propagated to storage operations for proper isolation.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -925,6 +934,11 @@ class LightRAG:
         # Generate track_id if not provided
         if track_id is None:
             track_id = generate_track_id("insert")
+
+        # Store tenant context for propagation to storage operations
+        if tenant_context:
+            self._tenant_id = tenant_context.tenant_id
+            self._kb_id = tenant_context.kb_id
 
         await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
         await self.apipeline_process_enqueue_documents(
@@ -1011,6 +1025,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        external_ids: list[str] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1051,6 +1066,31 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
+        # If external_ids provided, check idempotency before further processing
+        # We iterate in-order and skip any document whose external_id already exists in doc_status
+        indices_to_process = list(range(len(input)))
+        if external_ids is not None:
+            if isinstance(external_ids, str):
+                external_ids = [external_ids]
+            if len(external_ids) != len(input):
+                raise ValueError("Number of external_ids must match the number of documents")
+
+            # Call get_doc_by_external_id for each external_id and filter out existing documents
+            remaining_indices = []
+            for i, ext_id in enumerate(external_ids):
+                if ext_id and str(ext_id).strip():
+                    try:
+                        existing = await self.doc_status.get_doc_by_external_id(ext_id)
+                    except Exception:
+                        existing = None
+                    if existing:
+                        # Skip this index (idempotent: doc exists)
+                        logger.info(f"Skipping document with external_id {ext_id} since it already exists")
+                        continue
+                remaining_indices.append(i)
+
+            indices_to_process = remaining_indices
+
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
@@ -1076,7 +1116,13 @@ class LightRAG:
         else:
             # Clean input text and remove duplicates in one pass
             unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+            # When ids isn't provided we compute md5 ids, but we only consider indices_to_process
+            for idx, (doc, path) in enumerate(zip(input, file_paths)):
+                if idx not in indices_to_process:
+                    continue
+                cleaned_content = sanitize_text_for_encoding(doc)
+                if cleaned_content not in unique_content_with_paths:
+                    unique_content_with_paths[cleaned_content] = path
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_content_with_paths:
                     unique_content_with_paths[cleaned_content] = path
@@ -1089,6 +1135,29 @@ class LightRAG:
                 }
                 for content, path in unique_content_with_paths.items()
             }
+
+        # If external_ids were provided, attach them to the corresponding new_docs (metadata)
+        external_map: dict[str, str] = {}
+        if external_ids is not None:
+            # Map external_ids to the computed doc ids in a best-effort manner using original indices
+            # We only have doc ids in 'contents' keys; we'll map in insertion order
+            # Build list of doc ids in same ordering of processed inputs
+            content_list = list(contents.items())
+            # Map by index in indices_to_process
+            try:
+                for idx, ext_id in zip(indices_to_process, external_ids):
+                    if ext_id and str(ext_id).strip():
+                        # Find the generated doc_id for this content
+                        # Need to compute cleaned content to find key
+                        cleaned = sanitize_text_for_encoding(input[idx])
+                        # find matching doc id
+                        for doc_id, data in contents.items():
+                            if data.get("content") == cleaned:
+                                external_map[doc_id] = ext_id
+                                break
+            except Exception:
+                # If anything goes wrong mapping external ids, ignore external map
+                external_map = {}
 
         # 2. Generate document initial status (without content)
         new_docs: dict[str, Any] = {
@@ -1147,6 +1216,14 @@ class LightRAG:
         await self.full_docs.index_done_callback()
 
         # Store document status (without content)
+        # Attach external_id metadata to status entries when available
+        if external_map:
+            for doc_id, ext_id in external_map.items():
+                if doc_id in new_docs:
+                    doc_metadata = new_docs[doc_id].get("metadata", {})
+                    doc_metadata["external_id"] = ext_id
+                    new_docs[doc_id]["metadata"] = doc_metadata
+
         await self.doc_status.upsert(new_docs)
         logger.debug(f"Stored {len(new_docs)} new unique documents")
 
@@ -1368,7 +1445,8 @@ class LightRAG:
         """
 
         # Get pipeline status shared data and lock
-        pipeline_status = await get_namespace_data("pipeline_status")
+        await initialize_pipeline_status(self.pipeline_status_key)
+        pipeline_status = await get_namespace_data(self.pipeline_status_key)
         pipeline_status_lock = get_pipeline_status_lock()
 
         # Check if another process is already processing the queue
@@ -2060,6 +2138,7 @@ class LightRAG:
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
+        tenant_context: Optional[Any] = None,
     ) -> str | AsyncIterator[str]:
         """
         Perform a async query (backward compatibility wrapper).
@@ -2072,12 +2151,19 @@ class LightRAG:
             param (QueryParam): Configuration parameters for query execution.
                 If param.model_func is provided, it will be used instead of the global model.
             system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            tenant_context: Optional TenantContext for multi-tenant deployments. If provided, query execution will
+                be scoped to the specified tenant and knowledge base for proper data isolation.
 
         Returns:
             str | AsyncIterator[str]: The LLM response content.
                 - Non-streaming: Returns str
                 - Streaming: Returns AsyncIterator[str]
         """
+        # Store tenant context for propagation to storage operations
+        if tenant_context:
+            self._tenant_id = tenant_context.tenant_id
+            self._kb_id = tenant_context.kb_id
+
         # Call the new aquery_llm function to get complete results
         result = await self.aquery_llm(query, param, system_prompt)
 
@@ -2114,6 +2200,7 @@ class LightRAG:
         self,
         query: str,
         param: QueryParam = QueryParam(),
+        tenant_context: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Asynchronous data retrieval API: returns structured retrieval results without LLM generation.
@@ -2124,6 +2211,8 @@ class LightRAG:
         Args:
             query: Query text for retrieval.
             param: Query parameters controlling retrieval behavior (same as aquery).
+            tenant_context: Optional TenantContext for multi-tenant deployments. If provided, query execution will
+                be scoped to the specified tenant and knowledge base for proper data isolation.
 
         Returns:
             dict[str, Any]: Structured data result in the following format:
@@ -2221,6 +2310,11 @@ class LightRAG:
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        # Store tenant context for propagation to storage operations
+        if tenant_context:
+            self._tenant_id = tenant_context.tenant_id
+            self._kb_id = tenant_context.kb_id
+
         global_config = asdict(self)
 
         # Create a copy of param to avoid modifying the original
@@ -2409,7 +2503,7 @@ class LightRAG:
                 }
 
             # Extract structured data from query result
-            raw_data = query_result.raw_data if query_result else {}
+            raw_data = query_result.raw_data if query_result and query_result.raw_data else {}
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
@@ -2567,7 +2661,7 @@ class LightRAG:
         # Return the dictionary containing statuses only for the found document IDs
         return found_statuses
 
-    async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
+    async def adelete_by_doc_id(self, doc_id: str, tenant_context: Optional[Any] = None) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements, and cached entries.
 
         This method orchestrates a comprehensive deletion process for a given document ID.
@@ -2576,6 +2670,8 @@ class LightRAG:
 
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
+            tenant_context: Optional TenantContext for multi-tenant deployments. If provided, deletion will
+                be scoped to the specified tenant and knowledge base.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -2585,6 +2681,11 @@ class LightRAG:
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 500).
                 - `file_path` (str | None): The file path of the deleted document, if available.
         """
+        # Store tenant context for propagation to storage operations
+        if tenant_context:
+            self._tenant_id = tenant_context.tenant_id
+            self._kb_id = tenant_context.kb_id
+
         deletion_operations_started = False
         original_exception = None
 

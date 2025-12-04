@@ -1,0 +1,4 @@
+- Actions: Modified `lightrag/api/config.py` to set default `SUPER_ADMIN_USERS` to "admin".
+- Decisions: Decided to restore "admin" as a default super user to fix 403 Forbidden errors in default/dev environments, while maintaining the ability to override it via env vars.
+- Next steps: None.
+- Lessons/insights: Removing hardcoded admin checks (SEC-002) requires ensuring the configuration default provides a usable fallback for dev environments.

@@ -68,7 +68,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     def _get_workspace_label(self) -> str:
         """Return workspace label (guaranteed non-empty during initialization)"""
-        return self.workspace
+        return self._get_composite_workspace()
 
     def _is_chinese_text(self, text: str) -> bool:
         """Check if text contains Chinese characters."""

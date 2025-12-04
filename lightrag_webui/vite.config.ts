@@ -1,8 +1,12 @@
 import { defineConfig } from 'vite'
 import path from 'path'
-import { webuiPrefix } from '@/lib/constants'
 import react from '@vitejs/plugin-react-swc'
 import tailwindcss from '@tailwindcss/vite'
+
+// Get the base URL from environment or default to /
+const getBaseUrl = (): string => {
+  return process.env.VITE_BASE_URL || '/'
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -12,10 +16,9 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
-  // base: import.meta.env.VITE_BASE_URL || '/webui/',
-  base: webuiPrefix,
+  base: getBaseUrl(),
   build: {
-    outDir: path.resolve(__dirname, '../lightrag/api/webui'),
+    outDir: 'dist',
     emptyOutDir: true,
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
@@ -61,12 +64,12 @@ export default defineConfig({
     }
   },
   server: {
-    proxy: import.meta.env.VITE_API_PROXY === 'true' && import.meta.env.VITE_API_ENDPOINTS ?
+    proxy: process.env.VITE_API_PROXY === 'true' && process.env.VITE_API_ENDPOINTS ?
       Object.fromEntries(
-        import.meta.env.VITE_API_ENDPOINTS.split(',').map(endpoint => [
+        process.env.VITE_API_ENDPOINTS.split(',').map(endpoint => [
           endpoint,
           {
-            target: import.meta.env.VITE_BACKEND_URL || 'http://localhost:9621',
+            target: process.env.VITE_BACKEND_URL || 'http://localhost:9621',
             changeOrigin: true,
             rewrite: endpoint === '/api' ?
               (path) => path.replace(/^\/api/, '') :

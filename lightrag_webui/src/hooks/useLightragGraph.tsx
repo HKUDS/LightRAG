@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { queryGraphs } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
+import { useTenantState } from '@/stores/tenant'
 
 import seedrandom from 'seedrandom'
 
@@ -475,6 +476,7 @@ const useLightrangeGraph = () => {
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
   const graphDataVersion = useGraphStore.use.graphDataVersion()
+  const selectedKB = useTenantState.use.selectedKB()
 
 
   // Use ref to track if data has been loaded and initial load
@@ -511,6 +513,26 @@ const useLightrangeGraph = () => {
       initialLoadRef.current = false
     }
   }, [queryLabel, rawGraph, sigmaGraph])
+
+  // Reset fetch attempt when KB changes to trigger re-fetch
+  useEffect(() => {
+    const state = useGraphStore.getState()
+    
+    // Clear current graph immediately when KB changes
+    state.reset()
+    
+    // Reset all flags to allow new fetch
+    state.setGraphDataFetchAttempted(false)
+    state.setLabelsFetchAttempted(false)
+    
+    // Reset refs to allow new fetch
+    dataLoadedRef.current = false
+    initialLoadRef.current = false
+    fetchInProgressRef.current = false
+    emptyDataHandledRef.current = false
+    
+    console.log('[useLightragGraph] KB changed, reset graph state')
+  }, [selectedKB?.kb_id])
 
   // Graph data fetching logic
   useEffect(() => {
@@ -661,7 +683,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, selectedKB?.kb_id])
 
   // Handle node expansion
   useEffect(() => {
