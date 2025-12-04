@@ -136,12 +136,6 @@ def on_exit(server):
     print("Gunicorn shutdown complete")
     print("=" * 80)
 
-    print("=" * 80)
-
-    print("=" * 80)
-    print("Gunicorn shutdown complete")
-    print("=" * 80)
-
 
 def post_fork(server, worker):
     """
@@ -166,37 +160,3 @@ def post_fork(server, worker):
     uvicorn_error_logger.handlers = []
     uvicorn_error_logger.setLevel(logging.CRITICAL)
     uvicorn_error_logger.propagate = False
-
-
-def worker_exit(server, worker):
-    """
-    Executed when a worker is about to exit.
-
-    NOTE: When using UvicornWorker (worker_class = "uvicorn.workers.UvicornWorker"),
-    this hook may NOT be called reliably. UvicornWorker has its own lifecycle
-    management that prioritizes ASGI lifespan shutdown events.
-
-    The primary cleanup mechanism is handled by:
-    1. FastAPI lifespan context manager with GUNICORN_CMD_ARGS check (in lightrag_server.py)
-       - Workers skip cleanup when GUNICORN_CMD_ARGS is set
-    2. on_exit() hook for main process cleanup
-
-    This function serves as a defensive fallback for:
-    - Non-UvicornWorker scenarios
-    - Future Gunicorn/Uvicorn behavior changes
-    - Additional safety layer
-
-    When called, we should only clean up worker-local resources, NOT the shared Manager.
-    The Manager should only be shut down by the main process in on_exit().
-    """
-    print("=" * 80)
-    print(f"GUNICORN WORKER PROCESS: Shutting down worker {worker.pid}")
-    print(f"Process ID: {os.getpid()}")
-    print("=" * 80)
-
-    # Clean up worker-local resources without shutting down the Manager
-    # Pass shutdown_manager=False to prevent Manager shutdown
-    finalize_share_data(shutdown_manager=False)
-
-    print(f"Worker {worker.pid} cleanup complete")
-    print("=" * 80)
