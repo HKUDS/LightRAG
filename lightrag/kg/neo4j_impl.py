@@ -16,7 +16,7 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
+from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -42,6 +42,23 @@ config.read("config.ini", "utf-8")
 
 # Set neo4j logger level to ERROR to suppress warning logs
 logging.getLogger("neo4j").setLevel(logging.ERROR)
+
+
+READ_RETRY_EXCEPTIONS = (
+    neo4jExceptions.ServiceUnavailable,
+    neo4jExceptions.TransientError,
+    neo4jExceptions.SessionExpired,
+    ConnectionResetError,
+    OSError,
+    AttributeError,
+)
+
+READ_RETRY = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(READ_RETRY_EXCEPTIONS),
+    reraise=True,
+)
 
 
 @final
@@ -340,10 +357,9 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def finalize(self):
         """Close the Neo4j driver and release all resources"""
-        async with get_graph_db_lock():
-            if self._driver:
-                await self._driver.close()
-                self._driver = None
+        if self._driver:
+            await self._driver.close()
+            self._driver = None
 
     async def __aexit__(self, exc_type, exc, tb):
         """Ensure driver is closed when context manager exits"""
@@ -353,6 +369,7 @@ class Neo4JStorage(BaseGraphStorage):
         # Neo4J handles persistence automatically
         pass
 
+    @READ_RETRY
     async def has_node(self, node_id: str) -> bool:
         """
         Check if a node with the given label exists in the database
@@ -386,6 +403,7 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()  # Ensure results are consumed even on error
                 raise
 
+    @READ_RETRY
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if an edge exists between two nodes
@@ -427,6 +445,7 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()  # Ensure results are consumed even on error
                 raise
 
+    @READ_RETRY
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties
 
@@ -480,6 +499,7 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 raise
 
+    @READ_RETRY
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """
         Retrieve multiple nodes in one query using UNWIND.
@@ -516,6 +536,7 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()  # Make sure to consume the result fully
             return nodes
 
+    @READ_RETRY
     async def node_degree(self, node_id: str) -> int:
         """Get the degree (number of relationships) of a node with the given label.
         If multiple nodes have the same label, returns the degree of the first node.
@@ -564,6 +585,7 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 raise
 
+    @READ_RETRY
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """
         Retrieve the degree for multiple nodes in a single query using UNWIND.
@@ -622,6 +644,7 @@ class Neo4JStorage(BaseGraphStorage):
         degrees = int(src_degree) + int(trg_degree)
         return degrees
 
+    @READ_RETRY
     async def edge_degrees_batch(
         self, edge_pairs: list[tuple[str, str]]
     ) -> dict[tuple[str, str], int]:
@@ -648,6 +671,7 @@ class Neo4JStorage(BaseGraphStorage):
             edge_degrees[(src, tgt)] = degrees.get(src, 0) + degrees.get(tgt, 0)
         return edge_degrees
 
+    @READ_RETRY
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
@@ -735,6 +759,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
             raise
 
+    @READ_RETRY
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
@@ -785,6 +810,7 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return edges_dict
 
+    @READ_RETRY
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Retrieves all edges (relationships) for a particular node identified by its label.
 
@@ -852,6 +878,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
             raise
 
+    @READ_RETRY
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
@@ -1773,24 +1800,23 @@ class Neo4JStorage(BaseGraphStorage):
             - On success: {"status": "success", "message": "workspace data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_graph_db_lock():
-            workspace_label = self._get_workspace_label()
-            try:
-                async with self._driver.session(database=self._DATABASE) as session:
-                    # Delete all nodes and relationships in current workspace only
-                    query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
-                    result = await session.run(query)
-                    await result.consume()  # Ensure result is fully consumed
+        workspace_label = self._get_workspace_label()
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                # Delete all nodes and relationships in current workspace only
+                query = f"MATCH (n:`{workspace_label}`) DETACH DELETE n"
+                result = await session.run(query)
+                await result.consume()  # Ensure result is fully consumed
 
-                    # logger.debug(
-                    #     f"[{self.workspace}] Process {os.getpid()} drop Neo4j workspace '{workspace_label}' in database {self._DATABASE}"
-                    # )
-                    return {
-                        "status": "success",
-                        "message": f"workspace '{workspace_label}' data dropped",
-                    }
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+                # logger.debug(
+                #     f"[{self.workspace}] Process {os.getpid()} drop Neo4j workspace '{workspace_label}' in database {self._DATABASE}"
+                # )
+                return {
+                    "status": "success",
+                    "message": f"workspace '{workspace_label}' data dropped",
+                }
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
