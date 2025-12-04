@@ -365,7 +365,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
 
         This endpoint establishes an undirected relationship between two existing entities.
         The provided source/target order is accepted for convenience, but the backend
-        stored edge is undirected and may be returned with the entities swapped.
+        stored edge is undirected and may be returned with the entities swapped. 
         Both entities must already exist in the knowledge graph. The system automatically
         generates vector embeddings for the relationship to enable semantic search and graph traversal.
 
