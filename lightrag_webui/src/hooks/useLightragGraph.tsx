@@ -344,7 +344,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
           console.error(`Source node ${edge.source} is undefined`)
           continue
         }
-        
+
         const targetNode = rawData.nodes[target]
         if (!targetNode) {
           console.error(`Target node ${edge.target} is undefined`)
