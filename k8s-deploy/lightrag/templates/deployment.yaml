@@ -43,14 +43,17 @@ spec:
             - name: env-file
               mountPath: /app/.env
               subPath: .env
-          envFrom:
-          {{- range .Values.envFrom.secrets }}
-            - secretRef:
-                name: {{ .name }}
+          {{- $envFrom := default (dict) .Values.envFrom }}
+          {{- $envFromEntries := list }}
+          {{- range (default (list) (index $envFrom "secrets")) }}
+          {{- $envFromEntries = append $envFromEntries (dict "secretRef" (dict "name" .name)) }}
           {{- end }}
-          {{- range .Values.envFrom.configmaps }}
-            - configMapRef:
-                name: {{ .name }}
+          {{- range (default (list) (index $envFrom "configmaps")) }}
+          {{- $envFromEntries = append $envFromEntries (dict "configMapRef" (dict "name" .name)) }}
+          {{- end }}
+          {{- if gt (len $envFromEntries) 0 }}
+          envFrom:
+{{- toYaml $envFromEntries | nindent 12 }}
           {{- end }}
       {{- with .Values.image.imagePullSecrets }}
       imagePullSecrets:
