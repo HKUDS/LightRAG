@@ -887,13 +887,13 @@ class LightRAG:
             need_entity_migration = await self.entity_chunks.is_empty()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"Failed to check entity chunks storage: {exc}")
-            need_entity_migration = True
+            raise exc
 
         try:
             need_relation_migration = await self.relation_chunks.is_empty()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"Failed to check relation chunks storage: {exc}")
-            need_relation_migration = True
+            raise exc
 
         if not need_entity_migration and not need_relation_migration:
             return
@@ -2793,7 +2793,9 @@ class LightRAG:
         # Return the dictionary containing statuses only for the found document IDs
         return found_statuses
 
-    async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
+    async def adelete_by_doc_id(
+        self, doc_id: str, delete_llm_cache: bool = False
+    ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
         This method orchestrates a comprehensive deletion process for a given document ID.
@@ -2803,6 +2805,8 @@ class LightRAG:
 
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
+            delete_llm_cache (bool): Whether to delete cached LLM extraction results
+                associated with the document. Defaults to False.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -2814,6 +2818,7 @@ class LightRAG:
         """
         deletion_operations_started = False
         original_exception = None
+        doc_llm_cache_ids: list[str] = []
 
         # Get pipeline status shared data and lock for status updates
         pipeline_status = await get_namespace_data("pipeline_status")
@@ -2913,6 +2918,57 @@ class LightRAG:
 
             # Mark that deletion operations have started
             deletion_operations_started = True
+
+            if delete_llm_cache and chunk_ids:
+                if not self.llm_response_cache:
+                    logger.info(
+                        "Skipping LLM cache collection for document %s because cache storage is unavailable",
+                        doc_id,
+                    )
+                elif not self.text_chunks:
+                    logger.info(
+                        "Skipping LLM cache collection for document %s because text chunk storage is unavailable",
+                        doc_id,
+                    )
+                else:
+                    try:
+                        chunk_data_list = await self.text_chunks.get_by_ids(
+                            list(chunk_ids)
+                        )
+                        seen_cache_ids: set[str] = set()
+                        for chunk_data in chunk_data_list:
+                            if not chunk_data or not isinstance(chunk_data, dict):
+                                continue
+                            cache_ids = chunk_data.get("llm_cache_list", [])
+                            if not isinstance(cache_ids, list):
+                                continue
+                            for cache_id in cache_ids:
+                                if (
+                                    isinstance(cache_id, str)
+                                    and cache_id
+                                    and cache_id not in seen_cache_ids
+                                ):
+                                    doc_llm_cache_ids.append(cache_id)
+                                    seen_cache_ids.add(cache_id)
+                        if doc_llm_cache_ids:
+                            logger.info(
+                                "Collected %d LLM cache entries for document %s",
+                                len(doc_llm_cache_ids),
+                                doc_id,
+                            )
+                        else:
+                            logger.info(
+                                "No LLM cache entries found for document %s", doc_id
+                            )
+                    except Exception as cache_collect_error:
+                        logger.error(
+                            "Failed to collect LLM cache ids for document %s: %s",
+                            doc_id,
+                            cache_collect_error,
+                        )
+                        raise Exception(
+                            f"Failed to collect LLM cache ids for document {doc_id}: {cache_collect_error}"
+                        ) from cache_collect_error
 
             # 4. Analyze entities and relationships that will be affected
             entities_to_delete = set()
@@ -3235,6 +3291,23 @@ class LightRAG:
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
+
+            if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
+                try:
+                    await self.llm_response_cache.delete(doc_llm_cache_ids)
+                    cache_log_message = f"Successfully deleted {len(doc_llm_cache_ids)} LLM cache entries for document {doc_id}"
+                    logger.info(cache_log_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = cache_log_message
+                        pipeline_status["history_messages"].append(cache_log_message)
+                    log_message = cache_log_message
+                except Exception as cache_delete_error:
+                    log_message = f"Failed to delete LLM cache for document {doc_id}: {cache_delete_error}"
+                    logger.error(log_message)
+                    logger.error(traceback.format_exc())
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
             return DeletionResult(
                 status="success",
