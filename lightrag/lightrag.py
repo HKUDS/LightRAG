@@ -39,6 +39,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
@@ -358,6 +359,11 @@ class LightRAG:
         default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
     )
     """Maximum number of graph nodes to return in knowledge graph queries."""
+
+    max_source_ids_per_entity: int = field(
+        default=get_env_value("MAX_SOURCE_IDS_PER_ENTITY", DEFAULT_MAX_SOURCE_IDS_PER_ENTITY, int)
+    )
+    """Maximum number of source (chunk) ids in entity Grpah + VDB."""
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
