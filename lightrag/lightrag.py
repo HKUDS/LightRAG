@@ -3327,15 +3327,16 @@ class LightRAG:
                 # 7. Delete entities that have no remaining sources
                 if entities_to_delete:
                     try:
+                        # Batch get all edges for entities to avoid N+1 query problem
+                        nodes_edges_dict = await self.chunk_entity_relation_graph.get_nodes_edges_batch(
+                            list(entities_to_delete)
+                        )
+
                         # Debug: Check and log all edges before deleting nodes
                         edges_to_delete = set()
                         edges_still_exist = 0
-                        for entity in entities_to_delete:
-                            edges = (
-                                await self.chunk_entity_relation_graph.get_node_edges(
-                                    entity
-                                )
-                            )
+
+                        for entity, edges in nodes_edges_dict.items():
                             if edges:
                                 for src, tgt in edges:
                                     # Normalize edge representation (sorted for consistency)
@@ -3358,6 +3359,7 @@ class LightRAG:
                                             f"Edge still exists: {src} <-- {tgt}"
                                         )
                                 edges_still_exist += 1
+
                         if edges_still_exist:
                             logger.warning(
                                 f"⚠️ {edges_still_exist} entities still has edges before deletion"
