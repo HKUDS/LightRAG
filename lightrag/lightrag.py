@@ -3328,6 +3328,7 @@ class LightRAG:
                 if entities_to_delete:
                     try:
                         # Debug: Check and log all edges before deleting nodes
+                        edges_to_delete = set()
                         edges_still_exist = 0
                         for entity in entities_to_delete:
                             edges = (
@@ -3337,6 +3338,10 @@ class LightRAG:
                             )
                             if edges:
                                 for src, tgt in edges:
+                                    # Normalize edge representation (sorted for consistency)
+                                    edge_tuple = tuple(sorted((src, tgt)))
+                                    edges_to_delete.add(edge_tuple)
+
                                     if (
                                         src in entities_to_delete
                                         and tgt in entities_to_delete
@@ -3350,7 +3355,7 @@ class LightRAG:
                                         )
                                     else:
                                         logger.warning(
-                                            f"Edge still exists: {tgt} --> {src}"
+                                            f"Edge still exists: {src} <-- {tgt}"
                                         )
                                 edges_still_exist += 1
                         if edges_still_exist:
@@ -3358,7 +3363,32 @@ class LightRAG:
                                 f"⚠️ {edges_still_exist} entities still has edges before deletion"
                             )
 
-                        # Delete from graph
+                        # Clean residual edges from VDB and storage before deleting nodes
+                        if edges_to_delete:
+                            # Delete from relationships_vdb
+                            rel_ids_to_delete = []
+                            for src, tgt in edges_to_delete:
+                                rel_ids_to_delete.extend(
+                                    [
+                                        compute_mdhash_id(src + tgt, prefix="rel-"),
+                                        compute_mdhash_id(tgt + src, prefix="rel-"),
+                                    ]
+                                )
+                            await self.relationships_vdb.delete(rel_ids_to_delete)
+
+                            # Delete from relation_chunks storage
+                            if self.relation_chunks:
+                                relation_storage_keys = [
+                                    make_relation_chunk_key(src, tgt)
+                                    for src, tgt in edges_to_delete
+                                ]
+                                await self.relation_chunks.delete(relation_storage_keys)
+
+                            logger.info(
+                                f"Cleaned {len(edges_to_delete)} residual edges from VDB and chunk-tracking storage"
+                            )
+
+                        # Delete from graph (edges will be auto-deleted with nodes)
                         await self.chunk_entity_relation_graph.remove_nodes(
                             list(entities_to_delete)
                         )
