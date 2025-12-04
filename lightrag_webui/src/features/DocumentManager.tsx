@@ -53,7 +53,7 @@ const getCountValue = (counts: Record<string, number>, ...keys: string[]): numbe
 const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
   getCountValue(counts, 'PROCESSING', 'processing') > 0 ||
   getCountValue(counts, 'PENDING', 'pending') > 0 ||
-  getCountValue(counts, 'PREPROCESSED', 'preprocessed', 'multimodal_processed') > 0
+  getCountValue(counts, 'PREPROCESSED', 'preprocessed') > 0
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -276,7 +276,7 @@ export default function DocumentManager() {
   const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
     all: routeState.page,
     processed: 1,
-    multimodal_processed: 1,
+    preprocessed: 1,
     processing: 1,
     pending: 1,
     failed: 1,
@@ -357,7 +357,7 @@ export default function DocumentManager() {
     setPageByStatus({
       all: 1,
       processed: 1,
-      'multimodal_processed': 1,
+      preprocessed: 1,
       processing: 1,
       pending: 1,
       failed: 1,
@@ -504,8 +504,8 @@ export default function DocumentManager() {
 
   const processedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.processed || 0;
   const preprocessedCount =
-    getCountValue(statusCounts, 'PREPROCESSED', 'preprocessed', 'multimodal_processed') ||
-    documentCounts.multimodal_processed ||
+    getCountValue(statusCounts, 'PREPROCESSED', 'preprocessed') ||
+    documentCounts.preprocessed ||
     0;
   const processingCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.processing || 0;
   const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
@@ -514,7 +514,7 @@ export default function DocumentManager() {
   // Store previous status counts
   const prevStatusCounts = useRef({
     processed: 0,
-    multimodal_processed: 0,
+    preprocessed: 0,
     processing: 0,
     pending: 0,
     failed: 0
@@ -605,7 +605,7 @@ export default function DocumentManager() {
     const legacyDocs: DocsStatusesResponse = {
       statuses: {
         processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processed'),
-        multimodal_processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'multimodal_processed'),
+        preprocessed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'preprocessed'),
         processing: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processing'),
         pending: response.documents.filter((doc: DocStatusResponse) => doc.status === 'pending'),
         failed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'failed')
@@ -995,7 +995,7 @@ export default function DocumentManager() {
     setPageByStatus({
       all: 1,
       processed: 1,
-      multimodal_processed: 1,
+      preprocessed: 1,
       processing: 1,
       pending: 1,
       failed: 1,
@@ -1042,7 +1042,7 @@ export default function DocumentManager() {
         const legacyDocs: DocsStatusesResponse = {
           statuses: {
             processed: response.documents.filter(doc => doc.status === 'processed'),
-            multimodal_processed: response.documents.filter(doc => doc.status === 'multimodal_processed'),
+            preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
             processing: response.documents.filter(doc => doc.status === 'processing'),
             pending: response.documents.filter(doc => doc.status === 'pending'),
             failed: response.documents.filter(doc => doc.status === 'failed')
@@ -1121,7 +1121,7 @@ export default function DocumentManager() {
     // Get new status counts
     const newStatusCounts = {
       processed: docs?.statuses?.processed?.length || 0,
-      multimodal_processed: docs?.statuses?.multimodal_processed?.length || 0,
+      preprocessed: docs?.statuses?.preprocessed?.length || 0,
       processing: docs?.statuses?.processing?.length || 0,
       pending: docs?.statuses?.pending?.length || 0,
       failed: docs?.statuses?.failed?.length || 0
@@ -1474,12 +1474,12 @@ export default function DocumentManager() {
                   </Button>
                   <Button
                     size="sm"
-                    variant={statusFilter === 'multimodal_processed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('multimodal_processed')}
+                    variant={statusFilter === 'preprocessed' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('preprocessed')}
                     disabled={isRefreshing}
                     className={cn(
                       preprocessedCount > 0 ? 'text-purple-600' : 'text-gray-500',
-                      statusFilter === 'multimodal_processed' && 'bg-purple-100 dark:bg-purple-900/30 font-medium border border-purple-400 dark:border-purple-600 shadow-sm'
+                      statusFilter === 'preprocessed' && 'bg-purple-100 dark:bg-purple-900/30 font-medium border border-purple-400 dark:border-purple-600 shadow-sm'
                     )}
                   >
                     {t('documentPanel.documentManager.status.preprocessed')} ({preprocessedCount})
@@ -1707,7 +1707,7 @@ export default function DocumentManager() {
                               {doc.status === 'processed' && (
                                 <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
                               )}
-                              {doc.status === 'multimodal_processed' && (
+                              {doc.status === 'preprocessed' && (
                                 <span className="text-purple-600">{t('documentPanel.documentManager.status.preprocessed')}</span>
                               )}
                               {doc.status === 'processing' && (

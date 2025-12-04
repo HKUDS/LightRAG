@@ -454,7 +454,7 @@ class DocsStatusesResponse(BaseModel):
                             "id": "doc_789",
                             "content_summary": "Document pending final indexing",
                             "content_length": 7200,
-                            "status": "multimodal_processed",
+                            "status": "preprocessed",
                             "created_at": "2025-03-31T09:30:00",
                             "updated_at": "2025-03-31T09:35:00",
                             "track_id": "upload_20250331_093000_xyz789",
