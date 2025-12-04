@@ -14,7 +14,8 @@ export const nodeBorderColorSelected = '#F57F17'
 
 export const edgeColorDarkTheme = '#888888'
 export const edgeColorSelected = '#F57F17'
-export const edgeColorHighlighted = '#FFFFFF'
+export const edgeColorHighlightedDarkTheme = '#F57F17'
+export const edgeColorHighlightedLightTheme = '#F57F17'
 
 export const searchResultLimit = 50
 export const labelListLimit = 100

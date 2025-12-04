@@ -302,6 +302,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
+          // Choose edge highlight color based on theme
+          const edgeHighlightColor = isDarkTheme 
+            ? Constants.edgeColorHighlightedDarkTheme 
+            : Constants.edgeColorHighlightedLightTheme
 
           if (_focusedNode && graph.hasNode(_focusedNode)) {
             try {
@@ -311,7 +315,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
                 }
               } else {
                 if (graph.extremities(edge).includes(_focusedNode)) {
-                  newData.color = Constants.edgeColorHighlighted
+                  newData.color = edgeHighlightColor
                 }
               }
             } catch (error) {
@@ -326,7 +330,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
               if (edge === _selectedEdge) {
                 newData.color = Constants.edgeColorSelected
               } else if (edge === _focusedEdge) {
-                newData.color = Constants.edgeColorHighlighted
+                newData.color = edgeHighlightColor
               } else if (hideUnselectedEdges) {
                 newData.hidden = true
               }
