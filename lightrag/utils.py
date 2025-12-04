@@ -353,8 +353,29 @@ class EmbeddingFunc:
     embedding_dim: int
     func: callable
     max_token_size: int | None = None  # deprecated keep it for compatible only
+    send_dimensions: bool = (
+        False  # Control whether to send embedding_dim to the function
+    )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
+        # Only inject embedding_dim when send_dimensions is True
+        if self.send_dimensions:
+            # Check if user provided embedding_dim parameter
+            if "embedding_dim" in kwargs:
+                user_provided_dim = kwargs["embedding_dim"]
+                # If user's value differs from class attribute, output warning
+                if (
+                    user_provided_dim is not None
+                    and user_provided_dim != self.embedding_dim
+                ):
+                    logger.warning(
+                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
+                        f"using declared embedding_dim={self.embedding_dim} from decorator"
+                    )
+
+            # Inject embedding_dim from decorator
+            kwargs["embedding_dim"] = self.embedding_dim
+
         return await self.func(*args, **kwargs)
 
 
@@ -1795,7 +1816,7 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
         remove Chinese quotes
-        remove English queotes in and around chinese
+        remove English quotes in and around chinese
         Convert non-breaking spaces to regular spaces
         Convert narrow non-breaking spaces after non-digits to regular spaces
 
@@ -2549,6 +2570,52 @@ def apply_source_ids_limit(
         )
 
     return truncated
+
+
+def compute_incremental_chunk_ids(
+    existing_full_chunk_ids: list[str],
+    old_chunk_ids: list[str],
+    new_chunk_ids: list[str],
+) -> list[str]:
+    """
+    Compute incrementally updated chunk IDs based on changes.
+
+    This function applies delta changes (additions and removals) to an existing
+    list of chunk IDs while maintaining order and ensuring deduplication.
+    Delta additions from new_chunk_ids are placed at the end.
+
+    Args:
+        existing_full_chunk_ids: Complete list of existing chunk IDs from storage
+        old_chunk_ids: Previous chunk IDs from source_id (chunks being replaced)
+        new_chunk_ids: New chunk IDs from updated source_id (chunks being added)
+
+    Returns:
+        Updated list of chunk IDs with deduplication
+
+    Example:
+        >>> existing = ['chunk-1', 'chunk-2', 'chunk-3']
+        >>> old = ['chunk-1', 'chunk-2']
+        >>> new = ['chunk-2', 'chunk-4']
+        >>> compute_incremental_chunk_ids(existing, old, new)
+        ['chunk-3', 'chunk-2', 'chunk-4']
+    """
+    # Calculate changes
+    chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
+    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
+
+    # Apply changes to full chunk_ids
+    # Step 1: Remove chunks that are no longer needed
+    updated_chunk_ids = [
+        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+    ]
+
+    # Step 2: Add new chunks (preserving order from new_chunk_ids)
+    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    for cid in new_chunk_ids:
+        if cid in chunks_to_add and cid not in updated_chunk_ids:
+            updated_chunk_ids.append(cid)
+
+    return updated_chunk_ids
 
 
 def subtract_source_ids(
