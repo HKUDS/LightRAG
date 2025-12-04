@@ -66,7 +66,12 @@ lightrag-dev/
 gui/
 
 # Frontend build output (built during PyPI release)
+<<<<<<< HEAD
 lightrag/api/webui/
+=======
+lightrag/api/webui/*
+!lightrag/api/webui/.gitkeep
+>>>>>>> be9e6d16 (Exclude Frontend Build Artifacts from Git Repository)
 
 # unit-test files
 test_*

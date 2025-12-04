@@ -1,0 +1,7 @@
+# This directory will contain the built frontend WebUI
+# 
+# The frontend is built during:
+# - GitHub Actions release workflow (automatic)
+# - Local development with: cd lightrag_webui && bun run build
+#
+# Build output is excluded from git but included in PyPI packages

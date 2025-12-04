@@ -19,14 +19,22 @@ jobs:
 
       # Build frontend WebUI
       - name: Setup Bun
+<<<<<<< HEAD
         uses: oven-sh/setup-bun@v2
+=======
+        uses: oven-sh/setup-bun@v1
+>>>>>>> be9e6d16 (Exclude Frontend Build Artifacts from Git Repository)
         with:
           bun-version: latest
 
       - name: Build Frontend WebUI
         run: |
           cd lightrag_webui
+<<<<<<< HEAD
           bun install --frozen-lockfile
+=======
+          bun install
+>>>>>>> be9e6d16 (Exclude Frontend Build Artifacts from Git Repository)
           bun run build
           cd ..
 
@@ -40,7 +48,11 @@ jobs:
           echo "Frontend files:"
           ls -lh lightrag/api/webui/ | head -10
 
+<<<<<<< HEAD
       - uses: actions/setup-python@v6
+=======
+      - uses: actions/setup-python@v5
+>>>>>>> be9e6d16 (Exclude Frontend Build Artifacts from Git Repository)
         with:
           python-version: "3.x"
 
