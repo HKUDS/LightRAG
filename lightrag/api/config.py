@@ -432,4 +432,83 @@ def update_uvicorn_mode_config():
         )
 
 
-global_args = parse_args()
+# Global configuration with lazy initialization
+_global_args = None
+_initialized = False
+
+
+def initialize_config(args=None, force=False):
+    """Initialize global configuration
+
+    This function allows explicit initialization of the configuration,
+    which is useful for programmatic usage, testing, or embedding LightRAG
+    in other applications.
+
+    Args:
+        args: Pre-parsed argparse.Namespace or None to parse from sys.argv
+        force: Force re-initialization even if already initialized
+
+    Returns:
+        argparse.Namespace: The configured arguments
+
+    Example:
+        # Use parsed command line arguments (default)
+        initialize_config()
+
+        # Use custom configuration programmatically
+        custom_args = argparse.Namespace(
+            host='localhost',
+            port=8080,
+            working_dir='./custom_rag',
+            # ... other config
+        )
+        initialize_config(custom_args)
+    """
+    global _global_args, _initialized
+
+    if _initialized and not force:
+        return _global_args
+
+    _global_args = args if args is not None else parse_args()
+    _initialized = True
+    return _global_args
+
+
+def get_config():
+    """Get global configuration, auto-initializing if needed
+
+    Returns:
+        argparse.Namespace: The configured arguments
+    """
+    if not _initialized:
+        initialize_config()
+    return _global_args
+
+
+class _GlobalArgsProxy:
+    """Proxy object that auto-initializes configuration on first access
+
+    This maintains backward compatibility with existing code while
+    allowing programmatic control over initialization timing.
+    """
+
+    def __getattr__(self, name):
+        if not _initialized:
+            initialize_config()
+        return getattr(_global_args, name)
+
+    def __setattr__(self, name, value):
+        if not _initialized:
+            initialize_config()
+        setattr(_global_args, name, value)
+
+    def __repr__(self):
+        if not _initialized:
+            return "<GlobalArgsProxy: Not initialized>"
+        return repr(_global_args)
+
+
+# Create proxy instance for backward compatibility
+# Existing code like `from config import global_args` continues to work
+# The proxy will auto-initialize on first attribute access
+global_args = _GlobalArgsProxy()

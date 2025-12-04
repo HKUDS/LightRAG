@@ -35,6 +35,11 @@ def check_and_install_dependencies():
 
 
 def main():
+    # Explicitly initialize configuration for Gunicorn mode
+    from lightrag.api.config import initialize_config
+
+    initialize_config()
+
     # Set Gunicorn mode flag for lifespan cleanup detection
     os.environ["LIGHTRAG_GUNICORN_MODE"] = "1"
 
