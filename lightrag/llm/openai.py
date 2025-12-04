@@ -875,6 +875,7 @@ async def azure_openai_embed(
     api_version = (
         api_version
         or os.getenv("AZURE_EMBEDDING_API_VERSION")
+        or os.getenv("AZURE_OPENAI_API_VERSION")
         or os.getenv("OPENAI_API_VERSION")
     )
 
