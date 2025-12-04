@@ -29,15 +29,15 @@ cd lightrag
 
 # Create a Python virtual environment
 uv venv --seed --python 3.12
-source .venv/bin/acivate
+source .venv/bin/activate
 
 # Install in editable mode with API support
 pip install -e ".[api]"
 
 # Build front-end artifacts
 cd lightrag_webui
-bun install --frozen-lockfile --production
-bun run build --emptyOutDir
+bun install --frozen-lockfile
+bun run build
 cd ..
 ```
 
@@ -119,37 +119,13 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 ### Launching LightRAG Server with Docker
 
-* Prepare the .env file:
-    Create a personalized .env file by copying the sample file [`env.example`](env.example). Configure the LLM and embedding parameters according to your requirements.
+Using Docker Compose is the most convenient way to deploy and run the LightRAG Server.
 
-* Create a file named `docker-compose.yml`:
+* Create a project directory.
 
-```yaml
-services:
-  lightrag:
-    container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-      tags:
-        - ghcr.io/hkuds/lightrag:latest
-    ports:
-      - "${PORT:-9621}:9621"
-    volumes:
-      - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
-      - ./data/tiktoken:/app/data/tiktoken
-      - ./config.ini:/app/config.ini
-      - ./.env:/app/.env
-    env_file:
-      - .env
-    environment:
-      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
+* Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
+
+* Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
 
 * Start the LightRAG Server with the following command:
 
@@ -158,11 +134,11 @@ docker compose up
 # If you want the program to run in the background after startup, add the -d parameter at the end of the command.
 ```
 
-> You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./../../docs/DockerDeployment.md).
 
 ### Offline Deployment
 
- For offline or air-gapped environments, see the [Offline Deployment Guide](./../../docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
+Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./../../docs/OfflineDeployment.md).
 
 ### Starting Multiple LightRAG Instances
 
@@ -189,7 +165,8 @@ Configuring an independent working directory and a dedicated `.env` configuratio
 The command-line `workspace` argument and the `WORKSPACE` environment variable in the `.env` file can both be used to specify the workspace name for the current instance, with the command-line argument having higher priority. Here is how workspaces are implemented for different types of storage:
 
 - **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
-- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
 
@@ -485,6 +462,59 @@ The `/query` and `/query/stream` API endpoints include an `enable_rerank` parame
 ```
 RERANK_BY_DEFAULT=False
 ```
+
+### Include Chunk Content in References
+
+By default, the `/query` and `/query/stream` endpoints return references with only `reference_id` and `file_path`. For evaluation, debugging, or citation purposes, you can request the actual retrieved chunk content to be included in references.
+
+The `include_chunk_content` parameter (default: `false`) controls whether the actual text content of retrieved chunks is included in the response references. This is particularly useful for:
+
+- **RAG Evaluation**: Testing systems like RAGAS that need access to retrieved contexts
+- **Debugging**: Verifying what content was actually used to generate the answer
+- **Citation Display**: Showing users the exact text passages that support the response
+- **Transparency**: Providing full visibility into the RAG retrieval process
+
+**Important**: The `content` field is an **array of strings**, where each string represents a chunk from the same file. A single file may correspond to multiple chunks, so the content is returned as a list to preserve chunk boundaries.
+
+**Example API Request:**
+
+```json
+{
+  "query": "What is LightRAG?",
+  "mode": "mix",
+  "include_references": true,
+  "include_chunk_content": true
+}
+```
+
+**Example Response (with chunk content):**
+
+```json
+{
+  "response": "LightRAG is a graph-based RAG system...",
+  "references": [
+    {
+      "reference_id": "1",
+      "file_path": "/documents/intro.md",
+      "content": [
+        "LightRAG is a retrieval-augmented generation system that combines knowledge graphs with vector similarity search...",
+        "The system uses a dual-indexing approach with both vector embeddings and graph structures for enhanced retrieval..."
+      ]
+    },
+    {
+      "reference_id": "2",
+      "file_path": "/documents/features.md",
+      "content": [
+        "The system provides multiple query modes including local, global, hybrid, and mix modes..."
+      ]
+    }
+  ]
+}
+```
+
+**Notes**:
+- This parameter only works when `include_references=true`. Setting `include_chunk_content=true` without including references has no effect.
+- **Breaking Change**: Prior versions returned `content` as a single concatenated string. Now it returns an array of strings to preserve individual chunk boundaries. If you need a single string, join the array elements with your preferred separator (e.g., `"\n\n".join(content)`).
 
 ### .env Examples
 
