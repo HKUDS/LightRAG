@@ -153,7 +153,14 @@
       "showButton": "显示",
       "hideButton": "隐藏",
       "showFileNameTooltip": "显示文件名",
-      "hideFileNameTooltip": "隐藏文件名"
+      "hideFileNameTooltip": "隐藏文件名",
+      "loading": "正在加载文档...",
+      "loadingHint": "请稍候",
+      "emptyWithPipelineTitle": "处理进行中",
+      "emptyWithPipelineDescription": "文档正在流水线中处理。您可以扫描新文档或查看流水线状态。",
+      "scanForDocuments": "扫描文档",
+      "viewPipeline": "查看流水线",
+      "emptyHint": "使用上方按钮上传文档，或扫描输入文件夹中的文档。"
     },
     "pipelineStatus": {
       "title": "流水线状态",

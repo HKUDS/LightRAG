@@ -169,6 +169,7 @@ async def get_tenant_context(
     Multi-tenant requests must include:
     - Authorization header with JWT token containing tenant_id
     - OR X-API-Key header with valid API key
+    - OR no auth if auth is not configured (auth_mode=disabled)
     - X-Tenant-ID header (optional, if not in token)
     - X-KB-ID header (optional, if not in token)
     
@@ -189,9 +190,13 @@ async def get_tenant_context(
     role_str = "viewer"
     metadata = {}
     
-    # Check API Key first
+    # Check if authentication is configured
     api_key = os.getenv("LIGHTRAG_API_KEY") or global_args.key
-    if api_key and x_api_key and x_api_key == api_key:
+    api_key_configured = bool(api_key)
+    auth_configured = bool(auth_handler.accounts)
+    
+    # Check API Key first
+    if api_key_configured and x_api_key and x_api_key == api_key:
         username = "system_admin"
         role_str = "admin"
     elif authorization:
@@ -217,6 +222,10 @@ async def get_tenant_context(
         username = token_data.get("username")
         metadata = token_data.get("metadata", {})
         role_str = token_data.get("role", "viewer")
+    elif not auth_configured and not api_key_configured:
+        # No auth configured - allow unauthenticated access with guest user
+        username = "guest"
+        role_str = "viewer"
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

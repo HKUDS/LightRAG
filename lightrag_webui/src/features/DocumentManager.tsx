@@ -23,6 +23,7 @@ import PaginationControls from '@/components/ui/PaginationControls'
 import {
   scanNewDocuments,
   getDocumentsPaginated,
+  getPipelineStatus,
   DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
@@ -223,6 +224,7 @@ export default function DocumentManager() {
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
+  const setPipelineBusy = useBackendState.use.setPipelineBusy()
 
   // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -810,6 +812,18 @@ export default function DocumentManager() {
       }
       updateComponentState(response);
 
+      // Fetch tenant-specific pipeline status and update global state
+      // This ensures pipelineBusy reflects the current tenant's pipeline, not global state
+      try {
+        const pipelineStatus = await getPipelineStatus();
+        if (isMountedRef.current) {
+          setPipelineBusy(pipelineStatus.busy);
+        }
+      } catch (pipelineErr) {
+        // Silently ignore pipeline status fetch errors - not critical
+        console.warn('[DocumentManager] Failed to fetch pipeline status:', pipelineErr);
+      }
+
     } catch (err) {
       if (isMountedRef.current) {
         const errorClassification = classifyError(err);
@@ -833,7 +847,7 @@ export default function DocumentManager() {
         setIsRefreshing(false);
       }
     }
-  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState, withTimeout, classifyError, recordFailure]);
+  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState, withTimeout, classifyError, recordFailure, setPipelineBusy, isTenantContextReady]);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (

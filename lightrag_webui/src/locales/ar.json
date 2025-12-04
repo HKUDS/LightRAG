@@ -153,7 +153,14 @@
       "showButton": "عرض",
       "hideButton": "إخفاء",
       "showFileNameTooltip": "عرض اسم الملف",
-      "hideFileNameTooltip": "إخفاء اسم الملف"
+      "hideFileNameTooltip": "إخفاء اسم الملف",
+      "loading": "جارٍ تحميل المستندات...",
+      "loadingHint": "قد يستغرق هذا لحظة",
+      "emptyWithPipelineTitle": "المعالجة قيد التقدم",
+      "emptyWithPipelineDescription": "يتم معالجة المستندات في خط الأنابيب. يمكنك مسح المستندات الجديدة أو عرض حالة خط الأنابيب.",
+      "scanForDocuments": "مسح المستندات",
+      "viewPipeline": "عرض خط الأنابيب",
+      "emptyHint": "قم بتحميل المستندات باستخدام الزر أعلاه أو امسح المستندات في مجلد الإدخال."
     },
     "pipelineStatus": {
       "title": "حالة خط الأنابيب",

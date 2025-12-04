@@ -153,7 +153,14 @@
       "showButton": "Show",
       "hideButton": "Hide",
       "showFileNameTooltip": "Show file name",
-      "hideFileNameTooltip": "Hide file name"
+      "hideFileNameTooltip": "Hide file name",
+      "loading": "Loading documents...",
+      "loadingHint": "This may take a moment",
+      "emptyWithPipelineTitle": "Processing in Progress",
+      "emptyWithPipelineDescription": "Documents are being processed in the pipeline. You can scan for new documents or view the pipeline status.",
+      "scanForDocuments": "Scan for Documents",
+      "viewPipeline": "View Pipeline",
+      "emptyHint": "Upload documents using the button above or scan for documents in the input folder."
     },
     "pipelineStatus": {
       "title": "Pipeline Status",

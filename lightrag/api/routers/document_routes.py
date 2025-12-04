@@ -2081,7 +2081,10 @@ def create_document_routes(
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        background_tasks: BackgroundTasks,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -2089,14 +2092,18 @@ def create_document_routes(
         and processes them. If a scanning process is already running, it returns a status indicating
         that fact.
 
+        Args:
+            background_tasks: FastAPI BackgroundTasks for async processing
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
+
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
         """
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
 
-        # Start the scanning process in the background with track_id
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        # Start the scanning process in the background with track_id (use tenant-specific RAG)
+        background_tasks.add_task(run_scanning_process, tenant_rag, doc_manager, track_id)
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -2107,7 +2114,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks, 
+        file: UploadFile = File(...),
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
     ):
         """
         Upload a file to the input directory and index it.
@@ -2119,6 +2128,7 @@ def create_document_routes(
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -2137,8 +2147,8 @@ def create_document_routes(
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
 
-            # Check if filename already exists in doc_status storage
-            existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
+            # Check if filename already exists in doc_status storage (tenant-specific)
+            existing_doc_data = await tenant_rag.doc_status.get_doc_by_file_path(safe_filename)
             if existing_doc_data:
                 # Get document status and track_id from existing document
                 status = existing_doc_data.get("status", "unknown")
@@ -2164,8 +2174,8 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            # Add to background tasks and get track_id (use tenant-specific RAG)
+            background_tasks.add_task(pipeline_index_file, tenant_rag, file_path, track_id)
 
             return InsertResponse(
                 status="success",
@@ -2182,7 +2192,9 @@ def create_document_routes(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
-        request: InsertTextRequest, background_tasks: BackgroundTasks
+        request: InsertTextRequest, 
+        background_tasks: BackgroundTasks,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
     ):
         """
         Insert text into the RAG system.
@@ -2193,6 +2205,7 @@ def create_document_routes(
         Args:
             request (InsertTextRequest): The request body containing the text to be inserted.
             background_tasks: FastAPI BackgroundTasks for async processing
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             InsertResponse: A response object containing the status of the operation.
@@ -2201,13 +2214,13 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            # Check if file_source already exists in doc_status storage
+            # Check if file_source already exists in doc_status storage (tenant-specific)
             if (
                 request.file_source
                 and request.file_source.strip()
                 and request.file_source != "unknown_source"
             ):
-                existing_doc_data = await rag.doc_status.get_doc_by_file_path(
+                existing_doc_data = await tenant_rag.doc_status.get_doc_by_file_path(
                     request.file_source
                 )
                 if existing_doc_data:
@@ -2221,10 +2234,10 @@ def create_document_routes(
                         track_id=existing_track_id,
                     )
 
-            # Check if content already exists by computing content hash (doc_id)
+            # Check if content already exists by computing content hash (doc_id) (tenant-specific)
             sanitized_text = sanitize_text_for_encoding(request.text)
             content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-            existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+            existing_doc = await tenant_rag.doc_status.get_by_id(content_doc_id)
             if existing_doc:
                 # Content already exists, return duplicated with existing track_id
                 status = existing_doc.get("status", "unknown")
@@ -2240,7 +2253,7 @@ def create_document_routes(
 
             background_tasks.add_task(
                 pipeline_index_texts,
-                rag,
+                tenant_rag,
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
@@ -2262,7 +2275,9 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
-        request: InsertTextsRequest, background_tasks: BackgroundTasks
+        request: InsertTextsRequest, 
+        background_tasks: BackgroundTasks,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
     ):
         """
         Insert multiple texts into the RAG system.
@@ -2273,6 +2288,7 @@ def create_document_routes(
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
             background_tasks: FastAPI BackgroundTasks for async processing
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             InsertResponse: A response object containing the status of the operation.
@@ -2281,7 +2297,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            # Check if any file_sources already exist in doc_status storage
+            # Check if any file_sources already exist in doc_status storage (tenant-specific)
             if request.file_sources:
                 for file_source in request.file_sources:
                     if (
@@ -2289,7 +2305,7 @@ def create_document_routes(
                         and file_source.strip()
                         and file_source != "unknown_source"
                     ):
-                        existing_doc_data = await rag.doc_status.get_doc_by_file_path(
+                        existing_doc_data = await tenant_rag.doc_status.get_doc_by_file_path(
                             file_source
                         )
                         if existing_doc_data:
@@ -2303,11 +2319,11 @@ def create_document_routes(
                                 track_id=existing_track_id,
                             )
 
-            # Check if any content already exists by computing content hash (doc_id)
+            # Check if any content already exists by computing content hash (doc_id) (tenant-specific)
             for text in request.texts:
                 sanitized_text = sanitize_text_for_encoding(text)
                 content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-                existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+                existing_doc = await tenant_rag.doc_status.get_by_id(content_doc_id)
                 if existing_doc:
                     # Content already exists, return duplicated with existing track_id
                     status = existing_doc.get("status", "unknown")
@@ -2323,7 +2339,7 @@ def create_document_routes(
 
             background_tasks.add_task(
                 pipeline_index_texts,
-                rag,
+                tenant_rag,
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
@@ -2342,13 +2358,18 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Clear all documents from the RAG system.
 
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
         from the input directory.
+
+        Args:
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             ClearDocumentsResponse: A response object containing the status and message.
@@ -2368,12 +2389,12 @@ def create_document_routes(
             get_namespace_lock,
         )
 
-        # Get pipeline status and lock
+        # Get pipeline status and lock (tenant-specific)
         pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
+            "pipeline_status", workspace=tenant_rag.workspace
         )
         pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=rag.workspace
+            "pipeline_status", workspace=tenant_rag.workspace
         )
 
         # Check and set status with lock
@@ -2403,20 +2424,20 @@ def create_document_routes(
             )
 
         try:
-            # Use drop method to clear all data
+            # Use drop method to clear all data (tenant-specific)
             drop_tasks = []
             storages = [
-                rag.text_chunks,
-                rag.full_docs,
-                rag.full_entities,
-                rag.full_relations,
-                rag.entity_chunks,
-                rag.relation_chunks,
-                rag.entities_vdb,
-                rag.relationships_vdb,
-                rag.chunks_vdb,
-                rag.chunk_entity_relation_graph,
-                rag.doc_status,
+                tenant_rag.text_chunks,
+                tenant_rag.full_docs,
+                tenant_rag.full_entities,
+                tenant_rag.full_relations,
+                tenant_rag.entity_chunks,
+                tenant_rag.relation_chunks,
+                tenant_rag.entities_vdb,
+                tenant_rag.relationships_vdb,
+                tenant_rag.chunks_vdb,
+                tenant_rag.chunk_entity_relation_graph,
+                tenant_rag.doc_status,
             ]
 
             # Log storage drop start
@@ -2760,6 +2781,7 @@ def create_document_routes(
     async def delete_document(
         delete_request: DeleteDocRequest,
         background_tasks: BackgroundTasks,
+        tenant_rag: LightRAG = Depends(get_tenant_rag),
     ) -> DeleteDocByIdResponse:
         """
         Delete documents and all their associated data by their IDs using background processing.
@@ -2774,6 +2796,7 @@ def create_document_routes(
         Args:
             delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
             background_tasks: FastAPI BackgroundTasks for async processing
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
@@ -2793,10 +2816,10 @@ def create_document_routes(
             )
 
             pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=tenant_rag.workspace
             )
             pipeline_status_lock = get_namespace_lock(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=tenant_rag.workspace
             )
 
             # Check if pipeline is busy with proper lock
@@ -2808,10 +2831,10 @@ def create_document_routes(
                         doc_id=", ".join(doc_ids),
                     )
 
-            # Add deletion task to background tasks
+            # Add deletion task to background tasks (use tenant-specific RAG)
             background_tasks.add_task(
                 background_delete_documents,
-                rag,
+                tenant_rag,
                 doc_manager,
                 doc_ids,
                 delete_request.delete_file,
@@ -2835,7 +2858,10 @@ def create_document_routes(
         response_model=ClearCacheResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def clear_cache(request: ClearCacheRequest):
+    async def clear_cache(
+        request: ClearCacheRequest,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Clear all cache data from the LLM response cache storage.
 
@@ -2844,6 +2870,7 @@ def create_document_routes(
 
         Args:
             request (ClearCacheRequest): The request body (ignored for compatibility).
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             ClearCacheResponse: A response object containing the status and message.
@@ -2852,8 +2879,8 @@ def create_document_routes(
             HTTPException: If an error occurs during cache clearing (500).
         """
         try:
-            # Call the aclear_cache method (no modes parameter)
-            await rag.aclear_cache()
+            # Call the aclear_cache method (no modes parameter) - tenant-specific
+            await tenant_rag.aclear_cache()
 
             # Prepare success message
             message = "Successfully cleared all cache"
@@ -2869,12 +2896,16 @@ def create_document_routes(
         response_model=DeletionResult,
         dependencies=[Depends(combined_auth)],
     )
-    async def delete_entity(request: DeleteEntityRequest):
+    async def delete_entity(
+        request: DeleteEntityRequest,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Delete an entity and all its relationships from the knowledge graph.
 
         Args:
             request (DeleteEntityRequest): The request body containing the entity name.
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -2883,7 +2914,7 @@ def create_document_routes(
             HTTPException: If the entity is not found (404) or an error occurs (500).
         """
         try:
-            result = await rag.adelete_by_entity(entity_name=request.entity_name)
+            result = await tenant_rag.adelete_by_entity(entity_name=request.entity_name)
             if result.status == "not_found":
                 raise HTTPException(status_code=404, detail=result.message)
             if result.status == "fail":
@@ -2904,12 +2935,16 @@ def create_document_routes(
         response_model=DeletionResult,
         dependencies=[Depends(combined_auth)],
     )
-    async def delete_relation(request: DeleteRelationRequest):
+    async def delete_relation(
+        request: DeleteRelationRequest,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Delete a relationship between two entities from the knowledge graph.
 
         Args:
             request (DeleteRelationRequest): The request body containing the source and target entity names.
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -2918,7 +2953,7 @@ def create_document_routes(
             HTTPException: If the relation is not found (404) or an error occurs (500).
         """
         try:
-            result = await rag.adelete_by_relation(
+            result = await tenant_rag.adelete_by_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
             )
@@ -3139,7 +3174,10 @@ def create_document_routes(
         response_model=ReprocessResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+    async def reprocess_failed_documents(
+        background_tasks: BackgroundTasks,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Reprocess failed and pending documents.
 
@@ -3156,6 +3194,10 @@ def create_document_routes(
         pipeline status. The reprocessed documents retain their original track_id from
         initial upload, so use their original track_id to monitor progress.
 
+        Args:
+            background_tasks: FastAPI BackgroundTasks for async processing
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
+
         Returns:
             ReprocessResponse: Response with status and message.
                 track_id is always empty string because reprocessed documents retain
@@ -3165,9 +3207,9 @@ def create_document_routes(
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
         try:
-            # Start the reprocessing in the background
+            # Start the reprocessing in the background (use tenant-specific RAG)
             # Note: Reprocessed documents retain their original track_id from initial upload
-            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+            background_tasks.add_task(tenant_rag.apipeline_process_enqueue_documents)
             logger.info("Reprocessing of failed documents initiated")
 
             return ReprocessResponse(
@@ -3185,7 +3227,9 @@ def create_document_routes(
         response_model=CancelPipelineResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def cancel_pipeline():
+    async def cancel_pipeline(
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
         """
         Request cancellation of the currently running pipeline.
 
@@ -3197,6 +3241,9 @@ def create_document_routes(
 
         The cancellation is graceful and ensures data consistency. Documents that have
         completed processing will remain in PROCESSED status.
+
+        Args:
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
 
         Returns:
             CancelPipelineResponse: Response with status and message
@@ -3213,10 +3260,10 @@ def create_document_routes(
             )
 
             pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=tenant_rag.workspace
             )
             pipeline_status_lock = get_namespace_lock(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=tenant_rag.workspace
             )
 
             async with pipeline_status_lock:

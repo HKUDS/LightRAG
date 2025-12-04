@@ -153,7 +153,14 @@
       "showButton": "Afficher",
       "hideButton": "Masquer",
       "showFileNameTooltip": "Afficher le nom du fichier",
-      "hideFileNameTooltip": "Masquer le nom du fichier"
+      "hideFileNameTooltip": "Masquer le nom du fichier",
+      "loading": "Chargement des documents...",
+      "loadingHint": "Cela peut prendre un moment",
+      "emptyWithPipelineTitle": "Traitement en cours",
+      "emptyWithPipelineDescription": "Les documents sont en cours de traitement dans le pipeline. Vous pouvez scanner de nouveaux documents ou voir l'état du pipeline.",
+      "scanForDocuments": "Scanner les documents",
+      "viewPipeline": "Voir le pipeline",
+      "emptyHint": "Téléchargez des documents à l'aide du bouton ci-dessus ou scannez les documents dans le dossier d'entrée."
     },
     "pipelineStatus": {
       "title": "État du Pipeline",
