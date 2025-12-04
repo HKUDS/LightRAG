@@ -448,6 +448,10 @@ async def initialize_rag():
     return rag
 ```
 
+> **关于嵌入函数封装的重要说明：**
+>
+> `EmbeddingFunc` 不能嵌套封装。已经被 `@wrap_embedding_func_with_attrs` 装饰过的嵌入函数（如 `openai_embed`、`ollama_embed` 等）不能再次使用 `EmbeddingFunc()` 封装。这就是为什么在创建自定义嵌入函数时，我们调用 `xxx_embed.func`（底层未封装的函数）而不是直接调用 `xxx_embed`。
+
 </details>
 
 <details>
@@ -552,6 +556,10 @@ rag = LightRAG(
     embedding_func=embedding_func,  # 直接传入装饰后的函数
 )
 ```
+
+> **关于嵌入函数封装的重要说明：**
+>
+> `EmbeddingFunc` 不能嵌套封装。已经被 `@wrap_embedding_func_with_attrs` 装饰过的嵌入函数（如 `openai_embed`、`ollama_embed` 等）不能再次使用 `EmbeddingFunc()` 封装。这就是为什么在创建自定义嵌入函数时，我们调用 `xxx_embed.func`（底层未封装的函数）而不是直接调用 `xxx_embed`。
 
 * **低RAM GPU**
 
