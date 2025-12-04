@@ -1579,6 +1579,7 @@ async def _merge_nodes_then_upsert(
 
     truncation_info = ""
     dd_message = ""
+    has_placeholder = False  # Initialize to track placeholder in file paths
 
     # Combine already_description with sorted new sorted descriptions
     description_list = already_description + sorted_descriptions
@@ -1620,7 +1621,15 @@ async def _merge_nodes_then_upsert(
 
         # Add truncation info from apply_source_ids_limit if truncation occurred
         if len(source_ids) < len(full_source_ids):
-            truncation_info = f"{limit_method}:{len(source_ids)}/{len(full_source_ids)}"
+            # Add + sign if has_placeholder is True, indicating actual file count is higher
+            full_source_count_str = (
+                f"{len(full_source_ids)}+"
+                if has_placeholder
+                else str(len(full_source_ids))
+            )
+            truncation_info = (
+                f"{limit_method}:{len(source_ids)}/{full_source_count_str}"
+            )
 
         if dd_message or truncation_info:
             status_message += f" ({', '.join([truncation_info, dd_message])})"
@@ -1648,6 +1657,7 @@ async def _merge_nodes_then_upsert(
         # Collect and apply limit
         file_paths_list = []
         seen_paths = set()
+        has_placeholder = False  # Track if already_file_paths contains placeholder
 
         # Get placeholder to filter it out
         file_path_placeholder = global_config.get(
@@ -1656,12 +1666,12 @@ async def _merge_nodes_then_upsert(
 
         # Collect from already_file_paths, excluding placeholder
         for fp in already_file_paths:
+            # Check if this is a placeholder record
+            if fp and fp.startswith(f"...{file_path_placeholder}"):
+                has_placeholder = True
+                continue
             # Skip placeholders (format: "...{placeholder}(showing X of Y)...")
-            if (
-                fp
-                and not fp.startswith(f"...{file_path_placeholder}")
-                and fp not in seen_paths
-            ):
+            if fp and fp not in seen_paths:
                 file_paths_list.append(fp)
                 seen_paths.add(fp)
 
@@ -1860,6 +1870,7 @@ async def _merge_edges_then_upsert(
 
     truncation_info = ""
     dd_message = ""
+    has_placeholder = False  # Initialize to track placeholder in file paths
 
     # Combine already_description with sorted new descriptions
     description_list = already_description + sorted_descriptions
@@ -1904,7 +1915,15 @@ async def _merge_edges_then_upsert(
 
         # Add truncation info from apply_source_ids_limit if truncation occurred
         if len(source_ids) < len(full_source_ids):
-            truncation_info = f"{limit_method}:{len(source_ids)}/{len(full_source_ids)}"
+            # Add + sign if has_placeholder is True, indicating actual file count is higher
+            full_source_count_str = (
+                f"{len(full_source_ids)}+"
+                if has_placeholder
+                else str(len(full_source_ids))
+            )
+            truncation_info = (
+                f"{limit_method}:{len(source_ids)}/{full_source_count_str}"
+            )
 
         if dd_message or truncation_info:
             status_message += f" ({', '.join([truncation_info, dd_message])})"
@@ -1947,6 +1966,7 @@ async def _merge_edges_then_upsert(
         # Collect and apply limit
         file_paths_list = []
         seen_paths = set()
+        has_placeholder = False  # Track if already_file_paths contains placeholder
 
         # Get placeholder to filter it out
         file_path_placeholder = global_config.get(
@@ -1955,12 +1975,12 @@ async def _merge_edges_then_upsert(
 
         # Collect from already_file_paths, excluding placeholder
         for fp in already_file_paths:
+            # Check if this is a placeholder record
+            if fp and fp.startswith(f"...{file_path_placeholder}"):
+                has_placeholder = True
+                continue
             # Skip placeholders (format: "...{placeholder}(showing X of Y)...")
-            if (
-                fp
-                and not fp.startswith(f"...{file_path_placeholder}")
-                and fp not in seen_paths
-            ):
+            if fp and fp not in seen_paths:
                 file_paths_list.append(fp)
                 seen_paths.add(fp)
 
