@@ -70,6 +70,7 @@
       "confirmButton": "نعم",
       "deleteFileOption": "حذف الملفات المرفوعة أيضًا",
       "deleteFileTooltip": "حدد هذا الخيار لحذف الملفات المرفوعة المقابلة على الخادم أيضًا",
+      "deleteLLMCacheOption": "حذف ذاكرة LLM المؤقتة للاستخراج أيضًا",
       "success": "تم بدء تشغيل خط معالجة حذف المستندات بنجاح",
       "failed": "فشل حذف المستندات:\n{{message}}",
       "error": "فشل حذف المستندات:\n{{error}}",
@@ -97,7 +98,7 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
@@ -113,13 +114,11 @@
     },
     "documentManager": {
       "title": "إدارة المستندات",
-      "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
-      "retryFailedButton": "إعادة المحاولة",
-      "retryFailedTooltip": "إعادة معالجة جميع المستندات الفاشلة",
+      "scanButton": "مسح/إعادة محاولة",
+      "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
       "refreshTooltip": "إعادة تعيين قائمة المستندات",
-      "pipelineStatusButton": "حالة خط المعالجة",
-      "pipelineStatusTooltip": "عرض حالة خط المعالجة",
+      "pipelineStatusButton": "خط المعالجة",
+      "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
       "emptyTitle": "لا توجد مستندات",
@@ -156,17 +155,27 @@
       "hideFileNameTooltip": "إخفاء اسم الملف"
     },
     "pipelineStatus": {
-      "title": "حالة خط المعالجة",
-      "busy": "خط المعالجة مشغول",
-      "requestPending": "الطلب معلق",
+      "title": "حالة خط الأنابيب",
+      "busy": "خط الأنابيب مشغول",
+      "requestPending": "طلب معلق",
+      "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
       "progress": "التقدم",
       "unit": "دفعة",
-      "latestMessage": "آخر رسالة",
-      "historyMessages": "سجل الرسائل",
+      "pipelineMessages": "رسائل خط الأنابيب",
+      "cancelButton": "إلغاء",
+      "cancelTooltip": "إلغاء معالجة خط الأنابيب",
+      "cancelConfirmTitle": "تأكيد إلغاء خط الأنابيب",
+      "cancelConfirmDescription": "سيؤدي هذا الإجراء إلى إيقاف معالجة خط الأنابيب الجارية. هل أنت متأكد من أنك تريد المتابعة؟",
+      "cancelConfirmButton": "تأكيد الإلغاء",
+      "cancelInProgress": "الإلغاء قيد التقدم...",
+      "pipelineNotRunning": "خط الأنابيب غير قيد التشغيل",
+      "cancelSuccess": "تم طلب إلغاء خط الأنابيب",
+      "cancelFailed": "فشل إلغاء خط الأنابيب\n{{error}}",
+      "cancelNotBusy": "خط الأنابيب غير قيد التشغيل، لا حاجة للإلغاء",
       "errors": {
-        "fetchFailed": "فشل في جلب حالة خط المعالجة\n{{error}}"
+        "fetchFailed": "فشل في جلب حالة خط الأنابيب\n{{error}}"
       }
     }
   },

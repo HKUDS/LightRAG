@@ -22,7 +22,6 @@ import PaginationControls from '@/components/ui/PaginationControls'
 
 import {
   scanNewDocuments,
-  reprocessFailedDocuments,
   getDocumentsPaginated,
   DocsStatusesResponse,
   DocStatus,
@@ -948,42 +947,6 @@ export default function DocumentManager() {
     }
   }, [t, startPollingInterval, currentTab, health, statusCounts])
 
-  const retryFailedDocuments = useCallback(async () => {
-    try {
-      // Check if component is still mounted before starting the request
-      if (!isMountedRef.current) return;
-
-      const { status, message, track_id: _track_id } = await reprocessFailedDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
-
-      // Check again if component is still mounted after the request completes
-      if (!isMountedRef.current) return;
-
-      // Note: _track_id is available for future use (e.g., progress tracking)
-      toast.message(message || status);
-
-      // Reset health check timer with 1 second delay to avoid race condition
-      useBackendState.getState().resetHealthCheckTimerDelayed(1000);
-
-      // Start fast refresh with 2-second interval immediately after retry
-      startPollingInterval(2000);
-
-      // Set recovery timer to restore normal polling interval after 15 seconds
-      setTimeout(() => {
-        if (isMountedRef.current && currentTab === 'documents' && health) {
-          // Restore intelligent polling interval based on document status
-          const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-          const normalInterval = hasActiveDocuments ? 5000 : 30000;
-          startPollingInterval(normalInterval);
-        }
-      }, 15000); // Restore after 15 seconds
-    } catch (err) {
-      // Only show error if component is still mounted
-      if (isMountedRef.current) {
-        toast.error(errorMessage(err));
-      }
-    }
-  }, [startPollingInterval, currentTab, health, statusCounts])
-
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
     if (newPageSize === pagination.page_size) return;
@@ -1369,16 +1332,6 @@ export default function DocumentManager() {
               size="sm"
             >
               <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={retryFailedDocuments}
-              side="bottom"
-              tooltip={t('documentPanel.documentManager.retryFailedTooltip')}
-              size="sm"
-              disabled={pipelineBusy}
-            >
-              <RotateCcwIcon /> {t('documentPanel.documentManager.retryFailedButton')}
             </Button>
             <Button
               variant="outline"
