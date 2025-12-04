@@ -1,0 +1,20 @@
+services:
+  lightrag:
+    container_name: ${CONTAINER_NAME:-lightrag}
+    image: ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - lightrag_rag_storage:/app/data/rag_storage
+      - lightrag_inputs:/app/data/inputs
+      # конфиг либо печь в образ, либо вынести в отдельный volume/абсолютный путь:
+      # - /var/lib/dokploy/lightrag/config.ini:/app/config.ini:ro
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  lightrag_rag_storage:
+  lightrag_inputs:
