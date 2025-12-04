@@ -11,11 +11,9 @@ This test verifies:
 import os
 import json
 import tempfile
-import pytest
 from lightrag.utils import write_json, load_json, SanitizingJSONEncoder
 
 
-@pytest.mark.offline
 class TestWriteJsonOptimization:
     """Test write_json optimization with two-stage approach"""
 
@@ -210,6 +208,137 @@ class TestWriteJsonOptimization:
         finally:
             os.unlink(temp_file)
 
+    def test_specific_surrogate_udc9a(self):
+        """Test specific surrogate character \\udc9a mentioned in the issue"""
+        # Test the exact surrogate character from the error message:
+        # UnicodeEncodeError: 'utf-8' codec can't encode character '\\udc9a'
+        data_with_udc9a = {
+            "text": "Some text with surrogate\udc9acharacter",
+            "position": 201,  # As mentioned in the error
+            "clean_field": "Normal text",
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+            temp_file = f.name
+
+        try:
+            # Write data - should trigger sanitization
+            needs_reload = write_json(data_with_udc9a, temp_file)
+            assert needs_reload, "Data with \\udc9a should trigger sanitization"
+
+            # Verify surrogate was removed
+            loaded_data = load_json(temp_file)
+            assert loaded_data is not None
+            assert "\udc9a" not in loaded_data["text"], "\\udc9a should be removed"
+            assert (
+                loaded_data["clean_field"] == "Normal text"
+            ), "Clean fields should remain"
+        finally:
+            os.unlink(temp_file)
+
+    def test_migration_with_surrogate_sanitization(self):
+        """Test that migration process handles surrogate characters correctly
+
+        This test simulates the scenario where legacy cache contains surrogate
+        characters and ensures they are cleaned during migration.
+        """
+        # Simulate legacy cache data with surrogate characters
+        legacy_data_with_surrogates = {
+            "cache_entry_1": {
+                "return": "Result with\ud800surrogate",
+                "cache_type": "extract",
+                "original_prompt": "Some\udc9aprompt",
+            },
+            "cache_entry_2": {
+                "return": "Clean result",
+                "cache_type": "query",
+                "original_prompt": "Clean prompt",
+            },
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+            temp_file = f.name
+
+        try:
+            # First write the dirty data directly (simulating legacy cache file)
+            # Use custom encoder to force write even with surrogates
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    legacy_data_with_surrogates,
+                    f,
+                    cls=SanitizingJSONEncoder,
+                    ensure_ascii=False,
+                )
+
+            # Load and verify surrogates were cleaned during initial write
+            loaded_data = load_json(temp_file)
+            assert loaded_data is not None
+
+            # The data should be sanitized
+            assert (
+                "\ud800" not in loaded_data["cache_entry_1"]["return"]
+            ), "Surrogate in return should be removed"
+            assert (
+                "\udc9a" not in loaded_data["cache_entry_1"]["original_prompt"]
+            ), "Surrogate in prompt should be removed"
+
+            # Clean data should remain unchanged
+            assert (
+                loaded_data["cache_entry_2"]["return"] == "Clean result"
+            ), "Clean data should remain"
+
+        finally:
+            os.unlink(temp_file)
+
+    def test_empty_values_after_sanitization(self):
+        """Test that data with empty values after sanitization is properly handled
+
+        Critical edge case: When sanitization results in data with empty string values,
+        we must use 'if cleaned_data is not None' instead of 'if cleaned_data' to ensure
+        proper reload, since truthy check on dict depends on content, not just existence.
+        """
+        # Create data where ALL values are only surrogate characters
+        all_dirty_data = {
+            "key1": "\ud800\udc00\ud801",
+            "key2": "\ud802\ud803",
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+            temp_file = f.name
+
+        try:
+            # Write dirty data - should trigger sanitization
+            needs_reload = write_json(all_dirty_data, temp_file)
+            assert needs_reload, "All-dirty data should trigger sanitization"
+
+            # Load the sanitized data
+            cleaned_data = load_json(temp_file)
+
+            # Critical assertions for the edge case
+            assert cleaned_data is not None, "Cleaned data should not be None"
+            # Sanitization removes surrogates but preserves keys with empty values
+            assert cleaned_data == {
+                "key1": "",
+                "key2": "",
+            }, "Surrogates should be removed, keys preserved"
+            # This dict is truthy because it has keys (even with empty values)
+            assert cleaned_data, "Dict with keys is truthy"
+
+            # Test the actual edge case: empty dict
+            empty_data = {}
+            needs_reload2 = write_json(empty_data, temp_file)
+            assert not needs_reload2, "Empty dict is clean"
+
+            reloaded_empty = load_json(temp_file)
+            assert reloaded_empty is not None, "Empty dict should not be None"
+            assert reloaded_empty == {}, "Empty dict should remain empty"
+            assert (
+                not reloaded_empty
+            ), "Empty dict evaluates to False (the critical check)"
+
+        finally:
+            os.unlink(temp_file)
+
 
 if __name__ == "__main__":
     # Run tests
@@ -241,6 +370,18 @@ if __name__ == "__main__":
 
     print("Running test_empty_and_none_strings...")
     test.test_empty_and_none_strings()
+    print("✓ Passed")
+
+    print("Running test_specific_surrogate_udc9a...")
+    test.test_specific_surrogate_udc9a()
+    print("✓ Passed")
+
+    print("Running test_migration_with_surrogate_sanitization...")
+    test.test_migration_with_surrogate_sanitization()
+    print("✓ Passed")
+
+    print("Running test_empty_values_after_sanitization...")
+    test.test_empty_values_after_sanitization()
     print("✓ Passed")
 
     print("\n✅ All tests passed!")
