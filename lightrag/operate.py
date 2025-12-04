@@ -3789,7 +3789,7 @@ async def _merge_all_chunks(
     return merged_chunks
 
 
-async def _build_llm_context(
+async def _build_context_str(
     entities_context: list[dict],
     relations_context: list[dict],
     merged_chunks: list[dict],
@@ -3889,23 +3889,32 @@ async def _build_llm_context(
         truncated_chunks
     )
 
-    # Rebuild text_units_context with truncated chunks
+    # Rebuild chunks_context with truncated chunks
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    text_units_context = []
+    chunks_context = []
     for i, chunk in enumerate(truncated_chunks):
-        text_units_context.append(
+        chunks_context.append(
             {
                 "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
             }
         )
 
+    text_units_str = "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
+    )
+    reference_list_str = "\n".join(
+        f"[{ref['reference_id']}] {ref['file_path']}"
+        for ref in reference_list
+        if ref["reference_id"]
+    )
+
     logger.info(
-        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(text_units_context)} chunks"
+        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
     )
 
     # not necessary to use LLM to generate a response
-    if not entities_context and not relations_context:
+    if not entities_context and not relations_context and not chunks_context:
         # Return empty raw data structure when no entities/relations
         empty_raw_data = convert_to_user_format(
             [],
@@ -3936,15 +3945,6 @@ async def _build_llm_context(
         if chunk_tracking_log:
             logger.info(f"Final chunks S+F/O: {' '.join(chunk_tracking_log)}")
 
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
-    )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
-
     result = kg_context_template.format(
         entities_str=entities_str,
         relations_str=relations_str,
@@ -3954,7 +3954,7 @@ async def _build_llm_context(
 
     # Always return both context and complete data structure (unified approach)
     logger.debug(
-        f"[_build_llm_context] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
+        f"[_build_context_str] Converting to user format: {len(entities_context)} entities, {len(relations_context)} relations, {len(truncated_chunks)} chunks"
     )
     final_data = convert_to_user_format(
         entities_context,
@@ -3966,7 +3966,7 @@ async def _build_llm_context(
         relation_id_to_original,
     )
     logger.debug(
-        f"[_build_llm_context] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+        f"[_build_context_str] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
     )
     return result, final_data
 
@@ -4043,8 +4043,8 @@ async def _build_query_context(
         return None
 
     # Stage 4: Build final LLM context with dynamic token processing
-    # _build_llm_context now always returns tuple[str, dict]
-    context, raw_data = await _build_llm_context(
+    # _build_context_str now always returns tuple[str, dict]
+    context, raw_data = await _build_context_str(
         entities_context=truncation_result["entities_context"],
         relations_context=truncation_result["relations_context"],
         merged_chunks=merged_chunks,
@@ -4817,10 +4817,10 @@ async def naive_query(
         "final_chunks_count": len(processed_chunks_with_ref_ids),
     }
 
-    # Build text_units_context from processed chunks with reference IDs
-    text_units_context = []
+    # Build chunks_context from processed chunks with reference IDs
+    chunks_context = []
     for i, chunk in enumerate(processed_chunks_with_ref_ids):
-        text_units_context.append(
+        chunks_context.append(
             {
                 "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
@@ -4828,7 +4828,7 @@ async def naive_query(
         )
 
     text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in text_units_context
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
     reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
