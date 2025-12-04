@@ -1,6 +1,6 @@
-# 📊 Portfolio RAG Evaluation Framework
+# 📊 LightRAG Evaluation Framework
 
-RAGAS-based offline evaluation of your LightRAG portfolio system.
+RAGAS-based offline evaluation of your LightRAG system.
 
 ## What is RAGAS?
 
@@ -25,13 +25,15 @@ Instead of requiring human-annotated ground truth, RAGAS uses state-of-the-art e
 ```
 lightrag/evaluation/
 ├── eval_rag_quality.py      # Main evaluation script
-├── test_dataset.json        # Test cases with ground truth
+├── sample_dataset.json        # Generic LightRAG test cases (not personal data)
 ├── __init__.py              # Package init
 ├── results/                 # Output directory
-│   ├── results_YYYYMMDD_HHMMSS.json    # Raw metrics
-│   └── report_YYYYMMDD_HHMMSS.html     # Beautiful HTML report
+│   ├── results_YYYYMMDD_HHMMSS.json    # Raw metrics in JSON
+│   └── results_YYYYMMDD_HHMMSS.csv     # Metrics in CSV format
 └── README.md                # This file
 ```
+
+**Note:** `sample_dataset.json` contains **generic test questions** about LightRAG features (RAG systems, vector databases, deployment, etc.). This is **not personal portfolio data** - you can use these questions directly to test your own LightRAG installation.
 
 ---
 
@@ -68,41 +70,47 @@ Results are saved automatically in `lightrag/evaluation/results/`:
 
 ```
 results/
-├── results_20241023_143022.json     ← Raw metrics (for analysis)
-└── report_20241023_143022.html      ← Beautiful HTML report 🌟
+├── results_20241023_143022.json     ← Raw metrics in JSON format
+└── results_20241023_143022.csv      ← Metrics in CSV format (for spreadsheets)
 ```
 
-**Open the HTML report in your browser to see:**
+**Results include:**
 - ✅ Overall RAGAS score
-- 📊 Per-metric averages
+- 📊 Per-metric averages (Faithfulness, Answer Relevance, Context Recall, Context Precision)
 - 📋 Individual test case results
-- 📈 Performance breakdown
+- 📈 Performance breakdown by question
 
 ---
 
 ## 📝 Test Dataset
 
-Edit `test_dataset.json` to add your own test cases:
+The included `sample_dataset.json` contains **generic example questions** about LightRAG (RAG systems, vector databases, deployment, etc.). **This is NOT personal data** - it's meant as a template.
+
+**Important:** You should **replace these with test questions based on YOUR data** that you've injected into your RAG system.
+
+### Creating Your Own Test Cases
+
+Edit `sample_dataset.json` with questions relevant to your indexed documents:
 
 ```json
 {
   "test_cases": [
     {
-      "question": "Your test question here",
-      "ground_truth": "Expected answer with key information",
-      "project_context": "project_name"
+      "question": "Question based on your documents",
+      "ground_truth": "Expected answer from your data",
+      "context": "topic_category"
     }
   ]
 }
 ```
 
-**Example:**
+**Example (for a technical portfolio):**
 
 ```json
 {
   "question": "Which projects use PyTorch?",
   "ground_truth": "The Neural ODE Project uses PyTorch with TorchODE library for continuous-time neural networks.",
-  "project_context": "neural_ode_project"
+  "context": "ml_projects"
 }
 ```
 
@@ -229,18 +237,21 @@ for i in range(3):
 
 ---
 
-## 🎯 For Portfolio/Interview
+## 🎯 Using Evaluation Results
 
-**What to Highlight:**
+**What the Metrics Tell You:**
 
-1. ✅ **Quality Metrics**: "RAG system achieves 85% RAGAS score"
-2. ✅ **Evaluation Framework**: "Automated quality assessment with RAGAS"
-3. ✅ **Best Practices**: "Offline evaluation pipeline for continuous improvement"
-4. ✅ **Production-Ready**: "Metrics-driven system optimization"
+1. ✅ **Quality Metrics**: Overall RAGAS score indicates system health
+2. ✅ **Evaluation Framework**: Automated quality assessment with RAGAS
+3. ✅ **Best Practices**: Offline evaluation pipeline for continuous improvement
+4. ✅ **Production-Ready**: Metrics-driven system optimization
 
-**Example Statement:**
+**Example Use Cases:**
 
-> "I built an evaluation framework using RAGAS that measures RAG quality across faithfulness, relevance, and context coverage. The system achieves 85% average RAGAS score, with automated HTML reports for quality tracking."
+- Track RAG quality over time as you update your documents
+- Compare different retrieval modes (local, global, hybrid, mix)
+- Measure impact of chunking strategy changes
+- Validate system performance before deployment
 
 ---
 
@@ -268,7 +279,7 @@ for i in range(3):
 pip install ragas datasets
 ```
 
-### "No test_dataset.json found"
+### "No sample_dataset.json found"
 
 Make sure you're running from the project root:
 
@@ -297,7 +308,7 @@ Current implementation uses ground truth as mock responses. Results will show pe
 
 ## 📝 Next Steps
 
-1. ✅ Review test dataset in `test_dataset.json`
+1. ✅ Review test dataset in `sample_dataset.json`
 2. ✅ Run `python lightrag/evaluation/eval_rag_quality.py`
 3. ✅ Open the HTML report in browser
 4. 🔄 Integrate with actual LightRAG system
