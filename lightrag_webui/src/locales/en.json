@@ -318,9 +318,9 @@
           "description": "Description",
           "entity_id": "Name",
           "entity_type": "Type",
-          "source_id": "SrcID",
+          "source_id": "C-ID",
           "Neighbour": "Neigh",
-          "file_path": "Source",
+          "file_path": "File",
           "keywords": "Keys",
           "weight": "Weight"
         }
