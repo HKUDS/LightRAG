@@ -260,13 +260,15 @@ class LightRAG:
         - `content`: The text to be split into chunks.
         - `split_by_character`: The character to split the text on. If None, the text is split into chunks of `chunk_token_size` tokens.
         - `split_by_character_only`: If True, the text is split only on the specified character.
-        - `chunk_token_size`: The maximum number of tokens per chunk.
         - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
+        - `chunk_token_size`: The maximum number of tokens per chunk.
+
 
     The function should return a list of dictionaries (or an awaitable that resolves to a list),
     where each dictionary contains the following keys:
-        - `tokens`: The number of tokens in the chunk.
-        - `content`: The text content of the chunk.
+        - `tokens` (int): The number of tokens in the chunk.
+        - `content` (str): The text content of the chunk.
+        - `chunk_order_index` (int): Zero-based index indicating the chunk's order in the document.
 
     Defaults to `chunking_by_token_size` if not specified.
     """
@@ -2948,6 +2950,26 @@ class LightRAG:
         data across different storage layers are removed or rebuiled. If entities or relationships
         are partially affected, they will be rebuilded using LLM cached from remaining documents.
 
+        **Concurrency Control Design:**
+
+        This function implements a pipeline-based concurrency control to prevent data corruption:
+
+        1. **Single Document Deletion** (when WE acquire pipeline):
+           - Sets job_name to "Single document deletion" (NOT starting with "deleting")
+           - Prevents other adelete_by_doc_id calls from running concurrently
+           - Ensures exclusive access to graph operations for this deletion
+
+        2. **Batch Document Deletion** (when background_delete_documents acquires pipeline):
+           - Sets job_name to "Deleting {N} Documents" (starts with "deleting")
+           - Allows multiple adelete_by_doc_id calls to join the deletion queue
+           - Each call validates the job name to ensure it's part of a deletion operation
+
+        The validation logic `if not job_name.startswith("deleting") or "document" not in job_name`
+        ensures that:
+        - adelete_by_doc_id can only run when pipeline is idle OR during batch deletion
+        - Prevents concurrent single deletions that could cause race conditions
+        - Rejects operations when pipeline is busy with non-deletion tasks
+
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
@@ -2955,23 +2977,61 @@ class LightRAG:
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
-                - `status` (str): "success", "not_found", or "failure".
+                - `status` (str): "success", "not_found", "not_allowed", or "failure".
                 - `doc_id` (str): The ID of the document attempted to be deleted.
                 - `message` (str): A summary of the operation's result.
-                - `status_code` (int): HTTP status code (e.g., 200, 404, 500).
+                - `status_code` (int): HTTP status code (e.g., 200, 404, 403, 500).
                 - `file_path` (str | None): The file path of the deleted document, if available.
         """
-        deletion_operations_started = False
-        original_exception = None
-        doc_llm_cache_ids: list[str] = []
-
-        # Get pipeline status shared data and lock for status updates
+        # Get pipeline status shared data and lock for validation
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
         pipeline_status_lock = get_namespace_lock(
             "pipeline_status", workspace=self.workspace
         )
+
+        # Track whether WE acquired the pipeline
+        we_acquired_pipeline = False
+
+        # Check and acquire pipeline if needed
+        async with pipeline_status_lock:
+            if not pipeline_status.get("busy", False):
+                # Pipeline is idle - WE acquire it for this deletion
+                we_acquired_pipeline = True
+                pipeline_status.update(
+                    {
+                        "busy": True,
+                        "job_name": "Single document deletion",
+                        "job_start": datetime.now(timezone.utc).isoformat(),
+                        "docs": 1,
+                        "batchs": 1,
+                        "cur_batch": 0,
+                        "request_pending": False,
+                        "cancellation_requested": False,
+                        "latest_message": f"Starting deletion for document: {doc_id}",
+                    }
+                )
+                # Initialize history messages
+                pipeline_status["history_messages"][:] = [
+                    f"Starting deletion for document: {doc_id}"
+                ]
+            else:
+                # Pipeline already busy - verify it's a deletion job
+                job_name = pipeline_status.get("job_name", "").lower()
+                if not job_name.startswith("deleting") or "document" not in job_name:
+                    return DeletionResult(
+                        status="not_allowed",
+                        doc_id=doc_id,
+                        message=f"Deletion not allowed: current job '{pipeline_status.get('job_name')}' is not a document deletion job",
+                        status_code=403,
+                        file_path=None,
+                    )
+                # Pipeline is busy with deletion - proceed without acquiring
+
+        deletion_operations_started = False
+        original_exception = None
+        doc_llm_cache_ids: list[str] = []
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
@@ -3584,6 +3644,18 @@ class LightRAG:
                 logger.debug(
                     f"No deletion operations were started for document {doc_id}, skipping persistence"
                 )
+
+            # Release pipeline only if WE acquired it
+            if we_acquired_pipeline:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["cancellation_requested"] = False
+                    completion_msg = (
+                        f"Deletion process completed for document: {doc_id}"
+                    )
+                    pipeline_status["latest_message"] = completion_msg
+                    pipeline_status["history_messages"].append(completion_msg)
+                    logger.info(completion_msg)
 
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
