@@ -1,6 +1,7 @@
 # LightRAG Offline Deployment Guide
 
 This guide provides comprehensive instructions for deploying LightRAG in offline environments where internet access is limited or unavailable.
+> Software packages requiring `transformers`, `torch`, or `cuda` will not be included in the offline dependency group. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, are outside the scope of offline installation support. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
 
 If you deploy LightRAG using Docker, there is no need to refer to this document, as the LightRAG Docker image is pre-configured for offline operation.
 

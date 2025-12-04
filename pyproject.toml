@@ -108,8 +108,6 @@ offline-llm = [
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
     "llama-index>=0.9.0,<1.0.0",
-    "transformers>=4.30.0,<5.0.0",
-    "torch>=2.0.0,<2.3.0",
 ]
 
 offline = [
