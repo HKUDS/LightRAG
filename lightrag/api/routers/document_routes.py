@@ -1061,9 +1061,9 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     Features:
     - Each sheet is wrapped with '====================' separators for visual distinction
     - Special characters (tabs, newlines, backslashes) are escaped to prevent structure corruption
-    - Column alignment is preserved across all rows to maintain tabular structure
+    - Trailing empty columns are trimmed per row to reduce token waste
     - Empty rows are preserved as blank lines to maintain row structure
-    - Two-pass processing: determines max column width, then extracts with consistent alignment
+    - Single-pass optimization for better performance on large spreadsheets
 
     Args:
         file_bytes: XLSX file content as bytes
@@ -1133,37 +1133,25 @@ def _extract_xlsx(file_bytes: bytes) -> str:
         safe_title = escape_sheet_title(sheet.title)
         content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
 
-        # Two-pass approach to preserve column alignment without storing rows in memory:
-        # Pass 1: Scan to determine the maximum column width (memory-efficient)
-        max_columns = 0
-        for row in sheet.iter_rows(values_only=True):
-            last_nonempty_idx = -1
-            for idx, cell in enumerate(row):
-                # Check if cell has meaningful content (not None or empty string)
-                if cell is not None and str(cell).strip():
-                    last_nonempty_idx = idx
-
-            if last_nonempty_idx >= 0:
-                max_columns = max(max_columns, last_nonempty_idx + 1)
-
-        # Pass 2: Extract rows with consistent width to preserve column alignment
+        # Single-pass optimization: escape and trim in one iteration
         for row in sheet.iter_rows(values_only=True):
             row_parts = []
+            last_nonempty_idx = -1
 
-            # Build row up to max_columns width
-            for idx in range(max_columns):
-                if idx < len(row):
-                    row_parts.append(escape_cell(row[idx]))
-                else:
-                    row_parts.append("")  # Pad short rows
+            # Build escaped row while tracking last non-empty cell position
+            for idx, cell in enumerate(row):
+                escaped = escape_cell(cell)
+                row_parts.append(escaped)
+                if escaped != "":
+                    last_nonempty_idx = idx
 
-            # Check if row is completely empty
-            if all(part == "" for part in row_parts):
+            # Handle completely empty rows vs rows with data
+            if last_nonempty_idx == -1:
                 # Preserve empty rows as blank lines (maintains row structure)
                 content_parts.append("")
             else:
-                # Join all columns to maintain consistent column count
-                content_parts.append("\t".join(row_parts))
+                # Only join up to last non-empty cell (trim trailing empties)
+                content_parts.append("\t".join(row_parts[: last_nonempty_idx + 1]))
 
     # Final separator for symmetry (makes parsing easier)
     content_parts.append(sheet_separator)
