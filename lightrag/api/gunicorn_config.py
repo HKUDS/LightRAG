@@ -169,8 +169,21 @@ def worker_exit(server, worker):
     """
     Executed when a worker is about to exit.
 
-    This is called for each worker process when it exits. We should only
-    clean up worker-local resources here, NOT the shared Manager.
+    NOTE: When using UvicornWorker (worker_class = "uvicorn.workers.UvicornWorker"),
+    this hook may NOT be called reliably. UvicornWorker has its own lifecycle
+    management that prioritizes ASGI lifespan shutdown events.
+
+    The primary cleanup mechanism is handled by:
+    1. FastAPI lifespan context manager with GUNICORN_CMD_ARGS check (in lightrag_server.py)
+       - Workers skip cleanup when GUNICORN_CMD_ARGS is set
+    2. on_exit() hook for main process cleanup
+
+    This function serves as a defensive fallback for:
+    - Non-UvicornWorker scenarios
+    - Future Gunicorn/Uvicorn behavior changes
+    - Additional safety layer
+
+    When called, we should only clean up worker-local resources, NOT the shared Manager.
     The Manager should only be shut down by the main process in on_exit().
     """
     print("=" * 80)

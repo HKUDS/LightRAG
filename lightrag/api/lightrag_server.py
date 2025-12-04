@@ -328,14 +328,10 @@ def create_app(args):
 
             # In Gunicorn mode with preload_app=True, cleanup is handled by worker_exit/on_exit hooks
             # Only perform cleanup in Uvicorn single-process mode
-            if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
+            if "GUNICORN_CMD_ARGS" not in os.environ:
+
                 # Clean up shared data
-                logger.debug("Unvicorn Mode: finalize shared storage...")
                 finalize_share_data()
-            else:
-                logger.debug(
-                    "Gunicorn Mode: don not finalize shared storage in worker process"
-                )
 
     # Initialize FastAPI
     base_description = (
