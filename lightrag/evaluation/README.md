@@ -1,12 +1,8 @@
-# 📊 LightRAG Evaluation Framework
-
-RAGAS-based offline evaluation of your LightRAG system.
+# 📊 RAGAS-based Evaluation Framework
 
 ## What is RAGAS?
 
-**RAGAS** (Retrieval Augmented Generation Assessment) is a framework for reference-free evaluation of RAG systems using LLMs.
-
-Instead of requiring human-annotated ground truth, RAGAS uses state-of-the-art evaluation metrics:
+**RAGAS** (Retrieval Augmented Generation Assessment) is a framework for reference-free evaluation of RAG systems using LLMs. RAGAS uses state-of-the-art evaluation metrics:
 
 ### Core Metrics
 
@@ -18,9 +14,7 @@ Instead of requiring human-annotated ground truth, RAGAS uses state-of-the-art e
 | **Context Precision** | Is retrieved context clean without irrelevant noise? | > 0.80 |
 | **RAGAS Score** | Overall quality metric (average of above) | > 0.80 |
 
----
-
-## 📁 Structure
+### 📁 LightRAG Evalua'tion Framework Directory Structure
 
 ```
 lightrag/evaluation/
@@ -42,7 +36,7 @@ lightrag/evaluation/
 
 **Quick Test:** Index files from `sample_documents/` into LightRAG, then run the evaluator to reproduce results (~89-100% RAGAS score per question).
 
----
+
 
 ## 🚀 Quick Start
 
@@ -55,7 +49,7 @@ pip install ragas datasets langfuse
 Or use your project dependencies (already included in pyproject.toml):
 
 ```bash
-pip install -e ".[offline-llm]"
+pip install -e ".[evaluation]"
 ```
 
 ### 2. Run Evaluation
@@ -102,7 +96,7 @@ results/
 - 📋 Individual test case results
 - 📈 Performance breakdown by question
 
----
+
 
 ## 📋 Command-Line Arguments
 
@@ -145,7 +139,7 @@ python lightrag/evaluation/eval_rag_quality.py -d /path/to/custom_dataset.json
 python lightrag/evaluation/eval_rag_quality.py --help
 ```
 
----
+
 
 ## ⚙️ Configuration
 
@@ -214,7 +208,7 @@ EVAL_LLM_TIMEOUT=180     # 3-minute timeout per request
 | **Rate limit errors (429)** | Increase `EVAL_LLM_MAX_RETRIES` and decrease `EVAL_MAX_CONCURRENT` |
 | **Request timeouts** | Increase `EVAL_LLM_TIMEOUT` to 180 or higher |
 
----
+
 
 ## 📝 Test Dataset
 
@@ -228,7 +222,7 @@ EVAL_LLM_TIMEOUT=180     # 3-minute timeout per request
     {
       "question": "Your question here",
       "ground_truth": "Expected answer from your data",
-      "context": "topic"
+      "project": "evaluation_project_name"
     }
   ]
 }
@@ -346,11 +340,10 @@ cd /path/to/LightRAG
 python lightrag/evaluation/eval_rag_quality.py
 ```
 
-### "LLM API errors during evaluation"
+### "LightRAG query API errors during evaluation"
 
 The evaluation uses your configured LLM (OpenAI by default). Ensure:
 - API keys are set in `.env`
-- Have sufficient API quota
 - Network connection is stable
 
 ### Evaluation requires running LightRAG API
@@ -360,15 +353,14 @@ The evaluator queries a running LightRAG API server at `http://localhost:9621`. 
 2. Documents are indexed in your LightRAG instance
 3. API is accessible at the configured URL
 
----
+
 
 ## 📝 Next Steps
 
-1. Index sample documents into LightRAG (WebUI or API)
-2. Start LightRAG API server
+1. Start LightRAG API server
+2. Upload sample documents into LightRAG  throught  WebUI
 3. Run `python lightrag/evaluation/eval_rag_quality.py`
 4. Review results (JSON/CSV) in `results/` folder
-5. Adjust entity extraction prompts or retrieval settings based on scores
 
 Evaluation Result Sample:
 
