@@ -99,52 +99,46 @@ class RAGEvaluator:
     async def generate_rag_response(
         self,
         question: str,
-        context: str = None,  # Not used - actual context comes from LightRAG
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """
-        Generate RAG response by calling LightRAG API
-
-        Calls the actual LightRAG /query endpoint instead of using mock data.
+        Generate RAG response by calling LightRAG API.
 
         Args:
-            question: The user query
-            context: Ignored (for compatibility), actual context from LightRAG
+            question: The user query.
 
         Returns:
-            Dict with 'answer' and 'context' keys
+            Dictionary with 'answer' and 'contexts' keys.
+            'contexts' is a list of strings (one per retrieved document).
 
         Raises:
-            Exception: If LightRAG API is unavailable
+            Exception: If LightRAG API is unavailable.
         """
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                # Prepare request to LightRAG API
                 payload = {
                     "query": question,
-                    "mode": "mix",  # Recommended: combines local & global
+                    "mode": "mix",
                     "include_references": True,
                     "response_type": "Multiple Paragraphs",
                     "top_k": 10,
                 }
 
-                # Call LightRAG /query endpoint
                 response = await client.post(
                     f"{self.rag_api_url}/query",
                     json=payload,
                 )
-
-                if response.status_code != 200:
-                    raise Exception(
-                        f"LightRAG API error {response.status_code}: {response.text}"
-                    )
-
+                response.raise_for_status()  # Better error handling
                 result = response.json()
+
+                # Extract text content from each reference document
+                references = result.get("references", [])
+                contexts = [
+                    ref.get("text", "") for ref in references if ref.get("text")
+                ]
 
                 return {
                     "answer": result.get("response", "No response generated"),
-                    "context": json.dumps(result.get("references", []))
-                    if result.get("references")
-                    else "",
+                    "contexts": contexts,  # List of strings, not JSON dump
                 }
 
         except httpx.ConnectError:
@@ -152,6 +146,10 @@ class RAGEvaluator:
                 f"❌ Cannot connect to LightRAG API at {self.rag_api_url}\n"
                 f"   Make sure LightRAG server is running:\n"
                 f"   python -m lightrag.api.lightrag_server"
+            )
+        except httpx.HTTPStatusError as e:
+            raise Exception(
+                f"LightRAG API error {e.response.status_code}: {e.response.text}"
             )
         except Exception as e:
             raise Exception(f"Error calling LightRAG API: {str(e)}")
@@ -178,14 +176,15 @@ class RAGEvaluator:
             # Generate RAG response by calling actual LightRAG API
             rag_response = await self.generate_rag_response(question=question)
 
-            # Prepare dataset for RAGAS evaluation
+            # *** CRITICAL FIX: Use actual retrieved contexts, NOT ground_truth ***
+            retrieved_contexts = rag_response["contexts"]
+
+            # Prepare dataset for RAGAS evaluation with CORRECT contexts
             eval_dataset = Dataset.from_dict(
                 {
                     "question": [question],
                     "answer": [rag_response["answer"]],
-                    "contexts": [
-                        [ground_truth]
-                    ],  # RAGAS expects list of context strings
+                    "contexts": [retrieved_contexts],
                     "ground_truth": [ground_truth],
                 }
             )
