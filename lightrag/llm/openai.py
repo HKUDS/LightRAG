@@ -329,7 +329,10 @@ async def openai_complete_if_cache(
 
                     # Check if choices exists and is not empty
                     if not hasattr(chunk, "choices") or not chunk.choices:
-                        logger.warning(f"Received chunk without choices: {chunk}")
+                        # Azure OpenAI sends content filter results in first chunk without choices
+                        logger.debug(
+                            f"Received chunk without choices (likely Azure content filter): {chunk}"
+                        )
                         continue
 
                     # Check if delta exists
@@ -775,6 +778,7 @@ async def azure_openai_complete_if_cache(
         api_version
         or os.getenv("AZURE_OPENAI_API_VERSION")
         or os.getenv("OPENAI_API_VERSION")
+        or "2024-08-01-preview"
     )
     
     # Pop timeout from kwargs if present (will be handled by openai_complete_if_cache)
@@ -858,6 +862,7 @@ async def azure_openai_embed(
         api_version
         or os.getenv("AZURE_EMBEDDING_API_VERSION")
         or os.getenv("OPENAI_API_VERSION")
+        or "2024-08-01-preview"
     )
     
     # Call the unified implementation with Azure-specific parameters
