@@ -234,49 +234,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                                      causes name conflict (default: False)
 
         Returns:
-            Dict with the following structure:
-            {
-                "status": "success",
-                "message": "Entity updated successfully" | "Entity merged successfully into 'target_name'",
-                "data": {
-                    "entity_name": str,        # Final entity name
-                    "description": str,        # Entity description
-                    "entity_type": str,        # Entity type
-                    "source_id": str,         # Source chunk IDs
-                    ...                       # Other entity properties
-                },
-                "operation_summary": {
-                    "merged": bool,           # Whether entity was merged into another
-                    "merge_status": str,      # "success" | "failed" | "not_attempted"
-                    "merge_error": str | None, # Error message if merge failed
-                    "operation_status": str,  # "success" | "partial_success" | "failure"
-                    "target_entity": str | None, # Target entity name if renaming/merging
-                    "final_entity": str,      # Final entity name after operation
-                    "renamed": bool           # Whether entity was renamed
-                }
-            }
-
-        operation_status values explained:
-            - "success": All operations completed successfully
-                * For simple updates: entity properties updated
-                * For renames: entity renamed successfully
-                * For merges: non-name updates applied AND merge completed
-
-            - "partial_success": Update succeeded but merge failed
-                * Non-name property updates were applied successfully
-                * Merge operation failed (entity not merged)
-                * Original entity still exists with updated properties
-                * Use merge_error for failure details
-
-            - "failure": Operation failed completely
-                * If merge_status == "failed": Merge attempted but both update and merge failed
-                * If merge_status == "not_attempted": Regular update failed
-                * No changes were applied to the entity
-
-        merge_status values explained:
-            - "success": Entity successfully merged into target entity
-            - "failed": Merge operation was attempted but failed
-            - "not_attempted": No merge was attempted (normal update/rename)
+            Dict: Updated entity information with status
 
         Behavior when renaming to an existing entity:
             - If allow_merge=False: Raises ValueError with 400 status (default behavior)
@@ -292,22 +250,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "allow_merge": false
             }
 
-        Example Response (simple update success):
-            {
-                "status": "success",
-                "message": "Entity updated successfully",
-                "data": { ... },
-                "operation_summary": {
-                    "merged": false,
-                    "merge_status": "not_attempted",
-                    "merge_error": null,
-                    "operation_status": "success",
-                    "target_entity": null,
-                    "final_entity": "Tesla",
-                    "renamed": false
-                }
-            }
-
         Example Request (rename with auto-merge):
             POST /graph/entity/edit
             {
@@ -319,38 +261,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "allow_rename": true,
                 "allow_merge": true
             }
-
-        Example Response (merge success):
-            {
-                "status": "success",
-                "message": "Entity merged successfully into 'Elon Musk'",
-                "data": { ... },
-                "operation_summary": {
-                    "merged": true,
-                    "merge_status": "success",
-                    "merge_error": null,
-                    "operation_status": "success",
-                    "target_entity": "Elon Musk",
-                    "final_entity": "Elon Musk",
-                    "renamed": true
-                }
-            }
-
-        Example Response (partial success - update succeeded but merge failed):
-            {
-                "status": "success",
-                "message": "Entity updated successfully",
-                "data": { ... },  # Data reflects updated "Elon Msk" entity
-                "operation_summary": {
-                    "merged": false,
-                    "merge_status": "failed",
-                    "merge_error": "Target entity locked by another operation",
-                    "operation_status": "partial_success",
-                    "target_entity": "Elon Musk",
-                    "final_entity": "Elon Msk",  # Original entity still exists
-                    "renamed": true
-                }
-            }
         """
         try:
             result = await rag.aedit_entity(
@@ -359,41 +269,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 allow_rename=request.allow_rename,
                 allow_merge=request.allow_merge,
             )
-
-            # Extract operation_summary from result, with fallback for backward compatibility
-            operation_summary = result.get(
-                "operation_summary",
-                {
-                    "merged": False,
-                    "merge_status": "not_attempted",
-                    "merge_error": None,
-                    "operation_status": "success",
-                    "target_entity": None,
-                    "final_entity": request.updated_data.get(
-                        "entity_name", request.entity_name
-                    ),
-                    "renamed": request.updated_data.get(
-                        "entity_name", request.entity_name
-                    )
-                    != request.entity_name,
-                },
-            )
-
-            # Separate entity data from operation_summary for clean response
-            entity_data = dict(result)
-            entity_data.pop("operation_summary", None)
-
-            # Generate appropriate response message based on merge status
-            response_message = (
-                f"Entity merged successfully into '{operation_summary['final_entity']}'"
-                if operation_summary.get("merged")
-                else "Entity updated successfully"
-            )
             return {
                 "status": "success",
-                "message": response_message,
-                "data": entity_data,
-                "operation_summary": operation_summary,
+                "message": "Entity updated successfully",
+                "data": result,
             }
         except ValueError as ve:
             logger.error(
