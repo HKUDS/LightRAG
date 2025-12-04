@@ -1061,6 +1061,8 @@ async def pipeline_enqueue_file(
                         else:
                             if not pm.is_installed("pypdf2"):  # type: ignore
                                 pm.install("pypdf2")
+                            if not pm.is_installed("pycryptodome"):  # type: ignore
+                                pm.install("pycryptodome")
                             from PyPDF2 import PdfReader  # type: ignore
                             from io import BytesIO
 
