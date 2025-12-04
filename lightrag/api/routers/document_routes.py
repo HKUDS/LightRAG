@@ -1525,7 +1525,19 @@ async def background_delete_documents(
     try:
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
+            # Check for cancellation at the start of each document deletion
             async with pipeline_status_lock:
+                if pipeline_status.get("cancellation_requested", False):
+                    cancel_msg = f"Deletion cancelled by user at document {i}/{total_docs}. {len(successful_deletions)} deleted, {total_docs - i + 1} remaining."
+                    logger.info(cancel_msg)
+                    pipeline_status["latest_message"] = cancel_msg
+                    pipeline_status["history_messages"].append(cancel_msg)
+                    # Add remaining documents to failed list with cancellation reason
+                    failed_deletions.extend(
+                        doc_ids[i - 1 :]
+                    )  # i-1 because enumerate starts at 1
+                    break  # Exit the loop, remaining documents unchanged
+
                 start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
                 logger.info(start_msg)
                 pipeline_status["cur_batch"] = i
@@ -1686,6 +1698,10 @@ async def background_delete_documents(
         # Final summary and check for pending requests
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
+            pipeline_status["pending_requests"] = False  # Reset pending requests flag
+            pipeline_status["cancellation_requested"] = (
+                False  # Always reset cancellation flag
+            )
             completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
             pipeline_status["latest_message"] = completion_msg
             pipeline_status["history_messages"].append(completion_msg)
@@ -2217,7 +2233,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    # TODO: Deprecated
+    # TODO: Deprecated, use /documents/paginated instead
     @router.get(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )

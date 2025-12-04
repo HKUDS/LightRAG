@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import partial
+from pathlib import Path
 
 import asyncio
 import json
@@ -67,7 +68,7 @@ from dotenv import load_dotenv
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 
 def _truncate_entity_identifier(
