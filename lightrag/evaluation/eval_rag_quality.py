@@ -52,10 +52,10 @@ try:
     from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
+        answer_relevancy,
+        context_precision,
+        context_recall,
+        faithfulness,
     )
     from ragas.llms import LangchainLLMWrapper
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -185,9 +185,13 @@ class RAGEvaluator:
 
     def _display_configuration(self):
         """Display all evaluation configuration settings"""
-        logger.info("EVALUATION CONFIGURATION")
+        logger.info("")
+        logger.info("%s", "=" * 70)
+        logger.info("🔧 EVALUATION CONFIGURATION")
+        logger.info("%s", "=" * 70)
 
-        logger.info("  Evaluation Models:")
+        logger.info("")
+        logger.info("Evaluation Models:")
         logger.info("  • LLM Model:            %s", self.eval_model)
         logger.info("  • Embedding Model:      %s", self.eval_embedding_model)
         if self.eval_base_url:
@@ -196,17 +200,28 @@ class RAGEvaluator:
         else:
             logger.info("  • Endpoint:             OpenAI Official API")
 
-        logger.info("  Concurrency & Rate Limiting:")
+        logger.info("")
+        logger.info("Concurrency & Rate Limiting:")
+        max_concurrent = int(os.getenv("EVAL_MAX_CONCURRENT", "1"))
         query_top_k = int(os.getenv("EVAL_QUERY_TOP_K", "10"))
+        logger.info(
+            "  • Max Concurrent:       %s %s",
+            max_concurrent,
+            "(serial evaluation)" if max_concurrent == 1 else "parallel evaluations",
+        )
         logger.info("  • Query Top-K:          %s Entities/Relations", query_top_k)
         logger.info("  • LLM Max Retries:      %s", self.eval_max_retries)
         logger.info("  • LLM Timeout:          %s seconds", self.eval_timeout)
 
-        logger.info("  Test Configuration:")
+        logger.info("")
+        logger.info("Test Configuration:")
         logger.info("  • Total Test Cases:     %s", len(self.test_cases))
         logger.info("  • Test Dataset:         %s", self.test_dataset_path.name)
         logger.info("  • LightRAG API:         %s", self.rag_api_url)
         logger.info("  • Results Directory:    %s", self.results_dir.name)
+
+        logger.info("%s", "=" * 70)
+        logger.info("")
 
     def _load_test_dataset(self) -> List[Dict[str, str]]:
         """Load test cases from JSON file"""
@@ -380,16 +395,14 @@ class RAGEvaluator:
             )
 
             # Run RAGAS evaluation
-            # IMPORTANT: Create fresh metric instances for each evaluation to avoid
-            # concurrent state conflicts when multiple tasks run in parallel
             try:
                 eval_results = evaluate(
                     dataset=eval_dataset,
                     metrics=[
-                        Faithfulness(),
-                        AnswerRelevancy(),
-                        ContextRecall(),
-                        ContextPrecision(),
+                        faithfulness,
+                        answer_relevancy,
+                        context_recall,
+                        context_precision,
                     ],
                     llm=self.eval_llm,
                     embeddings=self.eval_embeddings,
@@ -465,6 +478,7 @@ class RAGEvaluator:
         logger.info("🚀 Starting RAGAS Evaluation of Portfolio RAG System")
         logger.info("🔧 Concurrent evaluations: %s", max_async)
         logger.info("%s", "=" * 70)
+        logger.info("")
 
         # Create semaphore to limit concurrent evaluations
         semaphore = asyncio.Semaphore(max_async)
@@ -756,11 +770,12 @@ class RAGEvaluator:
 
         # Add a small delay to ensure all buffered output is completely written
         await asyncio.sleep(0.2)
+
         # Flush all output buffers to ensure RAGAS progress bars are fully displayed
+        # before showing our results table
         sys.stdout.flush()
         sys.stderr.flush()
-
-        await asyncio.sleep(0.2)
+        # Make sure the progress bar line ends before logging summary output
         sys.stderr.write("\n")
         sys.stderr.flush()
 
@@ -852,8 +867,14 @@ async def main():
         if len(sys.argv) > 1:
             rag_api_url = sys.argv[1]
 
+        logger.info("")
         logger.info("%s", "=" * 70)
         logger.info("🔍 RAGAS Evaluation - Using Real LightRAG API")
+        logger.info("%s", "=" * 70)
+        if rag_api_url:
+            logger.info("📡 RAG API URL: %s", rag_api_url)
+        else:
+            logger.info("📡 RAG API URL: http://localhost:9621 (default)")
         logger.info("%s", "=" * 70)
 
         evaluator = RAGEvaluator(rag_api_url=rag_api_url)
