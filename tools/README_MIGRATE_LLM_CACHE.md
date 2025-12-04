@@ -93,8 +93,10 @@ Supported KV Storage Types:
 [3] PGKVStorage
 [4] MongoKVStorage
 
-Select Source storage type (1-4): 1
+Select Source storage type (1-4) (Press Enter or 0 to exit): 1
 ```
+
+**Note**: You can press Enter or type `0` at the source storage selection to exit gracefully.
 
 #### 2. Source Storage Validation
 The tool will:
@@ -113,10 +115,23 @@ Initializing Source storage...
 - Connection Status: ✓ Success
 
 Counting cache records...
-- default:extract: 8,500 records
-- default:summary: 234 records
 - Total: 8,734 records
 ```
+
+**Progress Display by Storage Type:**
+- **JsonKVStorage**: Fast in-memory counting, no progress display needed
+- **RedisKVStorage**: Real-time scanning progress
+  ```
+  Scanning Redis keys... found 8,734 records
+  ```
+- **PostgreSQL**: Shows timing if operation takes >1 second
+  ```
+  Counting PostgreSQL records... (took 2.3s)
+  ```
+- **MongoDB**: Shows timing if operation takes >1 second
+  ```
+  Counting MongoDB documents... (took 1.8s)
+  ```
 
 #### 3. Select Target Storage Type
 
@@ -124,11 +139,9 @@ Repeat steps 1-2 to select and validate the target storage.
 
 #### 4. Confirm Migration
 
-Review the migration summary and confirm:
-
 ```
-Migration Confirmation
 ==================================================
+Migration Confirmation
 Source: JsonKVStorage (workspace: space1) - 8,734 records
 Target: MongoKVStorage (workspace: space1) - 0 records
 Batch Size: 1,000 records/batch
