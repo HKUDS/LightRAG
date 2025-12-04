@@ -70,7 +70,6 @@
       "confirmButton": "YES",
       "deleteFileOption": "Also delete uploaded files",
       "deleteFileTooltip": "Check this option to also delete the corresponding uploaded files on the server",
-      "deleteLLMCacheOption": "Also delete extracted LLM cache",
       "success": "Document deletion pipeline started successfully",
       "failed": "Delete Documents Failed:\n{{message}}",
       "error": "Delete Documents Failed:\n{{error}}",
@@ -115,12 +114,12 @@
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan",
-      "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
-      "retryFailedButton": "Retry",
+      "scanTooltip": "Scan documents in input folder",
+      "retryFailedButton": "Retry Failed",
       "retryFailedTooltip": "Retry processing all failed documents",
       "refreshTooltip": "Reset document list",
-      "pipelineStatusButton": "Pipeline",
-      "pipelineStatusTooltip": "View document processing pipeline status",
+      "pipelineStatusButton": "Pipeline Status",
+      "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
@@ -140,7 +139,6 @@
       "status": {
         "all": "All",
         "completed": "Completed",
-        "preprocessed": "Preprocessed",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
@@ -160,25 +158,14 @@
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
       "requestPending": "Request Pending",
-      "cancellationRequested": "Cancellation Requested",
       "jobName": "Job Name",
       "startTime": "Start Time",
       "progress": "Progress",
-      "unit": "Batch",
+      "unit": "batch",
       "latestMessage": "Latest Message",
       "historyMessages": "History Messages",
-      "cancelButton": "Cancel",
-      "cancelTooltip": "Cancel pipeline processing",
-      "cancelConfirmTitle": "Confirm Pipeline Cancellation",
-      "cancelConfirmDescription": "This will interrupt the ongoing pipeline processing. Are you sure you want to continue?",
-      "cancelConfirmButton": "Confirm Cancellation",
-      "cancelInProgress": "Cancellation in progress...",
-      "pipelineNotRunning": "Pipeline not running",
-      "cancelSuccess": "Pipeline cancellation requested",
-      "cancelFailed": "Failed to cancel pipeline\n{{error}}",
-      "cancelNotBusy": "Pipeline is not running, no need to cancel",
       "errors": {
-        "fetchFailed": "Failed to fetch pipeline status\n{{error}}"
+        "fetchFailed": "Failed to get pipeline status\n{{error}}"
       }
     }
   },
@@ -330,9 +317,9 @@
           "description": "Description",
           "entity_id": "Name",
           "entity_type": "Type",
-          "source_id": "C-ID",
+          "source_id": "SrcID",
           "Neighbour": "Neigh",
-          "file_path": "File",
+          "file_path": "Source",
           "keywords": "Keys",
           "weight": "Weight"
         }
@@ -348,14 +335,14 @@
     },
     "search": {
       "placeholder": "Search nodes in page...",
-      "message": "And {{count}} others"
+      "message": "And {count} others"
     },
     "graphLabels": {
       "selectTooltip": "Get subgraph of a node (label)",
       "noLabels": "No matching nodes found",
       "label": "Search node name",
       "placeholder": "Search node name...",
-      "andOthers": "And {{count}} others",
+      "andOthers": "And {count} others",
       "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
       "refreshingTooltip": "Refreshing data..."
