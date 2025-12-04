@@ -1,0 +1,87 @@
+# Frontend build stage
+FROM oven/bun:1 AS frontend-builder
+
+WORKDIR /app
+
+# Copy frontend source code
+COPY lightrag_webui/ ./lightrag_webui/
+
+# Build frontend assets for inclusion in the API package
+RUN cd lightrag_webui \
+    && bun install --frozen-lockfile \
+    && bun run build
+
+# Python build stage
+FROM python:3.12-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# Upgrade packaging tools and install system deps (Rust is required by some wheels)
+RUN pip install --upgrade pip setuptools wheel \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+
+# Copy project metadata and sources
+COPY pyproject.toml .
+COPY setup.py .
+COPY requirements-offline*.txt ./
+COPY lightrag/ ./lightrag/
+
+# Include pre-built frontend assets from the previous stage
+COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
+
+# Install LightRAG with API extras and all offline dependencies
+RUN pip install --user --no-cache-dir --use-pep517 .[api]
+RUN pip install --user --no-cache-dir -r requirements-offline.txt
+
+# Prepare offline cache directory and pre-populate tiktoken data
+RUN mkdir -p /app/data/tiktoken \
+    && lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
+    if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
+
+# Final stage
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --upgrade pip setuptools wheel
+
+# Copy installed packages and application code
+COPY --from=builder /root/.local /root/.local
+COPY --from=builder /app/lightrag ./lightrag
+COPY pyproject.toml .
+COPY setup.py .
+COPY requirements-offline*.txt ./
+
+# Ensure the installed scripts are on PATH
+ENV PATH=/root/.local/bin:$PATH
+
+# Install editable package for runtime (re-using cached wheels) and verify extras
+# IMPORTANT: Must be done BEFORE creating data/ directory to avoid setuptools error
+RUN pip install --no-cache-dir --use-pep517 ".[api]"
+RUN pip install --no-cache-dir -r requirements-offline.txt
+
+# Create persistent data directories AFTER package installation
+RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken
+
+# Copy offline cache into the newly created directory
+COPY --from=builder /app/data/tiktoken /app/data/tiktoken
+
+# Point to the prepared cache
+ENV TIKTOKEN_CACHE_DIR=/app/data/tiktoken
+ENV WORKING_DIR=/app/data/rag_storage
+ENV INPUT_DIR=/app/data/inputs
+
+# Expose API port
+EXPOSE 9621
+
+ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]

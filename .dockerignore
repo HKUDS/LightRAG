@@ -27,6 +27,13 @@ Makefile
 
 # Exclude other projects
 /tests
+/scripts
+/data
+/dickens
+/reproduce
+/output_complete
+/rag_storage
+/inputs
 
 # Python version manager file
 .python-version
@@ -60,5 +67,3 @@ TODO.md
 .github
 .gitignore
 .pre-commit-config.yaml
-
-data/

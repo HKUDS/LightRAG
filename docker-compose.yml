@@ -14,6 +14,7 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
+      # - ./data/tiktoken:/app/data/tiktoken
     env_file:
       - .env
     restart: unless-stopped
