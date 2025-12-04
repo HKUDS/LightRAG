@@ -340,11 +340,12 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       const target = nodeIdMap[edge.target]
       if (source !== undefined && target !== undefined) {
         const sourceNode = rawData.nodes[source]
-        const targetNode = rawData.nodes[target]
         if (!sourceNode) {
           console.error(`Source node ${edge.source} is undefined`)
           continue
         }
+        
+        const targetNode = rawData.nodes[target]
         if (!targetNode) {
           console.error(`Target node ${edge.target} is undefined`)
           continue
