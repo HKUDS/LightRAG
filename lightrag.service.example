@@ -1,5 +1,5 @@
 [Unit]
-Description=LightRAG XYJ Ollama Service
+Description=LightRAG XYJ Service
 After=network.target
 
 [Service]
@@ -8,10 +8,23 @@ User=netman
 # Memory settings
 MemoryHigh=8G
 MemoryMax=12G
-WorkingDirectory=/home/netman/lightrag-xyj
-ExecStart=/home/netman/lightrag-xyj/lightrag-api
+
+# Set the LightRAG installation directory (change this to match your installation path)
+Environment="LIGHTRAG_HOME=/home/netman/lightrag-xyj"
+
+# Set Environment to your Python virtual environment
+Environment="PATH=${LIGHTRAG_HOME}/.venv/bin"
+WorkingDirectory=${LIGHTRAG_HOME}
+ExecStart=${LIGHTRAG_HOME}/.venv/bin/lightrag-server
+# ExecStart=${LIGHTRAG_HOME}/.venv/bin/lightrag-gunicorn
+
+# Kill mode require ExecStart must be gunicorn or unvicorn main process
+KillMode=process
+ExecStop=/bin/kill -s TERM $MAINPID
+TimeoutStopSec=60
+
 Restart=always
-RestartSec=10
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
