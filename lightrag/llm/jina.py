@@ -1,6 +1,4 @@
 import os
-from typing import Final
-
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
@@ -19,9 +17,6 @@ from tenacity import (
     retry_if_exception_type,
 )
 from lightrag.utils import wrap_embedding_func_with_attrs, logger
-
-
-DEFAULT_JINA_EMBED_DIM: Final[int] = 2048
 
 
 async def fetch_data(url, headers, data):
@@ -63,7 +58,7 @@ async def fetch_data(url, headers, data):
             return data_list
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=DEFAULT_JINA_EMBED_DIM)
+@wrap_embedding_func_with_attrs(embedding_dim=2048)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -74,7 +69,7 @@ async def fetch_data(url, headers, data):
 )
 async def jina_embed(
     texts: list[str],
-    embedding_dim: int | None = DEFAULT_JINA_EMBED_DIM,
+    embedding_dim: int = 2048,
     late_chunking: bool = False,
     base_url: str = None,
     api_key: str = None,
@@ -100,10 +95,6 @@ async def jina_embed(
         aiohttp.ClientError: If there is a connection error with the Jina API.
         aiohttp.ClientResponseError: If the Jina API returns an error response.
     """
-    resolved_embedding_dim = (
-        embedding_dim if embedding_dim is not None else DEFAULT_JINA_EMBED_DIM
-    )
-
     if api_key:
         os.environ["JINA_API_KEY"] = api_key
 
@@ -118,7 +109,7 @@ async def jina_embed(
     data = {
         "model": "jina-embeddings-v4",
         "task": "text-matching",
-        "dimensions": resolved_embedding_dim,
+        "dimensions": embedding_dim,
         "embedding_type": "base64",
         "input": texts,
     }
@@ -128,7 +119,7 @@ async def jina_embed(
         data["late_chunking"] = late_chunking
 
     logger.debug(
-        f"Jina embedding request: {len(texts)} texts, dimensions: {resolved_embedding_dim}"
+        f"Jina embedding request: {len(texts)} texts, dimensions: {embedding_dim}"
     )
 
     try:

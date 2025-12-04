@@ -11,7 +11,6 @@ if not pm.is_installed("openai"):
     pm.install("openai")
 
 from openai import (
-    AsyncOpenAI,
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
@@ -27,6 +26,7 @@ from lightrag.utils import (
     safe_unicode_decode,
     logger,
 )
+
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 
@@ -35,6 +35,32 @@ import base64
 from typing import Any, Union
 
 from dotenv import load_dotenv
+
+# Try to import Langfuse for LLM observability (optional)
+# Falls back to standard OpenAI client if not available
+# Langfuse requires proper configuration to work correctly
+LANGFUSE_ENABLED = False
+try:
+    # Check if required Langfuse environment variables are set
+    langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+
+    # Only enable Langfuse if both keys are configured
+    if langfuse_public_key and langfuse_secret_key:
+        from langfuse.openai import AsyncOpenAI
+
+        LANGFUSE_ENABLED = True
+        logger.info("Langfuse observability enabled for OpenAI client")
+    else:
+        from openai import AsyncOpenAI
+
+        logger.debug(
+            "Langfuse environment variables not configured, using standard OpenAI client"
+        )
+except ImportError:
+    from openai import AsyncOpenAI
+
+    logger.debug("Langfuse not available, using standard OpenAI client")
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -370,18 +396,23 @@ async def openai_complete_if_cache(
                         )
 
                 # Ensure resources are released even if no exception occurs
-                if (
-                    iteration_started
-                    and hasattr(response, "aclose")
-                    and callable(getattr(response, "aclose", None))
-                ):
-                    try:
-                        await response.aclose()
-                        logger.debug("Successfully closed stream response")
-                    except Exception as close_error:
-                        logger.warning(
-                            f"Failed to close stream response in finally block: {close_error}"
-                        )
+                # Note: Some wrapped clients (e.g., Langfuse) may not implement aclose() properly
+                if iteration_started and hasattr(response, "aclose"):
+                    aclose_method = getattr(response, "aclose", None)
+                    if callable(aclose_method):
+                        try:
+                            await response.aclose()
+                            logger.debug("Successfully closed stream response")
+                        except (AttributeError, TypeError) as close_error:
+                            # Some wrapper objects may report hasattr(aclose) but fail when called
+                            # This is expected behavior for certain client wrappers
+                            logger.debug(
+                                f"Stream response cleanup not supported by client wrapper: {close_error}"
+                            )
+                        except Exception as close_error:
+                            logger.warning(
+                                f"Unexpected error during stream response cleanup: {close_error}"
+                            )
 
                 # This prevents resource leaks since the caller doesn't handle closing
                 try:
@@ -578,6 +609,7 @@ async def openai_embed(
     model: str = "text-embedding-3-small",
     base_url: str | None = None,
     api_key: str | None = None,
+    embedding_dim: int | None = None,
     client_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
 ) -> np.ndarray:
@@ -588,6 +620,12 @@ async def openai_embed(
         model: The OpenAI embedding model to use.
         base_url: Optional base URL for the OpenAI API.
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
+        embedding_dim: Optional embedding dimension for dynamic dimension reduction.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper.
+            Do NOT manually pass this parameter when calling the function directly.
+            The dimension is controlled by the @wrap_embedding_func_with_attrs decorator.
+            Manually passing a different value will trigger a warning and be ignored.
+            When provided (by EmbeddingFunc), it will be passed to the OpenAI API for dimension reduction.
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
@@ -607,17 +645,27 @@ async def openai_embed(
     )
 
     async with openai_async_client:
-        response = await openai_async_client.embeddings.create(
-            model=model, input=texts, encoding_format="base64"
-        )
-        
+        # Prepare API call parameters
+        api_params = {
+            "model": model,
+            "input": texts,
+            "encoding_format": "base64",
+        }
+
+        # Add dimensions parameter only if embedding_dim is provided
+        if embedding_dim is not None:
+            api_params["dimensions"] = embedding_dim
+
+        # Make API call
+        response = await openai_async_client.embeddings.create(**api_params)
+
         if token_tracker and hasattr(response, "usage"):
             token_counts = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
             token_tracker.add_usage(token_counts)
-        
+
         return np.array(
             [
                 np.array(dp.embedding, dtype=np.float32)
