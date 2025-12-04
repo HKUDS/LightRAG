@@ -445,6 +445,11 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
     )
 
+    # Embedding token limit configuration
+    args.embedding_token_limit = get_env_value(
+        "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
+    )
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 

@@ -777,6 +777,11 @@ def create_app(args):
         send_dimensions=send_dimensions,
     )
 
+    # Set max_token_size if EMBEDDING_TOKEN_LIMIT is provided
+    if args.embedding_token_limit is not None:
+        embedding_func.max_token_size = args.embedding_token_limit
+        logger.info(f"Set embedding max_token_size to {args.embedding_token_limit}")
+
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
     if args.rerank_binding != "null":
