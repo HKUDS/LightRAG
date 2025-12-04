@@ -81,8 +81,8 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@eslint/js": "^9.37.0",
-    "@stylistic/eslint-plugin-js": "^4.4.1",
+    "@eslint/js": "^9.39.1",
+    "@stylistic/eslint-plugin-js": "^3.1.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/bun": "^1.2.23",
     "@types/katex": "^0.16.7",
@@ -94,18 +94,18 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/seedrandom": "^3.0.8",
     "@vitejs/plugin-react-swc": "^3.11.0",
-    "eslint": "^9.37.0",
+    "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.23",
+    "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^15.15.0",
     "graphology-types": "^0.24.8",
     "prettier": "^3.6.2",
     "prettier-plugin-tailwindcss": "^0.6.14",
     "tailwindcss": "^4.1.14",
     "tailwindcss-animate": "^1.0.7",
-    "typescript": "~5.7.3",
+    "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.0",
     "vite": "^6.3.6"
   }
