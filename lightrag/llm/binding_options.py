@@ -228,7 +228,7 @@ class BindingOptions:
                 argdef = {
                     "argname": f"{args_prefix}-{field.name}",
                     "env_name": f"{env_var_prefix}{field.name.upper()}",
-                    "type": _resolve_optional_type(field.type),
+                "type": _resolve_optional_type(field.type),
                     "default": default_value,
                     "help": f"{cls._binding_name} -- " + help.get(field.name, ""),
                 }
@@ -472,9 +472,6 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     _binding_name: ClassVar[str] = "ollama_llm"
 
 
-# =============================================================================
-# Binding Options for Gemini
-# =============================================================================
 @dataclass
 class GeminiLLMOptions(BindingOptions):
     """Options for Google Gemini models."""
@@ -489,9 +486,9 @@ class GeminiLLMOptions(BindingOptions):
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
     stop_sequences: List[str] = field(default_factory=list)
-    seed: int | None = None
-    thinking_config: dict | None = None
+    response_mime_type: str | None = None
     safety_settings: dict | None = None
+    system_instruction: str | None = None
 
     _help: ClassVar[dict[str, str]] = {
         "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
@@ -501,23 +498,10 @@ class GeminiLLMOptions(BindingOptions):
         "candidate_count": "Number of candidates returned per request",
         "presence_penalty": "Penalty for token presence (-2.0 to 2.0)",
         "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0)",
-        "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
-        "seed": "Random seed for reproducible generation (leave empty for random)",
-        "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
+        "stop_sequences": 'Stop sequences (JSON array of strings, e.g., \'["END"]\')',
+        "response_mime_type": "Desired MIME type for the response (e.g., application/json)",
         "safety_settings": "JSON object with Gemini safety settings overrides",
-    }
-
-
-@dataclass
-class GeminiEmbeddingOptions(BindingOptions):
-    """Options for Google Gemini embedding models."""
-
-    _binding_name: ClassVar[str] = "gemini_embedding"
-
-    task_type: str = "RETRIEVAL_DOCUMENT"
-
-    _help: ClassVar[dict[str, str]] = {
-        "task_type": "Task type for embedding optimization (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION)",
+        "system_instruction": "Default system instruction applied to every request",
     }
 
 
