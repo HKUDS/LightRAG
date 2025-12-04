@@ -605,9 +605,13 @@ export const clearCache = async (): Promise<{
   return response.data
 }
 
-export const deleteDocuments = async (docIds: string[], deleteFile: boolean = false): Promise<DeleteDocResponse> => {
+export const deleteDocuments = async (
+  docIds: string[],
+  deleteFile: boolean = false,
+  deleteLLMCache: boolean = false
+): Promise<DeleteDocResponse> => {
   const response = await axiosInstance.delete('/documents/delete_document', {
-    data: { doc_ids: docIds, delete_file: deleteFile }
+    data: { doc_ids: docIds, delete_file: deleteFile, delete_llm_cache: deleteLLMCache }
   })
   return response.data
 }
