@@ -368,8 +368,8 @@ async def _handle_single_entity_extraction(
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
-            logger.warning(
-                f"Entity extraction error: entity name became empty after cleaning. Original: '{record_attributes[1]}'"
+            logger.info(
+                f"Empty entity name found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
 
@@ -445,14 +445,14 @@ async def _handle_single_relationship_extraction(
 
         # Validate entity names after all cleaning steps
         if not source:
-            logger.warning(
-                f"Relationship extraction error: source entity became empty after cleaning. Original: '{record_attributes[1]}'"
+            logger.info(
+                f"Empty source entity found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
 
         if not target:
-            logger.warning(
-                f"Relationship extraction error: target entity became empty after cleaning. Original: '{record_attributes[2]}'"
+            logger.info(
+                f"Empty target entity found after sanitization. Original: '{record_attributes[2]}'"
             )
             return None
 
