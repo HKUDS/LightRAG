@@ -655,6 +655,7 @@ class RAGEvaluator:
         Args:
             results: List of evaluation results
         """
+        logger.info("")
         logger.info("%s", "=" * 115)
         logger.info("📊 EVALUATION RESULTS SUMMARY")
         logger.info("%s", "=" * 115)
@@ -840,6 +841,9 @@ class RAGEvaluator:
             "results": results,
         }
 
+        # Display results table
+        self._display_results_table(results)
+
         # Save JSON results
         json_path = (
             self.results_dir
@@ -848,14 +852,8 @@ class RAGEvaluator:
         with open(json_path, "w") as f:
             json.dump(summary, f, indent=2)
 
-        # Display results table
-        self._display_results_table(results)
-
-        logger.info("✅ JSON results saved to: %s", json_path)
-
         # Export to CSV
         csv_path = self._export_to_csv(results)
-        logger.info("✅ CSV results saved to: %s", csv_path)
 
         # Print summary
         logger.info("")
@@ -880,7 +878,7 @@ class RAGEvaluator:
         logger.info("Average Context Recall:    %.4f", avg["context_recall"])
         logger.info("Average Context Precision: %.4f", avg["context_precision"])
         logger.info("Average RAGAS Score:       %.4f", avg["ragas_score"])
-        logger.info("")
+        logger.info("%s", "-" * 70)
         logger.info(
             "Min RAGAS Score:           %.4f",
             benchmark_stats["min_ragas_score"],

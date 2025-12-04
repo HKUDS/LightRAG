@@ -156,13 +156,13 @@ The evaluation framework supports customization through environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EVAL_LLM_MODEL` | `gpt-4o-mini` | LLM model used for RAGAS evaluation |
-| `EVAL_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for evaluation |
-| `EVAL_LLM_BINDING_API_KEY` | (falls back to `OPENAI_API_KEY`) | API key for evaluation models |
+| `EVAL_EMBEDDING_MODEL` | `text-embedding-3-large` | Embedding model for evaluation |
+| `EVAL_LLM_BINDING_API_KEY` | falls back to `OPENAI_API_KEY` | API key for evaluation models |
 | `EVAL_LLM_BINDING_HOST` | (optional) | Custom endpoint URL for OpenAI-compatible services |
-| `EVAL_MAX_CONCURRENT` | `1` | Number of concurrent test case evaluations (1=serial) |
-| `EVAL_QUERY_TOP_K` | `10` | Number of documents to retrieve per query |
-| `EVAL_LLM_MAX_RETRIES` | `5` | Maximum LLM request retries |
-| `EVAL_LLM_TIMEOUT` | `120` | LLM request timeout in seconds |
+| `EVAL_MAX_CONCURRENT` | 2 | Number of concurrent test case evaluations (1=serial) |
+| `EVAL_QUERY_TOP_K` | 10 | Number of documents to retrieve per query |
+| `EVAL_LLM_MAX_RETRIES` | 5 | Maximum LLM request retries |
+| `EVAL_LLM_TIMEOUT` | 180 | LLM request timeout in seconds |
 
 ### Usage Examples
 
@@ -199,16 +199,10 @@ The evaluation framework includes built-in concurrency control to prevent API ra
 
 **Default Configuration (Conservative):**
 ```bash
-EVAL_MAX_CONCURRENT=1    # Serial evaluation (one test at a time)
+EVAL_MAX_CONCURRENT=2    # Serial evaluation (one test at a time)
 EVAL_QUERY_TOP_K=10      # OP_K query parameter of LightRAG
 EVAL_LLM_MAX_RETRIES=5   # Retry failed requests 5 times
-EVAL_LLM_TIMEOUT=180     # 2-minute timeout per request
-```
-
-**If You Have Higher API Quotas:**
-```bash
-EVAL_MAX_CONCURRENT=2    # Evaluate 2 tests in parallel
-EVAL_QUERY_TOP_K=20      # OP_K query parameter of LightRAG
+EVAL_LLM_TIMEOUT=180     # 3-minute timeout per request
 ```
 
 **Common Issues and Solutions:**
@@ -370,11 +364,71 @@ The evaluator queries a running LightRAG API server at `http://localhost:9621`. 
 
 ## 📝 Next Steps
 
-1. Index documents into LightRAG (WebUI or API)
+1. Index sample documents into LightRAG (WebUI or API)
 2. Start LightRAG API server
 3. Run `python lightrag/evaluation/eval_rag_quality.py`
 4. Review results (JSON/CSV) in `results/` folder
 5. Adjust entity extraction prompts or retrieval settings based on scores
+
+Evaluation Result Sample:
+
+```
+INFO: ======================================================================
+INFO: 🔍 RAGAS Evaluation - Using Real LightRAG API
+INFO: ======================================================================
+INFO: Evaluation Models:
+INFO:   • LLM Model:            gpt-4.1
+INFO:   • Embedding Model:      text-embedding-3-large
+INFO:   • Endpoint:             OpenAI Official API
+INFO: Concurrency & Rate Limiting:
+INFO:   • Query Top-K:          10 Entities/Relations
+INFO:   • LLM Max Retries:      5
+INFO:   • LLM Timeout:          180 seconds
+INFO: Test Configuration:
+INFO:   • Total Test Cases:     6
+INFO:   • Test Dataset:         sample_dataset.json
+INFO:   • LightRAG API:         http://localhost:9621
+INFO:   • Results Directory:    results
+INFO: ======================================================================
+INFO: 🚀 Starting RAGAS Evaluation of LightRAG System
+INFO: 🔧 RAGAS Evaluation (Stage 2): 2 concurrent
+INFO: ======================================================================
+INFO:
+INFO: ===================================================================================================================
+INFO: 📊 EVALUATION RESULTS SUMMARY
+INFO: ===================================================================================================================
+INFO: #    | Question                                           |  Faith | AnswRel | CtxRec | CtxPrec |  RAGAS | Status
+INFO: -------------------------------------------------------------------------------------------------------------------
+INFO: 1    | How does LightRAG solve the hallucination probl... | 1.0000 |  1.0000 | 1.0000 |  1.0000 | 1.0000 |      ✓
+INFO: 2    | What are the three main components required in ... | 0.8500 |  0.5790 | 1.0000 |  1.0000 | 0.8573 |      ✓
+INFO: 3    | How does LightRAG's retrieval performance compa... | 0.8056 |  1.0000 | 1.0000 |  1.0000 | 0.9514 |      ✓
+INFO: 4    | What vector databases does LightRAG support and... | 0.8182 |  0.9807 | 1.0000 |  1.0000 | 0.9497 |      ✓
+INFO: 5    | What are the four key metrics for evaluating RA... | 1.0000 |  0.7452 | 1.0000 |  1.0000 | 0.9363 |      ✓
+INFO: 6    | What are the core benefits of LightRAG and how ... | 0.9583 |  0.8829 | 1.0000 |  1.0000 | 0.9603 |      ✓
+INFO: ===================================================================================================================
+INFO:
+INFO: ======================================================================
+INFO: 📊 EVALUATION COMPLETE
+INFO: ======================================================================
+INFO: Total Tests:    6
+INFO: Successful:     6
+INFO: Failed:         0
+INFO: Success Rate:   100.00%
+INFO: Elapsed Time:   161.10 seconds
+INFO: Avg Time/Test:  26.85 seconds
+INFO:
+INFO: ======================================================================
+INFO: 📈 BENCHMARK RESULTS (Average)
+INFO: ======================================================================
+INFO: Average Faithfulness:      0.9053
+INFO: Average Answer Relevance:  0.8646
+INFO: Average Context Recall:    1.0000
+INFO: Average Context Precision: 1.0000
+INFO: Average RAGAS Score:       0.9425
+INFO: ----------------------------------------------------------------------
+INFO: Min RAGAS Score:           0.8573
+INFO: Max RAGAS Score:           1.0000
+```
 
 ---
 
