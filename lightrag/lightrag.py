@@ -709,7 +709,7 @@ class LightRAG:
 
     async def check_and_migrate_data(self):
         """Check if data migration is needed and perform migration if necessary"""
-        async with get_data_init_lock(enable_logging=True):
+        async with get_data_init_lock():
             try:
                 # Check if migration is needed:
                 # 1. chunk_entity_relation_graph has entities and relations (count > 0)
