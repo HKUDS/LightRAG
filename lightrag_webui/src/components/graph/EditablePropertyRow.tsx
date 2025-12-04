@@ -4,17 +4,10 @@ import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/Dialog'
-import Button from '@/components/ui/Button'
+import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
 import { PropertyName, EditIcon, PropertyValue } from './PropertyRowComponents'
 import PropertyEditDialog from './PropertyEditDialog'
+import MergeDialog from './MergeDialog'
 
 /**
  * Interface for the EditablePropertyRow component props
@@ -123,6 +116,12 @@ const EditablePropertyRow = ({
               sourceEntity: entityId,
             })
             setMergeDialogOpen(true)
+
+            // Remove old entity name from search history
+            SearchHistoryManager.removeLabel(entityId)
+
+            // Note: Search Label update is deferred until user clicks refresh button in merge dialog
+
             toast.success(t('graphPanel.propertiesView.success.entityMerged'))
           } else {
             // Node was updated/renamed normally
@@ -134,6 +133,23 @@ const EditablePropertyRow = ({
               console.error('Error updating node in graph:', error)
               throw new Error('Failed to update node in graph')
             }
+
+            // Update search history: remove old name, add new name
+            if (name === 'entity_id') {
+              const currentLabel = useSettingsStore.getState().queryLabel
+
+              SearchHistoryManager.removeLabel(entityId)
+              SearchHistoryManager.addToHistory(finalValue)
+
+              // Trigger dropdown refresh to show updated search history
+              useSettingsStore.getState().triggerSearchLabelDropdownRefresh()
+
+              // If current queryLabel is the old entity name, update to new name
+              if (currentLabel === entityId) {
+                useSettingsStore.getState().setQueryLabel(finalValue)
+              }
+            }
+
             toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
           }
 
@@ -207,16 +223,27 @@ const EditablePropertyRow = ({
     const info = mergeDialogInfo
     const graphState = useGraphStore.getState()
     const settingsState = useSettingsStore.getState()
+    const currentLabel = settingsState.queryLabel
 
+    // Clear graph state
     graphState.clearSelection()
     graphState.setGraphDataFetchAttempted(false)
     graphState.setLastSuccessfulQueryLabel('')
 
     if (useMergedStart && info?.targetEntity) {
+      // Use merged entity as new start point (might already be set in handleSave)
       settingsState.setQueryLabel(info.targetEntity)
     } else {
-      graphState.incrementGraphDataVersion()
+      // Keep current start point - refresh by resetting and restoring label
+      // This handles the case where user wants to stay with current label
+      settingsState.setQueryLabel('')
+      setTimeout(() => {
+        settingsState.setQueryLabel(currentLabel)
+      }, 50)
     }
+
+    // Force graph re-render and reset zoom/scale (same as refresh button behavior)
+    graphState.incrementGraphDataVersion()
 
     setMergeDialogOpen(false)
     setMergeDialogInfo(null)
@@ -242,42 +269,17 @@ const EditablePropertyRow = ({
         errorMessage={errorMessage}
       />
 
-      <Dialog
-        open={mergeDialogOpen}
+      <MergeDialog
+        mergeDialogOpen={mergeDialogOpen}
+        mergeDialogInfo={mergeDialogInfo}
         onOpenChange={(open) => {
           setMergeDialogOpen(open)
           if (!open) {
             setMergeDialogInfo(null)
           }
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('graphPanel.propertiesView.mergeDialog.title')}</DialogTitle>
-            <DialogDescription>
-              {t('graphPanel.propertiesView.mergeDialog.description', {
-                source: mergeDialogInfo?.sourceEntity ?? '',
-                target: mergeDialogInfo?.targetEntity ?? '',
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            {t('graphPanel.propertiesView.mergeDialog.refreshHint')}
-          </p>
-          <DialogFooter className="mt-4 flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleMergeRefresh(false)}
-            >
-              {t('graphPanel.propertiesView.mergeDialog.keepCurrentStart')}
-            </Button>
-            <Button type="button" onClick={() => handleMergeRefresh(true)}>
-              {t('graphPanel.propertiesView.mergeDialog.useMergedStart')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onRefresh={handleMergeRefresh}
+      />
     </div>
   )
 }

@@ -17,6 +17,7 @@ import { getPopularLabels, searchLabels } from '@/api/lightrag'
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
+  const dropdownRefreshTrigger = useSettingsStore.use.searchLabelDropdownRefreshTrigger()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
@@ -53,6 +54,18 @@ const GraphLabels = () => {
 
     initializeHistory()
   }, [])
+
+  // Force AsyncSelect to re-render when label changes externally (e.g., from entity rename/merge)
+  useEffect(() => {
+    setSelectKey(prev => prev + 1)
+  }, [label])
+
+  // Force AsyncSelect to re-render when dropdown refresh is triggered (e.g., after entity rename)
+  useEffect(() => {
+    if (dropdownRefreshTrigger > 0) {
+      setSelectKey(prev => prev + 1)
+    }
+  }, [dropdownRefreshTrigger])
 
   const fetchData = useCallback(
     async (query?: string): Promise<string[]> => {
@@ -223,6 +236,9 @@ const GraphLabels = () => {
 
             // Update the label to trigger data loading
             useSettingsStore.getState().setQueryLabel(newLabel);
+
+            // Force graph re-render and reset zoom/scale (must be AFTER setQueryLabel)
+            useGraphStore.getState().incrementGraphDataVersion();
           }}
           clearable={false}  // Prevent clearing value on reselect
           debounceTime={500}
