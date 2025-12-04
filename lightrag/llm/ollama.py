@@ -37,9 +37,13 @@ def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional
         return host
     try:
         model_name_str = str(model) if model is not None else ""
-    except Exception:
+    except (TypeError, ValueError, AttributeError) as e:
+        logger.warning(f"Failed to convert model to string: {e}, using empty string")
         model_name_str = ""
     if _CLOUD_MODEL_SUFFIX_PATTERN.search(model_name_str):
+        logger.debug(
+            f"Detected cloud model '{model_name_str}', using Ollama Cloud host"
+        )
         return _OLLAMA_CLOUD_HOST
     return host
 
