@@ -2253,7 +2253,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
-) -> QueryResult:
+) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
 
@@ -2270,7 +2270,7 @@ async def kg_query(
         chunks_vdb: Document chunks vector database
 
     Returns:
-        QueryResult: Unified query result object containing:
+        QueryResult | None: Unified query result object containing:
             - content: Non-streaming response text content
             - response_iterator: Streaming response iterator
             - raw_data: Complete structured data (including references and metadata)
@@ -2281,6 +2281,8 @@ async def kg_query(
         - only_need_prompt=True: content contains complete prompt
         - stream=True: response_iterator contains streaming response, raw_data contains complete data
         - default: content contains LLM response text, raw_data contains complete data
+
+        Returns None when no relevant context could be constructed for the query.
     """
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
@@ -2328,7 +2330,8 @@ async def kg_query(
     )
 
     if context_result is None:
-        return QueryResult(content=PROMPTS["fail_response"])
+        logger.info("[kg_query] No query context could be built; returning no-result.")
+        return None
 
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
@@ -3991,7 +3994,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
-) -> QueryResult:
+) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
 
@@ -4004,11 +4007,13 @@ async def naive_query(
         system_prompt: System prompt
 
     Returns:
-        QueryResult: Unified query result object containing:
+        QueryResult | None: Unified query result object containing:
             - content: Non-streaming response text content
             - response_iterator: Streaming response iterator
             - raw_data: Complete structured data (including references and metadata)
             - is_streaming: Whether this is a streaming result
+
+        Returns None when no relevant chunks are retrieved.
     """
 
     if not query:
@@ -4029,16 +4034,10 @@ async def naive_query(
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
-        # Build empty raw data structure for naive mode
-        empty_raw_data = convert_to_user_format(
-            [],  # naive mode has no entities
-            [],  # naive mode has no relationships
-            [],  # no chunks
-            [],  # no references
-            "naive",
+        logger.info(
+            "[naive_query] No relevant document chunks found; returning no-result."
         )
-        empty_raw_data["message"] = "No relevant document chunks found."
-        return QueryResult(content=PROMPTS["fail_response"], raw_data=empty_raw_data)
+        return None
 
     # Calculate dynamic token limit for chunks
     max_total_tokens = getattr(

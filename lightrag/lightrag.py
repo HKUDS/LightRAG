@@ -21,6 +21,7 @@ from typing import (
     List,
     Dict,
 )
+from lightrag.prompt import PROMPTS
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
@@ -2293,20 +2294,35 @@ class LightRAG:
         else:
             raise ValueError(f"Unknown mode {data_param.mode}")
 
-        # Extract raw_data from QueryResult
-        final_data = query_result.raw_data if query_result else {}
-
-        # Log final result counts - adapt to new data format from convert_to_user_format
-        if final_data and "data" in final_data:
-            data_section = final_data["data"]
-            entities_count = len(data_section.get("entities", []))
-            relationships_count = len(data_section.get("relationships", []))
-            chunks_count = len(data_section.get("chunks", []))
-            logger.debug(
-                f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
-            )
+        if query_result is None:
+            no_result_message = "Query returned no results"
+            if data_param.mode == "naive":
+                no_result_message = "No relevant document chunks found."
+            final_data: dict[str, Any] = {
+                "status": "failure",
+                "message": no_result_message,
+                "data": {},
+                "metadata": {
+                    "failure_reason": "no_results",
+                    "mode": data_param.mode,
+                },
+            }
+            logger.info("[aquery_data] Query returned no results.")
         else:
-            logger.warning("[aquery_data] No data section found in query result")
+            # Extract raw_data from QueryResult
+            final_data = query_result.raw_data or {}
+
+            # Log final result counts - adapt to new data format from convert_to_user_format
+            if final_data and "data" in final_data:
+                data_section = final_data["data"]
+                entities_count = len(data_section.get("entities", []))
+                relationships_count = len(data_section.get("relationships", []))
+                chunks_count = len(data_section.get("chunks", []))
+                logger.debug(
+                    f"[aquery_data] Final result: {entities_count} entities, {relationships_count} relationships, {chunks_count} chunks"
+                )
+            else:
+                logger.warning("[aquery_data] No data section found in query result")
 
         await self._query_done()
         return final_data
@@ -2409,16 +2425,19 @@ class LightRAG:
                     "status": "failure",
                     "message": "Query returned no results",
                     "data": {},
-                    "metadata": {},
+                    "metadata": {
+                        "failure_reason": "no_results",
+                        "mode": param.mode,
+                    },
                     "llm_response": {
-                        "content": None,
+                        "content": PROMPTS["fail_response"],
                         "response_iterator": None,
                         "is_streaming": False,
                     },
                 }
 
             # Extract structured data from query result
-            raw_data = query_result.raw_data if query_result else {}
+            raw_data = query_result.raw_data or {}
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
