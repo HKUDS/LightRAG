@@ -89,6 +89,7 @@ class LLMConfigCache:
 
         # Initialize configurations based on binding conditions
         self.openai_llm_options = None
+        self.gemini_llm_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
 
@@ -98,6 +99,12 @@ class LLMConfigCache:
 
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
             logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
+
+        if args.llm_binding == "gemini":
+            from lightrag.llm.binding_options import GeminiLLMOptions
+
+            self.gemini_llm_options = GeminiLLMOptions.options_dict(args)
+            logger.info(f"Gemini LLM Options: {self.gemini_llm_options}")
 
         # Only initialize and log Ollama LLM options when using Ollama LLM binding
         if args.llm_binding == "ollama":
@@ -279,6 +286,7 @@ def create_app(args):
         "openai",
         "azure_openai",
         "aws_bedrock",
+        "gemini",
     ]:
         raise Exception("llm binding not supported")
 
@@ -504,6 +512,40 @@ def create_app(args):
 
         return optimized_azure_openai_model_complete
 
+    def create_optimized_gemini_llm_func(config_cache: LLMConfigCache, args):
+        """Create optimized Gemini LLM function with cached configuration"""
+
+        async def optimized_gemini_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
+            **kwargs,
+        ) -> str:
+            from lightrag.llm.gemini import gemini_complete_if_cache
+
+            if history_messages is None:
+                history_messages = []
+
+            if (
+                config_cache.gemini_llm_options is not None
+                and "generation_config" not in kwargs
+            ):
+                kwargs["generation_config"] = dict(config_cache.gemini_llm_options)
+
+            return await gemini_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                api_key=args.llm_binding_api_key,
+                base_url=args.llm_binding_host,
+                keyword_extraction=keyword_extraction,
+                **kwargs,
+            )
+
+        return optimized_gemini_model_complete
+
     def create_llm_model_func(binding: str):
         """
         Create LLM model function based on binding type.
@@ -525,6 +567,8 @@ def create_app(args):
                 return create_optimized_azure_openai_llm_func(
                     config_cache, args, llm_timeout
                 )
+            elif binding == "gemini":
+                return create_optimized_gemini_llm_func(config_cache, args)
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
