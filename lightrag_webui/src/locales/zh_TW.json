@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "專案庫",
     "logout": "登出",
+    "frontendNeedsRebuild": "前端程式碼需重新建置",
     "themeToggle": {
       "switchToLight": "切換至淺色主題",
       "switchToDark": "切換至深色主題"

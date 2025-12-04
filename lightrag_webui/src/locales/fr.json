@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "Référentiel du projet",
     "logout": "Déconnexion",
+    "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
     "themeToggle": {
       "switchToLight": "Passer au thème clair",
       "switchToDark": "Passer au thème sombre"
