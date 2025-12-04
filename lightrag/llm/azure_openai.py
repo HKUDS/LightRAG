@@ -26,6 +26,7 @@ from lightrag.utils import (
     safe_unicode_decode,
     logger,
 )
+from lightrag.types import GPTKeywordExtractionFormat
 
 import numpy as np
 
@@ -46,6 +47,7 @@ async def azure_openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     api_version: str | None = None,
+    keyword_extraction: bool = False,
     **kwargs,
 ):
     if enable_cot:
@@ -66,8 +68,11 @@ async def azure_openai_complete_if_cache(
     )
 
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
     timeout = kwargs.pop("timeout", None)
+
+    # Handle keyword extraction mode
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=base_url,
@@ -117,12 +122,12 @@ async def azure_openai_complete_if_cache(
 async def azure_openai_complete(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    kwargs.pop("keyword_extraction", None)
     result = await azure_openai_complete_if_cache(
         os.getenv("LLM_MODEL", "gpt-4o-mini"),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
     return result
