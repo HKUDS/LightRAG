@@ -8,6 +8,10 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
+from lightrag.exceptions import (
+    PipelineCancelledException,
+    ChunkTokenLimitExceededError,
+)
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -82,11 +86,11 @@ def _truncate_entity_identifier(
     display_value = identifier[:limit]
     preview = identifier[:20]  # Show first 20 characters as preview
     logger.warning(
-        "%s: %s exceeded %d characters (len: %d, preview: '%s...'",
+        "%s: %s len %d > %d chars (Name: '%s...')",
         chunk_key,
         identifier_role,
-        limit,
         len(identifier),
+        limit,
         preview,
     )
     return display_value
@@ -97,8 +101,8 @@ def chunking_by_token_size(
     content: str,
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
-    overlap_token_size: int = 128,
-    max_token_size: int = 1024,
+    chunk_overlap_token_size: int = 100,
+    chunk_token_size: int = 1200,
 ) -> list[dict[str, Any]]:
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
@@ -108,19 +112,30 @@ def chunking_by_token_size(
         if split_by_character_only:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
+                if len(_tokens) > chunk_token_size:
+                    logger.warning(
+                        "Chunk split_by_character exceeds token limit: len=%d limit=%d",
+                        len(_tokens),
+                        chunk_token_size,
+                    )
+                    raise ChunkTokenLimitExceededError(
+                        chunk_tokens=len(_tokens),
+                        chunk_token_limit=chunk_token_size,
+                        chunk_preview=chunk[:120],
+                    )
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
-                if len(_tokens) > max_token_size:
+                if len(_tokens) > chunk_token_size:
                     for start in range(
-                        0, len(_tokens), max_token_size - overlap_token_size
+                        0, len(_tokens), chunk_token_size - chunk_overlap_token_size
                     ):
                         chunk_content = tokenizer.decode(
-                            _tokens[start : start + max_token_size]
+                            _tokens[start : start + chunk_token_size]
                         )
                         new_chunks.append(
-                            (min(max_token_size, len(_tokens) - start), chunk_content)
+                            (min(chunk_token_size, len(_tokens) - start), chunk_content)
                         )
                 else:
                     new_chunks.append((len(_tokens), chunk))
@@ -134,12 +149,12 @@ def chunking_by_token_size(
             )
     else:
         for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size)
+            range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
         ):
-            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
+            chunk_content = tokenizer.decode(tokens[start : start + chunk_token_size])
             results.append(
                 {
-                    "tokens": min(max_token_size, len(tokens) - start),
+                    "tokens": min(chunk_token_size, len(tokens) - start),
                     "content": chunk_content.strip(),
                     "chunk_order_index": index,
                 }
@@ -344,6 +359,20 @@ async def _summarize_descriptions(
         llm_response_cache=llm_response_cache,
         cache_type="summary",
     )
+
+    # Check summary token length against embedding limit
+    embedding_token_limit = global_config.get("embedding_token_limit")
+    if embedding_token_limit is not None and summary:
+        tokenizer = global_config["tokenizer"]
+        summary_token_count = len(tokenizer.encode(summary))
+        threshold = int(embedding_token_limit * 0.9)
+
+        if summary_token_count > threshold:
+            logger.warning(
+                f"Summary tokens ({summary_token_count}) exceeds 90% of embedding limit "
+                f"({embedding_token_limit}) for {description_type}: {description_name}"
+            )
+
     return summary
 
 
@@ -988,13 +1017,13 @@ async def _process_extraction_result(
                 relationship_data["src_id"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
-                "Relationship source entity",
+                "Relation entity",
             )
             truncated_target = _truncate_entity_identifier(
                 relationship_data["tgt_id"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
                 chunk_key,
-                "Relationship target entity",
+                "Relation entity",
             )
             relationship_data["src_id"] = truncated_source
             relationship_data["tgt_id"] = truncated_target
@@ -1694,6 +1723,12 @@ async def _merge_nodes_then_upsert(
         logger.error(f"Entity {entity_name} has no description")
         raise ValueError(f"Entity {entity_name} has no description")
 
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during entity summary")
+
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
         "Entity",
@@ -2014,6 +2049,14 @@ async def _merge_edges_then_upsert(
     if not description_list:
         logger.error(f"Relation {src_id}~{tgt_id} has no description")
         raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
+
+    # Check for cancellation before LLM summary
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during relation summary"
+                )
 
     # 8. Get summary description an LLM usage status
     description, llm_was_used = await _handle_entity_relation_summary(
@@ -2396,6 +2439,12 @@ async def merge_nodes_and_edges(
         file_path: File path for logging
     """
 
+    # Check for cancellation at the start of merge
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled during merge phase")
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -2432,6 +2481,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
+            # Check for cancellation before processing entity
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during entity merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             async with get_storage_keyed_lock(
@@ -2454,9 +2511,7 @@ async def merge_nodes_and_edges(
                     return entity_data
 
                 except Exception as e:
-                    error_msg = (
-                        f"Critical error in entity processing for `{entity_name}`: {e}"
-                    )
+                    error_msg = f"Error processing entity `{entity_name}`: {e}"
                     logger.error(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
@@ -2492,35 +2547,31 @@ async def merge_nodes_and_edges(
             entity_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception and ensure all exceptions are retrieved
         first_exception = None
-        successful_results = []
+        processed_entities = []
 
         for task in done:
             try:
-                exception = task.exception()
-                if exception is not None:
-                    if first_exception is None:
-                        first_exception = exception
-                else:
-                    successful_results.append(task.result())
-            except Exception as e:
+                result = task.result()
+            except BaseException as e:
                 if first_exception is None:
                     first_exception = e
+            else:
+                processed_entities.append(result)
 
-        # If any task failed, cancel all pending tasks and raise the first exception
+        if pending:
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                else:
+                    processed_entities.append(result)
+
         if first_exception is not None:
-            # Cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
-            # Re-raise the first exception to notify the caller
             raise first_exception
-
-        # If all tasks completed successfully, collect results
-        processed_entities = [task.result() for task in entity_tasks]
 
     # ===== Phase 2: Process all relationships concurrently =====
     log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
@@ -2531,6 +2582,14 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
+            # Check for cancellation before processing edges
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during relation merge"
+                        )
+
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             sorted_edge_key = sorted([edge_key[0], edge_key[1]])
@@ -2566,7 +2625,7 @@ async def merge_nodes_and_edges(
                     return edge_data, added_entities
 
                 except Exception as e:
-                    error_msg = f"Critical error in relationship processing for `{sorted_edge_key}`: {e}"
+                    error_msg = f"Error processing relation `{sorted_edge_key}`: {e}"
                     logger.error(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
@@ -2604,39 +2663,35 @@ async def merge_nodes_and_edges(
             edge_tasks, return_when=asyncio.FIRST_EXCEPTION
         )
 
-        # Check if any task raised an exception and ensure all exceptions are retrieved
         first_exception = None
-        successful_results = []
 
         for task in done:
             try:
-                exception = task.exception()
-                if exception is not None:
-                    if first_exception is None:
-                        first_exception = exception
-                else:
-                    successful_results.append(task.result())
-            except Exception as e:
+                edge_data, added_entities = task.result()
+            except BaseException as e:
                 if first_exception is None:
                     first_exception = e
+            else:
+                if edge_data is not None:
+                    processed_edges.append(edge_data)
+                all_added_entities.extend(added_entities)
 
-        # If any task failed, cancel all pending tasks and raise the first exception
+        if pending:
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                else:
+                    edge_data, added_entities = result
+                    if edge_data is not None:
+                        processed_edges.append(edge_data)
+                    all_added_entities.extend(added_entities)
+
         if first_exception is not None:
-            # Cancel all pending tasks
-            for pending_task in pending:
-                pending_task.cancel()
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
-            # Re-raise the first exception to notify the caller
             raise first_exception
-
-        # If all tasks completed successfully, collect results
-        for task in edge_tasks:
-            edge_data, added_entities = task.result()
-            if edge_data is not None:
-                processed_edges.append(edge_data)
-            all_added_entities.extend(added_entities)
 
     # ===== Phase 3: Update full_entities and full_relations storage =====
     if full_entities_storage and full_relations_storage and doc_id:
@@ -2718,6 +2773,14 @@ async def extract_entities(
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
+    # Check for cancellation at the start of entity extraction
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException(
+                    "User cancelled during entity extraction"
+                )
+
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
@@ -2885,6 +2948,14 @@ async def extract_entities(
 
     async def _process_with_semaphore(chunk):
         async with semaphore:
+            # Check for cancellation before processing chunk
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        raise PipelineCancelledException(
+                            "User cancelled during chunk processing"
+                        )
+
             try:
                 return await _process_single_content(chunk)
             except Exception as e:
@@ -3382,10 +3453,10 @@ async def _perform_kg_search(
     )
     query_embedding = None
     if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
-        embedding_func_config = text_chunks_db.embedding_func
-        if embedding_func_config and embedding_func_config.func:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if actual_embedding_func:
             try:
-                query_embedding = await embedding_func_config.func([query])
+                query_embedding = await actual_embedding_func([query])
                 query_embedding = query_embedding[
                     0
                 ]  # Extract first embedding from batch result
@@ -4293,25 +4364,21 @@ async def _find_related_text_unit_from_entities(
         num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
 
         # Get embedding function from global config
-        embedding_func_config = text_chunks_db.embedding_func
-        if not embedding_func_config:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if not actual_embedding_func:
             logger.warning("No embedding function found, falling back to WEIGHT method")
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                actual_embedding_func = embedding_func_config.func
-
-                selected_chunk_ids = None
-                if actual_embedding_func:
-                    selected_chunk_ids = await pick_by_vector_similarity(
-                        query=query,
-                        text_chunks_storage=text_chunks_db,
-                        chunks_vdb=chunks_vdb,
-                        num_of_chunks=num_of_chunks,
-                        entity_info=entities_with_chunks,
-                        embedding_func=actual_embedding_func,
-                        query_embedding=query_embedding,
-                    )
+                selected_chunk_ids = await pick_by_vector_similarity(
+                    query=query,
+                    text_chunks_storage=text_chunks_db,
+                    chunks_vdb=chunks_vdb,
+                    num_of_chunks=num_of_chunks,
+                    entity_info=entities_with_chunks,
+                    embedding_func=actual_embedding_func,
+                    query_embedding=query_embedding,
+                )
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"
@@ -4586,24 +4653,21 @@ async def _find_related_text_unit_from_relations(
         num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
 
         # Get embedding function from global config
-        embedding_func_config = text_chunks_db.embedding_func
-        if not embedding_func_config:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if not actual_embedding_func:
             logger.warning("No embedding function found, falling back to WEIGHT method")
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                actual_embedding_func = embedding_func_config.func
-
-                if actual_embedding_func:
-                    selected_chunk_ids = await pick_by_vector_similarity(
-                        query=query,
-                        text_chunks_storage=text_chunks_db,
-                        chunks_vdb=chunks_vdb,
-                        num_of_chunks=num_of_chunks,
-                        entity_info=relations_with_chunks,
-                        embedding_func=actual_embedding_func,
-                        query_embedding=query_embedding,
-                    )
+                selected_chunk_ids = await pick_by_vector_similarity(
+                    query=query,
+                    text_chunks_storage=text_chunks_db,
+                    chunks_vdb=chunks_vdb,
+                    num_of_chunks=num_of_chunks,
+                    entity_info=relations_with_chunks,
+                    embedding_func=actual_embedding_func,
+                    query_embedding=query_embedding,
+                )
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"
