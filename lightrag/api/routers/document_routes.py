@@ -1185,6 +1185,7 @@ async def pipeline_enqueue_file(
                             )
                         else:
 <<<<<<< HEAD
+<<<<<<< HEAD
                             if not pm.is_installed("pypdf2"):  # type: ignore
                                 pm.install("pypdf2")
                             from PyPDF2 import PdfReader  # type: ignore
@@ -1195,13 +1196,18 @@ async def pipeline_enqueue_file(
                             for page in reader.pages:
                                 content += page.extract_text() + "\n"
 =======
+=======
+>>>>>>> 69a0b74c (refactor: move document deps to api group, remove dynamic imports)
                             # Use pypdf (non-blocking via to_thread)
                             content = await asyncio.to_thread(
                                 _extract_pdf_pypdf,
                                 file,
                                 global_args.pdf_decrypt_password,
                             )
+<<<<<<< HEAD
 >>>>>>> 4b31942e (refactor: move document deps to api group, remove dynamic imports)
+=======
+>>>>>>> 69a0b74c (refactor: move document deps to api group, remove dynamic imports)
                     except Exception as e:
                         error_files = [
                             {

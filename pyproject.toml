@@ -92,6 +92,7 @@ docling = [
 
 # Offline deployment dependencies (layered design for flexibility)
 <<<<<<< HEAD
+<<<<<<< HEAD
 offline-docs = [
     # Document processing dependencies
     "docling>=1.0.0,<3.0.0",
@@ -103,6 +104,8 @@ offline-docs = [
 
 =======
 >>>>>>> 4b31942e (refactor: move document deps to api group, remove dynamic imports)
+=======
+>>>>>>> 69a0b74c (refactor: move document deps to api group, remove dynamic imports)
 offline-storage = [
     # Storage backend dependencies
     "redis>=5.0.0,<7.0.0",
@@ -127,6 +130,23 @@ offline-llm = [
 offline = [
     # Complete offline package (includes api for document processing, plus storage and LLM)
     "lightrag-hku[api,offline-storage,offline-llm]",
+<<<<<<< HEAD
+=======
+]
+
+evaluation = [
+    # RAG evaluation dependencies (RAGAS framework)
+    "ragas>=0.3.7",
+    "datasets>=4.3.0",
+    "httpx>=0.28.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
+
+observability = [
+    # LLM observability and tracing dependencies
+    "langfuse>=3.8.1",
+>>>>>>> 69a0b74c (refactor: move document deps to api group, remove dynamic imports)
 ]
 
 [project.scripts]
