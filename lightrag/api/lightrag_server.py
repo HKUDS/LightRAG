@@ -654,6 +654,17 @@ def create_app(args):
         2. Extracts max_token_size and embedding_dim from provider if it's an EmbeddingFunc
         3. Creates an optimized wrapper that calls the underlying function directly (avoiding double-wrapping)
         4. Returns a properly configured EmbeddingFunc instance
+
+        Configuration Rules:
+        - When EMBEDDING_MODEL is not set: Uses provider's default model and dimension
+          (e.g., jina-embeddings-v4 with 2048 dims, text-embedding-3-small with 1536 dims)
+        - When EMBEDDING_MODEL is set to a custom model: User MUST also set EMBEDDING_DIM
+          to match the custom model's dimension (e.g., for jina-embeddings-v3, set EMBEDDING_DIM=1024)
+
+        Note: The embedding_dim parameter is automatically injected by EmbeddingFunc wrapper
+        when send_dimensions=True (enabled for Jina and Gemini bindings). This wrapper calls
+        the underlying provider function directly (.func) to avoid double-wrapping, so we must
+        explicitly pass embedding_dim to the provider's underlying function.
         """
 
         # Step 1: Import provider function and extract default attributes
