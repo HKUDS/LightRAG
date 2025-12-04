@@ -501,7 +501,7 @@ async def _handle_single_relationship_extraction(
         return None
 
 
-async def _rebuild_knowledge_from_chunks(
+async def rebuild_knowledge_from_chunks(
     entities_to_rebuild: dict[str, list[str]],
     relationships_to_rebuild: dict[tuple[str, str], list[str]],
     knowledge_graph_inst: BaseGraphStorage,
@@ -724,7 +724,7 @@ async def _rebuild_knowledge_from_chunks(
                     rebuilt_relationships_count += 1
                 except Exception as e:
                     failed_relationships_count += 1
-                    status_message = f"Failed to rebuild `{src} - {tgt}`: {e}"
+                    status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
                     logger.info(status_message)  # Per requirement, change to info
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -1551,7 +1551,7 @@ async def _rebuild_single_relationship(
         raise  # Re-raise exception
 
     # Log rebuild completion with truncation info
-    status_message = f"Rebuild `{src} - {tgt}` from {len(chunk_ids)} chunks"
+    status_message = f"Rebuild `{src}`~`{tgt}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
     # Add truncation info from apply_source_ids_limit if truncation occurred
