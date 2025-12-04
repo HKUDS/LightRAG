@@ -225,8 +225,8 @@ const PropertyRow = ({
     formattedTooltip += `\n(Truncated: ${truncate})`
   }
 
-  // Use EditablePropertyRow for editable fields (description, entity_id and keywords)
-  if (isEditable && (name === 'description' || name === 'entity_id' || name === 'keywords')) {
+  // Use EditablePropertyRow for editable fields (description, entity_id and entity_type)
+  if (isEditable && (name === 'description' || name === 'entity_id' || name === 'entity_type'  || name === 'keywords')) {
     return (
       <EditablePropertyRow
         name={name}
@@ -325,7 +325,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
                 nodeId={String(node.id)}
                 entityId={node.properties['entity_id']}
                 entityType="node"
-                isEditable={name === 'description' || name === 'entity_id'}
+                isEditable={name === 'description' || name === 'entity_id' || name === 'entity_type'}
                 truncate={node.properties['truncate']}
               />
             )
