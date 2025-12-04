@@ -52,6 +52,9 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.tenant_routes import create_tenant_routes
+from lightrag.services.tenant_service import TenantService
+from lightrag.tenant_rag_manager import TenantRAGManager
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -848,20 +851,54 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
-    # Add routes
+    # Initialize multi-tenant components if enabled
+    # NOTE: These are initialized here but need the db pool to be ready before use.
+    # The tenant_service uses rag.full_docs.db for database access (initialized in lifespan).
+    tenant_service = None
+    rag_manager = None
+    if multi_tenant_enabled:
+        try:
+            # Create TenantService - will use rag.full_docs for db access
+            # The db pool is initialized in the lifespan context
+            tenant_service = TenantService(rag.full_docs)
+            
+            # Initialize tenant RAG manager with template RAG
+            rag_manager = TenantRAGManager(
+                base_working_dir=args.working_dir,
+                tenant_service=tenant_service,
+                template_rag=rag,
+                max_cached_instances=100,
+            )
+            
+            # Store in app.state for use by dependencies
+            app.state.tenant_service = tenant_service
+            app.state.rag_manager = rag_manager
+            
+            logger.info("Multi-tenant mode enabled - tenant components initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize multi-tenant components: {e}")
+            raise
+
+    # Add routes (rag_manager is passed for multi-tenant support, None for single-tenant)
     app.include_router(
         create_document_routes(
             rag,
             doc_manager,
             api_key,
+            rag_manager=rag_manager,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, rag_manager=rag_manager))
+    app.include_router(create_graph_routes(rag, api_key, rag_manager=rag_manager))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
+
+    # Add tenant routes if multi-tenant mode is enabled
+    if multi_tenant_enabled and tenant_service:
+        app.include_router(create_tenant_routes(tenant_service))
+        logger.info("Multi-tenant routes registered")
 
     # Custom Swagger UI endpoint for offline support
     @app.get("/docs", include_in_schema=False)

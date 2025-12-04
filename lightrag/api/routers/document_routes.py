@@ -10,7 +10,7 @@ import shutil
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from typing import Dict, List, Optional, Any, Literal, TYPE_CHECKING
 from io import BytesIO
 from fastapi import (
     APIRouter,
@@ -31,6 +31,10 @@ from lightrag.utils import (
 )
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+
+# Type checking import to avoid circular dependencies
+if TYPE_CHECKING:
+    from lightrag.tenant_rag_manager import TenantRAGManager
 
 
 @lru_cache(maxsize=1)
@@ -2035,10 +2039,44 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    rag: LightRAG, 
+    doc_manager: DocumentManager, 
+    api_key: Optional[str] = None,
+    rag_manager: Optional["TenantRAGManager"] = None,
 ):
+    """Create document routes with optional multi-tenant support.
+    
+    Args:
+        rag: Default/global LightRAG instance
+        doc_manager: Document manager for file operations
+        api_key: Optional API key for authentication
+        rag_manager: Optional TenantRAGManager for multi-tenant mode
+    """
+    # Import here to avoid circular dependencies
+    from lightrag.api.dependencies import get_tenant_context_optional
+    from lightrag.models.tenant import TenantContext
+    
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
+    
+    async def get_tenant_rag(
+        tenant_context: Optional[TenantContext] = Depends(get_tenant_context_optional)
+    ) -> LightRAG:
+        """Dependency to get tenant-specific RAG instance for document operations.
+        
+        In multi-tenant mode (when rag_manager is provided), returns tenant-specific RAG.
+        Otherwise, falls back to the global RAG instance.
+        """
+        if rag_manager and tenant_context and tenant_context.tenant_id and tenant_context.kb_id:
+            try:
+                return await rag_manager.get_rag_instance(
+                    tenant_context.tenant_id, 
+                    tenant_context.kb_id,
+                    tenant_context.user_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get tenant RAG instance: {e}, falling back to global")
+        return rag
 
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
@@ -2500,12 +2538,16 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
         response_model=PipelineStatusResponse,
     )
-    async def get_pipeline_status() -> PipelineStatusResponse:
+    async def get_pipeline_status(
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ) -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
 
         This endpoint returns information about the current state of the document processing pipeline,
         including the processing status, progress information, and history messages.
+        
+        In multi-tenant mode, returns pipeline status for the current tenant/KB context.
 
         Returns:
             PipelineStatusResponse: A response object containing:
@@ -2531,15 +2573,18 @@ def create_document_routes(
                 get_all_update_flags_status,
             )
 
+            # Use tenant-specific workspace for pipeline status
+            workspace = tenant_rag.workspace
+            
             pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=workspace
             )
             pipeline_status_lock = get_namespace_lock(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=workspace
             )
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status(workspace=rag.workspace)
+            update_status = await get_all_update_flags_status(workspace=workspace)
 
             # Convert MutableBoolean objects to regular boolean values
             processed_update_status = {}
@@ -2973,6 +3018,7 @@ def create_document_routes(
     )
     async def get_documents_paginated(
         request: DocumentsRequest,
+        tenant_rag: LightRAG = Depends(get_tenant_rag),
     ) -> PaginatedDocsResponse:
         """
         Get documents with pagination support.
@@ -2980,6 +3026,8 @@ def create_document_routes(
         This endpoint retrieves documents with pagination, filtering, and sorting capabilities.
         It provides better performance for large document collections by loading only the
         requested page of data.
+        
+        In multi-tenant mode, returns documents only for the current tenant/KB context.
 
         Args:
             request (DocumentsRequest): The request body containing pagination parameters
@@ -2995,14 +3043,15 @@ def create_document_routes(
         """
         try:
             # Get paginated documents and status counts in parallel
-            docs_task = rag.doc_status.get_docs_paginated(
+            # Use tenant-specific RAG for document operations
+            docs_task = tenant_rag.doc_status.get_docs_paginated(
                 status_filter=request.status_filter,
                 page=request.page,
                 page_size=request.page_size,
                 sort_field=request.sort_field,
                 sort_direction=request.sort_direction,
             )
-            status_counts_task = rag.doc_status.get_all_status_counts()
+            status_counts_task = tenant_rag.doc_status.get_all_status_counts()
 
             # Execute both queries in parallel
             (documents_with_ids, total_count), status_counts = await asyncio.gather(
@@ -3058,12 +3107,16 @@ def create_document_routes(
         response_model=StatusCountsResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def get_document_status_counts() -> StatusCountsResponse:
+    async def get_document_status_counts(
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ) -> StatusCountsResponse:
         """
         Get counts of documents by status.
 
         This endpoint retrieves the count of documents in each processing status
         (PENDING, PROCESSING, PROCESSED, FAILED) for all documents in the system.
+        
+        In multi-tenant mode, returns counts only for the current tenant/KB context.
 
         Returns:
             StatusCountsResponse: A response object containing status counts
@@ -3072,7 +3125,8 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving status counts (500).
         """
         try:
-            status_counts = await rag.doc_status.get_all_status_counts()
+            # Use tenant-specific RAG for document status counts
+            status_counts = await tenant_rag.doc_status.get_all_status_counts()
             return StatusCountsResponse(status_counts=status_counts)
 
         except Exception as e:

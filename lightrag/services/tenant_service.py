@@ -1,6 +1,6 @@
 """Service for managing tenants and knowledge bases."""
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 import logging
 from datetime import datetime
 
@@ -217,7 +217,7 @@ class TenantService:
                 # Function might not exist if migration hasn't run - use legacy fallback
                 error_msg = str(e)
                 if "has_tenant_access" in error_msg and "does not exist" in error_msg:
-                    logger.debug(f"has_tenant_access function not found, using legacy access check")
+                    logger.debug("has_tenant_access function not found, using legacy access check")
                 else:
                     logger.warning(f"Error checking user access: {e}")
                 # Fall through to legacy check
@@ -744,7 +744,12 @@ class TenantService:
             return {"items": [], "total": 0}
     
     async def delete_tenant(self, tenant_id: str) -> bool:
-        """Delete a tenant.
+        """Delete a tenant and all associated data.
+        
+        This method performs cascade delete:
+        1. Deletes all knowledge bases (which cascade delete their LIGHTRAG_* data)
+        2. Deletes user-tenant memberships
+        3. Deletes tenant metadata from PostgreSQL and KV storage
         
         Args:
             tenant_id: Tenant identifier
@@ -756,18 +761,39 @@ class TenantService:
         if not tenant:
             return False
         
-        # Delete all KBs associated with tenant
+        # Delete all KBs associated with tenant (includes cascade delete of LIGHTRAG_* data)
         kbs_result = await self.list_knowledge_bases(tenant_id)
         kbs_list = kbs_result.get("items", [])
         for kb in kbs_list:
             await self.delete_knowledge_base(tenant_id, kb.kb_id)
         
-        # Delete tenant
+        # Delete user-tenant memberships from PostgreSQL
+        if hasattr(self.kv_storage, 'db') and self.kv_storage.db is not None:
+            try:
+                await self.kv_storage.db.execute(
+                    "DELETE FROM user_tenant_memberships WHERE tenant_id = $1",
+                    [tenant_id]
+                )
+                logger.debug(f"Deleted user memberships for tenant {tenant_id}")
+            except Exception as e:
+                logger.debug(f"Could not delete user memberships: {e}")
+            
+            # Delete from tenants table (FK cascade should handle knowledge_bases)
+            try:
+                await self.kv_storage.db.execute(
+                    "DELETE FROM tenants WHERE tenant_id = $1",
+                    [tenant_id]
+                )
+                logger.debug(f"Deleted tenant {tenant_id} from PostgreSQL")
+            except Exception as e:
+                logger.debug(f"Could not delete from tenants table: {e}")
+        
+        # Delete tenant metadata from KV storage
         await self.kv_storage.delete(
             [f"{self.tenant_namespace}:{tenant_id}"]
         )
         
-        logger.info(f"Deleted tenant: {tenant_id}")
+        logger.info(f"Deleted tenant: {tenant_id} (with cascade delete)")
         return True
     
     async def create_knowledge_base(
@@ -1002,7 +1028,12 @@ class TenantService:
         tenant_id: str,
         kb_id: str,
     ) -> bool:
-        """Delete a knowledge base.
+        """Delete a knowledge base and all associated data.
+        
+        This method performs cascade delete:
+        1. Deletes all LIGHTRAG_* table data for this workspace
+        2. Deletes KB metadata from KV storage
+        3. Updates tenant KB count
         
         Args:
             tenant_id: Parent tenant ID
@@ -1015,10 +1046,59 @@ class TenantService:
         if not kb:
             return False
         
-        # Delete KB
+        # Cascade delete: Clean up LIGHTRAG_* tables for this workspace
+        workspace = f"{tenant_id}:{kb_id}"
+        if hasattr(self.kv_storage, 'db') and self.kv_storage.db is not None:
+            try:
+                # List of all LIGHTRAG tables that use workspace
+                lightrag_tables = [
+                    "LIGHTRAG_DOC_FULL",
+                    "LIGHTRAG_DOC_CHUNKS",
+                    "LIGHTRAG_DOC_STATUS",
+                    "LIGHTRAG_VDB_CHUNKS",
+                    "LIGHTRAG_VDB_ENTITY",
+                    "LIGHTRAG_VDB_RELATION",
+                    "LIGHTRAG_LLM_CACHE",
+                    "LIGHTRAG_FULL_ENTITIES",
+                    "LIGHTRAG_FULL_RELATIONS",
+                    "LIGHTRAG_ENTITY_CHUNKS",
+                    "LIGHTRAG_RELATION_CHUNKS",
+                ]
+                
+                total_deleted = 0
+                for table in lightrag_tables:
+                    try:
+                        result = await self.kv_storage.db.execute(
+                            f"DELETE FROM {table} WHERE workspace = $1",
+                            [workspace]
+                        )
+                        # Log if rows were deleted (result may be row count or None)
+                        if result:
+                            logger.debug(f"Deleted rows from {table} for workspace {workspace}")
+                            total_deleted += 1
+                    except Exception as table_error:
+                        # Table might not exist, log and continue
+                        logger.debug(f"Could not delete from {table}: {table_error}")
+                
+                logger.info(f"Cascade delete: cleaned up LIGHTRAG tables for workspace {workspace}")
+            except Exception as e:
+                logger.warning(f"Error during cascade delete for KB {kb_id}: {e}")
+                # Continue with KB deletion even if cascade fails
+        
+        # Delete KB metadata from KV storage
         await self.kv_storage.delete(
             [f"{self.kb_namespace}:{tenant_id}:{kb_id}"]
         )
+        
+        # Delete KB from knowledge_bases table if using PostgreSQL
+        if hasattr(self.kv_storage, 'db') and self.kv_storage.db is not None:
+            try:
+                await self.kv_storage.db.execute(
+                    "DELETE FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2",
+                    [tenant_id, kb_id]
+                )
+            except Exception as e:
+                logger.debug(f"Could not delete from knowledge_bases table: {e}")
         
         # Update tenant KB count
         tenant = await self.get_tenant(tenant_id)
@@ -1026,7 +1106,7 @@ class TenantService:
             tenant.kb_count = max(0, tenant.kb_count - 1)
             await self.update_tenant(tenant_id, kb_count=tenant.kb_count)
         
-        logger.info(f"Deleted KB: {kb_id} for tenant {tenant_id}")
+        logger.info(f"Deleted KB: {kb_id} for tenant {tenant_id} (with cascade delete)")
         return True
     
     def _deserialize_tenant(self, data: Dict[str, Any]) -> Tenant:
@@ -1049,7 +1129,7 @@ class TenantService:
             logger.warning(f"Deserializing tenant with missing ID. Data keys: {list(data.keys())}")
             
         config_data = data.get("config", {})
-        quota_data = data.get("quota", {})
+        data.get("quota", {})
         
         config = TenantConfig(
             llm_model=config_data.get("llm_model", "gpt-4o-mini"),
