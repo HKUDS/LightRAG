@@ -9,22 +9,9 @@ Evaluates RAG response quality using RAGAS metrics:
 - Context Precision: Is retrieved context clean without noise?
 
 Usage:
-    # Use defaults (sample_dataset.json, http://localhost:9621)
     python lightrag/evaluation/eval_rag_quality.py
-
-    # Specify custom dataset
-    python lightrag/evaluation/eval_rag_quality.py --dataset my_test.json
-    python lightrag/evaluation/eval_rag_quality.py -d my_test.json
-
-    # Specify custom RAG endpoint
-    python lightrag/evaluation/eval_rag_quality.py --ragendpoint http://my-server.com:9621
-    python lightrag/evaluation/eval_rag_quality.py -r http://my-server.com:9621
-
-    # Specify both
-    python lightrag/evaluation/eval_rag_quality.py -d my_test.json -r http://localhost:9621
-
-    # Get help
-    python lightrag/evaluation/eval_rag_quality.py --help
+    python lightrag/evaluation/eval_rag_quality.py http://localhost:9621
+    python lightrag/evaluation/eval_rag_quality.py http://your-rag-server.com:9621
 
 Results are saved to: lightrag/evaluation/results/
     - results_YYYYMMDD_HHMMSS.csv   (CSV export for analysis)
@@ -37,7 +24,6 @@ Technical Notes:
     - Deprecation warnings are suppressed for cleaner output
 """
 
-import argparse
 import asyncio
 import csv
 import json
@@ -213,9 +199,7 @@ class RAGEvaluator:
         logger.info("  • Embedding Model:      %s", self.eval_embedding_model)
         if self.eval_base_url:
             logger.info("  • Custom Endpoint:      %s", self.eval_base_url)
-            logger.info(
-                "  • Bypass N-Parameter:   Enabled (use LangchainLLMWrapperfor compatibility)"
-            )
+            logger.info("  • Bypass N-Parameter:   Enabled (use LangchainLLMWrapperfor compatibility)")
         else:
             logger.info("  • Endpoint:             OpenAI Official API")
 
@@ -481,7 +465,7 @@ class RAGEvaluator:
             List of evaluation results with metrics
         """
         # Get evaluation concurrency from environment (default to 1 for serial evaluation)
-        max_async = int(os.getenv("EVAL_MAX_CONCURRENT", "2"))
+        max_async = int(os.getenv("EVAL_MAX_CONCURRENT", "3"))
 
         logger.info("%s", "=" * 70)
         logger.info("🚀 Starting RAGAS Evaluation of LightRAG System")
@@ -775,6 +759,19 @@ class RAGEvaluator:
 
         elapsed_time = time.time() - start_time
 
+        # Add a small delay to ensure all buffered output is completely written
+        await asyncio.sleep(0.5)
+        # Flush all output buffers to ensure RAGAS progress bars are fully displayed
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sys.stdout.write("\n")
+        sys.stderr.write("\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+        # Display results table
+        self._display_results_table(results)
+
         # Calculate benchmark statistics
         benchmark_stats = self._calculate_benchmark_stats(results)
 
@@ -794,20 +791,6 @@ class RAGEvaluator:
         )
         with open(json_path, "w") as f:
             json.dump(summary, f, indent=2)
-
-        # Add a small delay to ensure all buffered output is completely written
-        await asyncio.sleep(0.8)
-        # Flush all output buffers to ensure RAGAS progress bars are fully displayed
-        sys.stdout.flush()
-        sys.stderr.flush()
-        sys.stdout.write("\n")
-        sys.stderr.write("\n")
-        sys.stdout.flush()
-        sys.stderr.flush()
-
-        # Display results table
-        self._display_results_table(results)
-
         logger.info("✅ JSON results saved to: %s", json_path)
 
         # Export to CSV
@@ -863,61 +846,22 @@ async def main():
     """
     Main entry point for RAGAS evaluation
 
-    Command-line arguments:
-        --dataset, -d: Path to test dataset JSON file (default: sample_dataset.json)
-        --ragendpoint, -r: LightRAG API endpoint URL (default: http://localhost:9621 or $LIGHTRAG_API_URL)
-
     Usage:
         python lightrag/evaluation/eval_rag_quality.py
-        python lightrag/evaluation/eval_rag_quality.py --dataset my_test.json
-        python lightrag/evaluation/eval_rag_quality.py -d my_test.json -r http://localhost:9621
+        python lightrag/evaluation/eval_rag_quality.py http://localhost:9621
+        python lightrag/evaluation/eval_rag_quality.py http://your-server.com:9621
     """
     try:
-        # Parse command-line arguments
-        parser = argparse.ArgumentParser(
-            description="RAGAS Evaluation Script for LightRAG System",
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-            epilog="""
-Examples:
-  # Use defaults
-  python lightrag/evaluation/eval_rag_quality.py
-
-  # Specify custom dataset
-  python lightrag/evaluation/eval_rag_quality.py --dataset my_test.json
-
-  # Specify custom RAG endpoint
-  python lightrag/evaluation/eval_rag_quality.py --ragendpoint http://my-server.com:9621
-
-  # Specify both
-  python lightrag/evaluation/eval_rag_quality.py -d my_test.json -r http://localhost:9621
-            """,
-        )
-
-        parser.add_argument(
-            "--dataset",
-            "-d",
-            type=str,
-            default=None,
-            help="Path to test dataset JSON file (default: sample_dataset.json in evaluation directory)",
-        )
-
-        parser.add_argument(
-            "--ragendpoint",
-            "-r",
-            type=str,
-            default=None,
-            help="LightRAG API endpoint URL (default: http://localhost:9621 or $LIGHTRAG_API_URL environment variable)",
-        )
-
-        args = parser.parse_args()
+        # Get RAG API URL from command line or environment
+        rag_api_url = None
+        if len(sys.argv) > 1:
+            rag_api_url = sys.argv[1]
 
         logger.info("%s", "=" * 70)
         logger.info("🔍 RAGAS Evaluation - Using Real LightRAG API")
         logger.info("%s", "=" * 70)
 
-        evaluator = RAGEvaluator(
-            test_dataset_path=args.dataset, rag_api_url=args.ragendpoint
-        )
+        evaluator = RAGEvaluator(rag_api_url=rag_api_url)
         await evaluator.run()
     except Exception as e:
         logger.exception("❌ Error: %s", e)
