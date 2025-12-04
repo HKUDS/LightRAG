@@ -48,6 +48,7 @@ neo4jWorkDir/
 inputs/
 output/
 rag_storage/
+data/
 
 # Miscellaneous
 .DS_Store
