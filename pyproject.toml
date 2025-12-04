@@ -150,6 +150,15 @@ observability = [
 >>>>>>> 69a0b74c (refactor: move document deps to api group, remove dynamic imports)
 ]
 
+evaluation = [
+    # RAG evaluation dependencies (RAGAS framework)
+    "ragas>=0.3.7",
+    "datasets>=4.3.0",
+    "httpx>=0.28.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
