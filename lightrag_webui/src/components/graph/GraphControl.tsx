@@ -303,8 +303,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
           // Choose edge highlight color based on theme
-          const edgeHighlightColor = isDarkTheme 
-            ? Constants.edgeColorHighlightedDarkTheme 
+          const edgeHighlightColor = isDarkTheme
+            ? Constants.edgeColorHighlightedDarkTheme
             : Constants.edgeColorHighlightedLightTheme
 
           if (_focusedNode && graph.hasNode(_focusedNode)) {
