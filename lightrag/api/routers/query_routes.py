@@ -4,7 +4,7 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 import logging
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
@@ -146,13 +146,24 @@ class QueryRequest(BaseModel):
         return param
 
 
+class ReferenceItem(BaseModel):
+    """A single reference item in query responses."""
+
+    reference_id: str = Field(description="Unique reference identifier")
+    file_path: str = Field(description="Path to the source file")
+    content: Optional[List[str]] = Field(
+        default=None,
+        description="List of chunk contents from this file (only present when include_chunk_content=True)",
+    )
+
+
 class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
     )
-    references: Optional[List[Dict[str, Union[str, List[str]]]]] = Field(
+    references: Optional[List[ReferenceItem]] = Field(
         default=None,
-        description="Reference list (Disabled when include_references=False, /query/data always includes references.). The 'content' field in each reference is a list of strings when include_chunk_content=True.",
+        description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
 
 
