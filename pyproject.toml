@@ -77,9 +77,21 @@ api = [
     "python-multipart",
     "pytz",
     "uvicorn",
+    # Document processing dependencies (required for API document upload functionality)
+    "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
+    "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
+    "pypdf>=6.1.0",                 # PDF processing
+    "python-docx>=0.8.11,<2.0.0",  # DOCX processing
+    "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+]
+
+# Advanced document processing engine (optional)
+docling = [
+    "docling>=2.0.0,<3.0.0",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
+<<<<<<< HEAD
 offline-docs = [
     # Document processing dependencies
     "docling>=1.0.0,<3.0.0",
@@ -89,6 +101,8 @@ offline-docs = [
     "openpyxl>=3.0.0,<4.0.0",
 ]
 
+=======
+>>>>>>> 4b31942e (refactor: move document deps to api group, remove dynamic imports)
 offline-storage = [
     # Storage backend dependencies
     "redis>=5.0.0,<7.0.0",
@@ -111,8 +125,8 @@ offline-llm = [
 ]
 
 offline = [
-    # Complete offline package (includes all offline dependencies)
-    "lightrag-hku[offline-docs,offline-storage,offline-llm]",
+    # Complete offline package (includes api for document processing, plus storage and LLM)
+    "lightrag-hku[api,offline-storage,offline-llm]",
 ]
 
 [project.scripts]
