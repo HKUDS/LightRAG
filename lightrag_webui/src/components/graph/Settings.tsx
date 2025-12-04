@@ -386,25 +386,29 @@ export default function Settings() {
               defaultValue={15}
               onEditFinished={setGraphLayoutMaxIterations}
             />
-            <Separator />
-            
-            {/* Development/Testing Section */}
-            <div className="flex flex-col gap-2">
-              <label className="text-sm leading-none font-medium text-muted-foreground">
-                Development
-              </label>
-              <Button
-                onClick={handleGenerateRandomGraph}
-                variant="outline"
-                size="sm"
-                className="flex items-center gap-2"
-              >
-                <Shuffle className="h-3.5 w-3.5" />
-                Generate Random Graph
-              </Button>
-            </div>
+            {/* Development/Testing Section - Only visible in development mode */}
+            {import.meta.env.DEV && (
+              <>
+                <Separator />
 
-            <Separator />
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm leading-none font-medium text-muted-foreground">
+                    Dev Options
+                  </label>
+                  <Button
+                    onClick={handleGenerateRandomGraph}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                  >
+                    <Shuffle className="h-3.5 w-3.5" />
+                    Gen Random Graph
+                  </Button>
+                </div>
+
+                <Separator />
+              </>
+            )}
             <Button
               onClick={saveSettings}
               variant="outline"
