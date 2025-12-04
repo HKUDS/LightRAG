@@ -2617,7 +2617,12 @@ class LightRAG:
                 )
 
             # Check document status and log warning for non-completed documents
-            doc_status = doc_status_data.get("status")
+            raw_status = doc_status_data.get("status")
+            try:
+                doc_status = DocStatus(raw_status)
+            except ValueError:
+                doc_status = raw_status
+
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
                     warning_msg = (
@@ -2627,12 +2632,23 @@ class LightRAG:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: PROCESSING)"
                     )
+                elif doc_status == DocStatus.PREPROCESSED:
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: PREPROCESSED)"
+                    )
                 elif doc_status == DocStatus.FAILED:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: FAILED)"
                     )
                 else:
-                    warning_msg = f"Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
+                    status_text = (
+                        doc_status.value
+                        if isinstance(doc_status, DocStatus)
+                        else str(doc_status)
+                    )
+                    warning_msg = (
+                        f"Deleting {doc_id} {file_path}(previous status: {status_text})"
+                    )
                 logger.info(warning_msg)
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:

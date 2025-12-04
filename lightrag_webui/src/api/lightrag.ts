@@ -167,7 +167,7 @@ export type DeleteDocResponse = {
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
+export type DocStatus = 'pending' | 'processing' | 'multimodal_processed' | 'processed' | 'failed'
 
 export type DocStatusResponse = {
   id: string

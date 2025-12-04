@@ -139,6 +139,7 @@
       "status": {
         "all": "Tous",
         "completed": "Terminé",
+        "preprocessed": "Prétraité",
         "processing": "En traitement",
         "pending": "En attente",
         "failed": "Échoué"

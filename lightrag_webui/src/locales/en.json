@@ -139,6 +139,7 @@
       "status": {
         "all": "All",
         "completed": "Completed",
+        "preprocessed": "Preprocessed",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
