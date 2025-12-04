@@ -5,12 +5,11 @@ Start LightRAG server with Gunicorn
 
 import os
 import sys
-import signal
 import pipmaster as pm
 from lightrag.api.utils_api import display_splash_screen, check_env_file
 from lightrag.api.config import global_args
 from lightrag.utils import get_env_value
-from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
+from lightrag.kg.shared_storage import initialize_share_data
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -34,20 +33,6 @@ def check_and_install_dependencies():
             print(f"{package} installed successfully")
 
 
-# Signal handler for graceful shutdown
-def signal_handler(sig, frame):
-    print("\n\n" + "=" * 80)
-    print("RECEIVED TERMINATION SIGNAL")
-    print(f"Process ID: {os.getpid()}")
-    print("=" * 80 + "\n")
-
-    # Release shared resources
-    finalize_share_data()
-
-    # Exit with success status
-    sys.exit(0)
-
-
 def main():
     # Set Gunicorn mode flag for lifespan cleanup detection
     os.environ["LIGHTRAG_GUNICORN_MODE"] = "1"
@@ -59,9 +44,10 @@ def main():
     # Check and install dependencies
     check_and_install_dependencies()
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
+    # Note: Signal handlers are NOT registered here because:
+    # - Worker cleanup is handled by gunicorn_config.worker_exit()
+    # - Master cleanup is handled by gunicorn_config.on_exit()
+    # This prevents race conditions when multiple processes try to finalize shared data
 
     # Display startup information
     display_splash_screen(global_args)

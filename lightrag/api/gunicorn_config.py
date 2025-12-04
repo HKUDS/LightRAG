@@ -163,3 +163,24 @@ def post_fork(server, worker):
     uvicorn_error_logger.handlers = []
     uvicorn_error_logger.setLevel(logging.CRITICAL)
     uvicorn_error_logger.propagate = False
+
+
+def worker_exit(server, worker):
+    """
+    Executed when a worker is about to exit.
+
+    This is called for each worker process when it exits. We should only
+    clean up worker-local resources here, NOT the shared Manager.
+    The Manager should only be shut down by the main process in on_exit().
+    """
+    print("=" * 80)
+    print(f"GUNICORN WORKER PROCESS: Shutting down worker {worker.pid}")
+    print(f"Process ID: {os.getpid()}")
+    print("=" * 80)
+
+    # Clean up worker-local resources without shutting down the Manager
+    # Pass shutdown_manager=False to prevent Manager shutdown
+    finalize_share_data(shutdown_manager=False)
+
+    print(f"Worker {worker.pid} cleanup complete")
+    print("=" * 80)

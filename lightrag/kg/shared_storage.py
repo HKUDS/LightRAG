@@ -1565,7 +1565,7 @@ def get_namespace_lock(
     return NamespaceLock(namespace, workspace, enable_logging)
 
 
-def finalize_share_data():
+def finalize_share_data(shutdown_manager: bool = True):
     """
     Release shared resources and clean up.
 
@@ -1574,6 +1574,10 @@ def finalize_share_data():
 
     In multi-process mode, it shuts down the Manager and releases all shared objects.
     In single-process mode, it simply resets the global variables.
+
+    Args:
+        shutdown_manager: If True, shut down the multiprocessing Manager.
+                         Should be True only for the main process, False for worker processes.
     """
     global \
         _manager, \
@@ -1598,8 +1602,8 @@ def finalize_share_data():
         f"Process {os.getpid()} finalizing storage data (multiprocess={_is_multiprocess})"
     )
 
-    # In multi-process mode, shut down the Manager
-    if _is_multiprocess and _manager is not None:
+    # In multi-process mode, shut down the Manager only if requested
+    if _is_multiprocess and _manager is not None and shutdown_manager:
         try:
             # Clear shared resources before shutting down Manager
             if _shared_dicts is not None:
