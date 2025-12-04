@@ -115,7 +115,7 @@ entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a cha
 entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
 entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
 entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}equiment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+entity{tuple_delimiter}The Device{tuple_delimiter}equipment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
 relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
 relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
 relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
@@ -223,40 +223,41 @@ Consider the conversation history if provided to maintain conversational flow an
 
 ---Instructions---
 
-**1. Step-by-Step Instruction:**
+1. Step-by-Step Instruction:
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
-  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
-**2. Content & Grounding:**
+2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
 
-**3. Formatting & Language:**
+3. Formatting & Language:
   - The response MUST be in the same language as the user query.
-  - Use Markdown for clear formatting (e.g., headings, bold, lists).
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
-**4. References Section Format:**
+4. References Section Format:
   - The References section should be under heading: `### References`
   - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any text after the references.
+  - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
-**5. Reference Section Example:**
+5. Reference Section Example:
 ```
 ### References
-* [1] Document Title One
-* [2] Document Title Two
-* [3] Document Title Three
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
 ```
 
-**6. Additional Instructions**: {user_prompt}
+6. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -276,7 +277,7 @@ Consider the conversation history if provided to maintain conversational flow an
 
 ---Instructions---
 
-**1. Think Step-by-Step:**
+1. Step-by-Step Instruction:
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
@@ -284,32 +285,33 @@ Consider the conversation history if provided to maintain conversational flow an
   - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
-**2. Content & Grounding:**
+2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
 
-**3. Formatting & Language:**
+3. Formatting & Language:
   - The response MUST be in the same language as the user query.
-  - Use Markdown for clear formatting (e.g., headings, bold, lists).
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
-**4. References Section Format:**
+4. References Section Format:
   - The References section should be under heading: `### References`
   - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
   - The Document Title in the citation must retain its original language.
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any text after the references.
+  - Do not generate footnotes section or any comment, summary, or explanation after the references.
 
-**5. Reference Section Example:**
+5. Reference Section Example:
 ```
 ### References
-* [1] Document Title One
-* [2] Document Title Two
-* [3] Document Title Three
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
 ```
 
-**6. Additional Instructions**: {user_prompt}
+6. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -338,7 +340,7 @@ Document Chunks (Each entry has a reference_id refer to the `Reference Document 
 
 Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
 
-```text
+```
 {reference_list_str}
 ```
 
@@ -353,7 +355,7 @@ Document Chunks (Each entry has a reference_id refer to the `Reference Document 
 
 Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
 
-```text
+```
 {reference_list_str}
 ```
 

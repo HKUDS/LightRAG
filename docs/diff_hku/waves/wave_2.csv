@@ -1,0 +1,94 @@
+commit,auth_date,author,subject,category,priority_idx,git_cherry_pick_cmd
+ec40b17e,2025-10-08,Yasiru,Rangana feat: Add token tracking support to openai_embed function,embedding,8,git cherry-pick ec40b17e
+0f15fdc3,2025-10-09,Daniel.y,Merge pull request #2181 from yrangana/feat/openai-embedding-token-tracking,embedding,8,git cherry-pick 0f15fdc3
+6d1ae404,2025-10-15,yangdx,Add offline Docker build support with embedded models and cache,embedding,8,git cherry-pick 6d1ae404
+6a29b5da,2025-10-23,yangdx,Update Docker deployment comments for LLM and embedding hosts,embedding,8,git cherry-pick 6a29b5da
+7b8223da,2025-11-03,yangdx,Update env.example with host/endpoint clarifications for LLM/embedding,embedding,8,git cherry-pick 7b8223da
+9c057060,2025-11-05,yangdx,Add separate endpoint configuration for LLM and embeddings in evaluation,embedding,8,git cherry-pick 9c057060
+01b07b2b,2025-11-07,yangdx,Refactor Jina embedding dimension by changing param to optional with default,embedding,8,git cherry-pick 01b07b2b
+33a1482f,2025-11-07,yangdx,Add optional embedding dimension parameter control via env var,embedding,8,git cherry-pick 33a1482f
+9cee5a63,2025-11-07,yangdx,Merge branch 'main' into apply-dim-to-embedding-call,embedding,8,git cherry-pick 9cee5a63
+ce28f30c,2025-11-07,yangdx,Add embedding_dim parameter support to embedding functions,embedding,8,git cherry-pick ce28f30c
+d8a6355e,2025-11-07,yangdx,Merge branch 'main' into apply-dim-to-embedding-call,embedding,8,git cherry-pick d8a6355e
+d94aae9c,2025-11-07,Yasiru,Rangana Add dimensions parameter support to openai_embed(),embedding,8,git cherry-pick d94aae9c
+ffeeae42,2025-11-07,yangdx,refactor: simplify jina embedding dimension handling,embedding,8,git cherry-pick ffeeae42
+03cc6262,2025-11-08,yangdx,Prohibit direct access to internal functions of EmbeddingFunc.,embedding,8,git cherry-pick 03cc6262
+0b2a15c4,2025-11-08,yangdx,Centralize embedding_send_dim config through args instead of env var,embedding,8,git cherry-pick 0b2a15c4
+29a349f2,2025-11-08,Daniel.y,Merge pull request #2329 from danielaskdd/gemini-embedding,embedding,8,git cherry-pick 29a349f2
+a624a950,2025-11-08,yangdx,Add Gemini to APIs requiring embedding dimension parameter,embedding,8,git cherry-pick a624a950
+de4ed736,2025-11-08,yangdx,Add Gemini embedding support,embedding,8,git cherry-pick de4ed736
+f4492d48,2025-11-08,Daniel.y,Merge pull request #2328 from HKUDS/apply-dim-to-embedding-call,embedding,8,git cherry-pick f4492d48
+05852e1a,2025-11-14,yangdx,Add max_token_size parameter to embedding function decorators,embedding,8,git cherry-pick 05852e1a
+14a6c24e,2025-11-14,yangdx,Add configurable embedding token limit with validation,embedding,8,git cherry-pick 14a6c24e
+2fb57e76,2025-11-14,yangdx,Fix embedding token limit initialization order,embedding,8,git cherry-pick 2fb57e76
+39b49e92,2025-11-14,yangdx,Convert embedding_token_limit from property to field with __post_init__,embedding,8,git cherry-pick 39b49e92
+5dec4dea,2025-11-14,yangdx,Improve embedding config priority and add debug logging,embedding,8,git cherry-pick 5dec4dea
+6b2af2b5,2025-11-14,yangdx,Refactor embedding function creation with proper attribute inheritance,embedding,8,git cherry-pick 6b2af2b5
+77221564,2025-11-14,yangdx,Add max_token_size parameter to embedding function decorators,embedding,8,git cherry-pick 77221564
+963a0a5d,2025-11-14,yangdx,Refactor embedding function creation with proper attribute inheritance,embedding,8,git cherry-pick 963a0a5d
+ab4d7ac2,2025-11-14,yangdx,Add configurable embedding token limit with validation,embedding,8,git cherry-pick ab4d7ac2
+de4412dd,2025-11-14,yangdx,Fix embedding token limit initialization order,embedding,8,git cherry-pick de4412dd
+e5addf4d,2025-11-14,yangdx,Improve embedding config priority and add debug logging,embedding,8,git cherry-pick e5addf4d
+f0254773,2025-11-14,yangdx,Convert embedding_token_limit from property to field with __post_init__,embedding,8,git cherry-pick f0254773
+3b76eea2,2025-11-15,Daniel.y,Merge pull request #2359 from danielaskdd/embedding-limit,embedding,8,git cherry-pick 3b76eea2
+b5589ce4,2025-11-15,yangdx,Merge branch 'main' into embedding-limit,embedding,8,git cherry-pick b5589ce4
+c13f9116,2025-11-17,yangdx,Add embedding dimension validation to EmbeddingFunc wrapper,embedding,8,git cherry-pick c13f9116
+46ce6d9a,2025-11-20,yangdx,Fix Azure OpenAI embedding model parameter fallback,embedding,8,git cherry-pick 46ce6d9a
+0c4cba38,2025-11-21,yangdx,Fix double decoration in azure_openai_embed and document decorator usage,embedding,8,git cherry-pick 0c4cba38
+7b762110,2025-11-22,yangdx,Add fallback to AZURE_OPENAI_API_VERSION for embedding API version,embedding,8,git cherry-pick 7b762110
+1b02684e,2025-11-28,Daniel.y,Merge pull request #2432 from danielaskdd/embedding-example,embedding,8,git cherry-pick 1b02684e
+1d07ff7f,2025-11-28,yangdx,Update OpenAI and Ollama embedding func examples in README,embedding,8,git cherry-pick 1d07ff7f
+4ab4a7ac,2025-11-28,yangdx,Allow embedding models to use provider defaults when unspecified,embedding,8,git cherry-pick 4ab4a7ac
+56e0365c,2025-11-28,yangdx,Add configurable model parameter to jina_embed function,embedding,8,git cherry-pick 56e0365c
+6e2946e7,2025-11-28,yangdx,Add max_token_size parameter to azure_openai_embed wrapper,embedding,8,git cherry-pick 6e2946e7
+97a9dfca,2025-11-28,yangdx,Add important note about embedding function wrapping restrictions,embedding,8,git cherry-pick 97a9dfca
+b6705449,2025-11-28,Daniel.y,Merge pull request #2433 from danielaskdd/fix-jina-embedding,embedding,8,git cherry-pick b6705449
+ea8d55ab,2025-11-28,yangdx,Add documentation for embedding provider configuration rules,embedding,8,git cherry-pick ea8d55ab
+37e8898c,2025-10-01,yangdx,Simplify reference formatting in LLM context generation,llm_cloud,9,git cherry-pick 37e8898c
+83d99e14,2025-10-01,yangdx,fix(OllamaAPI): Add validation to ensure last message is from user role,llm_cloud,9,git cherry-pick 83d99e14
+0b3d3150,2025-10-20,Humphry,"extended to use gemini, sswitched to use gemini-flash-latest",llm_cloud,9,git cherry-pick 0b3d3150
+74694214,2025-10-20,dependabot[bot],"Update openai requirement from <2.0.0,>=1.0.0 to >=1.0.0,<3.0.0",llm_cloud,9,git cherry-pick 74694214
+175ef459,2025-10-21,Daniel.y,Merge pull request #2238 from HKUDS/dependabot/pip/openai-gte-1.0.0-and-lt-3.0.0,llm_cloud,9,git cherry-pick 175ef459
+162370b6,2025-10-22,yangdx,Add optional LLM cache deletion when deleting documents,llm_cloud,9,git cherry-pick 162370b6
+aa916f28,2025-11-01,anouarbm,"docs: add generic test_dataset.json for evaluation examples Test cases with generic examples about: - LightRAG framework features and capabilities - RAG system architecture and components - Vector database support (ChromaDB, Neo4j, Milvus, etc.) - LLM provider integrations (OpenAI, Anthropic, Ollama, etc.) - RAG evaluation metrics explanation - Deployment options (Docker, FastAPI, direct integration) - Knowledge graph-based retrieval concepts",llm_cloud,9,git cherry-pick aa916f28
+994a82dc,2025-11-05,yangdx,Suppress token usage warnings for custom OpenAI-compatible endpoints,llm_cloud,9,git cherry-pick 994a82dc
+3cb4eae4,2025-11-07,yangdx,Add Chain of Thought support to Gemini LLM integration,llm_cloud,9,git cherry-pick 3cb4eae4
+6686edfd,2025-11-07,yangdx,"Update Gemini LLM options: add seed and thinking config, remove MIME type",llm_cloud,9,git cherry-pick 6686edfd
+73284623,2025-11-07,Daniel.y,Merge pull request #2326 from danielaskdd/gemini-cot,llm_cloud,9,git cherry-pick 73284623
+8c275553,2025-11-07,yangdx,Fix Gemini response parsing to avoid warnings from non-text parts,llm_cloud,9,git cherry-pick 8c275553
+924c8cb8,2025-11-07,yangdx,Merge branch 'main' into gemini-cot,llm_cloud,9,git cherry-pick 924c8cb8
+fc40a369,2025-11-07,yangdx,Add timeout support to Gemini LLM and improve parameter handling,llm_cloud,9,git cherry-pick fc40a369
+3d9de5ed,2025-11-08,yangdx,feat: improve Gemini client error handling and retry logic,llm_cloud,9,git cherry-pick 3d9de5ed
+55274dde,2025-11-08,yangdx,Add LLM cache migration tool for KV storage backends,llm_cloud,9,git cherry-pick 55274dde
+57ee7d5a,2025-11-08,yangdx,Merge branch 'main' into llm-cache-migrate,llm_cloud,9,git cherry-pick 57ee7d5a
+6b9f13c7,2025-11-08,yangdx,Enhance LLM cache migration tool with streaming and improved UX,llm_cloud,9,git cherry-pick 6b9f13c7
+6fc54d36,2025-11-08,yangdx,Move LLM cache migration tool to lightrag.tools module,llm_cloud,9,git cherry-pick 6fc54d36
+85bb98b3,2025-11-08,Daniel.y,Merge pull request #2331 from danielaskdd/gemini-retry,llm_cloud,9,git cherry-pick 85bb98b3
+987bc09c,2025-11-08,yangdx,Update LLM cache migration docs and improve UX prompts,llm_cloud,9,git cherry-pick 987bc09c
+d0d31e92,2025-11-08,yangdx,Improve LLM cache migration tool configuration and messaging,llm_cloud,9,git cherry-pick d0d31e92
+f83ea339,2025-11-08,yangdx,Add section header comment for Gemini binding options,llm_cloud,9,git cherry-pick f83ea339
+1485cb82,2025-11-09,yangdx,Add LLM query cache cleanup tool for KV storage backends,llm_cloud,9,git cherry-pick 1485cb82
+3110ca51,2025-11-09,Daniel.y,Merge pull request #2335 from danielaskdd/llm-cache-cleanup,llm_cloud,9,git cherry-pick 3110ca51
+754d2ad2,2025-11-09,yangdx,Add documentation for LLM cache migration between storage types,llm_cloud,9,git cherry-pick 754d2ad2
+88ab73f6,2025-11-09,yangdx,HotFix: Restore streaming response in OpenAI LLM,llm_cloud,9,git cherry-pick 88ab73f6
+8adf3180,2025-11-09,Daniel.y,Merge pull request #2330 from danielaskdd/llm-cache-migrate,llm_cloud,9,git cherry-pick 8adf3180
+18893015,2025-11-13,yangdx,Merge branch 'feat/add_cloud_ollama_support',llm_cloud,9,git cherry-pick 18893015
+680e36c6,2025-11-14,yangdx,Improve Bedrock error handling with retry logic and custom exceptions,llm_cloud,9,git cherry-pick 680e36c6
+f5b48587,2025-11-14,yangdx,Improve Bedrock error handling with retry logic and custom exceptions,llm_cloud,9,git cherry-pick f5b48587
+95e1fb16,2025-11-17,yangdx,Remove final_namespace attribute for in-memory storage and use namespace in clean_llm_query_cache.py,llm_cloud,9,git cherry-pick 95e1fb16
+a990c1d4,2025-11-17,BukeLy,fix: Correct Mock LLM output format in E2E test,llm_cloud,9,git cherry-pick a990c1d4
+021b637d,2025-11-21,Daniel.y,Merge pull request #2403 from danielaskdd/azure-cot-handling,llm_cloud,9,git cherry-pick 021b637d
+02fdceb9,2025-11-21,yangdx,Update OpenAI client to use stable API and bump minimum version to 2.0.0,llm_cloud,9,git cherry-pick 02fdceb9
+1e477e95,2025-11-21,yangdx,Add lightrag-clean-llmqc console script entry point,llm_cloud,9,git cherry-pick 1e477e95
+45f4f823,2025-11-21,yangdx,Refactor Azure OpenAI client creation to support client_configs merging,llm_cloud,9,git cherry-pick 45f4f823
+8777895e,2025-11-21,Daniel.y,Merge pull request #2401 from danielaskdd/fix-openai-keyword-extraction,llm_cloud,9,git cherry-pick 8777895e
+9f69c5bf,2025-11-21,yangdx,feat: Support structured output `parsed` from OpenAI,llm_cloud,9,git cherry-pick 9f69c5bf
+ac9f2574,2025-11-21,yangdx,Improve Azure OpenAI wrapper functions with full parameter support,llm_cloud,9,git cherry-pick ac9f2574
+b709f8f8,2025-11-21,yangdx,Consolidate Azure OpenAI implementation into main OpenAI module,llm_cloud,9,git cherry-pick b709f8f8
+fafa1791,2025-11-21,yangdx,Fix Azure OpenAI model parameter to use deployment name consistently,llm_cloud,9,git cherry-pick fafa1791
+ffd8da51,2025-11-21,yangdx,Improve Azure OpenAI compatibility and error handling,llm_cloud,9,git cherry-pick ffd8da51
+49fb11e2,2025-11-22,yangdx,Update Azure OpenAI configuration examples,llm_cloud,9,git cherry-pick 49fb11e2
+5f53de88,2025-11-22,yangdx,Fix Azure configuration examples and correct typos in env.example,llm_cloud,9,git cherry-pick 5f53de88
+a898f054,2025-11-25,palanisd,Merge branch 'HKUDS:main' into cohere-rerank,rerank,10,git cherry-pick a898f054
+8e50eef5,2025-12-02,yangdx,Merge branch 'main' into cohere-rerank,rerank,10,git cherry-pick 8e50eef5
+f0d67f16,2025-12-03,yangdx,Merge branch 'cohere-rerank',rerank,10,git cherry-pick f0d67f16

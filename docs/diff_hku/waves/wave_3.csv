@@ -1,0 +1,31 @@
+commit,auth_date,author,subject,category,priority_idx,git_cherry_pick_cmd
+075399ff,2025-11-12,Daniel.y,Merge pull request #2346 from danielaskdd/optimize-json-sanitization,json,11,git cherry-pick 075399ff
+23cbb9c9,2025-11-12,yangdx,Add data sanitization to JSON writing to prevent UTF-8 encoding errors,json,11,git cherry-pick 23cbb9c9
+6de4123f,2025-11-12,yangdx,Optimize JSON string sanitization with precompiled regex and zero-copy,json,11,git cherry-pick 6de4123f
+70cc2419,2025-11-12,yangdx,Fix empty dict handling after JSON sanitization,json,11,git cherry-pick 70cc2419
+7f54f470,2025-11-12,yangdx,Optimize JSON string sanitization with precompiled regex and zero-copy,json,11,git cherry-pick 7f54f470
+a08bc726,2025-11-12,yangdx,Fix empty dict handling after JSON sanitization,json,11,git cherry-pick a08bc726
+abeaac84,2025-11-12,yangdx,Improve JSON data sanitization to handle tuples and dict keys,json,11,git cherry-pick abeaac84
+cca0800e,2025-11-12,yangdx,Fix migration to reload sanitized data and prevent memory corruption,json,11,git cherry-pick cca0800e
+d1f4b6e5,2025-11-12,yangdx,Add data sanitization to JSON writing to prevent UTF-8 encoding errors,json,11,git cherry-pick d1f4b6e5
+dcf1d286,2025-11-12,yangdx,Fix migration to reload sanitized data and prevent memory corruption,json,11,git cherry-pick dcf1d286
+f28a0c25,2025-11-12,yangdx,Improve JSON data sanitization to handle tuples and dict keys,json,11,git cherry-pick f28a0c25
+c46c1b26,2025-10-31,yangdx,Add pycryptodome dependency for PDF encryption support,pdf,12,git cherry-pick c46c1b26
+61b57cbb,2025-11-01,yangdx,Add PDF decryption support for password-protected files,pdf,12,git cherry-pick 61b57cbb
+ece0398d,2025-11-01,Daniel.y,Merge pull request #2296 from danielaskdd/pdf-decryption,pdf,12,git cherry-pick ece0398d
+5a6bb658,2025-11-11,Daniel.y,Merge pull request #2338 from danielaskdd/migrate-to-pypdf,pdf,12,git cherry-pick 5a6bb658
+c434879c,2025-11-11,yangdx,Replace PyPDF2 with pypdf for PDF processing,pdf,12,git cherry-pick c434879c
+fdcb4d0b,2025-11-11,yangdx,Replace PyPDF2 with pypdf for PDF processing,pdf,12,git cherry-pick fdcb4d0b
+186c8f0e,2025-11-19,yangdx,Preserve blank paragraphs in DOCX extraction to maintain spacing,docx,13,git cherry-pick 186c8f0e
+4438ba41,2025-11-19,yangdx,Enhance DOCX extraction to preserve document order with tables,docx,13,git cherry-pick 4438ba41
+95cd0ece,2025-11-19,yangdx,Fix DOCX table extraction by escaping special characters in cells,docx,13,git cherry-pick 95cd0ece
+e7d2803a,2025-11-19,yangdx,Remove text stripping in DOCX extraction to preserve whitespace,docx,13,git cherry-pick e7d2803a
+fa887d81,2025-11-19,yangdx,Fix table column structure preservation in DOCX extraction,docx,13,git cherry-pick fa887d81
+3f6423df,2025-12-01,yangdx,Fix KaTeX extension loading by moving imports to app startup,katex,14,git cherry-pick 3f6423df
+8f4bfbf1,2025-12-01,yangdx,Add KaTeX copy-tex extension support for formula copying,katex,14,git cherry-pick 8f4bfbf1
+0244699d,2025-11-19,yangdx,Optimize XLSX extraction by using sheet.max_column instead of two-pass scan,xlsx,20,git cherry-pick 0244699d
+2b160163,2025-11-19,yangdx,Optimize XLSX extraction to avoid storing all rows in memory,xlsx,20,git cherry-pick 2b160163
+3efb1716,2025-11-19,yangdx,Enhance XLSX extraction with structured tab-delimited format and escaping,xlsx,20,git cherry-pick 3efb1716
+87de2b3e,2025-11-19,yangdx,Update XLSX extraction documentation to reflect current implementation,xlsx,20,git cherry-pick 87de2b3e
+af4d2a3d,2025-11-19,Daniel.y,Merge pull request #2386 from danielaskdd/excel-optimization,xlsx,20,git cherry-pick af4d2a3d
+ef659a1e,2025-11-19,yangdx,Preserve column alignment in XLSX extraction with two-pass processing,xlsx,20,git cherry-pick ef659a1e
