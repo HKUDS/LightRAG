@@ -34,14 +34,19 @@ ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 COPY pyproject.toml .
 COPY setup.py .
 COPY requirements-offline*.txt ./
+COPY constraints-offline.txt .
 COPY lightrag/ ./lightrag/
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install LightRAG with API extras and all offline dependencies
-RUN pip install --user --no-cache-dir --use-pep517 .[api]
-RUN pip install --user --no-cache-dir -r requirements-offline.txt
+# Install LightRAG with API extras and all offline dependencies in a single step
+# This prevents version conflicts from multiple installation passes
+# Use constraints file for reproducible builds with exact versions
+RUN pip install --user --no-cache-dir --use-pep517 \
+    --upgrade-strategy=only-if-needed \
+    --constraint constraints-offline.txt \
+    .[api] -r requirements-offline.txt
 
 # Prepare offline cache directory and pre-populate tiktoken data
 RUN mkdir -p /app/data/tiktoken \
@@ -61,14 +66,18 @@ COPY --from=builder /app/lightrag ./lightrag
 COPY pyproject.toml .
 COPY setup.py .
 COPY requirements-offline*.txt ./
+COPY constraints-offline.txt .
 
 # Ensure the installed scripts are on PATH
 ENV PATH=/root/.local/bin:$PATH
 
 # Install editable package for runtime (re-using cached wheels) and verify extras
 # IMPORTANT: Must be done BEFORE creating data/ directory to avoid setuptools error
-RUN pip install --no-cache-dir --use-pep517 ".[api]"
-RUN pip install --no-cache-dir -r requirements-offline.txt
+# Use single installation to prevent version conflicts with exact version constraints
+RUN pip install --no-cache-dir --use-pep517 \
+    --upgrade-strategy=only-if-needed \
+    --constraint constraints-offline.txt \
+    ".[api]" -r requirements-offline.txt
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken

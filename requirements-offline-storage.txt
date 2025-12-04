@@ -3,12 +3,14 @@
 # For offline installation:
 #   pip download -r requirements-offline-storage.txt -d ./packages
 #   pip install --no-index --find-links=./packages -r requirements-offline-storage.txt
+#
+# Recommended: Use pip install lightrag-hku[offline-storage] for the same effect
+# Or use constraints: pip install --constraint constraints-offline.txt -r requirements-offline-storage.txt
 
-asyncpg>=0.29.0
-neo4j>=5.0.0
-protobuf>=5.27.2,<6.0.0  # Required for pymilvus compatibility
-pymilvus>=2.6.2
-pymongo>=4.0.0
-qdrant-client>=1.7.0
-# Storage backend dependencies
-redis>=5.0.0
+# Storage backend dependencies (with version constraints matching pyproject.toml)
+asyncpg>=0.29.0,<1.0.0
+neo4j>=5.0.0,<7.0.0
+pymilvus>=2.6.2,<3.0.0
+pymongo>=4.0.0,<5.0.0
+qdrant-client>=1.7.0,<2.0.0
+redis>=5.0.0,<7.0.0

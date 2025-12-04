@@ -23,12 +23,13 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
+    "dotenv",
     "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
     "numpy",
-    "pandas>=2.0.0,<2.4.0",
+    "pandas>=2.0.0,<2.3.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -44,13 +45,14 @@ api = [
     # Core dependencies
     "aiohttp",
     "configparser",
+    "dotenv",
     "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
     "numpy",
-    "openai>=1.0.0,<3.0.0",
-    "pandas>=2.0.0,<2.4.0",
+    "openai>=1.0.0,<2.0.0",
+    "pandas>=2.0.0,<2.3.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -80,16 +82,16 @@ api = [
 # Offline deployment dependencies (layered design for flexibility)
 offline-docs = [
     # Document processing dependencies
-    "openpyxl>=3.0.0,<4.0.0",
-    "pycryptodome>=3.0.0,<4.0.0",
-    "pypdf>=6.1.0",
+    "docling>=1.0.0,<3.0.0",
+    "pypdf2>=3.0.0",
     "python-docx>=0.8.11,<2.0.0",
     "python-pptx>=0.6.21,<2.0.0",
+    "openpyxl>=3.0.0,<4.0.0",
 ]
 
 offline-storage = [
     # Storage backend dependencies
-    "redis>=5.0.0,<8.0.0",
+    "redis>=5.0.0,<7.0.0",
     "neo4j>=5.0.0,<7.0.0",
     "pymilvus>=2.6.2,<3.0.0",
     "pymongo>=4.0.0,<5.0.0",
@@ -99,13 +101,15 @@ offline-storage = [
 
 offline-llm = [
     # LLM provider dependencies
-    "openai>=1.0.0,<3.0.0",
+    "openai>=1.0.0,<2.0.0",
     "anthropic>=0.18.0,<1.0.0",
     "ollama>=0.1.0,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
     "llama-index>=0.9.0,<1.0.0",
+    "transformers>=4.30.0,<5.0.0",
+    "torch>=2.0.0,<2.3.0",
 ]
 
 offline = [
@@ -135,7 +139,7 @@ include-package-data = true
 version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
-lightrag = ["api/webui/**/*", "api/static/**/*"]
+lightrag = ["api/webui/**/*"]
 
 [tool.ruff]
 target-version = "py310"
