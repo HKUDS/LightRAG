@@ -5,6 +5,10 @@ LightRAG FastAPI Server
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
 import os
 import logging
 import logging.config
@@ -264,7 +268,7 @@ def create_app(args):
         "description": swagger_description,
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
-        "docs_url": "/docs",  # Explicitly set docs URL
+        "docs_url": None,  # Disable default docs, we'll create custom endpoint
         "redoc_url": "/redoc",  # Explicitly set redoc URL
         "lifespan": lifespan,
     }
@@ -675,6 +679,25 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
+    # Custom Swagger UI endpoint for offline support
+    @app.get("/docs", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        """Custom Swagger UI HTML with local static files"""
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=app.title + " - Swagger UI",
+            oauth2_redirect_url="/docs/oauth2-redirect",
+            swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
+            swagger_css_url="/static/swagger-ui/swagger-ui.css",
+            swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+            swagger_ui_parameters=app.swagger_ui_parameters,
+        )
+
+    @app.get("/docs/oauth2-redirect", include_in_schema=False)
+    async def swagger_ui_redirect():
+        """OAuth2 redirect for Swagger UI"""
+        return get_swagger_ui_oauth2_redirect_html()
+
     @app.get("/")
     async def redirect_to_webui():
         """Redirect root path to /webui"""
@@ -840,6 +863,15 @@ def create_app(args):
                 response.headers["Content-Type"] = "text/css"
 
             return response
+
+    # Mount Swagger UI static files for offline support
+    swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
+    if swagger_static_dir.exists():
+        app.mount(
+            "/static/swagger-ui",
+            StaticFiles(directory=swagger_static_dir),
+            name="swagger-ui-static",
+        )
 
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
