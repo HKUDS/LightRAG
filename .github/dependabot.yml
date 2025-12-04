@@ -3,8 +3,11 @@
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#package-ecosystem
 version: 2
 updates:
-  # Enable version updates for GitHub Actions
-  # Workflow files stored in the default location of `.github/workflows`
+  # ============================================================
+  # GitHub Actions
+  # PR Strategy:
+  #   - All updates (major/minor/patch): Grouped into a single PR
+  # ============================================================
   - package-ecosystem: github-actions
     directory: /
     groups:
@@ -13,22 +16,22 @@ updates:
           - "*"  # Group all Actions updates into a single larger pull request
     schedule:
       interval: weekly
-      day: monday
-      time: "02:00"
-      timezone: "Asia/Shanghai"
     labels:
       - "dependencies"
       - "github-actions"
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 5
 
-  # Configuration for pip (Python dependencies)
+  # ============================================================
+  # Python (pip) Dependencies
+  # PR Strategy:
+  #   - Major updates: Individual PR per package (except numpy which is ignored)
+  #   - Minor updates: Grouped by category (llm-providers, storage, etc.)
+  #   - Patch updates: Grouped by category
+  # ============================================================
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "wednesday"
-      time: "02:00"
-      timezone: "Asia/Shanghai"
     cooldown:
       default-days: 5
       semver-major-days: 30
@@ -63,7 +66,7 @@ updates:
       # Data processing and ML
       data-processing:
         patterns:
-          # - "numpy"
+          - "numpy"
           - "scipy"
           - "pandas"
           - "tiktoken"
@@ -102,21 +105,25 @@ updates:
           - "minor"
           - "patch"
     ignore:
-      # numpy updates are disabled due to potential breaking changes
       - dependency-name: "numpy"
+        update-types:
+          - "version-update:semver-major"
     labels:
       - "dependencies"
       - "python"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
 
-  # Configuration for bun (Frontend dependencies)
+  # ============================================================
+  # Frontend (bun) Dependencies
+  # PR Strategy:
+  #   - Major updates: Individual PR per package
+  #   - Minor updates: Grouped by category (react, ui-components, etc.)
+  #   - Patch updates: Grouped by category
+  # ============================================================
   - package-ecosystem: "bun"
     directory: "/lightrag_webui"
     schedule:
       interval: "weekly"
-      day: "friday"
-      time: "02:00"
-      timezone: "Asia/Shanghai"
     cooldown:
       default-days: 5
       semver-major-days: 30
@@ -162,18 +169,7 @@ updates:
           - "typescript"
           - "eslint*"
           - "@eslint/*"
-          - "typescript-eslint"
           - "prettier"
-          - "prettier-*"
-          - "@types/bun"
-        update-types:
-          - "minor"
-          - "patch"
-      # Content rendering libraries (math, diagrams, etc.)
-      content-rendering:
-        patterns:
-          - "katex"
-          - "mermaid"
         update-types:
           - "minor"
           - "patch"
@@ -187,4 +183,4 @@ updates:
     labels:
       - "dependencies"
       - "frontend"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
