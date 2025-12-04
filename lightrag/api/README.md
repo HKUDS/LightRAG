@@ -212,24 +212,18 @@ MAX_ASYNC=4
 
 ### Install LightRAG as a Linux Service
 
-Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the `WorkingDirectory` and `ExecStart` in the service file:
+Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the start options the service file:
 
 ```text
-Description=LightRAG Ollama Service
-WorkingDirectory=<lightrag installed directory>
-ExecStart=<lightrag installed directory>/lightrag/api/lightrag-api
+# Set Enviroment to your Python virtual enviroment
+Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
+WorkingDirectory=/home/netman/lightrag-xyj
+# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
+ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
+
 ```
 
-Modify your service startup script: `lightrag-api`. Change your Python virtual environment activation command as needed:
-
-```shell
-#!/bin/bash
-
-# your python virtual environment activation
-source /home/netman/lightrag-xyj/venv/bin/activate
-# start lightrag api server
-lightrag-server
-```
+> The ExecStart command must be either `lightrag-gunicorn` or `lightrag-server`; no wrapper scripts are allowed. This is because service termination requires the main process to be one of these two executables.
 
 Install LightRAG service. If your system is Ubuntu, the following commands will work:
 

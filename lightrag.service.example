@@ -9,14 +9,11 @@ User=netman
 MemoryHigh=8G
 MemoryMax=12G
 
-# Set the LightRAG installation directory (change this to match your installation path)
-Environment="LIGHTRAG_HOME=/home/netman/lightrag-xyj"
-
-# Set Environment to your Python virtual environment
-Environment="PATH=${LIGHTRAG_HOME}/.venv/bin"
-WorkingDirectory=${LIGHTRAG_HOME}
-ExecStart=${LIGHTRAG_HOME}/.venv/bin/lightrag-server
-# ExecStart=${LIGHTRAG_HOME}/.venv/bin/lightrag-gunicorn
+# Using virtual enviroment created by miniconda
+Environment="PATH=/home/netman/miniconda3/bin:/home/netman/lightrag-xyj/venv/bin"
+WorkingDirectory=/home/netman/lightrag-xyj
+# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
+ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
 
 # Kill mode require ExecStart must be gunicorn or unvicorn main process
 KillMode=process

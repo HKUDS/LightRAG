@@ -210,24 +210,16 @@ MAX_ASYNC=4
 
 ### 将 Lightrag 安装为 Linux 服务
 
-从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的 WorkingDirectory 和 ExecStart：
+从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
 
 ```text
-Description=LightRAG Ollama Service
-WorkingDirectory=<lightrag 安装目录>
-ExecStart=<lightrag 安装目录>/lightrag/api/lightrag-api
+# Set Enviroment to your Python virtual enviroment
+Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
+WorkingDirectory=/home/netman/lightrag-xyj
+# ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
+ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-gunicorn
 ```
-
-修改您的服务启动脚本：`lightrag-api`。根据需要更改 python 虚拟环境激活命令：
-
-```shell
-#!/bin/bash
-
-# 您的 python 虚拟环境激活命令
-source /home/netman/lightrag-xyj/venv/bin/activate
-# 启动 lightrag api 服务器
-lightrag-server
-```
+> ExecStart命令必须是 lightrag-gunicorn 或 lightrag-server 中的一个，不能使用其它脚本包裹它们。因为停止服务必须要求主进程必须是这两个进程。
 
 安装 LightRAG 服务。如果您的系统是 Ubuntu，以下命令将生效：
 
