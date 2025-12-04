@@ -39,6 +39,11 @@ class TestPostgresRetryIntegration:
             "database": os.getenv("POSTGRES_DATABASE", "postgres"),
             "workspace": os.getenv("POSTGRES_WORKSPACE", "test_retry"),
             "max_connections": int(os.getenv("POSTGRES_MAX_CONNECTIONS", "10")),
+            # Retry configuration
+            "connection_retry_attempts": int(os.getenv("POSTGRES_CONNECTION_RETRIES", "3")),
+            "connection_retry_backoff": float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "0.5")),
+            "connection_retry_backoff_max": float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "2.0")),
+            "pool_close_timeout": float(os.getenv("POSTGRES_POOL_CLOSE_TIMEOUT", "3.0")),
         }
 
     @pytest.fixture
