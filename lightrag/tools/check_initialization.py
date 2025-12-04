@@ -86,7 +86,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
         print("✅ Pipeline status: INITIALIZED")
     except KeyError:
         issues.append(
-            "Pipeline status not initialized - call initialize_pipeline_status()"
+            "Pipeline status not initialized - call rag.initialize_storages() first"
         )
     except Exception as e:
         issues.append(f"Error checking pipeline status: {str(e)}")
@@ -101,7 +101,6 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
 
         print("\n📝 To fix, run this initialization sequence:\n")
         print("  await rag.initialize_storages()")
-        print("  from lightrag.kg.shared_storage import initialize_pipeline_status")
         print(
             "\n📚 Documentation: https://github.com/HKUDS/LightRAG#important-initialization-requirements"
         )
