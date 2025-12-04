@@ -29,14 +29,14 @@ cd lightrag
 
 # Create a Python virtual environment
 uv venv --seed --python 3.12
-source .venv/bin/activate
+source .venv/bin/acivate
 
 # Install in editable mode with API support
 pip install -e ".[api]"
 
 # Build front-end artifacts
 cd lightrag_webui
-bun install --frozen-lockfile
+bun install --frozen-lockfile --production
 bun run build
 cd ..
 ```
@@ -119,13 +119,37 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 ### Launching LightRAG Server with Docker
 
-Using Docker Compose is the most convenient way to deploy and run the LightRAG Server.
+* Prepare the .env file:
+    Create a personalized .env file by copying the sample file [`env.example`](env.example). Configure the LLM and embedding parameters according to your requirements.
 
-* Create a project directory.
+* Create a file named `docker-compose.yml`:
 
-* Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
-
-* Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
+```yaml
+services:
+  lightrag:
+    container_name: lightrag
+    image: ghcr.io/hkuds/lightrag:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./data/tiktoken:/app/data/tiktoken
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    environment:
+      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
 
 * Start the LightRAG Server with the following command:
 
@@ -134,11 +158,11 @@ docker compose up
 # If you want the program to run in the background after startup, add the -d parameter at the end of the command.
 ```
 
-You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./../../docs/DockerDeployment.md).
+> You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### Offline Deployment
 
-Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./../../docs/OfflineDeployment.md).
+ For offline or air-gapped environments, see the [Offline Deployment Guide](./../../docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 ### Starting Multiple LightRAG Instances
 
@@ -412,10 +436,6 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample env file or config.ini file.
 
-### LLM Cache Migration Between Storage Types
-
-When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
-
 ### LightRAG API Server Command Line Options
 
 | Parameter             | Default       | Description                                                                                                                     |
@@ -471,50 +491,6 @@ The `/query` and `/query/stream` API endpoints include an `enable_rerank` parame
 ```
 RERANK_BY_DEFAULT=False
 ```
-
-### Include Chunk Content in References
-
-By default, the `/query` and `/query/stream` endpoints return references with only `reference_id` and `file_path`. For evaluation, debugging, or citation purposes, you can request the actual retrieved chunk content to be included in references.
-
-The `include_chunk_content` parameter (default: `false`) controls whether the actual text content of retrieved chunks is included in the response references. This is particularly useful for:
-
-- **RAG Evaluation**: Testing systems like RAGAS that need access to retrieved contexts
-- **Debugging**: Verifying what content was actually used to generate the answer
-- **Citation Display**: Showing users the exact text passages that support the response
-- **Transparency**: Providing full visibility into the RAG retrieval process
-
-**Example API Request:**
-
-```json
-{
-  "query": "What is LightRAG?",
-  "mode": "mix",
-  "include_references": true,
-  "include_chunk_content": true
-}
-```
-
-**Example Response (with chunk content):**
-
-```json
-{
-  "response": "LightRAG is a graph-based RAG system...",
-  "references": [
-    {
-      "reference_id": "1",
-      "file_path": "/documents/intro.md",
-      "content": "LightRAG is a retrieval-augmented generation system that combines knowledge graphs with vector similarity search..."
-    },
-    {
-      "reference_id": "2",
-      "file_path": "/documents/features.md",
-      "content": "The system provides multiple query modes including local, global, hybrid, and mix modes..."
-    }
-  ]
-}
-```
-
-**Note**: This parameter only works when `include_references=true`. Setting `include_chunk_content=true` without including references has no effect.
 
 ### .env Examples
 
