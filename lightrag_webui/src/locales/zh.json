@@ -114,8 +114,8 @@
     "documentManager": {
       "title": "文档管理",
       "scanButton": "扫描",
-      "scanTooltip": "扫描输入目录中的文档",
-      "retryFailedButton": "重试失败",
+      "scanTooltip": "扫描处理输入目录中的文档，同时重新处理所有失败的文档",
+      "retryFailedButton": "重试",
       "retryFailedTooltip": "重新处理所有失败的文档",
       "refreshTooltip": "复位文档清单",
       "pipelineStatusButton": "流水线状态",
