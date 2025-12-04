@@ -264,20 +264,24 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            # Use the proper acreate_entity method which handles:
-            # - Graph lock for concurrency
-            # - Vector embedding creation in entities_vdb
-            # - Metadata population and defaults
-            # - Index consistency via _edit_entity_done
-            result = await rag.acreate_entity(
-                entity_name=request.entity_name,
-                entity_data=request.entity_data,
+            # Check if entity already exists
+            exists = await rag.chunk_entity_relation_graph.has_node(request.entity_name)
+            if exists:
+                raise ValueError(f"Entity '{request.entity_name}' already exists")
+
+            # Prepare entity data
+            entity_data = request.entity_data.copy()
+            entity_data["entity_id"] = request.entity_name
+
+            # Create the entity
+            await rag.chunk_entity_relation_graph.upsert_node(
+                request.entity_name, entity_data
             )
 
             return {
                 "status": "success",
                 "message": f"Entity '{request.entity_name}' created successfully",
-                "data": result,
+                "data": entity_data,
             }
         except ValueError as ve:
             logger.error(
@@ -317,22 +321,36 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            # Use the proper acreate_relation method which handles:
-            # - Graph lock for concurrency
-            # - Entity existence validation
-            # - Duplicate relation checks
-            # - Vector embedding creation in relationships_vdb
-            # - Index consistency via _edit_relation_done
-            result = await rag.acreate_relation(
-                source_entity=request.source_entity,
-                target_entity=request.target_entity,
-                relation_data=request.relation_data,
+            # Check if both entities exist
+            source_exists = await rag.chunk_entity_relation_graph.has_node(
+                request.source_entity
+            )
+            target_exists = await rag.chunk_entity_relation_graph.has_node(
+                request.target_entity
+            )
+
+            if not source_exists:
+                raise ValueError(
+                    f"Source entity '{request.source_entity}' does not exist"
+                )
+            if not target_exists:
+                raise ValueError(
+                    f"Target entity '{request.target_entity}' does not exist"
+                )
+
+            # Create the relationship
+            await rag.chunk_entity_relation_graph.upsert_edge(
+                request.source_entity, request.target_entity, request.relation_data
             )
 
             return {
                 "status": "success",
                 "message": f"Relation created successfully between '{request.source_entity}' and '{request.target_entity}'",
-                "data": result,
+                "data": {
+                    "source": request.source_entity,
+                    "target": request.target_entity,
+                    **request.relation_data,
+                },
             }
         except ValueError as ve:
             logger.error(
