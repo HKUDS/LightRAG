@@ -408,6 +408,10 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 
 在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `env.exampl`e文件。
 
+### 在不同存储类型之间迁移LLM缓存
+
+当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
+
 ### LightRag API 服务器命令行选项
 
 | 参数 | 默认值 | 描述 |

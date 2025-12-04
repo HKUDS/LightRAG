@@ -412,6 +412,10 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample env file or config.ini file.
 
+### LLM Cache Migration Between Storage Types
+
+When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
+
 ### LightRAG API Server Command Line Options
 
 | Parameter             | Default       | Description                                                                                                                     |
