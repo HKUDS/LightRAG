@@ -1188,7 +1188,7 @@ async def _rebuild_single_entity(
             file_paths_list = file_paths_list[:max_file_paths]
 
         file_paths_list.append(
-            f"...{file_path_placeholder}({limit_method}:{max_file_paths}/{original_count})..."
+            f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
         )
         logger.info(
             f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
@@ -1222,7 +1222,7 @@ async def _rebuild_single_entity(
 
     if len(limited_chunk_ids) < len(normalized_chunk_ids):
         truncation_info = (
-            f"{limit_method}:{len(limited_chunk_ids)}/{len(normalized_chunk_ids)}"
+            f"{limit_method} {len(limited_chunk_ids)}/{len(normalized_chunk_ids)}"
         )
     else:
         truncation_info = ""
@@ -1347,7 +1347,7 @@ async def _rebuild_single_relationship(
             file_paths_list = file_paths_list[:max_file_paths]
 
         file_paths_list.append(
-            f"...{file_path_placeholder}({limit_method}:{max_file_paths}/{original_count})..."
+            f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
         )
         logger.info(
             f"Limited `{src}`~`{tgt}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
@@ -1383,7 +1383,7 @@ async def _rebuild_single_relationship(
 
     if len(limited_chunk_ids) < len(normalized_chunk_ids):
         truncation_info = (
-            f"{limit_method}:{len(limited_chunk_ids)}/{len(normalized_chunk_ids)}"
+            f"{limit_method} {len(limited_chunk_ids)}/{len(normalized_chunk_ids)}"
         )
     else:
         truncation_info = ""
