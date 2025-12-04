@@ -9,10 +9,9 @@ __pycache__/
 
 # Virtual Environment
 .venv/
+env/
 venv/
-
-# Enviroment Variable Files
-.env
+*.env*
 
 # Build / Distribution
 dist/
@@ -46,12 +45,11 @@ neo4jWorkDir/
 
 # Data & Storage
 inputs/
-output/
 rag_storage/
+examples/input/
+examples/output/
+output*/
 data/
-
-# Evaluation results
-lightrag/evaluation/results/
 
 # Miscellaneous
 .DS_Store
@@ -60,17 +58,18 @@ ignore_this.txt
 *.ignore.*
 
 # Project-specific files
-/dickens*/
-/book.txt
+dickens*/
+book.txt
+LightRAG.pdf
 download_models_hf.py
+lightrag-dev/
+gui/
 
 # Frontend build output (built during PyPI release)
-/lightrag/api/webui/
+lightrag/api/webui/
 
-# temporary test files in project root
-/test_*
+# unit-test files
+test_*
 
 # Cline files
-memory-bank
-.claude/CLAUDE.md
-.claude/
+memory-bank/
