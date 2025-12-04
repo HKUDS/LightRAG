@@ -19,7 +19,7 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
 
   # Configuration for pip (Python dependencies)
   - package-ecosystem: "pip"
@@ -107,7 +107,7 @@ updates:
     labels:
       - "dependencies"
       - "python"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
 
   # Configuration for bun (Frontend dependencies)
   - package-ecosystem: "bun"
@@ -176,4 +176,4 @@ updates:
     labels:
       - "dependencies"
       - "frontend"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
