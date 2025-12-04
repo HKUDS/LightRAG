@@ -482,6 +482,7 @@ class OllamaAPI:
                         "eval_duration": eval_time,
                     }
             except Exception as e:
+                logger.error(f"Ollama generate error: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.router.post(
@@ -747,4 +748,5 @@ class OllamaAPI:
                         "eval_duration": eval_time,
                     }
             except Exception as e:
+                logger.error(f"Ollama chat error: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
