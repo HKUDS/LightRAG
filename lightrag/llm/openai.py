@@ -138,7 +138,6 @@ async def openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     token_tracker: Any | None = None,
-    keyword_extraction: bool = False,  # Will be removed from kwargs before passing to OpenAI
     stream: bool | None = None,
     timeout: int | None = None,
     **kwargs: Any,
@@ -170,14 +169,14 @@ async def openai_complete_if_cache(
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
         token_tracker: Optional token usage tracker for monitoring API usage.
         enable_cot: Whether to enable Chain of Thought (COT) processing. Default is False.
+        stream: Whether to stream the response. Default is False.
+        timeout: Request timeout in seconds. Default is None.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url).
             - keyword_extraction: Will be removed from kwargs before passing to OpenAI.
-            - stream: Whether to stream the response. Default is False.
-            - timeout: Request timeout in seconds. Default is None.
 
     Returns:
         The completed text (with integrated COT content if available) or an async iterator
@@ -227,6 +226,12 @@ async def openai_complete_if_cache(
     logger.debug("===== Sending Query to LLM =====")
 
     messages = kwargs.pop("messages", messages)
+
+    # Add explicit parameters back to kwargs so they're passed to OpenAI API
+    if stream is not None:
+        kwargs["stream"] = stream
+    if timeout is not None:
+        kwargs["timeout"] = timeout
 
     try:
         # Don't use async with context manager, use client directly
