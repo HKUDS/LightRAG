@@ -817,7 +817,9 @@ def create_app(args):
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
 
-            if path.endswith(".html"):
+            is_html = path.endswith(".html") or response.media_type == "text/html"
+
+            if is_html:
                 response.headers["Cache-Control"] = (
                     "no-cache, no-store, must-revalidate"
                 )
