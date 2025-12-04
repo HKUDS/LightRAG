@@ -78,7 +78,13 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     }
   }
 
-  return JSON.stringify(formattedMetadata, null, 2);
+  // Format JSON and remove outer braces and indentation
+  const jsonStr = JSON.stringify(formattedMetadata, null, 2);
+  const lines = jsonStr.split('\n');
+  // Remove first line ({) and last line (}), and remove leading indentation (2 spaces)
+  return lines.slice(1, -1)
+    .map(line => line.replace(/^ {2}/, ''))
+    .join('\n');
 };
 
 const pulseStyle = `
@@ -1669,13 +1675,16 @@ export default function DocumentManager() {
                               )}
 
                               {/* Tooltip rendering logic */}
-                              {(doc.error_msg || (doc.metadata && Object.keys(doc.metadata).length > 0)) && (
+                              {(doc.error_msg || (doc.metadata && Object.keys(doc.metadata).length > 0) || doc.track_id) && (
                                 <div className="invisible group-hover:visible tooltip">
-                                  {doc.error_msg && (
-                                    <pre>{doc.error_msg}</pre>
+                                  {doc.track_id && (
+                                    <div className="mt-1">Track ID: {doc.track_id}</div>
                                   )}
                                   {doc.metadata && Object.keys(doc.metadata).length > 0 && (
                                     <pre>{formatMetadata(doc.metadata)}</pre>
+                                  )}
+                                  {doc.error_msg && (
+                                    <pre>{doc.error_msg}</pre>
                                   )}
                                 </div>
                               )}
