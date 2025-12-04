@@ -76,19 +76,15 @@ export const ChatMessage = ({
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
-  // Load KaTeX dynamically with mhchem extension for chemistry formulas
+  // Load KaTeX rehype plugin dynamically
+  // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
-        // First load mhchem extension (must be loaded before rehype-katex)
-        // This enables \ce and \pu commands for chemistry formulas
-        await import('katex/contrib/mhchem');
-        // Then load rehype-katex
         const { default: rehypeKatex } = await import('rehype-katex');
         setKatexPlugin(() => rehypeKatex);
       } catch (error) {
         console.error('Failed to load KaTeX plugin:', error);
-        // Set to null to ensure we don't try to use a failed plugin
         setKatexPlugin(null);
       }
     };
