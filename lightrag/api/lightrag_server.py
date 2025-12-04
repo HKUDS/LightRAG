@@ -251,14 +251,17 @@ def create_app(args):
             finalize_share_data()
 
     # Initialize FastAPI
+    base_description = (
+        "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
+    )
+    swagger_description = (
+        base_description
+        + (" (With authentication)" if api_key else "")
+        + "\n\n[View ReDoc documentation](/redoc)"
+    )
     app_kwargs = {
         "title": "LightRAG Server API",
-        "description": (
-            "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-            + "(With authentication)"
-            if api_key
-            else ""
-        ),
+        "description": swagger_description,
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
