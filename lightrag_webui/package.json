@@ -101,12 +101,12 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "graphology-types": "^0.24.8",
-    "prettier": "^3.6.2",
-    "prettier-plugin-tailwindcss": "^0.7.1",
+    "prettier": "^3.7.1",
+    "prettier-plugin-tailwindcss": "^0.7.2",
     "typescript-eslint": "^8.48.0",
     "tailwindcss": "^4.1.17",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.6"
   }
 }
