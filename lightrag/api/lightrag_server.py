@@ -256,7 +256,7 @@ def create_app(args):
     )
     swagger_description = (
         base_description
-        + (" (With authentication)" if api_key else "")
+        + (" (API-Key Enabled)" if api_key else "")
         + "\n\n[View ReDoc documentation](/redoc)"
     )
     app_kwargs = {
