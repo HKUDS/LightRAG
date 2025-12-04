@@ -53,28 +53,24 @@
 
 ## 🎉 新闻
 
-- [x] [2025.11.05]🎯📢添加**基于RAGAS的**LightRAG评估框架。
-- [x] [2025.10.22]🎯📢消除处理**大规模数据集**的瓶颈。
-- [x] [2025.09.15]🎯📢显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
-- [x] [2025.08.29]🎯📢现已支持**Reranker**，显著提升混合查询性能。
-- [x] [2025.08.04]🎯📢支持**文档删除**并重新生成知识图谱以确保查询性能。
-- [x] [2025.06.16]🎯📢我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
-- [X] [2025.06.05]🎯📢LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
-- [X] [2025.03.18]🎯📢LightRAG现已支持引文功能。
-- [X] [2025.02.05]🎯📢我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
-- [X] [2025.01.13]🎯📢我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
-- [X] [2025.01.06]🎯📢现在您可以[使用PostgreSQL进行存储](#using-postgresql-for-storage)。
-- [X] [2024.11.25]🎯📢LightRAG现在支持无缝集成[自定义知识图谱](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg)，使用户能够用自己的领域专业知识增强系统。
-- [X] [2024.11.19]🎯📢LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
-- [X] [2024.11.11]🎯📢LightRAG现在支持[通过实体名称删除实体](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete)。
-- [X] [2024.11.09]🎯📢推出[LightRAG Gui](https://lightrag-gui.streamlit.app)，允许您插入、查询、可视化和下载LightRAG知识。
-- [X] [2024.11.04]🎯📢现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
-- [X] [2024.10.29]🎯📢LightRAG现在通过`textract`支持多种文件类型，包括PDF、DOC、PPT和CSV。
-- [X] [2024.10.20]🎯📢我们为LightRAG添加了一个新功能：图形可视化。
-- [X] [2024.10.18]🎯📢我们添加了[LightRAG介绍视频](https://youtu.be/oageL-1I0GE)的链接。感谢作者！
-- [X] [2024.10.17]🎯📢我们创建了一个[Discord频道](https://discord.gg/yF2MmDJyGJ)！欢迎加入分享和讨论！🎉🎉
-- [X] [2024.10.16]🎯📢LightRAG现在支持[Ollama模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
-- [X] [2024.10.15]🎯📢LightRAG现在支持[Hugging Face模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
+- [x] [2025.11.05]🎯添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持（API可随查询结果返回召回上下文）。
+- [x] [2025.10.22]🎯消除处理**大规模数据集**的性能瓶颈。
+- [x] [2025.09.15]🎯显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
+- [x] [2025.08.29]🎯现已支持**Reranker**，显著提升混合查询性能(现已设为默认查询模式)。
+- [x] [2025.08.04]🎯支持**文档删除**并重新生成知识图谱以确保查询性能。
+- [x] [2025.06.16]🎯我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
+- [x] [2025.06.05]🎯LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
+- [x] [2025.03.18]🎯LightRAG现已支持参考文献功能。
+- [x] [2025.02.12]🎯现在您可以使用MongoDB作为一体化存储解决方案。
+- [x] [2025.02.05]🎯我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
+- [x] [2025.01.13]🎯我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
+- [x] [2025.01.06]🎯现在您可以使用PostgreSQL作为一体化存储解决方案。
+- [x] [2024.11.19]🎯LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
+- [x] [2024.11.09]🎯推出LightRAG Webui，允许您插入、查询、可视化LightRAG知识。
+- [x] [2024.11.04]🎯现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
+- [x] [2024.10.18]🎯我们添加了[LightRAG介绍视频](https://youtu.be/oageL-1I0GE)的链接。感谢作者！
+- [x] [2024.10.17]🎯我们创建了一个[Discord频道](https://discord.gg/yF2MmDJyGJ)！欢迎加入分享和讨论！🎉🎉
+- [x] [2024.10.16]🎯LightRAG现在支持[Ollama模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
@@ -90,6 +86,11 @@
 
 ## 安装
 
+> **💡 使用 uv 进行包管理**: 本项目使用 [uv](https://docs.astral.sh/uv/) 进行快速可靠的 Python 包管理。
+> 首先安装 uv: `curl -LsSf https://astral.sh/uv/install.sh | sh` (Unix/macOS) 或 `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
+>
+> **注意**: 如果您更喜欢使用 pip 也可以，但我们推荐使用 uv 以获得更好的性能和更可靠的依赖管理。
+
 ### 安装LightRAG服务器
 
 LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知识图谱探索和简单的RAG查询界面。LightRAG服务器还提供兼容Ollama的接口，旨在将LightRAG模拟为Ollama聊天模型。这使得AI聊天机器人（如Open WebUI）可以轻松访问LightRAG。
@@ -97,8 +98,13 @@ LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知
 * 从PyPI安装
 
 ```bash
-pip install "lightrag-hku[api]"
-cp env.example .env
+# 使用 uv (推荐)
+uv pip install "lightrag-hku[api]"
+# 或使用 pip
+# pip install "lightrag-hku[api]"
+
+cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+
 lightrag-server
 ```
 
@@ -107,9 +113,17 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-# 如有必要，创建Python虚拟环境
-# 以可开发（编辑）模式安装LightRAG服务器
-pip install -e ".[api]"
+
+# 使用 uv (推荐)
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+uv sync --extra api
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# 或使用 pip 和虚拟环境
+# python -m venv .venv
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# pip install -e ".[api]"
 
 cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
 
@@ -140,13 +154,19 @@ docker compose up
 
 ```bash
 cd LightRAG
-pip install -e .
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
+uv sync
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# 或: pip install -e .
 ```
 
 * 从PyPI安装
 
 ```bash
-pip install lightrag-hku
+uv pip install lightrag-hku
+# 或: pip install lightrag-hku
 ```
 
 ## 快速开始
@@ -198,6 +218,10 @@ python examples/lightrag_openai_demo.py
 
 > ⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
 
+### ⚠️ 重要：初始化要求
+
+LightRAG 在使用前需要显式初始化。 创建 LightRAG 实例后，您必须调用 await rag.initialize_storages()，否则将出现错误。
+
 ### 一个简单程序
 
 以下Python代码片段演示了如何初始化LightRAG、插入文本并进行查询：
@@ -207,7 +231,6 @@ import os
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
-from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
@@ -222,9 +245,7 @@ async def initialize_rag():
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
     )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-    return rag
+    await rag.initialize_storages()    return rag
 
 async def main():
     try:
@@ -418,8 +439,6 @@ async def initialize_rag():
     )
 
     await rag.initialize_storages()
-    await initialize_pipeline_status()
-
     return rag
 ```
 
@@ -548,7 +567,6 @@ from lightrag import LightRAG
 from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
-from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import setup_logger
 
 # 为LightRAG设置日志处理程序
@@ -565,8 +583,6 @@ async def initialize_rag():
     )
 
     await rag.initialize_storages()
-    await initialize_pipeline_status()
-
     return rag
 
 def main():
@@ -816,8 +832,6 @@ async def initialize_rag():
     # 初始化数据库连接
     await rag.initialize_storages()
     # 初始化文档处理的管道状态
-    await initialize_pipeline_status()
-
     return rag
 ```
 
@@ -867,8 +881,8 @@ rag = LightRAG(
 
 对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式储解解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
 
-* 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（请务必阅读概述）：https://hub.docker.com/r/shangor/postgres-for-rag
-* Apache AGE的性能不如Neo4j。最求高性能的图数据库请使用Noe4j。
+* 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（默认帐号密码:rag/rag）：https://hub.docker.com/r/gzdaniel/postgres-for-rag
+* Apache AGE的性能不如Neo4j。追求高性能的图数据库请使用Noe4j。
 
 </details>
 
@@ -1462,6 +1476,50 @@ LightRAG服务器旨在提供Web UI和API支持。**有关LightRAG服务器的�
 LightRAG服务器提供全面的知识图谱可视化功能。它支持各种重力布局、节点查询、子图过滤等。**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
 
 ![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
+
+## Langfuse 可观测性集成
+
+Langfuse 为 OpenAI 客户端提供了直接替代方案，可自动跟踪所有 LLM 交互，使开发者能够在无需修改代码的情况下监控、调试和优化其 RAG 系统。
+
+### 安装 Langfuse 可选依赖
+
+```
+pip install lightrag-hku
+pip install lightrag-hku[observability]
+
+# 或从源代码安装并启用调试模式
+pip install -e .
+pip install -e ".[observability]"
+```
+
+### 配置 Langfuse 环境变量
+
+修改 .env 文件：
+
+```
+## Langfuse 可观测性（可选）
+# LLM 可观测性和追踪平台
+# 安装命令: pip install lightrag-hku[observability]
+# 注册地址: https://cloud.langfuse.com 或自托管部署
+LANGFUSE_SECRET_KEY=""
+LANGFUSE_PUBLIC_KEY=""
+LANGFUSE_HOST="https://cloud.langfuse.com"  # 或您的自托管实例地址
+LANGFUSE_ENABLE_TRACE=true
+```
+
+### Langfuse 使用说明
+
+安装并配置完成后，Langfuse 会自动追踪所有 OpenAI LLM 调用。Langfuse 仪表板功能包括：
+
+- **追踪**：查看完整的 LLM 调用链
+- **分析**：Token 使用量、延迟、成本指标
+- **调试**：检查提示词和响应内容
+- **评估**：比较模型输出结果
+- **监控**：实时告警功能
+
+### 重要提示
+
+**注意**：LightRAG 目前仅把 OpenAI 兼容的 API 调用接入了 Langfuse。Ollama、Azure 和 AWS Bedrock 等 API 还无法使用 Langfuse 的可观测性功能。
 
 ## RAGAS评估
 
