@@ -52,7 +52,7 @@
 ---
 ## 🎉 News
 - [x] [2025.11.05]🎯📢Add **RAGAS-based** Evaluation Framework for LightRAG.
-- [x] [2025.10.22]🎯📢MualEliminate bottlenecks in processing **large-scale datasets**.
+- [x] [2025.10.22]🎯📢Eliminate bottlenecks in processing **large-scale datasets**.
 - [x] [2025.09.15]🎯📢Significantly enhances KG extraction accuracy for **small LLMs** like Qwen3-30B-A3B.
 - [x] [2025.08.29]🎯📢**Reranker** is supported now , significantly boosting performance for mixed queries.
 - [x] [2025.08.04]🎯📢**Document deletion** with KG regeneration to ensure query performance.
