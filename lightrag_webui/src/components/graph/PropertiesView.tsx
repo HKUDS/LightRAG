@@ -222,7 +222,7 @@ const PropertyRow = ({
 
   // If this is source_id field and truncate info exists, append it to the tooltip
   if (name === 'source_id' && truncate) {
-    formattedTooltip += `\n(${truncate} truncated)`
+    formattedTooltip += `\n(Truncated: ${truncate})`
   }
 
   // Use EditablePropertyRow for editable fields (description, entity_id and keywords)
