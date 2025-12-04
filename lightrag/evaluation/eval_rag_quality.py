@@ -423,10 +423,7 @@ class RAGEvaluator:
                         # leave=False ensures the progress bar is cleared after completion,
                         # preventing accumulation of completed bars and allowing position reuse
                         pbar = tqdm(
-                            total=4,
-                            desc=f"Eval-{idx:02d}",
-                            position=position,
-                            leave=False,
+                            total=4, desc=f"Eval-{idx}", position=position, leave=False
                         )
                         # Give tqdm time to initialize and claim its screen position
                         await asyncio.sleep(0.05)
@@ -520,7 +517,8 @@ class RAGEvaluator:
 
         logger.info("%s", "=" * 70)
         logger.info("🚀 Starting RAGAS Evaluation of LightRAG System")
-        logger.info("🔧 RAGAS Evaluation (Stage 2): %s concurrent", max_async)
+        logger.info("🔧 Two-Stage Pipeline Configuration:")
+        logger.info("   • RAGAS Evaluation (Stage 2): %s concurrent", max_async)
         logger.info("%s", "=" * 70)
 
         # Create two-stage pipeline semaphores
