@@ -38,7 +38,7 @@ DEFAULT_ENTITY_TYPES = [
     "NaturalObject",
 ]
 
-# Separator for graph fields
+# Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
 # Query and retrieval configuration defaults
