@@ -3,17 +3,32 @@
     {
       "question": "How does LightRAG solve the hallucination problem in large language models?",
       "ground_truth": "LightRAG solves the hallucination problem by combining large language models with external knowledge retrieval. The framework ensures accurate responses by grounding LLM outputs in actual documents. LightRAG provides contextual responses that reduce hallucinations significantly.",
-      "project": "lightrag_overview"
+      "project": "lightrag_evaluation_sample"
     },
     {
       "question": "What are the three main components required in a RAG system?",
       "ground_truth": "A RAG system requires three main components: a retrieval system (vector database or search engine) to find relevant documents, an embedding model to convert text into vector representations for similarity search, and a large language model (LLM) to generate responses based on retrieved context.",
-      "project": "rag_architecture"
+      "project": "lightrag_evaluation_sample"
     },
     {
       "question": "How does LightRAG's retrieval performance compare to traditional RAG approaches?",
-      "ground_truth": "LightRAG delivers faster retrieval performance than traditional RAG approaches. The framework optimizes document retrieval operations for speed, while traditional RAG systems often suffer from slow query response times. LightRAG achieves high quality results with improved performance.",
-      "project": "lightrag_improvements"
+      "ground_truth": "LightRAG delivers faster retrieval performance than traditional RAG approaches. The framework optimizes document retrieval operations for speed. Traditional RAG systems often suffer from slow query response times. LightRAG achieves high quality results with improved performance. The framework combines speed with accuracy in retrieval operations, prioritizing ease of use without sacrificing quality.",
+      "project": "lightrag_evaluation_sample"
+    },
+    {
+      "question": "What vector databases does LightRAG support and what are their key characteristics?",
+      "ground_truth": "LightRAG supports multiple vector databases including ChromaDB for simple deployment and efficient similarity search, Neo4j for graph-based knowledge representation with vector capabilities, Milvus for high-performance vector search at scale, Qdrant for fast similarity search with filtering and production-ready infrastructure, MongoDB Atlas for combined document storage and vector search, Redis for in-memory low-latency vector search, and a built-in nano-vectordb that eliminates external dependencies for small projects. This multi-database support enables developers to choose appropriate backends based on scale, performance, and infrastructure requirements.",
+      "project": "lightrag_evaluation_sample"
+    },
+    {
+      "question": "What are the four key metrics for evaluating RAG system quality and what does each metric measure?",
+      "ground_truth": "RAG system quality is measured through four key metrics: Faithfulness measures whether answers are factually grounded in retrieved context and detects hallucinations. Answer Relevance measures how well answers address the user question and evaluates response appropriateness. Context Recall measures completeness of retrieval and whether all relevant information was retrieved from documents. Context Precision measures quality and relevance of retrieved documents without noise or irrelevant content.",
+      "project": "lightrag_evaluation_sample"
+    },
+    {
+      "question": "What are the core benefits of LightRAG and how does it improve upon traditional RAG systems?",
+      "ground_truth": "LightRAG offers five core benefits: accuracy through document-grounded responses, up-to-date information without model retraining, domain expertise through specialized document collections, cost-effectiveness by avoiding expensive fine-tuning, and transparency by showing source documents. Compared to traditional RAG systems, LightRAG provides a simpler API with intuitive interfaces, faster retrieval performance with optimized operations, better integration with multiple vector database backends for flexible selection, and optimized prompting strategies with refined templates. LightRAG prioritizes ease of use while maintaining quality and combines speed with accuracy.",
+      "project": "lightrag_evaluation_sample"
     }
   ]
 }
