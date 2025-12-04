@@ -480,6 +480,7 @@ rag = LightRAG(
 
 <details>
 <summary> <b>使用Ollama模型</b> </summary>
+
 如果您想使用Ollama模型，您需要拉取计划使用的模型和嵌入模型，例如`nomic-embed-text`。
 
 然后您只需要按如下方式设置LightRAG：
@@ -569,7 +570,7 @@ rag = LightRAG(
 LightRAG支持与LlamaIndex集成 (`llm/llama_index_impl.py`):
 
 - 通过LlamaIndex与OpenAI和其他提供商集成
-- 详细设置和示例请参见[LlamaIndex文档](lightrag/llm/Readme.md)
+- 详细设置和示例请参见[LlamaIndex文档](https://developers.llamaindex.ai/python/framework/)
 
 **使用示例：**
 
@@ -631,9 +632,10 @@ if __name__ == "__main__":
 
 **详细文档和示例，请参见：**
 
-- [LlamaIndex文档](lightrag/llm/Readme.md)
-- [直接OpenAI示例](examples/lightrag_llamaindex_direct_demo.py)
-- [LiteLLM代理示例](examples/lightrag_llamaindex_litellm_demo.py)
+- [LlamaIndex文档](https://developers.llamaindex.ai/python/framework/)
+- [直接OpenAI示例](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM代理示例](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
+- [LiteLLM+OPIK代理示例](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
 
 </details>
 
@@ -1536,7 +1538,7 @@ LANGFUSE_ENABLE_TRACE=true
 
 ## RAGAS评估
 
-**RAGAS**（Retrieval Augmented Generation Assessment，检索增强生成评估）是一个使用LLM对RAG系统进行无参考评估的框架。我们提供了基于RAGAS的评估脚本。详细信息请参阅[基于RAGAS的评估框架](lightrag/evaluation/README.md)。
+**RAGAS**（Retrieval Augmented Generation Assessment，检索增强生成评估）是一个使用LLM对RAG系统进行无参考评估的框架。我们提供了基于RAGAS的评估脚本。详细信息请参阅[基于RAGAS的评估框架](lightrag/evaluation/README_EVALUASTION_RAGAS.md)。
 
 ## 评估
 

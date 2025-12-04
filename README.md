@@ -476,6 +476,7 @@ rag = LightRAG(
 
 <details>
 <summary> <b>Using Ollama Models</b> </summary>
+
 **Overview**
 
 If you want to use Ollama models, you need to pull model you plan to use and embedding model, for example `nomic-embed-text`.
@@ -567,7 +568,7 @@ In order to run this experiment on low RAM GPU you should select small model and
 LightRAG supports integration with LlamaIndex (`llm/llama_index_impl.py`):
 
 - Integrates with OpenAI and other providers through LlamaIndex
-- See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
+- See [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/) for detailed setup or the [examples](examples/unofficial-sample/)
 
 **Example Usage**
 
@@ -629,9 +630,10 @@ if __name__ == "__main__":
 
 **For detailed documentation and examples, see:**
 
-- [LlamaIndex Documentation](lightrag/llm/Readme.md)
-- [Direct OpenAI Example](examples/lightrag_llamaindex_direct_demo.py)
-- [LiteLLM Proxy Example](examples/lightrag_llamaindex_litellm_demo.py)
+- [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)
+- [Direct OpenAI Example](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM Proxy Example](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
+- [LiteLLM Proxy with Opik Example](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
 
 </details>
 
@@ -1604,7 +1606,7 @@ Once installed and configured, Langfuse automatically traces all OpenAI LLM call
 
 ## RAGAS-based Evaluation
 
-**RAGAS** (Retrieval Augmented Generation Assessment) is a framework for reference-free evaluation of RAG systems using LLMs. There is an evaluation script based on RAGAS. For detailed information, please refer to [RAGAS-based Evaluation Framework](lightrag/evaluation/README.md).
+**RAGAS** (Retrieval Augmented Generation Assessment) is a framework for reference-free evaluation of RAG systems using LLMs. There is an evaluation script based on RAGAS. For detailed information, please refer to [RAGAS-based Evaluation Framework](lightrag/evaluation/README_EVALUASTION_RAGAS.md).
 
 ## Evaluation
 
