@@ -1,3 +1,6 @@
+import tailwindcssAnimate from 'tailwindcss-animate'
+import typography from '@tailwindcss/typography'
+
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: ['class'],
@@ -262,11 +265,5 @@ export default {
       },
     },
   },
-  plugins: [
-    // Using ES module imports
-    // Note: This assumes these packages support ES module imports
-    // If issues occur, may need to fallback to require() and disable ESLint rules
-    import('tailwindcss-animate').then(module => module.default),
-    import('@tailwindcss/typography').then(module => module.default),
-  ],
+  plugins: [tailwindcssAnimate, typography],
 }

@@ -3,6 +3,9 @@
 @plugin 'tailwindcss-animate';
 @plugin 'tailwind-scrollbar';
 
+@source '../index.html';
+@source './**/*.{ts,tsx}';
+
 @custom-variant dark (&:is(.dark *));
 
 :root {
