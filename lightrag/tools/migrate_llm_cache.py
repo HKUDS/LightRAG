@@ -224,7 +224,7 @@ class MigrationTool:
                 if key.startswith("default:extract:") or key.startswith(
                     "default:summary:"
                 ):
-                    filtered[key] = value
+                    filtered[key] = value.copy()
             return filtered
 
     async def get_default_caches_redis(
@@ -399,7 +399,7 @@ class MigrationTool:
             for field_name in ["namespace", "workspace", "_id", "content"]:
                 doc_copy.pop(field_name, None)
 
-            cache_data[key] = doc_copy
+            cache_data[key] = doc_copy.copy()
 
             # Periodically yield control (every batch_size documents)
             if len(cache_data) % batch_size == 0:
@@ -584,7 +584,7 @@ class MigrationTool:
         # Now iterate over snapshot without holding lock
         batch = {}
         for key, value in matching_items:
-            batch[key] = value
+            batch[key] = value.copy()
             if len(batch) >= batch_size:
                 yield batch
                 batch = {}
@@ -745,7 +745,7 @@ class MigrationTool:
             for field_name in ["namespace", "workspace", "_id", "content"]:
                 doc_copy.pop(field_name, None)
 
-            batch[key] = doc_copy
+            batch[key] = doc_copy.copy()
 
             if len(batch) >= batch_size:
                 yield batch
