@@ -330,7 +330,12 @@ def create_app(args):
             # Only perform cleanup in Uvicorn single-process mode
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Clean up shared data
+                logger.debug("Unvicorn Mode: finalize shared storage...")
                 finalize_share_data()
+            else:
+                logger.debug(
+                    "Gunicorn Mode: don not finalize shared storage in worker process"
+                )
 
     # Initialize FastAPI
     base_description = (
