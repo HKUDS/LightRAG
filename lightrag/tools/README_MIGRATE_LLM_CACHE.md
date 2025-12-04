@@ -78,7 +78,9 @@ pip install -r requirements.txt
 Run from the LightRAG project root directory:
 
 ```bash
-python tools/migrate_llm_cache.py
+python -m lightrag.tools.migrate_llm_cache
+# or
+python lightrag/tools/migrate_llm_cache.py
 ```
 
 ### Interactive Workflow
@@ -341,7 +343,7 @@ MONGO_URI=mongodb://user:pass@prod-server:27017/
 MONGO_DATABASE=LightRAG
 
 # 2. Run tool
-python tools/migrate_llm_cache.py
+python -m lightrag.tools.migrate_llm_cache
 
 # 3. Select: 1 (JsonKVStorage) -> 4 (MongoKVStorage)
 ```
@@ -369,7 +371,7 @@ POSTGRES_HOST=new-postgres-server
 # ... Other PostgreSQL configs
 
 # 2. Run tool
-python tools/migrate_llm_cache.py
+python -m lightrag.tools.migrate_llm_cache
 
 # 3. Select: 2 (RedisKVStorage) -> 3 (PGKVStorage)
 ```
