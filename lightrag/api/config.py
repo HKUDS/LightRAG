@@ -357,6 +357,9 @@ def parse_args() -> argparse.Namespace:
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
 
+    # PDF decryption password
+    args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
+
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)

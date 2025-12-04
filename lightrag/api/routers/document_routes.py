@@ -1068,6 +1068,67 @@ async def pipeline_enqueue_file(
 
                             pdf_file = BytesIO(file)
                             reader = PdfReader(pdf_file)
+
+                            # Check if PDF is encrypted
+                            if reader.is_encrypted:
+                                pdf_password = global_args.pdf_decrypt_password
+                                if not pdf_password:
+                                    # PDF is encrypted but no password provided
+                                    error_files = [
+                                        {
+                                            "file_path": str(file_path.name),
+                                            "error_description": "[File Extraction]PDF is encrypted but no password provided",
+                                            "original_error": "Please set PDF_DECRYPT_PASSWORD environment variable to decrypt this PDF file",
+                                            "file_size": file_size,
+                                        }
+                                    ]
+                                    await rag.apipeline_enqueue_error_documents(
+                                        error_files, track_id
+                                    )
+                                    logger.error(
+                                        f"[File Extraction]PDF is encrypted but no password provided: {file_path.name}"
+                                    )
+                                    return False, track_id
+
+                                # Try to decrypt with password
+                                try:
+                                    decrypt_result = reader.decrypt(pdf_password)
+                                    if decrypt_result == 0:
+                                        # Password is incorrect
+                                        error_files = [
+                                            {
+                                                "file_path": str(file_path.name),
+                                                "error_description": "[File Extraction]Failed to decrypt PDF - incorrect password",
+                                                "original_error": "The provided PDF_DECRYPT_PASSWORD is incorrect for this file",
+                                                "file_size": file_size,
+                                            }
+                                        ]
+                                        await rag.apipeline_enqueue_error_documents(
+                                            error_files, track_id
+                                        )
+                                        logger.error(
+                                            f"[File Extraction]Incorrect PDF password: {file_path.name}"
+                                        )
+                                        return False, track_id
+                                except Exception as decrypt_error:
+                                    # Decryption process error
+                                    error_files = [
+                                        {
+                                            "file_path": str(file_path.name),
+                                            "error_description": "[File Extraction]PDF decryption failed",
+                                            "original_error": f"Error during PDF decryption: {str(decrypt_error)}",
+                                            "file_size": file_size,
+                                        }
+                                    ]
+                                    await rag.apipeline_enqueue_error_documents(
+                                        error_files, track_id
+                                    )
+                                    logger.error(
+                                        f"[File Extraction]PDF decryption error for {file_path.name}: {str(decrypt_error)}"
+                                    )
+                                    return False, track_id
+
+                            # Extract text from PDF (encrypted PDFs are now decrypted, unencrypted PDFs proceed directly)
                             for page in reader.pages:
                                 content += page.extract_text() + "\n"
                     except Exception as e:
