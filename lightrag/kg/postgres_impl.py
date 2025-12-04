@@ -3763,7 +3763,9 @@ class PGGraphStorage(BaseGraphStorage):
                     node_key = result["node_id"]
                     original_key = lookup.get(node_key)
                     if original_key is None:
-                        logger.warning(f"[{self.workspace}] Node {node_key} not found in lookup map")
+                        logger.warning(
+                            f"[{self.workspace}] Node {node_key} not found in lookup map"
+                        )
                         original_key = node_key
                     if original_key in requested:
                         nodes_dict[original_key] = node_dict
@@ -3854,7 +3856,9 @@ class PGGraphStorage(BaseGraphStorage):
                 node_key = node_id
                 original_key = lookup.get(node_key)
                 if original_key is None:
-                    logger.warning(f"[{self.workspace}] Node {node_key} not found in lookup map")
+                    logger.warning(
+                        f"[{self.workspace}] Node {node_key} not found in lookup map"
+                    )
                     original_key = node_key
                 if original_key in requested:
                     out_degrees[original_key] = int(row.get("out_degree", 0) or 0)
