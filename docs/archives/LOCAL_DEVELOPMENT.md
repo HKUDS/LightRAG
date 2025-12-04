@@ -299,7 +299,7 @@ curl -X POST "http://localhost:9621/documents/text" \
 
 ### Multi-Tenant Architecture
 
-See [Multi-Tenant UX Documentation](./0004-multi-tenant-ux-state-management.md) for:
+See [Multi-Tenant UX Documentation](archives/0004-multi-tenant-ux-state-management.md) for:
 - State management architecture
 - URL synchronization patterns
 - Idempotency implementation details

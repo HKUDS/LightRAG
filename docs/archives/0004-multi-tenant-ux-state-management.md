@@ -208,6 +208,6 @@ RUN_E2E_TESTS=1 pytest tests/e2e_multi_tenant_state.py -v
 
 ## Related Documentation
 
-- [0001-multi-tenant-architecture.md](./0001-multi-tenant-architecture.md) - Core architecture
-- [0002-multi-tenant-visual-reference.md](./0002-multi-tenant-visual-reference.md) - Visual diagrams
-- [LOCAL_DEVELOPMENT.md](./LOCAL_DEVELOPMENT.md) - Local testing setup
+- [0001-multi-tenant-architecture.md](archives/0001-multi-tenant-architecture.md) - Core architecture
+- [0002-multi-tenant-visual-reference.md](archives/0002-multi-tenant-visual-reference.md) - Visual diagrams
+- [LOCAL_DEVELOPMENT.md](archives/LOCAL_DEVELOPMENT.md) - Local testing setup
