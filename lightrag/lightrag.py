@@ -41,10 +41,14 @@ from lightrag.constants import (
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_MAX_GRAPH_NODES,
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
+    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
     DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
 
@@ -99,6 +103,9 @@ from lightrag.utils import (
     generate_track_id,
     convert_to_user_format,
     logger,
+    subtract_source_ids,
+    make_relation_chunk_key,
+    normalize_source_ids_limit_method,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -362,9 +369,39 @@ class LightRAG:
     """Maximum number of graph nodes to return in knowledge graph queries."""
 
     max_source_ids_per_entity: int = field(
-        default=get_env_value("MAX_SOURCE_IDS_PER_ENTITY", DEFAULT_MAX_SOURCE_IDS_PER_ENTITY, int)
+        default=get_env_value(
+            "MAX_SOURCE_IDS_PER_ENTITY", DEFAULT_MAX_SOURCE_IDS_PER_ENTITY, int
+        )
     )
     """Maximum number of source (chunk) ids in entity Grpah + VDB."""
+
+    max_source_ids_per_relation: int = field(
+        default=get_env_value(
+            "MAX_SOURCE_IDS_PER_RELATION",
+            DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
+            int,
+        )
+    )
+    """Maximum number of source (chunk) ids in relation Graph + VDB."""
+
+    source_ids_limit_method: str = field(
+        default_factory=lambda: normalize_source_ids_limit_method(
+            get_env_value(
+                "SOURCE_IDS_LIMIT_METHOD",
+                DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+                str,
+            )
+        )
+    )
+    """Strategy for enforcing source_id limits: IGNORE_NEW or FIFO."""
+
+    max_file_paths: int = field(
+        default=get_env_value("MAX_FILE_PATHS", DEFAULT_MAX_FILE_PATHS, int)
+    )
+    """Maximum number of file paths to store in entity/relation file_path field."""
+
+    file_path_more_placeholder: str = field(default=DEFAULT_FILE_PATH_MORE_PLACEHOLDER)
+    """Placeholder text when file paths exceed max_file_paths limit."""
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
@@ -535,6 +572,18 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
+        self.entity_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
+            namespace=NameSpace.KV_STORE_ENTITY_CHUNKS,
+            workspace=self.workspace,
+            embedding_func=self.embedding_func,
+        )
+
+        self.relation_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
+            namespace=NameSpace.KV_STORE_RELATION_CHUNKS,
+            workspace=self.workspace,
+            embedding_func=self.embedding_func,
+        )
+
         self.chunk_entity_relation_graph: BaseGraphStorage = self.graph_storage_cls(  # type: ignore
             namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
             workspace=self.workspace,
@@ -594,6 +643,8 @@ class LightRAG:
                 self.text_chunks,
                 self.full_entities,
                 self.full_relations,
+                self.entity_chunks,
+                self.relation_chunks,
                 self.entities_vdb,
                 self.relationships_vdb,
                 self.chunks_vdb,
@@ -616,6 +667,8 @@ class LightRAG:
                 ("text_chunks", self.text_chunks),
                 ("full_entities", self.full_entities),
                 ("full_relations", self.full_relations),
+                ("entity_chunks", self.entity_chunks),
+                ("relation_chunks", self.relation_chunks),
                 ("entities_vdb", self.entities_vdb),
                 ("relationships_vdb", self.relationships_vdb),
                 ("chunks_vdb", self.chunks_vdb),
@@ -671,6 +724,13 @@ class LightRAG:
                     logger.debug("No entities found in graph, skipping migration check")
                     return
 
+                try:
+                    # Initialize chunk tracking storage after migration
+                    await self._migrate_chunk_tracking_storage()
+                except Exception as e:
+                    logger.error(f"Error during chunk_tracking migration: {e}")
+                    raise e
+
                 # Check if full_entities and full_relations are empty
                 # Get all processed documents to check their entity/relation data
                 try:
@@ -711,11 +771,11 @@ class LightRAG:
 
                 except Exception as e:
                     logger.error(f"Error during migration check: {e}")
-                    # Don't raise the error, just log it to avoid breaking initialization
+                    raise e
 
             except Exception as e:
                 logger.error(f"Error in data migration check: {e}")
-                # Don't raise the error to avoid breaking initialization
+                raise e
 
     async def _migrate_entity_relation_data(self, processed_docs: dict):
         """Migrate existing entity and relation data to full_entities and full_relations storage"""
@@ -813,6 +873,140 @@ class LightRAG:
         logger.info(
             f"Data migration completed: migrated {migration_count} documents with entities/relations"
         )
+
+    async def _migrate_chunk_tracking_storage(self) -> None:
+        """Ensure entity/relation chunk tracking KV stores exist and are seeded."""
+
+        if not self.entity_chunks or not self.relation_chunks:
+            return
+
+        need_entity_migration = False
+        need_relation_migration = False
+
+        try:
+            need_entity_migration = await self.entity_chunks.is_empty()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"Failed to check entity chunks storage: {exc}")
+            need_entity_migration = True
+
+        try:
+            need_relation_migration = await self.relation_chunks.is_empty()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"Failed to check relation chunks storage: {exc}")
+            need_relation_migration = True
+
+        if not need_entity_migration and not need_relation_migration:
+            return
+
+        BATCH_SIZE = 500  # Process 500 records per batch
+
+        if need_entity_migration:
+            try:
+                nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+            except Exception as exc:
+                logger.error(f"Failed to fetch nodes for chunk migration: {exc}")
+                nodes = []
+
+            logger.info(f"Starting chunk_tracking data migration: {len(nodes)} nodes")
+
+            # Process nodes in batches
+            total_nodes = len(nodes)
+            total_batches = (total_nodes + BATCH_SIZE - 1) // BATCH_SIZE
+            total_migrated = 0
+
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min((batch_idx + 1) * BATCH_SIZE, total_nodes)
+                batch_nodes = nodes[start_idx:end_idx]
+
+                upsert_payload: dict[str, dict[str, object]] = {}
+                for node in batch_nodes:
+                    entity_id = node.get("entity_id") or node.get("id")
+                    if not entity_id:
+                        continue
+
+                    raw_source = node.get("source_id") or ""
+                    chunk_ids = [
+                        chunk_id
+                        for chunk_id in raw_source.split(GRAPH_FIELD_SEP)
+                        if chunk_id
+                    ]
+                    if not chunk_ids:
+                        continue
+
+                    upsert_payload[entity_id] = {
+                        "chunk_ids": chunk_ids,
+                        "count": len(chunk_ids),
+                    }
+
+                if upsert_payload:
+                    await self.entity_chunks.upsert(upsert_payload)
+                    total_migrated += len(upsert_payload)
+                    logger.info(
+                        f"Processed entity batch {batch_idx + 1}/{total_batches}: {len(upsert_payload)} records (total: {total_migrated}/{total_nodes})"
+                    )
+
+            if total_migrated > 0:
+                # Persist entity_chunks data to disk
+                await self.entity_chunks.index_done_callback()
+                logger.info(
+                    f"Entity chunk_tracking migration completed: {total_migrated} records persisted"
+                )
+
+        if need_relation_migration:
+            try:
+                edges = await self.chunk_entity_relation_graph.get_all_edges()
+            except Exception as exc:
+                logger.error(f"Failed to fetch edges for chunk migration: {exc}")
+                edges = []
+
+            logger.info(f"Starting chunk_tracking data migration: {len(edges)} edges")
+
+            # Process edges in batches
+            total_edges = len(edges)
+            total_batches = (total_edges + BATCH_SIZE - 1) // BATCH_SIZE
+            total_migrated = 0
+
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min((batch_idx + 1) * BATCH_SIZE, total_edges)
+                batch_edges = edges[start_idx:end_idx]
+
+                upsert_payload: dict[str, dict[str, object]] = {}
+                for edge in batch_edges:
+                    src = edge.get("source") or edge.get("src_id") or edge.get("src")
+                    tgt = edge.get("target") or edge.get("tgt_id") or edge.get("tgt")
+                    if not src or not tgt:
+                        continue
+
+                    raw_source = edge.get("source_id") or ""
+                    chunk_ids = [
+                        chunk_id
+                        for chunk_id in raw_source.split(GRAPH_FIELD_SEP)
+                        if chunk_id
+                    ]
+                    if not chunk_ids:
+                        continue
+
+                    storage_key = make_relation_chunk_key(src, tgt)
+                    upsert_payload[storage_key] = {
+                        "chunk_ids": chunk_ids,
+                        "count": len(chunk_ids),
+                    }
+
+                if upsert_payload:
+                    await self.relation_chunks.upsert(upsert_payload)
+                    total_migrated += len(upsert_payload)
+                    logger.info(
+                        f"Processed relation batch {batch_idx + 1}/{total_batches}: {len(upsert_payload)} records (total: {total_migrated}/{total_edges})"
+                    )
+
+            if total_migrated > 0:
+                # Persist relation_chunks data to disk
+                await self.relation_chunks.index_done_callback()
+                logger.info(
+                    f"Relation chunk_tracking migration completed: {total_migrated} records persisted"
+                )
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()
@@ -1676,6 +1870,8 @@ class LightRAG:
                                     pipeline_status=pipeline_status,
                                     pipeline_status_lock=pipeline_status_lock,
                                     llm_response_cache=self.llm_response_cache,
+                                    entity_chunks_storage=self.entity_chunks,
+                                    relation_chunks_storage=self.relation_chunks,
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
@@ -1845,6 +2041,8 @@ class LightRAG:
                 self.text_chunks,
                 self.full_entities,
                 self.full_relations,
+                self.entity_chunks,
+                self.relation_chunks,
                 self.llm_response_cache,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -2718,9 +2916,11 @@ class LightRAG:
 
             # 4. Analyze entities and relationships that will be affected
             entities_to_delete = set()
-            entities_to_rebuild = {}  # entity_name -> remaining_chunk_ids
+            entities_to_rebuild = {}  # entity_name -> remaining chunk id list
             relationships_to_delete = set()
-            relationships_to_rebuild = {}  # (src, tgt) -> remaining_chunk_ids
+            relationships_to_rebuild = {}  # (src, tgt) -> remaining chunk id list
+            entity_chunk_updates: dict[str, list[str]] = {}
+            relation_chunk_updates: dict[tuple[str, str], list[str]] = {}
 
             try:
                 # Get affected entities and relations from full_entities and full_relations storage
@@ -2776,14 +2976,41 @@ class LightRAG:
                 # Process entities
                 for node_data in affected_nodes:
                     node_label = node_data.get("entity_id")
-                    if node_label and "source_id" in node_data:
-                        sources = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
-                        remaining_sources = sources - chunk_ids
+                    if not node_label:
+                        continue
 
-                        if not remaining_sources:
-                            entities_to_delete.add(node_label)
-                        elif remaining_sources != sources:
-                            entities_to_rebuild[node_label] = remaining_sources
+                    existing_sources: list[str] = []
+                    if self.entity_chunks:
+                        stored_chunks = await self.entity_chunks.get_by_id(node_label)
+                        if stored_chunks and isinstance(stored_chunks, dict):
+                            existing_sources = [
+                                chunk_id
+                                for chunk_id in stored_chunks.get("chunk_ids", [])
+                                if chunk_id
+                            ]
+
+                    if not existing_sources and node_data.get("source_id"):
+                        existing_sources = [
+                            chunk_id
+                            for chunk_id in node_data["source_id"].split(
+                                GRAPH_FIELD_SEP
+                            )
+                            if chunk_id
+                        ]
+
+                    if not existing_sources:
+                        continue
+
+                    remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
+
+                    if not remaining_sources:
+                        entities_to_delete.add(node_label)
+                        entity_chunk_updates[node_label] = []
+                    elif remaining_sources != existing_sources:
+                        entities_to_rebuild[node_label] = remaining_sources
+                        entity_chunk_updates[node_label] = remaining_sources
+                    else:
+                        logger.info(f"Untouch entity: {node_label}")
 
                 async with pipeline_status_lock:
                     log_message = f"Found {len(entities_to_rebuild)} affected entities"
@@ -2796,21 +3023,51 @@ class LightRAG:
                     src = edge_data.get("source")
                     tgt = edge_data.get("target")
 
-                    if src and tgt and "source_id" in edge_data:
-                        edge_tuple = tuple(sorted((src, tgt)))
-                        if (
-                            edge_tuple in relationships_to_delete
-                            or edge_tuple in relationships_to_rebuild
-                        ):
-                            continue
+                    if not src or not tgt or "source_id" not in edge_data:
+                        continue
 
-                        sources = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
-                        remaining_sources = sources - chunk_ids
+                    edge_tuple = tuple(sorted((src, tgt)))
+                    if (
+                        edge_tuple in relationships_to_delete
+                        or edge_tuple in relationships_to_rebuild
+                    ):
+                        continue
 
-                        if not remaining_sources:
-                            relationships_to_delete.add(edge_tuple)
-                        elif remaining_sources != sources:
-                            relationships_to_rebuild[edge_tuple] = remaining_sources
+                    existing_sources: list[str] = []
+                    if self.relation_chunks:
+                        storage_key = make_relation_chunk_key(src, tgt)
+                        stored_chunks = await self.relation_chunks.get_by_id(
+                            storage_key
+                        )
+                        if stored_chunks and isinstance(stored_chunks, dict):
+                            existing_sources = [
+                                chunk_id
+                                for chunk_id in stored_chunks.get("chunk_ids", [])
+                                if chunk_id
+                            ]
+
+                    if not existing_sources:
+                        existing_sources = [
+                            chunk_id
+                            for chunk_id in edge_data["source_id"].split(
+                                GRAPH_FIELD_SEP
+                            )
+                            if chunk_id
+                        ]
+
+                    if not existing_sources:
+                        continue
+
+                    remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
+
+                    if not remaining_sources:
+                        relationships_to_delete.add(edge_tuple)
+                        relation_chunk_updates[edge_tuple] = []
+                    elif remaining_sources != existing_sources:
+                        relationships_to_rebuild[edge_tuple] = remaining_sources
+                        relation_chunk_updates[edge_tuple] = remaining_sources
+                    else:
+                        logger.info(f"Untouch relation: {edge_tuple}")
 
                 async with pipeline_status_lock:
                     log_message = (
@@ -2819,6 +3076,45 @@ class LightRAG:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
+
+                current_time = int(time.time())
+
+                if entity_chunk_updates and self.entity_chunks:
+                    entity_upsert_payload = {}
+                    entity_delete_ids: set[str] = set()
+                    for entity_name, remaining in entity_chunk_updates.items():
+                        if not remaining:
+                            entity_delete_ids.add(entity_name)
+                        else:
+                            entity_upsert_payload[entity_name] = {
+                                "chunk_ids": remaining,
+                                "count": len(remaining),
+                                "updated_at": current_time,
+                            }
+
+                    if entity_delete_ids:
+                        await self.entity_chunks.delete(list(entity_delete_ids))
+                    if entity_upsert_payload:
+                        await self.entity_chunks.upsert(entity_upsert_payload)
+
+                if relation_chunk_updates and self.relation_chunks:
+                    relation_upsert_payload = {}
+                    relation_delete_ids: set[str] = set()
+                    for edge_tuple, remaining in relation_chunk_updates.items():
+                        storage_key = make_relation_chunk_key(*edge_tuple)
+                        if not remaining:
+                            relation_delete_ids.add(storage_key)
+                        else:
+                            relation_upsert_payload[storage_key] = {
+                                "chunk_ids": remaining,
+                                "count": len(remaining),
+                                "updated_at": current_time,
+                            }
+
+                    if relation_delete_ids:
+                        await self.relation_chunks.delete(list(relation_delete_ids))
+                    if relation_upsert_payload:
+                        await self.relation_chunks.upsert(relation_upsert_payload)
 
             except Exception as e:
                 logger.error(f"Failed to process graph analysis results: {e}")
@@ -2914,6 +3210,8 @@ class LightRAG:
                         global_config=asdict(self),
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
+                        entity_chunks_storage=self.entity_chunks,
+                        relation_chunks_storage=self.relation_chunks,
                     )
 
                 except Exception as e:
