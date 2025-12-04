@@ -47,7 +47,7 @@ try:
 
     # Only enable Langfuse if both keys are configured
     if langfuse_public_key and langfuse_secret_key:
-        from langfuse.openai import AsyncOpenAI
+        from langfuse.openai import AsyncOpenAI  # type: ignore[import-untyped]
 
         LANGFUSE_ENABLED = True
         logger.info("Langfuse observability enabled for OpenAI client")
@@ -140,6 +140,7 @@ async def openai_complete_if_cache(
     token_tracker: Any | None = None,
     stream: bool | None = None,
     timeout: int | None = None,
+    keyword_extraction: bool = False,
     **kwargs: Any,
 ) -> str:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
@@ -171,12 +172,13 @@ async def openai_complete_if_cache(
         enable_cot: Whether to enable Chain of Thought (COT) processing. Default is False.
         stream: Whether to stream the response. Default is False.
         timeout: Request timeout in seconds. Default is None.
+        keyword_extraction: Whether to enable keyword extraction mode. When True, triggers
+            special response formatting for keyword extraction. Default is False.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
                 These will be passed to the client constructor but will be overridden by
                 explicit parameters (api_key, base_url).
-            - keyword_extraction: Will be removed from kwargs before passing to OpenAI.
 
     Returns:
         The completed text (with integrated COT content if available) or an async iterator
@@ -197,10 +199,13 @@ async def openai_complete_if_cache(
 
     # Remove special kwargs that shouldn't be passed to OpenAI
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
 
     # Extract client configuration options
     client_configs = kwargs.pop("openai_client_configs", {})
+
+    # Handle keyword extraction mode
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
 
     # Create the OpenAI client
     openai_async_client = create_openai_async_client(
@@ -236,7 +241,7 @@ async def openai_complete_if_cache(
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
-            response = await openai_async_client.beta.chat.completions.parse(
+            response = await openai_async_client.chat.completions.parse(
                 model=model, messages=messages, **kwargs
             )
         else:
@@ -448,46 +453,57 @@ async def openai_complete_if_cache(
                 raise InvalidResponseError("Invalid response from OpenAI API")
 
             message = response.choices[0].message
-            content = getattr(message, "content", None)
-            reasoning_content = getattr(message, "reasoning_content", "")
 
-            # Handle COT logic for non-streaming responses (only if enabled)
-            final_content = ""
+            # Handle parsed responses (structured output via response_format)
+            # When using beta.chat.completions.parse(), the response is in message.parsed
+            if hasattr(message, "parsed") and message.parsed is not None:
+                # Serialize the parsed structured response to JSON
+                final_content = message.parsed.model_dump_json()
+                logger.debug("Using parsed structured response from API")
+            else:
+                # Handle regular content responses
+                content = getattr(message, "content", None)
+                reasoning_content = getattr(message, "reasoning_content", "")
 
-            if enable_cot:
-                # Check if we should include reasoning content
-                should_include_reasoning = False
-                if reasoning_content and reasoning_content.strip():
-                    if not content or content.strip() == "":
-                        # Case 1: Only reasoning content, should include COT
-                        should_include_reasoning = True
-                        final_content = (
-                            content or ""
-                        )  # Use empty string if content is None
+                # Handle COT logic for non-streaming responses (only if enabled)
+                final_content = ""
+
+                if enable_cot:
+                    # Check if we should include reasoning content
+                    should_include_reasoning = False
+                    if reasoning_content and reasoning_content.strip():
+                        if not content or content.strip() == "":
+                            # Case 1: Only reasoning content, should include COT
+                            should_include_reasoning = True
+                            final_content = (
+                                content or ""
+                            )  # Use empty string if content is None
+                        else:
+                            # Case 3: Both content and reasoning_content present, ignore reasoning
+                            should_include_reasoning = False
+                            final_content = content
                     else:
-                        # Case 3: Both content and reasoning_content present, ignore reasoning
-                        should_include_reasoning = False
-                        final_content = content
+                        # No reasoning content, use regular content
+                        final_content = content or ""
+
+                    # Apply COT wrapping if needed
+                    if should_include_reasoning:
+                        if r"\u" in reasoning_content:
+                            reasoning_content = safe_unicode_decode(
+                                reasoning_content.encode("utf-8")
+                            )
+                        final_content = (
+                            f"<think>{reasoning_content}</think>{final_content}"
+                        )
                 else:
-                    # No reasoning content, use regular content
+                    # COT disabled, only use regular content
                     final_content = content or ""
 
-                # Apply COT wrapping if needed
-                if should_include_reasoning:
-                    if r"\u" in reasoning_content:
-                        reasoning_content = safe_unicode_decode(
-                            reasoning_content.encode("utf-8")
-                        )
-                    final_content = f"<think>{reasoning_content}</think>{final_content}"
-            else:
-                # COT disabled, only use regular content
-                final_content = content or ""
-
-            # Validate final content
-            if not final_content or final_content.strip() == "":
-                logger.error("Received empty content from OpenAI API")
-                await openai_async_client.close()  # Ensure client is closed
-                raise InvalidResponseError("Received empty content from OpenAI API")
+                # Validate final content
+                if not final_content or final_content.strip() == "":
+                    logger.error("Received empty content from OpenAI API")
+                    await openai_async_client.close()  # Ensure client is closed
+                    raise InvalidResponseError("Received empty content from OpenAI API")
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:
@@ -521,15 +537,13 @@ async def openai_complete(
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
-    if keyword_extraction:
-        kwargs["response_format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await openai_complete_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
 
@@ -544,15 +558,13 @@ async def gpt_4o_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
-    if keyword_extraction:
-        kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
         "gpt-4o",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
 
@@ -567,15 +579,13 @@ async def gpt_4o_mini_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
-    if keyword_extraction:
-        kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
         "gpt-4o-mini",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        keyword_extraction=keyword_extraction,
         **kwargs,
     )
 
@@ -590,20 +600,20 @@ async def nvidia_openai_complete(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    kwargs.pop("keyword_extraction", None)
     result = await openai_complete_if_cache(
         "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
+        keyword_extraction=keyword_extraction,
         base_url="https://integrate.api.nvidia.com/v1",
         **kwargs,
     )
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536)
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -618,6 +628,7 @@ async def openai_embed(
     model: str = "text-embedding-3-small",
     base_url: str | None = None,
     api_key: str | None = None,
+    embedding_dim: int | None = None,
     client_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
 ) -> np.ndarray:
@@ -628,6 +639,12 @@ async def openai_embed(
         model: The OpenAI embedding model to use.
         base_url: Optional base URL for the OpenAI API.
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
+        embedding_dim: Optional embedding dimension for dynamic dimension reduction.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper.
+            Do NOT manually pass this parameter when calling the function directly.
+            The dimension is controlled by the @wrap_embedding_func_with_attrs decorator.
+            Manually passing a different value will trigger a warning and be ignored.
+            When provided (by EmbeddingFunc), it will be passed to the OpenAI API for dimension reduction.
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
@@ -647,9 +664,19 @@ async def openai_embed(
     )
 
     async with openai_async_client:
-        response = await openai_async_client.embeddings.create(
-            model=model, input=texts, encoding_format="base64"
-        )
+        # Prepare API call parameters
+        api_params = {
+            "model": model,
+            "input": texts,
+            "encoding_format": "base64",
+        }
+
+        # Add dimensions parameter only if embedding_dim is provided
+        if embedding_dim is not None:
+            api_params["dimensions"] = embedding_dim
+
+        # Make API call
+        response = await openai_async_client.embeddings.create(**api_params)
 
         if token_tracker and hasattr(response, "usage"):
             token_counts = {
