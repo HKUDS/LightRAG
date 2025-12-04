@@ -12,7 +12,6 @@ from fastapi.openapi.docs import (
 import os
 import logging
 import logging.config
-import signal
 import sys
 import uvicorn
 import pipmaster as pm
@@ -82,24 +81,6 @@ config.read("config.ini")
 auth_configured = bool(auth_handler.accounts)
 
 
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown"""
-
-    def signal_handler(sig, frame):
-        print(f"\n\nReceived signal {sig}, shutting down gracefully...")
-        print(f"Process ID: {os.getpid()}")
-
-        # Release shared resources
-        finalize_share_data()
-
-        # Exit with success status
-        sys.exit(0)
-
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
-
-
 class LLMConfigCache:
     """Smart LLM and Embedding configuration cache class"""
 
@@ -150,10 +131,11 @@ class LLMConfigCache:
 
 
 def check_frontend_build():
-    """Check if frontend is built before starting server"""
+    """Check if frontend is built and optionally check if source is up-to-date"""
     webui_dir = Path(__file__).parent / "webui"
     index_html = webui_dir / "index.html"
 
+    # 1. Check if build files exist (required)
     if not index_html.exists():
         ASCIIColors.red("\n" + "=" * 80)
         ASCIIColors.red("ERROR: Frontend Not Built")
@@ -163,7 +145,7 @@ def check_frontend_build():
             "Please build the frontend code first using the following commands:\n"
         )
         ASCIIColors.cyan("    cd lightrag_webui")
-        ASCIIColors.cyan("    bun install")
+        ASCIIColors.cyan("    bun install --frozen-lockfile")
         ASCIIColors.cyan("    bun run build")
         ASCIIColors.cyan("    cd ..")
         ASCIIColors.yellow("\nThen restart the service.\n")
@@ -172,6 +154,99 @@ def check_frontend_build():
         )
         ASCIIColors.red("=" * 80 + "\n")
         sys.exit(1)  # Exit immediately
+
+    # 2. Check if this is a development environment (source directory exists)
+    try:
+        source_dir = Path(__file__).parent.parent.parent / "lightrag_webui"
+        src_dir = source_dir / "src"
+
+        # Determine if this is a development environment: source directory exists and contains src directory
+        if not source_dir.exists() or not src_dir.exists():
+            # Production environment, skip source code check
+            logger.debug(
+                "Production environment detected, skipping source freshness check"
+            )
+            return
+
+        # Development environment, perform source code timestamp check
+        logger.debug("Development environment detected, checking source freshness")
+
+        # Source code file extensions (files to check)
+        source_extensions = {
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".mjs",
+            ".cjs",  # TypeScript/JavaScript
+            ".css",
+            ".scss",
+            ".sass",
+            ".less",  # Style files
+            ".json",
+            ".jsonc",  # Configuration/data files
+            ".html",
+            ".htm",  # Template files
+            ".md",
+            ".mdx",  # Markdown
+        }
+
+        # Key configuration files (in lightrag_webui root directory)
+        key_files = [
+            source_dir / "package.json",
+            source_dir / "bun.lock",
+            source_dir / "vite.config.ts",
+            source_dir / "tsconfig.json",
+            source_dir / "tailwind.config.js",
+            source_dir / "index.html",
+        ]
+
+        # Get the latest modification time of source code
+        latest_source_time = 0
+
+        # Check source code files in src directory
+        for file_path in src_dir.rglob("*"):
+            if file_path.is_file():
+                # Only check source code files, ignore temporary files and logs
+                if file_path.suffix.lower() in source_extensions:
+                    mtime = file_path.stat().st_mtime
+                    latest_source_time = max(latest_source_time, mtime)
+
+        # Check key configuration files
+        for key_file in key_files:
+            if key_file.exists():
+                mtime = key_file.stat().st_mtime
+                latest_source_time = max(latest_source_time, mtime)
+
+        # Get build time
+        build_time = index_html.stat().st_mtime
+
+        # Compare timestamps (5 second tolerance to avoid file system time precision issues)
+        if latest_source_time > build_time + 5:
+            ASCIIColors.yellow("\n" + "=" * 80)
+            ASCIIColors.yellow("WARNING: Frontend Source Code Has Been Updated")
+            ASCIIColors.yellow("=" * 80)
+            ASCIIColors.yellow(
+                "The frontend source code is newer than the current build."
+            )
+            ASCIIColors.yellow(
+                "This might happen after 'git pull' or manual code changes.\n"
+            )
+            ASCIIColors.cyan(
+                "Recommended: Rebuild the frontend to use the latest changes:"
+            )
+            ASCIIColors.cyan("    cd lightrag_webui")
+            ASCIIColors.cyan("    bun install --frozen-lockfile")
+            ASCIIColors.cyan("    bun run build")
+            ASCIIColors.cyan("    cd ..")
+            ASCIIColors.yellow("\nThe server will continue with the current build.")
+            ASCIIColors.yellow("=" * 80 + "\n")
+        else:
+            logger.info("Frontend build is up-to-date")
+
+    except Exception as e:
+        # If check fails, log warning but don't affect startup
+        logger.warning(f"Failed to check frontend source freshness: {e}")
 
 
 def create_app(args):
@@ -251,8 +326,11 @@ def create_app(args):
             # Clean up database connections
             await rag.finalize_storages()
 
-            # Clean up shared data
-            finalize_share_data()
+            # In Gunicorn mode with preload_app=True, cleanup is handled by worker_exit/on_exit hooks
+            # Only perform cleanup in Uvicorn single-process mode
+            if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
+                # Clean up shared data
+                finalize_share_data()
 
     # Initialize FastAPI
     base_description = (
@@ -1014,8 +1092,10 @@ def main():
     update_uvicorn_mode_config()
     display_splash_screen(global_args)
 
-    # Setup signal handlers for graceful shutdown
-    setup_signal_handlers()
+    # Note: Signal handlers are NOT registered here because:
+    # - Uvicorn has built-in signal handling that properly calls lifespan shutdown
+    # - Custom signal handlers can interfere with uvicorn's graceful shutdown
+    # - Cleanup is handled by the lifespan context manager's finally block
 
     # Create application instance directly instead of using factory function
     app = create_app(global_args)

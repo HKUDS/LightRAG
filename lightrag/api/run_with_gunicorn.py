@@ -49,6 +49,9 @@ def signal_handler(sig, frame):
 
 
 def main():
+    # Set Gunicorn mode flag for lifespan cleanup detection
+    os.environ["LIGHTRAG_GUNICORN_MODE"] = "1"
+
     # Check .env file
     if not check_env_file():
         sys.exit(1)
