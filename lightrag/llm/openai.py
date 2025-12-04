@@ -609,7 +609,7 @@ async def openai_embed(
     model: str = "text-embedding-3-small",
     base_url: str | None = None,
     api_key: str | None = None,
-    embedding_dim: int | None = None,
+    embedding_dim: int = None,
     client_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
 ) -> np.ndarray:
@@ -620,12 +620,7 @@ async def openai_embed(
         model: The OpenAI embedding model to use.
         base_url: Optional base URL for the OpenAI API.
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
-        embedding_dim: Optional embedding dimension for dynamic dimension reduction.
-            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper.
-            Do NOT manually pass this parameter when calling the function directly.
-            The dimension is controlled by the @wrap_embedding_func_with_attrs decorator.
-            Manually passing a different value will trigger a warning and be ignored.
-            When provided (by EmbeddingFunc), it will be passed to the OpenAI API for dimension reduction.
+        embedding_dim: Optional embedding dimension. If None, uses the default embedding dimension for the model. (will be passed to API for dimension reduction).
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
