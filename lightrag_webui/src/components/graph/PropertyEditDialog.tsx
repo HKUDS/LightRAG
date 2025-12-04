@@ -88,9 +88,10 @@ const PropertyEditDialog = ({
   };
 
   const handleSave = async () => {
-    if (value.trim() !== '') {
+    const trimmedValue = value.trim()
+    if (trimmedValue !== '') {
       const options = propertyName === 'entity_id' ? { allowMerge } : undefined
-      await onSave(value, options)
+      await onSave(trimmedValue, options)
     }
   }
 
