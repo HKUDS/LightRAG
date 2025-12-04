@@ -676,14 +676,6 @@ async def rebuild_knowledge_from_chunks(
                         entity_chunks_storage=entity_chunks_storage,
                     )
                     rebuilt_entities_count += 1
-                    status_message = (
-                        f"Rebuild `{entity_name}` from {len(chunk_ids)} chunks"
-                    )
-                    logger.info(status_message)
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
                 except Exception as e:
                     failed_entities_count += 1
                     status_message = f"Failed to rebuild `{entity_name}`: {e}"
@@ -1431,10 +1423,6 @@ async def _rebuild_single_relationship(
     else:
         truncation_info = ""
 
-    # Sort src and tgt to ensure consistent ordering (smaller string first)
-    if src > tgt:
-        src, tgt = tgt, src
-
     # Update relationship in graph storage
     updated_relationship_data = {
         **current_relationship,
@@ -1509,6 +1497,9 @@ async def _rebuild_single_relationship(
     await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Update relationship in vector database
+    # Sort src and tgt to ensure consistent ordering (smaller string first)
+    if src > tgt:
+        src, tgt = tgt, src
     try:
         rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")
         rel_vdb_id_reverse = compute_mdhash_id(tgt + src, prefix="rel-")
@@ -2130,10 +2121,6 @@ async def _merge_edges_then_upsert(
     else:
         logger.debug(status_message)
 
-    # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
-    if src_id > tgt_id:
-        src_id, tgt_id = tgt_id, src_id
-
     # 11. Update both graph and vector db
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
@@ -2220,6 +2207,10 @@ async def _merge_edges_then_upsert(
         truncate=truncation_info,
         weight=weight,
     )
+
+    # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
+    if src_id > tgt_id:
+        src_id, tgt_id = tgt_id, src_id
 
     if relationships_vdb is not None:
         rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
