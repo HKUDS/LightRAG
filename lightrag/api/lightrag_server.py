@@ -716,15 +716,18 @@ def create_app(args):
     if args.embedding_binding == "jina":
         # Jina API requires dimension parameter - always send it
         send_dimensions = has_embedding_dim_param
-        dimension_control = "forced (Jina API requirement)"
+        dimension_control = "forced by Jina API"
     else:
         # For OpenAI and other bindings, respect EMBEDDING_SEND_DIM setting
         send_dimensions = embedding_send_dim and has_embedding_dim_param
-        dimension_control = f"env_var={embedding_send_dim}"
+        if send_dimensions or not embedding_send_dim:
+            dimension_control = "by env var"
+        else:
+            dimension_control = "by not hasparam"
 
     logger.info(
-        f"Embedding configuration: send_dimensions={send_dimensions} "
-        f"({dimension_control}, has_param={has_embedding_dim_param}, "
+        f"Send embedding dimension: {send_dimensions} {dimension_control} "
+        f"(dimensions={args.embedding_dim}, has_param={has_embedding_dim_param}, "
         f"binding={args.embedding_binding})"
     )
 
