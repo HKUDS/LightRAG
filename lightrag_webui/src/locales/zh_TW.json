@@ -305,11 +305,24 @@
       "errors": {
         "duplicateName": "節點名稱已存在",
         "updateFailed": "更新節點失敗",
-        "tryAgainLater": "請稍後重試"
+        "tryAgainLater": "請稍後重試",
+        "updateSuccessButMergeFailed": "屬性已更新，但合併失敗：{{error}}",
+        "mergeFailed": "合併失敗：{{error}}"
       },
       "success": {
         "entityUpdated": "節點更新成功",
-        "relationUpdated": "關係更新成功"
+        "relationUpdated": "關係更新成功",
+        "entityMerged": "節點合併成功"
+      },
+      "mergeOptionLabel": "遇到重名時自動合併",
+      "mergeOptionDescription": "勾選後，重新命名為既有名稱時會自動將當前節點合併過去，不再報錯。",
+      "mergeDialog": {
+        "title": "節點已合併",
+        "description": "\"{{source}}\" 已合併到 \"{{target}}\"。",
+        "refreshHint": "請重新整理圖譜以取得最新結構。",
+        "keepCurrentStart": "重新整理並保留目前的起始節點",
+        "useMergedStart": "重新整理並以合併後的節點為起始節點",
+        "refreshing": "正在重新整理圖譜..."
       },
       "node": {
         "title": "節點",

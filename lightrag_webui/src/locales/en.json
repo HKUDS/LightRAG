@@ -305,11 +305,24 @@
       "errors": {
         "duplicateName": "Node name already exists",
         "updateFailed": "Failed to update node",
-        "tryAgainLater": "Please try again later"
+        "tryAgainLater": "Please try again later",
+        "updateSuccessButMergeFailed": "Properties updated, but merge failed: {{error}}",
+        "mergeFailed": "Merge failed: {{error}}"
       },
       "success": {
         "entityUpdated": "Node updated successfully",
-        "relationUpdated": "Relation updated successfully"
+        "relationUpdated": "Relation updated successfully",
+        "entityMerged": "Nodes merged successfully"
+      },
+      "mergeOptionLabel": "Automatically merge when a duplicate name is found",
+      "mergeOptionDescription": "If enabled, renaming to an existing name will merge this node into the existing one instead of failing.",
+      "mergeDialog": {
+        "title": "Node merged",
+        "description": "\"{{source}}\" has been merged into \"{{target}}\".",
+        "refreshHint": "Refresh the graph to load the latest structure.",
+        "keepCurrentStart": "Refresh and keep current start node",
+        "useMergedStart": "Refresh and use merged node",
+        "refreshing": "Refreshing graph..."
       },
       "node": {
         "title": "Node",

@@ -143,6 +143,21 @@ export type QueryResponse = {
   response: string
 }
 
+export type EntityUpdateResponse = {
+  status: string
+  message: string
+  data: Record<string, any>
+  operation_summary?: {
+    merged: boolean
+    merge_status: 'success' | 'failed' | 'not_attempted'
+    merge_error: string | null
+    operation_status: 'success' | 'partial_success' | 'failure'
+    target_entity: string | null
+    final_entity?: string | null
+    renamed?: boolean
+  }
+}
+
 export type DocActionResponse = {
   status: 'success' | 'partial_success' | 'failure' | 'duplicated'
   message: string
@@ -716,17 +731,20 @@ export const loginToServer = async (username: string, password: string): Promise
  * @param entityName The name of the entity to update
  * @param updatedData Dictionary containing updated attributes
  * @param allowRename Whether to allow renaming the entity (default: false)
+ * @param allowMerge Whether to merge into an existing entity when renaming to a duplicate name
  * @returns Promise with the updated entity information
  */
 export const updateEntity = async (
   entityName: string,
   updatedData: Record<string, any>,
-  allowRename: boolean = false
-): Promise<DocActionResponse> => {
+  allowRename: boolean = false,
+  allowMerge: boolean = false
+): Promise<EntityUpdateResponse> => {
   const response = await axiosInstance.post('/graph/entity/edit', {
     entity_name: entityName,
     updated_data: updatedData,
-    allow_rename: allowRename
+    allow_rename: allowRename,
+    allow_merge: allowMerge
   })
   return response.data
 }

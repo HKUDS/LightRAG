@@ -540,7 +540,33 @@ async def aedit_entity(
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
 
     Returns:
-        Dictionary containing updated entity information
+        Dictionary containing updated entity information and operation summary with the following structure:
+        {
+            "entity_name": str,           # Name of the entity
+            "description": str,           # Entity description
+            "entity_type": str,           # Entity type
+            "source_id": str,            # Source chunk IDs
+            ...                          # Other entity properties
+            "operation_summary": {
+                "merged": bool,          # Whether entity was merged
+                "merge_status": str,     # "success" | "failed" | "not_attempted"
+                "merge_error": str | None,  # Error message if merge failed
+                "operation_status": str, # "success" | "partial_success" | "failure"
+                "target_entity": str | None,  # Target entity name if renaming/merging
+                "final_entity": str,     # Final entity name after operation
+                "renamed": bool          # Whether entity was renamed
+            }
+        }
+
+        operation_status values:
+            - "success": Operation completed successfully (update/rename/merge all succeeded)
+            - "partial_success": Non-name updates succeeded but merge failed
+            - "failure": Operation failed completely
+
+        merge_status values:
+            - "success": Entity successfully merged into target
+            - "failed": Merge operation failed
+            - "not_attempted": No merge was attempted (normal update/rename)
     """
     new_entity_name = updated_data.get("entity_name", entity_name)
     is_renaming = new_entity_name != entity_name
@@ -549,6 +575,16 @@ async def aedit_entity(
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+
+    operation_summary: dict[str, Any] = {
+        "merged": False,
+        "merge_status": "not_attempted",
+        "merge_error": None,
+        "operation_status": "success",
+        "target_entity": None,
+        "final_entity": new_entity_name if is_renaming else entity_name,
+        "renamed": is_renaming,
+    }
     async with get_storage_keyed_lock(
         lock_keys, namespace=namespace, enable_logging=False
     ):
@@ -572,38 +608,93 @@ async def aedit_entity(
                         f"Entity Edit: `{entity_name}` will be merged into `{new_entity_name}`"
                     )
 
+                    # Track whether non-name updates were applied
+                    non_name_updates_applied = False
                     non_name_updates = {
                         key: value
                         for key, value in updated_data.items()
                         if key != "entity_name"
                     }
+
+                    # Apply non-name updates first
                     if non_name_updates:
-                        logger.info(
-                            "Entity Edit: applying non-name updates before merge"
-                        )
-                        await _edit_entity_impl(
+                        try:
+                            logger.info(
+                                "Entity Edit: applying non-name updates before merge"
+                            )
+                            await _edit_entity_impl(
+                                chunk_entity_relation_graph,
+                                entities_vdb,
+                                relationships_vdb,
+                                entity_name,
+                                non_name_updates,
+                                entity_chunks_storage=entity_chunks_storage,
+                                relation_chunks_storage=relation_chunks_storage,
+                            )
+                            non_name_updates_applied = True
+                        except Exception as update_error:
+                            # If update fails, re-raise immediately
+                            logger.error(
+                                f"Entity Edit: non-name updates failed: {update_error}"
+                            )
+                            raise
+
+                    # Attempt to merge entities
+                    try:
+                        merge_result = await _merge_entities_impl(
                             chunk_entity_relation_graph,
                             entities_vdb,
                             relationships_vdb,
-                            entity_name,
-                            non_name_updates,
+                            [entity_name],
+                            new_entity_name,
+                            merge_strategy=None,
+                            target_entity_data=None,
                             entity_chunks_storage=entity_chunks_storage,
                             relation_chunks_storage=relation_chunks_storage,
                         )
 
-                    return await _merge_entities_impl(
-                        chunk_entity_relation_graph,
-                        entities_vdb,
-                        relationships_vdb,
-                        [entity_name],
-                        new_entity_name,
-                        merge_strategy=None,
-                        target_entity_data=None,
-                        entity_chunks_storage=entity_chunks_storage,
-                        relation_chunks_storage=relation_chunks_storage,
-                    )
+                        # Merge succeeded
+                        operation_summary.update(
+                            {
+                                "merged": True,
+                                "merge_status": "success",
+                                "merge_error": None,
+                                "operation_status": "success",
+                                "target_entity": new_entity_name,
+                                "final_entity": new_entity_name,
+                            }
+                        )
+                        return {**merge_result, "operation_summary": operation_summary}
 
-            return await _edit_entity_impl(
+                    except Exception as merge_error:
+                        # Merge failed, but update may have succeeded
+                        logger.error(f"Entity Edit: merge failed: {merge_error}")
+
+                        # Return partial success status (update succeeded but merge failed)
+                        operation_summary.update(
+                            {
+                                "merged": False,
+                                "merge_status": "failed",
+                                "merge_error": str(merge_error),
+                                "operation_status": "partial_success"
+                                if non_name_updates_applied
+                                else "failure",
+                                "target_entity": new_entity_name,
+                                "final_entity": entity_name,  # Keep source entity name
+                            }
+                        )
+
+                        # Get current entity info (with applied updates if any)
+                        entity_info = await get_entity_info(
+                            chunk_entity_relation_graph,
+                            entities_vdb,
+                            entity_name,
+                            include_vector_data=True,
+                        )
+                        return {**entity_info, "operation_summary": operation_summary}
+
+            # Normal edit flow (no merge involved)
+            edit_result = await _edit_entity_impl(
                 chunk_entity_relation_graph,
                 entities_vdb,
                 relationships_vdb,
@@ -612,6 +703,9 @@ async def aedit_entity(
                 entity_chunks_storage=entity_chunks_storage,
                 relation_chunks_storage=relation_chunks_storage,
             )
+            operation_summary["operation_status"] = "success"
+            return {**edit_result, "operation_summary": operation_summary}
+
         except Exception as e:
             logger.error(f"Error while editing entity '{entity_name}': {e}")
             raise
