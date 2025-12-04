@@ -299,6 +299,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             entity_data (dict): Entity properties including:
                 - description (str): Textual description of the entity
                 - entity_type (str): Category/type of the entity (e.g., PERSON, ORGANIZATION, LOCATION)
+                - source_id (str): Related chunk_id from which the description originates
                 - Additional custom properties as needed
 
         Response Schema:
@@ -309,6 +310,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     "entity_name": "Tesla",
                     "description": "Electric vehicle manufacturer",
                     "entity_type": "ORGANIZATION",
+                    "source_id": "chunk-123<SEP>chunk-456"
                     ... (other entity properties)
                 }
             }
@@ -329,24 +331,20 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            # Check if entity already exists
-            exists = await rag.chunk_entity_relation_graph.has_node(request.entity_name)
-            if exists:
-                raise ValueError(f"Entity '{request.entity_name}' already exists")
-
-            # Prepare entity data
-            entity_data = request.entity_data.copy()
-            entity_data["entity_id"] = request.entity_name
-
-            # Create the entity
-            await rag.chunk_entity_relation_graph.upsert_node(
-                request.entity_name, entity_data
+            # Use the proper acreate_entity method which handles:
+            # - Graph lock for concurrency
+            # - Vector embedding creation in entities_vdb
+            # - Metadata population and defaults
+            # - Index consistency via _edit_entity_done
+            result = await rag.acreate_entity(
+                entity_name=request.entity_name,
+                entity_data=request.entity_data,
             )
 
             return {
                 "status": "success",
                 "message": f"Entity '{request.entity_name}' created successfully",
-                "data": entity_data,
+                "data": result,
             }
         except ValueError as ve:
             logger.error(
@@ -365,10 +363,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         Create a new relationship between two entities in the knowledge graph
 
-        This endpoint establishes a directed relationship between two existing entities.
-        Both the source and target entities must already exist in the knowledge graph.
-        The system automatically generates vector embeddings for the relationship to
-        enable semantic search and graph traversal.
+        This endpoint establishes an undirected relationship between two existing entities.
+        The provided source/target order is accepted for convenience, but the backend
+        stored edge is undirected and may be returned with the entities swapped.
+        Both entities must already exist in the knowledge graph. The system automatically
+        generates vector embeddings for the relationship to enable semantic search and graph traversal.
 
         Prerequisites:
             - Both source_entity and target_entity must exist in the knowledge graph
@@ -380,6 +379,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             relation_data (dict): Relationship properties including:
                 - description (str): Textual description of the relationship
                 - keywords (str): Comma-separated keywords describing the relationship type
+                - source_id (str): Related chunk_id from which the description originates
                 - weight (float): Relationship strength/importance (default: 1.0)
                 - Additional custom properties as needed
 
@@ -392,6 +392,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     "tgt_id": "Tesla",
                     "description": "Elon Musk is the CEO of Tesla",
                     "keywords": "CEO, founder",
+                    "source_id": "chunk-123<SEP>chunk-456"
                     "weight": 1.0,
                     ... (other relationship properties)
                 }
@@ -415,36 +416,22 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            # Check if both entities exist
-            source_exists = await rag.chunk_entity_relation_graph.has_node(
-                request.source_entity
-            )
-            target_exists = await rag.chunk_entity_relation_graph.has_node(
-                request.target_entity
-            )
-
-            if not source_exists:
-                raise ValueError(
-                    f"Source entity '{request.source_entity}' does not exist"
-                )
-            if not target_exists:
-                raise ValueError(
-                    f"Target entity '{request.target_entity}' does not exist"
-                )
-
-            # Create the relationship
-            await rag.chunk_entity_relation_graph.upsert_edge(
-                request.source_entity, request.target_entity, request.relation_data
+            # Use the proper acreate_relation method which handles:
+            # - Graph lock for concurrency
+            # - Entity existence validation
+            # - Duplicate relation checks
+            # - Vector embedding creation in relationships_vdb
+            # - Index consistency via _edit_relation_done
+            result = await rag.acreate_relation(
+                source_entity=request.source_entity,
+                target_entity=request.target_entity,
+                relation_data=request.relation_data,
             )
 
             return {
                 "status": "success",
                 "message": f"Relation created successfully between '{request.source_entity}' and '{request.target_entity}'",
-                "data": {
-                    "source": request.source_entity,
-                    "target": request.target_entity,
-                    **request.relation_data,
-                },
+                "data": result,
             }
         except ValueError as ve:
             logger.error(
