@@ -51,17 +51,13 @@
 
 ---
 ## 🎉 News
-- [x] [2025.11.05]🎯📢Add **RAGAS-based** Evaluation Framework and **Langfuse** observability for LightRAG.
-- [x] [2025.10.22]🎯📢Eliminate bottlenecks in processing **large-scale datasets**.
-- [x] [2025.09.15]🎯📢Significantly enhances KG extraction accuracy for **small LLMs** like Qwen3-30B-A3B.
-- [x] [2025.08.29]🎯📢**Reranker** is supported now , significantly boosting performance for mixed queries.
-- [x] [2025.08.04]🎯📢**Document deletion** with KG regeneration to ensure query performance.
-- [x] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
+- [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
 - [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
 - [X] [2025.01.06]🎯📢You can now [use PostgreSQL for Storage](#using-postgresql-for-storage).
+- [X] [2024.12.31]🎯📢LightRAG now supports [deletion by document ID](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
 - [X] [2024.11.25]🎯📢LightRAG now supports seamless integration of [custom knowledge graphs](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg), empowering users to enhance the system with their own domain expertise.
 - [X] [2024.11.19]🎯📢A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
 - [X] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
@@ -88,11 +84,6 @@
 
 ## Installation
 
-> **💡 Using uv for Package Management**: This project uses [uv](https://docs.astral.sh/uv/) for fast and reliable Python package management.
-> Install uv first: `curl -LsSf https://astral.sh/uv/install.sh | sh` (Unix/macOS) or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
->
-> **Note**: You can also use pip if you prefer, but uv is recommended for better performance and more reliable dependency management.
->
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 ### Install LightRAG Server
@@ -102,11 +93,7 @@ The LightRAG Server is designed to provide Web UI and API support. The Web UI fa
 * Install from PyPI
 
 ```bash
-# Using uv (recommended)
-uv pip install "lightrag-hku[api]"
-# Or using pip
-# pip install "lightrag-hku[api]"
-
+pip install "lightrag-hku[api]"
 cp env.example .env
 lightrag-server
 ```
@@ -116,17 +103,9 @@ lightrag-server
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-
-# Using uv (recommended)
-# Note: uv sync automatically creates a virtual environment in .venv/
-uv sync --extra api
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
-
-# Or using pip with virtual environment
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[api]"
+# Create a Python virtual enviroment if neccesary
+# Install in editable mode with API support
+pip install -e ".[api]"
 
 cp env.example .env  # Update the .env with your LLM and embedding configurations
 
@@ -149,29 +128,21 @@ cp env.example .env  # Update the .env with your LLM and embedding configuration
 docker compose up
 ```
 
-> Tip: When targeting Google Gemini, set `LLM_BINDING=gemini`, choose a model such as `LLM_MODEL=gemini-flash-latest`, and provide your Gemini key via `LLM_BINDING_API_KEY` (or `GEMINI_API_KEY`). The server now understands this binding out of the box.
-
 > Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### Install  LightRAG Core
 
-* Install from source (Recommended)
+* Install from source (Recommend)
 
 ```bash
 cd LightRAG
-# Note: uv sync automatically creates a virtual environment in .venv/
-uv sync
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
-
-# Or: pip install -e .
+pip install -e .
 ```
 
 * Install from PyPI
 
 ```bash
-uv pip install lightrag-hku
-# Or: pip install lightrag-hku
+pip install lightrag-hku
 ```
 
 ## Quick Start
@@ -225,7 +196,10 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ### ⚠️ Important: Initialization Requirements
 
-**LightRAG requires explicit initialization before use.** You must call `await rag.initialize_storages()` after creating a LightRAG instance, otherwise you will encounter errors.
+**LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+
+- `AttributeError: __aenter__` - if storages are not initialized
+- `KeyError: 'history_messages'` - if pipeline status is not initialized
 
 ### A Simple Program
 
@@ -236,6 +210,7 @@ import os
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
+from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
@@ -251,7 +226,9 @@ async def initialize_rag():
         llm_model_func=gpt_4o_mini_complete,
     )
     # IMPORTANT: Both initialization calls are required!
-    await rag.initialize_storages()  # Initialize storage backends    return rag
+    await rag.initialize_storages()  # Initialize storage backends
+    await initialize_pipeline_status()  # Initialize processing pipeline
+    return rag
 
 async def main():
     try:
@@ -408,11 +385,6 @@ LightRAG requires the utilization of LLM and Embedding models to accomplish docu
 * LightRAG also supports Open AI-like chat/embeddings APIs:
 
 ```python
-import os
-import numpy as np
-from lightrag.utils import wrap_embedding_func_with_attrs
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
@@ -426,9 +398,8 @@ async def llm_model_func(
         **kwargs
     )
 
-@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192)
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embed.func(
+    return await openai_embed(
         texts,
         model="solar-embedding-1-large-query",
         api_key=os.getenv("UPSTAGE_API_KEY"),
@@ -439,16 +410,17 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=embedding_func  # Pass the decorated function directly
+        embedding_func=EmbeddingFunc(
+            embedding_dim=4096,
+            func=embedding_func
+        )
     )
 
     await rag.initialize_storages()
+    await initialize_pipeline_status()
+
     return rag
 ```
-
-> **Important Note on Embedding Function Wrapping:**
->
-> `EmbeddingFunc` cannot be nested. Functions that have been decorated with `@wrap_embedding_func_with_attrs` (such as `openai_embed`, `ollama_embed`, etc.) cannot be wrapped again using `EmbeddingFunc()`. This is why we call `xxx_embed.func` (the underlying unwrapped function) instead of `xxx_embed` directly when creating custom embedding functions.
 
 </details>
 
@@ -488,20 +460,19 @@ If you want to use Ollama models, you need to pull model you plan to use and emb
 Then you only need to set LightRAG as follows:
 
 ```python
-import numpy as np
-from lightrag.utils import wrap_embedding_func_with_attrs
-from lightrag.llm.ollama import ollama_model_complete, ollama_embed
-
-@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
-async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
-
 # Initialize LightRAG with Ollama model
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
     llm_model_name='your_model_name', # Your model name
-    embedding_func=embedding_func,  # Pass the decorated function directly
+    # Use Ollama embedding function
+    embedding_func=EmbeddingFunc(
+        embedding_dim=768,
+        func=lambda texts: ollama_embed(
+            texts,
+            embed_model="nomic-embed-text"
+        )
+    ),
 )
 ```
 
@@ -540,26 +511,21 @@ ollama create -f Modelfile qwen2m
 Tiy can use `llm_model_kwargs` param to configure ollama:
 
 ```python
-import numpy as np
-from lightrag.utils import wrap_embedding_func_with_attrs
-from lightrag.llm.ollama import ollama_model_complete, ollama_embed
-
-@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
-async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
-
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
     llm_model_name='your_model_name', # Your model name
     llm_model_kwargs={"options": {"num_ctx": 32768}},
-    embedding_func=embedding_func,  # Pass the decorated function directly
+    # Use Ollama embedding function
+    embedding_func=EmbeddingFunc(
+        embedding_dim=768,
+        func=lambda texts: ollama_embed(
+            texts,
+            embed_model="nomic-embed-text"
+        )
+    ),
 )
 ```
-
-> **Important Note on Embedding Function Wrapping:**
->
-> `EmbeddingFunc` cannot be nested. Functions that have been decorated with `@wrap_embedding_func_with_attrs` (such as `openai_embed`, `ollama_embed`, etc.) cannot be wrapped again using `EmbeddingFunc()`. This is why we call `xxx_embed.func` (the underlying unwrapped function) instead of `xxx_embed` directly when creating custom embedding functions.
 
 * **Low RAM GPUs**
 
@@ -583,6 +549,7 @@ from lightrag import LightRAG
 from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
+from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import setup_logger
 
 # Setup log handler for LightRAG
@@ -599,6 +566,8 @@ async def initialize_rag():
     )
 
     await rag.initialize_storages()
+    await initialize_pipeline_status()
+
     return rag
 
 def main():
@@ -850,6 +819,8 @@ async def initialize_rag():
     # Initialize database connections
     await rag.initialize_storages()
     # Initialize pipeline status for document processing
+    await initialize_pipeline_status()
+
     return rag
 ```
 
@@ -863,7 +834,7 @@ see test_neo4j.py for a working example.
 For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
 
 * PostgreSQL is lightweight,the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
-* If you prefer docker, please start with this image if you are a beginner to avoid hiccups (Default user password:rag/rag): https://hub.docker.com/r/gzdaniel/postgres-for-rag
+* If you prefer docker, please start with this image if you are a beginner to avoid hiccups (DO read the overview): https://hub.docker.com/r/shangor/postgres-for-rag
 * How to start? Ref to: [examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
 * For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 
@@ -934,6 +905,8 @@ async def initialize_rag():
     # Initialize database connections
     await rag.initialize_storages()
     # Initialize pipeline status for document processing
+    await initialize_pipeline_status()
+
     return rag
 ```
 
@@ -968,8 +941,7 @@ maxclients 500
 The `workspace` parameter ensures data isolation between different LightRAG instances. Once initialized, the `workspace` is immutable and cannot be changed.Here is how workspaces are implemented for different types of storage:
 
 - **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
-- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
-- **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
 
@@ -1541,13 +1513,16 @@ If you encounter these errors when using LightRAG:
 
 2. **`KeyError: 'history_messages'`**
    - **Cause**: Pipeline status not initialized
-   - **Solution**: Call `
+   - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
+
 3. **Both errors in sequence**
    - **Cause**: Neither initialization method was called
    - **Solution**: Always follow this pattern:
    ```python
    rag = LightRAG(...)
-   await rag.initialize_storages()   ```
+   await rag.initialize_storages()
+   await initialize_pipeline_status()
+   ```
 
 ### Model Switching Issues
 
@@ -1562,54 +1537,6 @@ The LightRAG Server is designed to provide Web UI and API support.  **For more i
 The LightRAG Server offers a comprehensive knowledge graph visualization feature. It supports various gravity layouts, node queries, subgraph filtering, and more. **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
 ![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
-
-## Langfuse observability integration
-
-Langfuse provides a drop-in replacement for the OpenAI client that automatically tracks all LLM interactions, enabling developers to monitor, debug, and optimize their RAG systems without code changes.
-
-### Installation with Langfuse option
-
-```
-pip install lightrag-hku
-pip install lightrag-hku[observability]
-
-# Or install from souce code with debug mode enabled
-pip install -e .
-pip install -e ".[observability]"
-```
-
-### Config Langfuse env vars
-
-modify .env file:
-
-```
-## Langfuse Observability (Optional)
-# LLM observability and tracing platform
-# Install with: pip install lightrag-hku[observability]
-# Sign up at: https://cloud.langfuse.com or self-host
-LANGFUSE_SECRET_KEY=""
-LANGFUSE_PUBLIC_KEY=""
-LANGFUSE_HOST="https://cloud.langfuse.com"  # or your self-hosted instance
-LANGFUSE_ENABLE_TRACE=true
-```
-
-### Langfuse Usage
-
-Once installed and configured, Langfuse automatically traces all OpenAI LLM calls. Langfuse dashboard features include:
-
-- **Tracing**: View complete LLM call chains
-- **Analytics**: Token usage, latency, cost metrics
-- **Debugging**: Inspect prompts and responses
-- **Evaluation**: Compare model outputs
-- **Monitoring**: Real-time alerting
-
-### Important Notice
-
-**Note**: LightRAG currently only integrates OpenAI-compatible API calls with Langfuse. APIs such as Ollama, Azure, and AWS Bedrock are not yet supported for Langfuse observability.
-
-## RAGAS-based Evaluation
-
-**RAGAS** (Retrieval Augmented Generation Assessment) is a framework for reference-free evaluation of RAG systems using LLMs. There is an evaluation script based on RAGAS. For detailed information, please refer to [RAGAS-based Evaluation Framework](lightrag/evaluation/README.md).
 
 ## Evaluation
 
