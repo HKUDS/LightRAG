@@ -927,68 +927,22 @@ def load_json(file_name):
         return json.load(f)
 
 
-def _sanitize_string_for_json(text: str) -> str:
-    """Remove characters that cannot be encoded in UTF-8 for JSON serialization.
-
-    This is a simpler sanitizer specifically for JSON that directly removes
-    problematic characters without attempting to encode first.
-
-    Args:
-        text: String to sanitize
-
-    Returns:
-        Sanitized string safe for UTF-8 encoding in JSON
-    """
-    if not text:
-        return text
-
-    # Directly filter out problematic characters without pre-validation
-    sanitized = ""
-    for char in text:
-        code_point = ord(char)
-        # Skip surrogate characters (U+D800 to U+DFFF) - main cause of encoding errors
-        if 0xD800 <= code_point <= 0xDFFF:
-            continue
-        # Skip other non-characters in Unicode
-        elif code_point == 0xFFFE or code_point == 0xFFFF:
-            continue
-        else:
-            sanitized += char
-
-    return sanitized
-
-
 def _sanitize_json_data(data: Any) -> Any:
     """Recursively sanitize all string values in data structure for safe UTF-8 encoding
 
-    Handles all JSON-serializable types including:
-    - Dictionary keys and values
-    - Lists and tuples (preserves type)
-    - Nested structures
-    - Strings at any level
-
     Args:
-        data: Data to sanitize (dict, list, tuple, str, or other types)
+        data: Data to sanitize (dict, list, str, or other types)
 
     Returns:
         Sanitized data with all strings cleaned of problematic characters
     """
     if isinstance(data, dict):
-        # Sanitize both keys and values
-        return {
-            _sanitize_string_for_json(k)
-            if isinstance(k, str)
-            else k: _sanitize_json_data(v)
-            for k, v in data.items()
-        }
-    elif isinstance(data, (list, tuple)):
-        # Handle both lists and tuples, preserve original type
-        sanitized = [_sanitize_json_data(item) for item in data]
-        return type(data)(sanitized)
+        return {k: _sanitize_json_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_sanitize_json_data(item) for item in data]
     elif isinstance(data, str):
-        return _sanitize_string_for_json(data)
+        return sanitize_text_for_encoding(data, replacement_char="")
     else:
-        # Numbers, booleans, None, etc. - return as-is
         return data
 
 
