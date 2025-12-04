@@ -588,69 +588,6 @@ You can test the API endpoints using the provided curl commands or through the S
 4. Query the system using the query endpoints
 5. Trigger document scan if new files are put into the inputs directory
 
-### Graph Manipulation Endpoints
-
-LightRAG provides REST API endpoints for direct knowledge graph manipulation:
-
-#### Create Entity
-
-Create a new entity in the knowledge graph:
-
-```bash
-curl -X POST "http://localhost:9621/graph/entity/create" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "entity_name": "Tesla",
-    "entity_data": {
-      "description": "Electric vehicle manufacturer",
-      "entity_type": "ORGANIZATION"
-    }
-  }'
-```
-
-#### Create Relationship
-
-Create a new relationship between two existing entities:
-
-```bash
-curl -X POST "http://localhost:9621/graph/relation/create" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_entity": "Elon Musk",
-    "target_entity": "Tesla",
-    "relation_data": {
-      "description": "Elon Musk is the CEO of Tesla",
-      "keywords": "CEO, founder",
-      "weight": 1.0
-    }
-  }'
-```
-
-#### Merge Entities
-
-Consolidate duplicate or misspelled entities while preserving all relationships:
-
-```bash
-curl -X POST "http://localhost:9621/graph/entities/merge" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "entities_to_change": ["Elon Msk", "Ellon Musk"],
-    "entity_to_change_into": "Elon Musk"
-  }'
-```
-
-**What the merge operation does:**
-- Deletes the specified source entities
-- Transfers all relationships from source entities to the target entity
-- Intelligently merges duplicate relationships
-- Updates vector embeddings for accurate retrieval
-- Preserves the entire graph structure
-
-This is particularly useful for:
-- Fixing spelling errors in entity names
-- Consolidating duplicate entities discovered after document processing
-- Cleaning up the knowledge graph for better query performance
-
 ## Asynchronous Document Indexing with Progress Tracking
 
 LightRAG implements asynchronous document indexing to enable frontend monitoring and querying of document processing progress. Upon uploading files or inserting text through designated endpoints, a unique Track ID is returned to facilitate real-time progress monitoring.

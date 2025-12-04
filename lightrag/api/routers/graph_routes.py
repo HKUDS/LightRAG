@@ -5,7 +5,7 @@ This module contains all graph-related routes for the LightRAG API.
 from typing import Optional, Dict, Any
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
@@ -26,19 +26,63 @@ class RelationUpdateRequest(BaseModel):
 
 
 class EntityMergeRequest(BaseModel):
-    entities_to_change: list[str]
-    entity_to_change_into: str
+    entities_to_change: list[str] = Field(
+        ...,
+        description="List of entity names to be merged and deleted. These are typically duplicate or misspelled entities.",
+        min_length=1,
+        examples=[["Elon Msk", "Ellon Musk"]],
+    )
+    entity_to_change_into: str = Field(
+        ...,
+        description="Target entity name that will receive all relationships from the source entities. This entity will be preserved.",
+        min_length=1,
+        examples=["Elon Musk"],
+    )
 
 
 class EntityCreateRequest(BaseModel):
-    entity_name: str
-    entity_data: Dict[str, Any]
+    entity_name: str = Field(
+        ...,
+        description="Unique name for the new entity",
+        min_length=1,
+        examples=["Tesla"],
+    )
+    entity_data: Dict[str, Any] = Field(
+        ...,
+        description="Dictionary containing entity properties. Common fields include 'description' and 'entity_type'.",
+        examples=[
+            {
+                "description": "Electric vehicle manufacturer",
+                "entity_type": "ORGANIZATION",
+            }
+        ],
+    )
 
 
 class RelationCreateRequest(BaseModel):
-    source_entity: str
-    target_entity: str
-    relation_data: Dict[str, Any]
+    source_entity: str = Field(
+        ...,
+        description="Name of the source entity. This entity must already exist in the knowledge graph.",
+        min_length=1,
+        examples=["Elon Musk"],
+    )
+    target_entity: str = Field(
+        ...,
+        description="Name of the target entity. This entity must already exist in the knowledge graph.",
+        min_length=1,
+        examples=["Tesla"],
+    )
+    relation_data: Dict[str, Any] = Field(
+        ...,
+        description="Dictionary containing relationship properties. Common fields include 'description', 'keywords', and 'weight'.",
+        examples=[
+            {
+                "description": "Elon Musk is the CEO of Tesla",
+                "keywords": "CEO, founder",
+                "weight": 1.0,
+            }
+        ],
+    )
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
@@ -246,15 +290,36 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         Create a new entity in the knowledge graph
 
-        Args:
-            request (EntityCreateRequest): Request containing:
-                - entity_name: Name of the entity
-                - entity_data: Dictionary of entity properties (e.g., description, entity_type)
+        This endpoint creates a new entity node in the knowledge graph with the specified
+        properties. The system automatically generates vector embeddings for the entity
+        to enable semantic search and retrieval.
 
-        Returns:
-            Dict: Created entity information
+        Request Body:
+            entity_name (str): Unique name identifier for the entity
+            entity_data (dict): Entity properties including:
+                - description (str): Textual description of the entity
+                - entity_type (str): Category/type of the entity (e.g., PERSON, ORGANIZATION, LOCATION)
+                - Additional custom properties as needed
 
-        Example:
+        Response Schema:
+            {
+                "status": "success",
+                "message": "Entity 'Tesla' created successfully",
+                "data": {
+                    "entity_name": "Tesla",
+                    "description": "Electric vehicle manufacturer",
+                    "entity_type": "ORGANIZATION",
+                    ... (other entity properties)
+                }
+            }
+
+        HTTP Status Codes:
+            200: Entity created successfully
+            400: Invalid request (e.g., missing required fields, duplicate entity)
+            500: Internal server error
+
+        Example Request:
+            POST /graph/entity/create
             {
                 "entity_name": "Tesla",
                 "entity_data": {
@@ -300,16 +365,45 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         Create a new relationship between two entities in the knowledge graph
 
-        Args:
-            request (RelationCreateRequest): Request containing:
-                - source_entity: Source entity name
-                - target_entity: Target entity name
-                - relation_data: Dictionary of relation properties (e.g., description, keywords, weight)
+        This endpoint establishes a directed relationship between two existing entities.
+        Both the source and target entities must already exist in the knowledge graph.
+        The system automatically generates vector embeddings for the relationship to
+        enable semantic search and graph traversal.
 
-        Returns:
-            Dict: Created relation information
+        Prerequisites:
+            - Both source_entity and target_entity must exist in the knowledge graph
+            - Use /graph/entity/create to create entities first if they don't exist
 
-        Example:
+        Request Body:
+            source_entity (str): Name of the source entity (relationship origin)
+            target_entity (str): Name of the target entity (relationship destination)
+            relation_data (dict): Relationship properties including:
+                - description (str): Textual description of the relationship
+                - keywords (str): Comma-separated keywords describing the relationship type
+                - weight (float): Relationship strength/importance (default: 1.0)
+                - Additional custom properties as needed
+
+        Response Schema:
+            {
+                "status": "success",
+                "message": "Relation created successfully between 'Elon Musk' and 'Tesla'",
+                "data": {
+                    "src_id": "Elon Musk",
+                    "tgt_id": "Tesla",
+                    "description": "Elon Musk is the CEO of Tesla",
+                    "keywords": "CEO, founder",
+                    "weight": 1.0,
+                    ... (other relationship properties)
+                }
+            }
+
+        HTTP Status Codes:
+            200: Relationship created successfully
+            400: Invalid request (e.g., missing entities, invalid data, duplicate relationship)
+            500: Internal server error
+
+        Example Request:
+            POST /graph/relation/create
             {
                 "source_entity": "Elon Musk",
                 "target_entity": "Tesla",
@@ -369,24 +463,59 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
     async def merge_entities(request: EntityMergeRequest):
         """
-        Merge multiple entities into a single entity, preserving all relationships.
+        Merge multiple entities into a single entity, preserving all relationships
 
-        This endpoint is useful for consolidating duplicate or misspelled entities.
-        All relationships from the source entities will be transferred to the target entity.
+        This endpoint consolidates duplicate or misspelled entities while preserving the entire
+        graph structure. It's particularly useful for cleaning up knowledge graphs after document
+        processing or correcting entity name variations.
 
-        Args:
-            request (EntityMergeRequest): Request containing:
-                - entities_to_change: List of entity names to be removed
-                - entity_to_change_into: Name of the target entity to merge into
+        What the Merge Operation Does:
+            1. Deletes the specified source entities from the knowledge graph
+            2. Transfers all relationships from source entities to the target entity
+            3. Intelligently merges duplicate relationships (if multiple sources have the same relationship)
+            4. Updates vector embeddings for accurate retrieval and search
+            5. Preserves the complete graph structure and connectivity
+            6. Maintains relationship properties and metadata
 
-        Returns:
-            Dict: Result of the merge operation with merged entity information
+        Use Cases:
+            - Fixing spelling errors in entity names (e.g., "Elon Msk" -> "Elon Musk")
+            - Consolidating duplicate entities discovered after document processing
+            - Merging name variations (e.g., "NY", "New York", "New York City")
+            - Cleaning up the knowledge graph for better query performance
+            - Standardizing entity names across the knowledge base
 
-        Example:
+        Request Body:
+            entities_to_change (list[str]): List of entity names to be merged and deleted
+            entity_to_change_into (str): Target entity that will receive all relationships
+
+        Response Schema:
+            {
+                "status": "success",
+                "message": "Successfully merged 2 entities into 'Elon Musk'",
+                "data": {
+                    "merged_entity": "Elon Musk",
+                    "deleted_entities": ["Elon Msk", "Ellon Musk"],
+                    "relationships_transferred": 15,
+                    ... (merge operation details)
+                }
+            }
+
+        HTTP Status Codes:
+            200: Entities merged successfully
+            400: Invalid request (e.g., empty entity list, target entity doesn't exist)
+            500: Internal server error
+
+        Example Request:
+            POST /graph/entities/merge
             {
                 "entities_to_change": ["Elon Msk", "Ellon Musk"],
                 "entity_to_change_into": "Elon Musk"
             }
+
+        Note:
+            - The target entity (entity_to_change_into) must exist in the knowledge graph
+            - Source entities will be permanently deleted after the merge
+            - This operation cannot be undone, so verify entity names before merging
         """
         try:
             result = await rag.amerge_entities(
