@@ -463,7 +463,9 @@ class CleanupTool:
 
                 # CRITICAL: Set update flag so changes persist to disk
                 # Without this, deletions remain in-memory only and are lost on exit
-                await set_all_update_flags(storage.final_namespace)
+                await set_all_update_flags(
+                    storage.namespace, workspace=storage.workspace
+                )
 
                 # Success
                 stats.successful_batches += 1
@@ -719,7 +721,7 @@ class CleanupTool:
         """
         print(f"\n{title}")
         print("┌" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┐")
-        print(f"│ {'Mode':<10} │ {'Query':<10} │ {'Keywords':<10} │ {'Total':<10} │")
+        print(f"│ {'Mode':<10} │ {'Query':>10} │ {'Keywords':>10} │ {'Total':>10} │")
         print("├" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┤")
 
         total_query = 0
@@ -873,6 +875,31 @@ class CleanupTool:
 
         storage_name = STORAGE_TYPES[choice]
 
+        # Special warning for JsonKVStorage about concurrent access
+        if storage_name == "JsonKVStorage":
+            print("\n" + "=" * 60)
+            print(f"{BOLD_RED}⚠️  IMPORTANT WARNING - JsonKVStorage Concurrency{RESET}")
+            print("=" * 60)
+            print("\nJsonKVStorage is an in-memory database that does NOT support")
+            print("concurrent access to the same file by multiple programs.")
+            print("\nBefore proceeding, please ensure that:")
+            print("  • LightRAG Server is completely shut down")
+            print("  • No other programs are accessing the storage files")
+            print("\n" + "=" * 60)
+
+            confirm = (
+                input("\nHas LightRAG Server been shut down? (yes/no): ")
+                .strip()
+                .lower()
+            )
+            if confirm != "yes":
+                print(
+                    "\n✓ Operation cancelled - Please shut down LightRAG Server first"
+                )
+                return None, None, None
+
+            print("✓ Proceeding with JsonKVStorage cleanup...")
+
         # Check configuration (warnings only, doesn't block)
         print("\nChecking configuration...")
         self.check_env_vars(storage_name)
@@ -981,18 +1008,36 @@ class CleanupTool:
                     return
                 elif choice == "1":
                     cleanup_type = "all"
-                    break
                 elif choice == "2":
                     cleanup_type = "query"
-                    break
                 elif choice == "3":
                     cleanup_type = "keywords"
-                    break
                 else:
                     print("✗ Invalid choice. Please enter 0, 1, 2, or 3")
+                    continue
 
-            # Calculate total to delete
-            stats.total_to_delete = self.calculate_total_to_delete(counts, cleanup_type)
+                # Calculate total to delete for the selected type
+                stats.total_to_delete = self.calculate_total_to_delete(
+                    counts, cleanup_type
+                )
+
+                # Check if there are any records to delete
+                if stats.total_to_delete == 0:
+                    if cleanup_type == "all":
+                        print(f"\n{BOLD_RED}⚠️  No query caches found to delete!{RESET}")
+                    elif cleanup_type == "query":
+                        print(
+                            f"\n{BOLD_RED}⚠️  No query caches found to delete! (Only keywords exist){RESET}"
+                        )
+                    elif cleanup_type == "keywords":
+                        print(
+                            f"\n{BOLD_RED}⚠️  No keywords caches found to delete! (Only query caches exist){RESET}"
+                        )
+                    print("   Please select a different cleanup option.\n")
+                    continue
+
+                # Valid selection with records to delete
+                break
 
             # Confirm deletion
             print("\n" + "=" * 60)

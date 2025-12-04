@@ -41,10 +41,8 @@ class NetworkXStorage(BaseGraphStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
             workspace_dir = working_dir
             self.workspace = "_"
 
