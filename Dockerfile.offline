@@ -11,16 +11,17 @@ RUN cd lightrag_webui \
     && bun install --frozen-lockfile \
     && bun run build
 
-# Python build stage
-FROM python:3.12-slim AS builder
+# Python build stage - using uv for faster package installation
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
 
-# Upgrade packaging tools and install system deps (Rust is required by some wheels)
-RUN pip install --upgrade pip setuptools wheel \
-    && apt-get update \
+# Install system deps (Rust is required by some wheels)
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
         build-essential \
@@ -30,27 +31,31 @@ RUN pip install --upgrade pip setuptools wheel \
 
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 
+# Ensure shared data directory exists for uv caches
+RUN mkdir -p /root/.local/share/uv
+
 # Copy project metadata and sources
 COPY pyproject.toml .
 COPY setup.py .
-COPY requirements-offline*.txt ./
-COPY constraints-offline.txt .
+COPY uv.lock .
+
+# Install base, API, and offline extras without the project to improve caching
+RUN uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
+
+# Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
 
-# Install LightRAG with API extras and all offline dependencies in a single step
-# This prevents version conflicts from multiple installation passes
-# Use constraints file for reproducible builds with exact versions
-RUN pip install --user --no-cache-dir --use-pep517 \
-    --upgrade-strategy=only-if-needed \
-    --constraint constraints-offline.txt \
-    .[api] -r requirements-offline.txt
+# Sync project in non-editable mode and ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Prepare offline cache directory and pre-populate tiktoken data
+# Use uv run to execute commands from the virtual environment
 RUN mkdir -p /app/data/tiktoken \
-    && lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
+    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
     if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
@@ -58,26 +63,26 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --upgrade pip setuptools wheel
+# Install uv for package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV UV_SYSTEM_PYTHON=1
 
 # Copy installed packages and application code
 COPY --from=builder /root/.local /root/.local
+COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/lightrag ./lightrag
 COPY pyproject.toml .
 COPY setup.py .
-COPY requirements-offline*.txt ./
-COPY constraints-offline.txt .
+COPY uv.lock .
 
 # Ensure the installed scripts are on PATH
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
-# Install editable package for runtime (re-using cached wheels) and verify extras
-# IMPORTANT: Must be done BEFORE creating data/ directory to avoid setuptools error
-# Use single installation to prevent version conflicts with exact version constraints
-RUN pip install --no-cache-dir --use-pep517 \
-    --upgrade-strategy=only-if-needed \
-    --constraint constraints-offline.txt \
-    ".[api]" -r requirements-offline.txt
+# Install dependencies with uv sync (uses locked versions from uv.lock)
+# And ensure pip is available for runtime installs
+RUN uv sync --frozen --no-dev --extra api --extra offline --no-editable \
+    && /app/.venv/bin/python -m ensurepip --upgrade
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/tiktoken

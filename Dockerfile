@@ -74,7 +74,6 @@ COPY uv.lock .
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
 # Sync dependencies inside the final image using uv
-# And ensure pip is available for runtime installs
 RUN uv sync --frozen --no-dev --extra api --no-editable \
     && /app/.venv/bin/python -m ensurepip --upgrade
 
