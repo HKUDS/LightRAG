@@ -47,7 +47,7 @@ try:
 
     # Only enable Langfuse if both keys are configured
     if langfuse_public_key and langfuse_secret_key:
-        from langfuse.openai import AsyncOpenAI
+        from langfuse.openai import AsyncOpenAI  # type: ignore[import-untyped]
 
         LANGFUSE_ENABLED = True
         logger.info("Langfuse observability enabled for OpenAI client")
@@ -594,7 +594,7 @@ async def nvidia_openai_complete(
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536)
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
