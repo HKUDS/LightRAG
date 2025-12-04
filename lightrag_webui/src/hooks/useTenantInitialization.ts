@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useTenantState } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/state'
 import { fetchTenants, fetchKnowledgeBases } from '@/api/tenant'
 import type { Tenant, KnowledgeBase } from '@/stores/tenant'
 
@@ -8,6 +9,9 @@ import type { Tenant, KnowledgeBase } from '@/stores/tenant'
  * Ensures that documents are visible even on initial page load
  * This solves the "empty state on refresh" issue by automatically
  * selecting the first available tenant and KB if none are currently selected
+ * 
+ * In single-tenant mode (multiTenantEnabled=false), this hook does nothing
+ * as the default tenant is already set by App.tsx
  */
 export function useTenantInitialization() {
   const selectedKB = useTenantState.use.selectedKB()
@@ -17,15 +21,23 @@ export function useTenantInitialization() {
   const setKnowledgeBases = useTenantState.use.setKnowledgeBases()
   const setLoading = useTenantState.use.setLoading()
   const setError = useTenantState.use.setError()
+  const multiTenantEnabled = useAuthStore(state => state.multiTenantEnabled)
 
   const initializationAttempted = useRef(false)
 
   const initializeTenantContext = useCallback(async () => {
+    // In single-tenant mode, skip tenant/KB API calls
+    // The default tenant is already set in App.tsx
+    if (!multiTenantEnabled) {
+      console.log('[TenantInit] Single-tenant mode, skipping tenant API calls')
+      return
+    }
+
     try {
       setLoading(true)
       setError(null)
 
-      // Fetch list of available tenants
+      // Fetch list of available tenants (only in multi-tenant mode)
       console.log('[TenantInit] Fetching available tenants...')
       const availableTenants: Tenant[] = await fetchTenants()
 
@@ -110,11 +122,18 @@ export function useTenantInitialization() {
       setError(error instanceof Error ? error.message : 'Failed to initialize tenant context')
       setLoading(false)
     }
-  }, [setError, setKnowledgeBases, setLoading, setSelectedKB, setSelectedTenant, setTenants])
+  }, [multiTenantEnabled, setError, setKnowledgeBases, setLoading, setSelectedKB, setSelectedTenant, setTenants])
 
   useEffect(() => {
     // Prevent double initialization in strict mode
     if (initializationAttempted.current) {
+      return
+    }
+
+    // In single-tenant mode, skip initialization entirely
+    // The default tenant is set in App.tsx
+    if (!multiTenantEnabled) {
+      console.log('[TenantInit] Single-tenant mode, skipping tenant initialization')
       return
     }
 
@@ -130,5 +149,5 @@ export function useTenantInitialization() {
 
     initializationAttempted.current = true
     initializeTenantContext()
-  }, [initializeTenantContext])
+  }, [multiTenantEnabled, initializeTenantContext])
 }

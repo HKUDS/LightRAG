@@ -72,6 +72,10 @@ load_dotenv(dotenv_path=".env", override=False)
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
 
+# Multi-tenant mode configuration
+# Set LIGHTRAG_MULTI_TENANT=true to enable multi-tenant mode with tenant selection UI
+multi_tenant_enabled = os.getenv("LIGHTRAG_MULTI_TENANT", "false").lower() in ("true", "1", "yes")
+
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -897,6 +901,7 @@ def create_app(args):
                 "access_token": guest_token,
                 "token_type": "bearer",
                 "auth_mode": "disabled",
+                "multi_tenant_enabled": multi_tenant_enabled,
                 "message": "Authentication is disabled. Using guest access.",
                 "core_version": core_version,
                 "api_version": api_version_display,
@@ -907,6 +912,7 @@ def create_app(args):
         return {
             "auth_configured": True,
             "auth_mode": "enabled",
+            "multi_tenant_enabled": multi_tenant_enabled,
             "core_version": core_version,
             "api_version": api_version_display,
             "webui_title": webui_title,
@@ -1004,6 +1010,7 @@ def create_app(args):
                     "embedding_batch_num": args.embedding_batch_num,
                 },
                 "auth_mode": auth_mode,
+                "multi_tenant_enabled": multi_tenant_enabled,
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
                 "core_version": core_version,

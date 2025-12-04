@@ -57,7 +57,7 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription, multiTenantEnabled } = useAuthStore()
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -101,10 +101,12 @@ export default function SiteHeader() {
         )}
       </div>
 
-      {/* Tenant and KB Selection - More Prominent */}
-      <div className="shrink-0">
-        <TenantSelector hideTenantSelect />
-      </div>
+      {/* Tenant and KB Selection - Only show in multi-tenant mode */}
+      {multiTenantEnabled && (
+        <div className="shrink-0">
+          <TenantSelector hideTenantSelect />
+        </div>
+      )}
 
       <div className="flex-1 flex items-center justify-center gap-4 min-w-0">
         <TabsNavigation />

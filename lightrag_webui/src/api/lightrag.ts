@@ -241,6 +241,7 @@ export type AuthStatusResponse = {
   access_token?: string
   token_type?: string
   auth_mode?: 'enabled' | 'disabled'
+  multi_tenant_enabled?: boolean
   message?: string
   core_version?: string
   api_version?: string

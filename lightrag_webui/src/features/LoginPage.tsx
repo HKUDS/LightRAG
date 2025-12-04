@@ -13,6 +13,19 @@ import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 import TenantSelector from '@/components/TenantSelector'
 
+// Default tenant and KB for single-tenant mode
+const DEFAULT_SINGLE_TENANT = {
+  tenant_id: 'default',
+  name: 'Default',
+  description: 'Default single-tenant workspace',
+}
+
+const DEFAULT_SINGLE_KB = {
+  kb_id: 'default',
+  tenant_id: 'default',
+  name: 'Default',
+  description: 'Default knowledge base',
+}
 const LoginPage = () => {
   const navigate = useNavigate()
   const { login, isAuthenticated } = useAuthStore()
@@ -48,6 +61,11 @@ const LoginPage = () => {
 
         // Check auth status
         const status = await getAuthStatus()
+        
+        // Update multi-tenant status in AuthStore immediately
+        const isMultiTenant = status.multi_tenant_enabled ?? false
+        useAuthStore.getState().setMultiTenantEnabled(isMultiTenant)
+        console.log('[LoginPage] Multi-tenant mode:', isMultiTenant)
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
@@ -55,7 +73,17 @@ const LoginPage = () => {
         }
 
         if (!status.auth_configured && status.access_token) {
-          // If auth is not configured (free login mode), show tenant selector first
+          // If auth is not configured (free login mode)
+          if (!isMultiTenant) {
+            // In single-tenant mode, auto-login, set default tenant/KB, and redirect to app
+            console.log('[LoginPage] Single-tenant mode with free login, auto-redirecting')
+            useTenantState.getState().setSelectedTenant(DEFAULT_SINGLE_TENANT)
+            useTenantState.getState().setSelectedKB(DEFAULT_SINGLE_KB)
+            login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null, false)
+            navigate('/')
+            return
+          }
+          // In multi-tenant mode, show tenant selector first
           setShowFreeLoginForm(true)
           setCheckingAuth(false)
           return
@@ -92,8 +120,9 @@ const LoginPage = () => {
       return
     }
 
-    // Validate that a tenant is selected
-    if (!selectedTenant) {
+    // Validate that a tenant is selected only in multi-tenant mode
+    const multiTenantEnabled = useAuthStore.getState().multiTenantEnabled
+    if (multiTenantEnabled && !selectedTenant) {
       toast.error(t('login.selectTenantError', 'Please select a tenant to continue'))
       return
     }
@@ -120,9 +149,10 @@ const LoginPage = () => {
       // Update previous username
       localStorage.setItem('LIGHTRAG-PREVIOUS-USER', username)
 
-      // Check authentication mode
+      // Check authentication mode and multi-tenant status
       const isGuestMode = response.auth_mode === 'disabled'
-      login(response.access_token, isGuestMode, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null)
+      const isMultiTenant = (response as any).multi_tenant_enabled ?? false
+      login(response.access_token, isGuestMode, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null, isMultiTenant)
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
@@ -152,17 +182,20 @@ const LoginPage = () => {
   }
 
   const handleFreeLoginContinue = async () => {
-    // Validate that a tenant is selected
-    if (!selectedTenant) {
-      toast.error(t('login.selectTenantError', 'Please select a tenant to continue'))
-      return
-    }
-
     try {
       setLoading(true)
       const status = await getAuthStatus()
+      const isMultiTenant = status.multi_tenant_enabled ?? false
+      
+      // In single-tenant mode, tenant selection is not required
+      if (isMultiTenant && !selectedTenant) {
+        toast.error(t('login.selectTenantError', 'Please select a tenant to continue'))
+        setLoading(false)
+        return
+      }
+      
       if (status.access_token) {
-        login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
+        login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null, isMultiTenant)
         if (status.message) {
           toast.info(status.message)
         }

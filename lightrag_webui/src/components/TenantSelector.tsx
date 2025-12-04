@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useTenantState } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/state'
 import { fetchTenantsPaginated, fetchKnowledgeBasesPaginated } from '@/api/tenant'
 import {
   Select,
@@ -25,6 +26,7 @@ export function TenantSelector({ onTenantChange, onKBChange, hideTenantSelect = 
   const knowledgeBases = useTenantState.use.knowledgeBases()
   const loading = useTenantState.use.loading()
   const error = useTenantState.use.error()
+  const multiTenantEnabled = useAuthStore(state => state.multiTenantEnabled)
 
   const setSelectedTenant = useTenantState.use.setSelectedTenant()
   const setSelectedKB = useTenantState.use.setSelectedKB()
@@ -38,6 +40,12 @@ export function TenantSelector({ onTenantChange, onKBChange, hideTenantSelect = 
   const kbPageSize = 5
 
   useEffect(() => {
+    // In single-tenant mode, skip tenant API calls
+    if (!multiTenantEnabled) {
+      console.log('[TenantSelector] Single-tenant mode, skipping tenant API calls')
+      return
+    }
+
     const loadTenants = async () => {
       setLoading(true)
       try {
@@ -53,10 +61,16 @@ export function TenantSelector({ onTenantChange, onKBChange, hideTenantSelect = 
 
     loadTenants()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [multiTenantEnabled])
 
   useEffect(() => {
     if (hideKBSelect) return
+
+    // In single-tenant mode, skip KB API calls
+    if (!multiTenantEnabled) {
+      console.log('[TenantSelector] Single-tenant mode, skipping KB API calls')
+      return
+    }
 
     if (!selectedTenant) {
       setKnowledgeBases([])
@@ -84,7 +98,7 @@ export function TenantSelector({ onTenantChange, onKBChange, hideTenantSelect = 
     loadKBs()
     onTenantChange?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTenant?.tenant_id, hideKBSelect])
+  }, [selectedTenant?.tenant_id, hideKBSelect, multiTenantEnabled])
 
   useEffect(() => {
     onKBChange?.()
