@@ -19,7 +19,6 @@ from typing import (
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 from .constants import (
-    GRAPH_FIELD_SEP,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -355,6 +354,14 @@ class BaseKVStorage(StorageNameSpace, ABC):
             None
         """
 
+    @abstractmethod
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
+        """
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
@@ -519,56 +526,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges = await self.get_node_edges(node_id)
             result[node_id] = edges if edges is not None else []
         return result
-
-    @abstractmethod
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all nodes that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated nodes for.
-
-        Returns:
-            list[dict]: A list of nodes, where each node is a dictionary of its properties.
-                        An empty list if no matching nodes are found.
-        """
-
-    @abstractmethod
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all edges that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated edges for.
-
-        Returns:
-            list[dict]: A list of edges, where each edge is a dictionary of its properties.
-                        An empty list if no matching edges are found.
-        """
-        # Default implementation iterates through all nodes and their edges, which is inefficient.
-        # This method should be overridden by subclasses for better performance.
-        all_edges = []
-        all_labels = await self.get_all_labels()
-        processed_edges = set()
-
-        for label in all_labels:
-            edges = await self.get_node_edges(label)
-            if edges:
-                for src_id, tgt_id in edges:
-                    # Avoid processing the same edge twice in an undirected graph
-                    edge_tuple = tuple(sorted((src_id, tgt_id)))
-                    if edge_tuple in processed_edges:
-                        continue
-                    processed_edges.add(edge_tuple)
-
-                    edge = await self.get_edge(src_id, tgt_id)
-                    if edge and "source_id" in edge:
-                        source_ids = set(edge["source_id"].split(GRAPH_FIELD_SEP))
-                        if not source_ids.isdisjoint(chunk_ids):
-                            # Add source and target to the edge dict for easier processing later
-                            edge_with_nodes = edge.copy()
-                            edge_with_nodes["source"] = src_id
-                            edge_with_nodes["target"] = tgt_id
-                            all_edges.append(edge_with_nodes)
-        return all_edges
 
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
