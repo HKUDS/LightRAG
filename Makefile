@@ -52,6 +52,7 @@ help:
 	@echo "  $(YELLOW)make lint$(NC)             Run linters"
 	@echo "  $(YELLOW)make reset-demo-tenants$(NC) Reset DB + initialize 2 demo tenants (non-interactive)"
 	@echo "  $(YELLOW)make reset-demo-tenants-dry-run$(NC) Preview the reset-demo-tenants workflow without executing it"
+	@echo "  $(YELLOW)make seed-demo-tenants$(NC) Seed (non-destructive) the demo tenants via the API script"
 	@echo ""
 	@echo "$(GREEN)$(BOLD)📡 Service URLs (when running):$(NC)"
 	@echo "  • WebUI:        $(BLUE)http://localhost:5173$(NC)"
@@ -166,6 +167,13 @@ reset-demo-tenants-dry-run:
 	@echo "  python3 scripts/init_demo_tenants.py"
 	@echo "" 
 	@echo "Run 'make reset-demo-tenants' to actually perform the reset and seeding (destructive)."
+
+# Run only the API-side seeding script (non-destructive, does not drop DB)
+.PHONY: seed-demo-tenants
+seed-demo-tenants:
+	@echo "$(BLUE)⤴️  Seeding demo tenants via API (non-destructive)$(NC)"
+	@echo "→ This will call: python3 scripts/init_demo_tenants.py"
+	@python3 scripts/init_demo_tenants.py || echo "$(YELLOW)⚠ Seed script failed — check API accessibility or logs.$(NC)"
 
 # ============================================================================
 # SETUP & UTILITIES
