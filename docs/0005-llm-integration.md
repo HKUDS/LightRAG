@@ -2,7 +2,7 @@
 
 > Complete guide to configuring LLM providers and embedding models
 
-**Version**: 1.4.9.1 | **Last Updated**: December 2025
+**Version**: 1.4.9.2 | **Last Updated**: December 2025
 
 ---
 
@@ -675,4 +675,4 @@ rag = LightRAG(
 
 ---
 
-**Version**: 1.4.9.1 | **License**: MIT
+**Version**: 1.4.9.2 | **License**: MIT

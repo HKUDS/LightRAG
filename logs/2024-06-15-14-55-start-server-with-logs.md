@@ -1,4 +1,0 @@
-- Actions: Killed existing process on port 9621, exported `OPENAI_API_KEY` from `.env`, and started LightRAG server with `./e2e/run_tests.sh -b postgres --reset-db --openai --start-only --logs`.
-- Decisions: Used `isBackground=True` to allow the server to keep running while capturing the startup logs.
-- Next steps: User can now access the WebUI at `http://localhost:9621` and verify the fix.
-- Lessons/insights: Ensuring a clean state (killing old processes) and correctly setting environment variables (API keys) is crucial for reliable server startup in test scripts.

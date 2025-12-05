@@ -2,7 +2,7 @@
 
 > Complete guide to storage backend configuration and implementation
 
-**Version**: 1.4.9.1 | **Last Updated**: December 2025
+**Version**: 1.4.9.2 | **Last Updated**: December 2025
 
 ---
 
@@ -783,4 +783,4 @@ MAX_ASYNC=8
 
 ---
 
-**Version**: 1.4.9.1 | **License**: MIT
+**Version**: 1.4.9.2 | **License**: MIT

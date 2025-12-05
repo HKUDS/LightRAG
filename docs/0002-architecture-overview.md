@@ -2,7 +2,7 @@
 
 > Technical deep-dive into LightRAG's Graph-Enhanced RAG system architecture
 
-**Version**: 1.4.9.1 | **Last Updated**: December 2025
+**Version**: 1.4.9.2 | **Last Updated**: December 2025
 
 ---
 
@@ -776,8 +776,9 @@ COSINE_THRESHOLD=0.2
 - **[0004-storage-backends.md](./0004-storage-backends.md)**: Detailed storage implementation guide
 - **[0005-llm-integration.md](./0005-llm-integration.md)**: LLM provider configuration
 - **[0006-deployment-guide.md](./0006-deployment-guide.md)**: Docker, K8s, and production setup
-- **[0007-quick-start.md](./0007-quick-start.md)**: Getting started tutorial
+- **[0007-configuration-reference.md](./0007-configuration-reference.md)**: All configuration options
+- **[0008-multi-tenancy.md](./0008-multi-tenancy.md)**: Multi-tenant setup guide
 
 ---
 
-**Version**: 1.4.9.1 | **License**: MIT | **Repository**: [HKUDS/LightRAG](https://github.com/HKUDS/LightRAG)
+**Version**: 1.4.9.2 | **License**: MIT | **Repository**: [HKUDS/LightRAG](https://github.com/HKUDS/LightRAG)

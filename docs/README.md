@@ -1,6 +1,6 @@
-# LightRAG Enterprise Documentation
+# LightRAG Documentation
 
-**Version 2.0.0-enterprise** | Graph-Enhanced Retrieval-Augmented Generation
+**Version 1.4.9.2** | Graph-Enhanced Retrieval-Augmented Generation
 
 ```
 ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -12,17 +12,12 @@
 ║     ███████╗██║╚██████╔╝██║  ██║   ██║   ██║  ██║██║  ██║╚██████╔╝      ║
 ║     ╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝       ║
 ║                                                                           ║
-║              ENTERPRISE EDITION                                          ║
 ║         Simple and Fast Graph-Enhanced RAG System                        ║
 ║                                                                           ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 ```
 
-> **🔱 Fork Project** | This is an enterprise-ready fork of [LightRAG](https://github.com/HKUDS/LightRAG) by [Raphaël MANSUY](https://www.elitizon.com/).
->
-> **Goal**: Create an enterprise-ready version of LightRAG with production-grade features.
->
-> **First Enterprise Feature**: ✅ Multi-tenancy support with RBAC, tenant isolation, and knowledge base management.
+> **New Feature**: Multi-tenancy support with RBAC, tenant isolation, and knowledge base management.
 
 ---
 
@@ -214,14 +209,9 @@ Tenant A          Tenant B          Tenant C
 
 ## Resources
 
-### Enterprise Fork
-- **GitHub (Enterprise)**: https://github.com/raphaelmansuy/LightRAG
-- **Author**: [Raphaël MANSUY](https://www.elitizon.com/) - Elitizon
-- **Issues**: https://github.com/raphaelmansuy/LightRAG/issues
-
-### Original Project
-- **GitHub (Original)**: https://github.com/HKUDS/LightRAG
+- **GitHub**: https://github.com/HKUDS/LightRAG
 - **PyPI**: https://pypi.org/project/lightrag-hku/
+- **Issues**: https://github.com/HKUDS/LightRAG/issues
 
 ---
 
@@ -277,6 +267,6 @@ Tenant A          Tenant B          Tenant C
 
 ---
 
-*Original LightRAG built with ❤️ by [HKUDS](https://github.com/HKUDS)*
+*Built with ❤️ by [HKUDS](https://github.com/HKUDS)*
 
-*Enterprise Edition maintained by [Raphaël MANSUY](https://www.elitizon.com/) @ Elitizon*
+*Multi-tenant feature contributed by [Raphaël MANSUY](https://www.elitizon.com/)*

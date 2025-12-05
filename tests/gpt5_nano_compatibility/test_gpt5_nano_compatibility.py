@@ -34,7 +34,7 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
-from lightrag.llm.openai import (
+from lightrag.llm.openai import (  # noqa: E402
     openai_complete_if_cache,
     openai_embed,
     _normalize_openai_kwargs_for_model,

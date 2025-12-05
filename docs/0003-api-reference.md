@@ -2,7 +2,7 @@
 
 > Complete REST API documentation for LightRAG Server
 
-**Version**: 1.4.9.1 | **Base URL**: `http://localhost:9621`
+**Version**: 1.4.9.2 | **Base URL**: `http://localhost:9621`
 
 ---
 
@@ -250,12 +250,12 @@ Authorization: Bearer <token>
 
 ---
 
-### POST `/documents/file`
+### POST `/documents/upload`
 
 Upload a file for processing.
 
 ```http
-POST /documents/file
+POST /documents/upload
 Content-Type: multipart/form-data
 Authorization: Bearer <token>
 ```
@@ -275,18 +275,6 @@ Authorization: Bearer <token>
   "filename": "document.pdf",
   "track_id": "track_20251204_123456_xyz"
 }
-```
-
----
-
-### POST `/documents/files`
-
-Upload multiple files for processing.
-
-```http
-POST /documents/files
-Content-Type: multipart/form-data
-Authorization: Bearer <token>
 ```
 
 ---
@@ -619,7 +607,7 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "version": "1.4.9.1",
+  "version": "1.4.9.2",
   "storage_status": "initialized",
   "llm_status": "connected",
   "embedding_status": "connected"
@@ -823,4 +811,4 @@ Interactive API documentation available at:
 
 ---
 
-**Version**: 1.4.9.1 | **License**: MIT
+**Version**: 1.4.9.2 | **License**: MIT
