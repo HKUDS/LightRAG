@@ -1939,27 +1939,36 @@ class LightRAG:
                             # Record processing end time for failed case
                             processing_end_time = int(time.time())
 
-                            # Update document status to failed
-                            await self.doc_status.upsert(
-                                {
-                                    doc_id: {
-                                        "status": DocStatus.FAILED,
-                                        "error_msg": str(e),
-                                        "content_summary": status_doc.content_summary,
-                                        "content_length": status_doc.content_length,
-                                        "created_at": status_doc.created_at,
-                                        "updated_at": datetime.now(
-                                            timezone.utc
-                                        ).isoformat(),
-                                        "file_path": file_path,
-                                        "track_id": status_doc.track_id,  # Preserve existing track_id
-                                        "metadata": {
-                                            "processing_start_time": processing_start_time,
-                                            "processing_end_time": processing_end_time,
-                                        },
+                            # Update document status to failed - wrapped in try/except to ensure we log 
+                            # even if the status update fails (e.g., DB connection lost)
+                            try:
+                                await self.doc_status.upsert(
+                                    {
+                                        doc_id: {
+                                            "status": DocStatus.FAILED,
+                                            "error_msg": str(e),
+                                            "content_summary": status_doc.content_summary,
+                                            "content_length": status_doc.content_length,
+                                            "created_at": status_doc.created_at,
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
+                                            "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "metadata": {
+                                                "processing_start_time": processing_start_time,
+                                                "processing_end_time": processing_end_time,
+                                            },
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            except Exception as status_update_error:
+                                # Critical: log that we couldn't update the status so the document might be stuck
+                                logger.critical(
+                                    f"CRITICAL: Failed to update document {doc_id} status to FAILED after error. "
+                                    f"Document may be stuck in PROCESSING state. "
+                                    f"Original error: {e}, Status update error: {status_update_error}"
+                                )
 
                         # Concurrency is controlled by keyed lock for individual entities and relationships
                         if file_extraction_stage_ok:

@@ -24,6 +24,7 @@ import {
   scanNewDocuments,
   getDocumentsPaginated,
   getPipelineStatus,
+  resetDocumentStatus,
   DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
@@ -1142,6 +1143,42 @@ export default function DocumentManager() {
     setPagination(prev => ({ ...prev, page: newPage }));
   }, [statusFilter, pagination.page, pageByStatus]);
 
+  // State for reset operation
+  const [isResetting, setIsResetting] = useState(false)
+
+  // Handle reset document status to pending for retry
+  const handleResetToPending = useCallback(async () => {
+    if (selectedDocIds.length === 0) return
+    
+    setIsResetting(true)
+    try {
+      const response = await resetDocumentStatus({
+        doc_ids: selectedDocIds,
+        target_status: 'pending'
+      })
+      
+      if (response.status === 'success') {
+        toast.success(t('documentPanel.documentManager.resetSuccess', { count: response.reset_count }))
+        setSelectedDocIds([])
+        // Refresh documents
+        startPollingInterval(500)
+      } else if (response.status === 'partial') {
+        toast.warning(t('documentPanel.documentManager.resetPartial', { 
+          count: response.reset_count, 
+          failed: response.failed_ids.length 
+        }))
+        setSelectedDocIds([])
+        startPollingInterval(500)
+      } else {
+        toast.error(t('documentPanel.documentManager.resetFailed'))
+      }
+    } catch (err) {
+      toast.error(t('documentPanel.documentManager.errors.resetFailed', { error: errorMessage(err) }))
+    } finally {
+      setIsResetting(false)
+    }
+  }, [selectedDocIds, t, startPollingInterval])
+
   // Handle documents deleted callback
   const handleDocumentsDeleted = useCallback(async () => {
     setSelectedDocIds([])
@@ -1377,10 +1414,27 @@ export default function DocumentManager() {
 
           <div className="flex gap-2">
             {isSelectionMode && (
-              <DeleteDocumentsDialog
-                selectedDocIds={selectedDocIds}
-                onDocumentsDeleted={handleDocumentsDeleted}
-              />
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResetToPending}
+                  disabled={isResetting}
+                  side="bottom"
+                  tooltip={t('documentPanel.documentManager.resetToPending')}
+                >
+                  {isResetting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcwIcon className="h-4 w-4" />
+                  )}
+                  {t('documentPanel.documentManager.retry')}
+                </Button>
+                <DeleteDocumentsDialog
+                  selectedDocIds={selectedDocIds}
+                  onDocumentsDeleted={handleDocumentsDeleted}
+                />
+              </>
             )}
             {isSelectionMode && hasCurrentPageSelection ? (
               (() => {

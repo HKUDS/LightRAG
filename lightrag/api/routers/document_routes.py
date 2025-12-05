@@ -433,6 +433,64 @@ class DeleteRelationRequest(BaseModel):
         return entity_name.strip()
 
 
+class ResetDocumentStatusRequest(BaseModel):
+    """Request model for resetting document status to PENDING for retry.
+    
+    Attributes:
+        doc_ids: List of document IDs to reset
+        target_status: The status to reset documents to (default: PENDING)
+    """
+    doc_ids: List[str] = Field(..., description="The IDs of the documents to reset.")
+    target_status: Literal["pending", "failed"] = Field(
+        default="pending",
+        description="Target status to set. Use 'pending' for retry, 'failed' to mark as failed."
+    )
+
+    @field_validator("doc_ids", mode="after")
+    @classmethod
+    def validate_doc_ids(cls, doc_ids: List[str]) -> List[str]:
+        if not doc_ids:
+            raise ValueError("Document IDs list cannot be empty")
+        validated_ids = []
+        for doc_id in doc_ids:
+            if not doc_id or not doc_id.strip():
+                raise ValueError("Document ID cannot be empty")
+            validated_ids.append(doc_id.strip())
+        if len(validated_ids) != len(set(validated_ids)):
+            raise ValueError("Document IDs must be unique")
+        return validated_ids
+
+
+class ResetDocumentStatusResponse(BaseModel):
+    """Response model for reset document status operation.
+    
+    Attributes:
+        status: Status of the operation
+        message: Human-readable message
+        reset_count: Number of documents successfully reset
+        failed_ids: List of document IDs that failed to reset
+    """
+    status: Literal["success", "partial", "failed"] = Field(
+        description="Status of the reset operation"
+    )
+    message: str = Field(description="Human-readable message describing the operation")
+    reset_count: int = Field(description="Number of documents successfully reset")
+    failed_ids: List[str] = Field(
+        default_factory=list,
+        description="List of document IDs that failed to reset"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "Successfully reset 2 document(s) to pending status",
+                "reset_count": 2,
+                "failed_ids": []
+            }
+        }
+
+
 class DocStatusResponse(BaseModel):
     id: str = Field(description="Document identifier")
     content_summary: str = Field(description="Summary of document content")
@@ -3166,6 +3224,100 @@ def create_document_routes(
 
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/reset_status",
+        response_model=ResetDocumentStatusResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def reset_document_status(
+        request: ResetDocumentStatusRequest,
+        tenant_rag: LightRAG = Depends(get_tenant_rag)
+    ):
+        """
+        Reset document status to allow reprocessing.
+
+        This endpoint allows resetting document status from any state to either:
+        - PENDING: For documents you want to retry processing
+        - FAILED: For documents stuck in PROCESSING that you want to mark as failed
+
+        This is useful for:
+        - Recovering documents stuck in PROCESSING state after server crashes
+        - Retrying failed documents after fixing the underlying issue
+        - Manually marking documents as failed for cleanup
+
+        Args:
+            request: ResetDocumentStatusRequest containing doc_ids and target_status
+            tenant_rag: Tenant-specific RAG instance (injected dependency)
+
+        Returns:
+            ResetDocumentStatusResponse: Response with status, message, and counts
+
+        Raises:
+            HTTPException: If an error occurs while resetting status (500).
+        """
+        from datetime import datetime, timezone
+        
+        try:
+            reset_count = 0
+            failed_ids = []
+            target_status = DocStatus.PENDING if request.target_status == "pending" else DocStatus.FAILED
+            
+            for doc_id in request.doc_ids:
+                try:
+                    # Get current document status
+                    current_status = await tenant_rag.doc_status.get_by_id(doc_id)
+                    
+                    if current_status is None:
+                        logger.warning(f"Document {doc_id} not found in doc_status storage")
+                        failed_ids.append(doc_id)
+                        continue
+                    
+                    # Update status - current_status is a dict, not an object
+                    updated_data = {
+                        doc_id: {
+                            "status": target_status,
+                            "content_summary": current_status.get("content_summary", ""),
+                            "content_length": current_status.get("content_length", 0),
+                            "created_at": current_status.get("created_at"),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "file_path": current_status.get("file_path", ""),
+                            "track_id": current_status.get("track_id"),
+                            "chunks_count": current_status.get("chunks_count"),
+                            "error_msg": None if target_status == DocStatus.PENDING else f"Manually reset to {target_status.value}",
+                        }
+                    }
+                    
+                    await tenant_rag.doc_status.upsert(updated_data)
+                    reset_count += 1
+                    logger.info(f"Reset document {doc_id} status to {target_status.value}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to reset document {doc_id}: {e}")
+                    failed_ids.append(doc_id)
+            
+            # Determine overall status
+            if reset_count == len(request.doc_ids):
+                status = "success"
+                message = f"Successfully reset {reset_count} document(s) to {request.target_status} status"
+            elif reset_count > 0:
+                status = "partial"
+                message = f"Reset {reset_count} of {len(request.doc_ids)} documents. {len(failed_ids)} failed."
+            else:
+                status = "failed"
+                message = "Failed to reset any documents. Check document IDs."
+            
+            return ResetDocumentStatusResponse(
+                status=status,
+                message=message,
+                reset_count=reset_count,
+                failed_ids=failed_ids
+            )
+            
+        except Exception as e:
+            logger.error(f"Error resetting document status: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

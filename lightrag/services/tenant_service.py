@@ -75,12 +75,17 @@ class TenantService:
             except Exception as e:
                 logger.error(f"Failed to insert tenant into PostgreSQL: {e}")
                 raise
-        
-        # Store tenant metadata in KV storage
-        tenant_data = tenant.to_dict()
-        await self.kv_storage.upsert({
-            f"{self.tenant_namespace}:{tenant.tenant_id}": tenant_data
-        })
+        else:
+            # Fallback: Store tenant metadata in KV storage only if no PostgreSQL DB
+            # Note: PGKVStorage doesn't support custom namespaces like __tenants__
+            # so we skip this when PostgreSQL is available (data is already in tenants table)
+            try:
+                tenant_data = tenant.to_dict()
+                await self.kv_storage.upsert({
+                    f"{self.tenant_namespace}:{tenant.tenant_id}": tenant_data
+                })
+            except Exception as e:
+                logger.warning(f"Could not store tenant in KV storage (non-critical): {e}")
         
         logger.info(f"Created tenant: {tenant.tenant_id} ({tenant_name})")
         return tenant
@@ -577,11 +582,32 @@ class TenantService:
         
         tenant.updated_at = datetime.utcnow()
         
-        # Store updated tenant
-        tenant_data = tenant.to_dict()
-        await self.kv_storage.upsert({
-            f"{self.tenant_namespace}:{tenant_id}": tenant_data
-        })
+        # Update in PostgreSQL if available
+        if hasattr(self.kv_storage, 'db') and self.kv_storage.db is not None:
+            try:
+                import json
+                metadata_json = json.dumps(tenant.metadata) if tenant.metadata else '{}'
+                await self.kv_storage.db.query(
+                    """
+                    UPDATE tenants 
+                    SET name = $2, description = $3, metadata = $4::jsonb, updated_at = NOW()
+                    WHERE tenant_id = $1
+                    """,
+                    [tenant_id, tenant.tenant_name, tenant.description or "", metadata_json]
+                )
+                logger.debug(f"Updated tenant {tenant_id} in PostgreSQL tenants table")
+            except Exception as e:
+                logger.error(f"Failed to update tenant in PostgreSQL: {e}")
+                raise
+        else:
+            # Fallback: Store updated tenant in KV storage
+            try:
+                tenant_data = tenant.to_dict()
+                await self.kv_storage.upsert({
+                    f"{self.tenant_namespace}:{tenant_id}": tenant_data
+                })
+            except Exception as e:
+                logger.warning(f"Could not update tenant in KV storage (non-critical): {e}")
         
         logger.info(f"Updated tenant: {tenant_id}")
         return tenant
@@ -832,11 +858,34 @@ class TenantService:
             created_by=created_by,
         )
         
-        # Store KB metadata
-        kb_data = kb.to_dict()
-        await self.kv_storage.upsert({
-            f"{self.kb_namespace}:{tenant_id}:{kb.kb_id}": kb_data
-        })
+        # Store KB in PostgreSQL if available
+        if hasattr(self.kv_storage, 'db') and self.kv_storage.db is not None:
+            try:
+                await self.kv_storage.db.query(
+                    """
+                    INSERT INTO knowledge_bases (kb_id, tenant_id, name, description, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, NOW(), NOW())
+                    ON CONFLICT (tenant_id, kb_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        description = EXCLUDED.description,
+                        updated_at = NOW()
+                    RETURNING kb_id
+                    """,
+                    [kb.kb_id, tenant_id, kb_name, description or ""]
+                )
+                logger.debug(f"Inserted KB {kb.kb_id} into PostgreSQL knowledge_bases table")
+            except Exception as e:
+                logger.error(f"Failed to insert KB into PostgreSQL: {e}")
+                raise
+        else:
+            # Fallback: Store KB metadata in KV storage
+            try:
+                kb_data = kb.to_dict()
+                await self.kv_storage.upsert({
+                    f"{self.kb_namespace}:{tenant_id}:{kb.kb_id}": kb_data
+                })
+            except Exception as e:
+                logger.warning(f"Could not store KB in KV storage (non-critical): {e}")
         
         # Update tenant KB count
         tenant.kb_count += 1
@@ -893,11 +942,30 @@ class TenantService:
         
         kb.updated_at = datetime.utcnow()
         
-        # Store updated KB
-        kb_data = kb.to_dict()
-        await self.kv_storage.upsert({
-            f"{self.kb_namespace}:{tenant_id}:{kb_id}": kb_data
-        })
+        # Update in PostgreSQL if available
+        if hasattr(self.kv_storage, 'db') and self.kv_storage.db is not None:
+            try:
+                await self.kv_storage.db.query(
+                    """
+                    UPDATE knowledge_bases 
+                    SET name = $3, description = $4, updated_at = NOW()
+                    WHERE tenant_id = $1 AND kb_id = $2
+                    """,
+                    [tenant_id, kb_id, kb.kb_name, kb.description or ""]
+                )
+                logger.debug(f"Updated KB {kb_id} in PostgreSQL knowledge_bases table")
+            except Exception as e:
+                logger.error(f"Failed to update KB in PostgreSQL: {e}")
+                raise
+        else:
+            # Fallback: Store updated KB in KV storage
+            try:
+                kb_data = kb.to_dict()
+                await self.kv_storage.upsert({
+                    f"{self.kb_namespace}:{tenant_id}:{kb_id}": kb_data
+                })
+            except Exception as e:
+                logger.warning(f"Could not update KB in KV storage (non-critical): {e}")
         
         logger.info(f"Updated KB: {kb_id} for tenant {tenant_id}")
         return kb
@@ -1143,6 +1211,16 @@ class TenantService:
             custom_metadata=config_data.get("custom_metadata", {}),
         )
         
+        # Helper to parse datetime that might be string or datetime object
+        def parse_datetime(val, default=None):
+            if val is None:
+                return default or datetime.utcnow()
+            if isinstance(val, datetime):
+                return val
+            if isinstance(val, str):
+                return datetime.fromisoformat(val)
+            return default or datetime.utcnow()
+        
         # Create and return tenant
         tenant = Tenant(
             tenant_id=data.get("tenant_id", ""),
@@ -1150,8 +1228,8 @@ class TenantService:
             description=data.get("description"),
             config=config,
             is_active=data.get("is_active", True),
-            created_at=datetime.fromisoformat(data.get("created_at")) if data.get("created_at") else datetime.utcnow(),
-            updated_at=datetime.fromisoformat(data.get("updated_at")) if data.get("updated_at") else datetime.utcnow(),
+            created_at=parse_datetime(data.get("created_at")),
+            updated_at=parse_datetime(data.get("updated_at")),
             created_by=data.get("created_by"),
             updated_by=data.get("updated_by"),
             metadata=data.get("metadata", {}),
@@ -1180,6 +1258,16 @@ class TenantService:
         config_data = data.get("config")
         config = KBConfig(**config_data) if config_data else None
         
+        # Helper to parse datetime that might be string or datetime object
+        def parse_datetime(val, default=None):
+            if val is None:
+                return default
+            if isinstance(val, datetime):
+                return val
+            if isinstance(val, str):
+                return datetime.fromisoformat(val)
+            return default
+        
         kb = KnowledgeBase(
             kb_id=data.get("kb_id", ""),
             tenant_id=data.get("tenant_id", ""),
@@ -1192,11 +1280,11 @@ class TenantService:
             relationship_count=data.get("relationship_count", 0),
             chunk_count=data.get("chunk_count", 0),
             storage_used_mb=data.get("storage_used_mb", 0.0),
-            last_indexed_at=datetime.fromisoformat(data.get("last_indexed_at")) if data.get("last_indexed_at") else None,
+            last_indexed_at=parse_datetime(data.get("last_indexed_at")),
             index_version=data.get("index_version", 1),
             config=config,
-            created_at=datetime.fromisoformat(data.get("created_at")) if data.get("created_at") else datetime.utcnow(),
-            updated_at=datetime.fromisoformat(data.get("updated_at")) if data.get("updated_at") else datetime.utcnow(),
+            created_at=parse_datetime(data.get("created_at"), datetime.utcnow()),
+            updated_at=parse_datetime(data.get("updated_at"), datetime.utcnow()),
             created_by=data.get("created_by"),
             updated_by=data.get("updated_by"),
             metadata=data.get("metadata", {}),

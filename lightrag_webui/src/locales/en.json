@@ -147,8 +147,14 @@
       "errors": {
         "loadFailed": "Failed to load documents\n{{error}}",
         "scanFailed": "Failed to scan documents\n{{error}}",
-        "scanProgressFailed": "Failed to get scan progress\n{{error}}"
+        "scanProgressFailed": "Failed to get scan progress\n{{error}}",
+        "resetFailed": "Failed to reset document status\n{{error}}"
       },
+      "retry": "Retry",
+      "resetToPending": "Reset selected documents to pending status for retry",
+      "resetSuccess": "Successfully reset {{count}} document(s) to pending status",
+      "resetPartial": "Reset {{count}} document(s), but {{failed}} failed",
+      "resetFailed": "Failed to reset any documents",
       "fileNameLabel": "File Name",
       "showButton": "Show",
       "hideButton": "Hide",

@@ -147,8 +147,14 @@
       "errors": {
         "loadFailed": "加载文档失败\n{{error}}",
         "scanFailed": "扫描文档失败\n{{error}}",
-        "scanProgressFailed": "获取扫描进度失败\n{{error}}"
+        "scanProgressFailed": "获取扫描进度失败\n{{error}}",
+        "resetFailed": "重置文档状态失败\n{{error}}"
       },
+      "retry": "重试",
+      "resetToPending": "将选中的文档重置为待处理状态以便重试",
+      "resetSuccess": "成功重置 {{count}} 个文档",
+      "resetPartial": "已重置 {{count}} 个文档，{{failed}} 个失败",
+      "resetFailed": "重置文档失败",
       "fileNameLabel": "文件名",
       "showButton": "显示",
       "hideButton": "隐藏",

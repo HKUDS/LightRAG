@@ -176,6 +176,18 @@ export type ReprocessFailedResponse = {
   track_id: string
 }
 
+export type ResetDocumentStatusRequest = {
+  doc_ids: string[]
+  target_status: 'pending' | 'failed'
+}
+
+export type ResetDocumentStatusResponse = {
+  status: 'success' | 'partial' | 'failed'
+  message: string
+  reset_count: number
+  failed_ids: string[]
+}
+
 export type DeleteDocResponse = {
   status: 'deletion_started' | 'busy' | 'not_allowed'
   message: string
@@ -329,6 +341,11 @@ export const scanNewDocuments = async (): Promise<ScanResponse> => {
 
 export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
   const response = await axiosInstance.post('/documents/reprocess_failed')
+  return response.data
+}
+
+export const resetDocumentStatus = async (request: ResetDocumentStatusRequest): Promise<ResetDocumentStatusResponse> => {
+  const response = await axiosInstance.post('/documents/reset_status', request)
   return response.data
 }
 

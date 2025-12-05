@@ -147,8 +147,14 @@
       "errors": {
         "loadFailed": "Échec du chargement des documents\n{{error}}",
         "scanFailed": "Échec de la numérisation des documents\n{{error}}",
-        "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}"
+        "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}",
+        "resetFailed": "Échec de la réinitialisation du statut\n{{error}}"
       },
+      "retry": "Réessayer",
+      "resetToPending": "Réinitialiser les documents sélectionnés en attente pour réessayer",
+      "resetSuccess": "{{count}} document(s) réinitialisé(s) avec succès",
+      "resetPartial": "{{count}} document(s) réinitialisé(s), mais {{failed}} ont échoué",
+      "resetFailed": "Échec de la réinitialisation des documents",
       "fileNameLabel": "Nom du fichier",
       "showButton": "Afficher",
       "hideButton": "Masquer",

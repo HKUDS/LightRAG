@@ -147,8 +147,14 @@
       "errors": {
         "loadFailed": "فشل تحميل المستندات\n{{error}}",
         "scanFailed": "فشل مسح المستندات\n{{error}}",
-        "scanProgressFailed": "فشل الحصول على تقدم المسح\n{{error}}"
+        "scanProgressFailed": "فشل الحصول على تقدم المسح\n{{error}}",
+        "resetFailed": "فشل إعادة تعيين حالة المستند\n{{error}}"
       },
+      "retry": "إعادة المحاولة",
+      "resetToPending": "إعادة تعيين المستندات المحددة إلى حالة الانتظار لإعادة المحاولة",
+      "resetSuccess": "تم إعادة تعيين {{count}} مستند(ات) بنجاح",
+      "resetPartial": "تم إعادة تعيين {{count}} مستند(ات)، فشل {{failed}}",
+      "resetFailed": "فشل إعادة تعيين المستندات",
       "fileNameLabel": "اسم الملف",
       "showButton": "عرض",
       "hideButton": "إخفاء",

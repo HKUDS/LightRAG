@@ -147,8 +147,14 @@
       "errors": {
         "loadFailed": "載入文件失敗\n{{error}}",
         "scanFailed": "掃描文件失敗\n{{error}}",
-        "scanProgressFailed": "取得掃描進度失敗\n{{error}}"
+        "scanProgressFailed": "取得掃描進度失敗\n{{error}}",
+        "resetFailed": "重置文件狀態失敗\n{{error}}"
       },
+      "retry": "重試",
+      "resetToPending": "將選取的文件重置為待處理狀態以便重試",
+      "resetSuccess": "成功重置 {{count}} 個文件",
+      "resetPartial": "已重置 {{count}} 個文件，{{failed}} 個失敗",
+      "resetFailed": "重置文件失敗",
       "fileNameLabel": "檔案名稱",
       "showButton": "顯示",
       "hideButton": "隱藏",
