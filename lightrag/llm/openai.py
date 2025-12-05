@@ -592,6 +592,39 @@ async def openai_complete_if_cache(
             await openai_async_client.close()
 
 
+def _normalize_openai_kwargs_for_model(model: str, kwargs: dict[str, Any]) -> None:
+    """Normalize OpenAI kwargs for specific models.
+
+    For gpt-5 family models (e.g., gpt-5-nano) we convert legacy `max_tokens`
+    to `max_completion_tokens` with a small safety buffer and strip
+    unsupported parameters such as `temperature`.
+
+    This is an in-place operation on the provided kwargs dict.
+    """
+    name = (model or "").lower()
+
+    # Work on gpt-5 family which expects `max_completion_tokens` instead of `max_tokens`
+    if name.startswith("gpt-5"):
+        # If explicit max_completion_tokens present keep it, otherwise convert from max_tokens
+        if "max_completion_tokens" not in kwargs and "max_tokens" in kwargs:
+            try:
+                orig = int(kwargs.get("max_tokens", 0))
+            except Exception:
+                orig = 0
+
+            # Add a small buffer (5%) + 1 token to be safe
+            buffered = int(orig * 1.05) + 1 if orig > 0 else 0
+            # Ensure we never decrease the value
+            kwargs["max_completion_tokens"] = max(buffered, orig)
+
+        # Remove legacy param
+        kwargs.pop("max_tokens", None)
+
+        # gpt-5 family does not use `temperature` parameter the same way; remove it
+        kwargs.pop("temperature", None)
+
+
+
 async def openai_complete(
     prompt,
     system_prompt=None,

@@ -296,7 +296,10 @@ def parse_args() -> argparse.Namespace:
     elif os.environ.get("LLM_BINDING") == "gemini":
         GeminiLLMOptions.add_args(parser)
 
-    args = parser.parse_args()
+    # Use parse_known_args so unknown arguments (e.g. pytest's CLI flags)
+    # do not cause a SystemExit during test collection or when importing
+    # this module in other tooling. Unknown args will be ignored.
+    args, _ = parser.parse_known_args()
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
