@@ -123,81 +123,58 @@ class TestTenantServiceOptionalUsage:
     @pytest.mark.asyncio
     async def test_tenant_service_initialization(self):
         """Test that TenantService initializes without errors."""
+        from unittest.mock import AsyncMock
         from lightrag.services.tenant_service import TenantService
         from lightrag.base import BaseKVStorage
 
-        # Provide a minimal in-memory KV storage implementation for tests
-        class FakeKV(BaseKVStorage):
-            async def index_done_callback(self) -> None:
-                return None
-
-            async def drop(self) -> dict[str, str]:
-                return {"status": "success", "message": "dropped"}
-
-            async def get_by_id(self, id: str):
-                return None
-
-            async def get_by_ids(self, ids: list[str]):
-                return []
-
-            async def filter_keys(self, keys: set[str]) -> set[str]:
-                return set()
-
-            async def upsert(self, data: dict[str, dict]):
-                return None
-
-            async def delete(self, ids: list[str]) -> None:
-                return None
+        # Use AsyncMock with spec for minimal test implementation
+        mock_storage = AsyncMock(spec=BaseKVStorage)
+        mock_storage.upsert = AsyncMock()
+        mock_storage.get_by_id = AsyncMock(return_value=None)
+        mock_storage.get_by_ids = AsyncMock(return_value=[])
+        mock_storage.filter_keys = AsyncMock(return_value=set())
+        mock_storage.delete = AsyncMock()
+        mock_storage.is_empty = AsyncMock(return_value=True)
 
         # Should initialize with a KV storage instance
-        service = TenantService(
-            FakeKV(namespace="kv", workspace="kv", global_config={})
-        )
+        service = TenantService(mock_storage)
         assert service is not None
 
     @pytest.mark.asyncio
     async def test_tenant_service_crud_operations(self):
         """Test basic CRUD operations on TenantService."""
+        from unittest.mock import AsyncMock
         from lightrag.services.tenant_service import TenantService
-
         from lightrag.base import BaseKVStorage
 
-        class FakeKV(BaseKVStorage):
-            def __init__(self, namespace, workspace, global_config):
-                super().__init__(
-                    namespace=namespace,
-                    workspace=workspace,
-                    global_config=global_config,
-                )
-                self.store: dict[str, dict] = {}
+        # Create a mock storage with an in-memory store
+        mock_storage = AsyncMock(spec=BaseKVStorage)
+        store: dict[str, dict] = {}
 
-            async def index_done_callback(self) -> None:
-                return None
+        async def mock_upsert(data: dict[str, dict]):
+            for k, v in data.items():
+                store[k] = v
 
-            async def drop(self) -> dict[str, str]:
-                self.store.clear()
-                return {"status": "success", "message": "dropped"}
+        async def mock_get_by_id(id: str):
+            return store.get(id)
 
-            async def get_by_id(self, id: str):
-                return self.store.get(id)
+        async def mock_get_by_ids(ids: list[str]):
+            return [store.get(i) for i in ids if i in store]
 
-            async def get_by_ids(self, ids: list[str]):
-                return [self.store.get(i) for i in ids if i in self.store]
+        async def mock_delete(ids: list[str]):
+            for i in ids:
+                store.pop(i, None)
 
-            async def filter_keys(self, keys: set[str]) -> set[str]:
-                return {k for k in keys if k in self.store}
-
-            async def upsert(self, data: dict[str, dict]):
-                for k, v in data.items():
-                    self.store[k] = v
-
-            async def delete(self, ids: list[str]) -> None:
-                for i in ids:
-                    self.store.pop(i, None)
-
-        service = TenantService(
-            FakeKV(namespace="kv", workspace="kv", global_config={})
+        mock_storage.upsert = mock_upsert
+        mock_storage.get_by_id = mock_get_by_id
+        mock_storage.get_by_ids = mock_get_by_ids
+        mock_storage.delete = mock_delete
+        mock_storage.filter_keys = AsyncMock(
+            side_effect=lambda keys: {k for k in keys if k in store}
         )
+        mock_storage.is_empty = AsyncMock(side_effect=lambda: len(store) == 0)
+
+        service = TenantService(mock_storage)
 
         # Create a tenant
         tenant = await service.create_tenant(
@@ -235,6 +212,7 @@ class TestMultiTenantOptionalness:
 
     def test_tenant_routes_are_isolated(self):
         """Test that tenant routes don't interfere with existing routes."""
+        from unittest.mock import AsyncMock
         from lightrag.api.routers.tenant_routes import create_tenant_routes
         from lightrag.services.tenant_service import TenantService
         from fastapi import FastAPI
@@ -243,31 +221,16 @@ class TestMultiTenantOptionalness:
         app = FastAPI()
         from lightrag.base import BaseKVStorage
 
-        class FakeKV(BaseKVStorage):
-            async def index_done_callback(self) -> None:
-                return None
+        # Use AsyncMock with spec for minimal test implementation
+        mock_storage = AsyncMock(spec=BaseKVStorage)
+        mock_storage.upsert = AsyncMock()
+        mock_storage.get_by_id = AsyncMock(return_value=None)
+        mock_storage.get_by_ids = AsyncMock(return_value=[])
+        mock_storage.filter_keys = AsyncMock(return_value=set())
+        mock_storage.delete = AsyncMock()
+        mock_storage.is_empty = AsyncMock(return_value=True)
 
-            async def drop(self) -> dict[str, str]:
-                return {"status": "success", "message": "dropped"}
-
-            async def get_by_id(self, id: str):
-                return None
-
-            async def get_by_ids(self, ids: list[str]):
-                return []
-
-            async def filter_keys(self, keys: set[str]) -> set[str]:
-                return set()
-
-            async def upsert(self, data: dict[str, dict]):
-                return None
-
-            async def delete(self, ids: list[str]) -> None:
-                return None
-
-        service = TenantService(
-            FakeKV(namespace="kv", workspace="kv", global_config={})
-        )
+        service = TenantService(mock_storage)
 
         # Register tenant routes
         router = create_tenant_routes(service)

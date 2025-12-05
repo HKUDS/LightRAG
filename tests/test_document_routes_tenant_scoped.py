@@ -11,6 +11,9 @@ Key test scenarios:
 3. Document listing via /documents endpoint (tenant-scoped)
 4. Document status tracking via /track_status endpoint (tenant-scoped)
 5. Multi-tenant isolation: documents in Tenant A are not visible in Tenant B
+
+NOTE: These tests require multi-tenant mode to be enabled and properly configured.
+They should be run as part of integration testing with proper backend setup.
 """
 
 import pytest
@@ -199,6 +202,7 @@ def client(app_with_document_routes):
 # ============================================================================
 
 
+@pytest.mark.integration
 class TestDocumentRoutesUseTenantRAG:
     """Test that document routes properly use tenant-scoped RAG instances."""
 
@@ -281,6 +285,7 @@ class TestDocumentRoutesUseTenantRAG:
         mock_rag_instances["tenant-a"].aget_docs_by_track_id.assert_called()
 
 
+@pytest.mark.integration
 class TestMultiTenantIsolation:
     """Test that documents from different tenants are isolated from each other."""
 
@@ -339,6 +344,7 @@ class TestMultiTenantIsolation:
         )
 
 
+@pytest.mark.integration
 class TestDocumentEndpointFunctionality:
     """Test basic functionality of document endpoints."""
 
