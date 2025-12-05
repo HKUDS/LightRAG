@@ -235,7 +235,31 @@ init-db:
 	@echo "$(BLUE)🗄️  Initializing PostgreSQL database...$(NC)"
 	@echo ""
 	@echo "$(YELLOW)→ Waiting for PostgreSQL to be ready...$(NC)"
-	@sleep 5
+	# Wait for the postgres container to be running and for pg_isready to succeed.
+	# Try for up to ~60 seconds (30 loops * 2s sleep) — prevents race where compose
+	# reports started but the DB is not yet accepting connections.
+	@TRIES=30; \
+	while [ $$TRIES -gt 0 ]; do \
+		# Check container exists in compose project
+		CID=$$(docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) ps -q postgres 2>/dev/null || echo ""); \
+		if [ -z "$$CID" ]; then \
+			echo "$(YELLOW)→ Postgres service not found in compose; trying to start it...$(NC)"; \
+			docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) up -d postgres >/dev/null 2>&1 || true; \
+		fi; \
+		# Check readiness via pg_isready (silently fail until ready)
+		if docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) exec -T postgres pg_isready -U $${POSTGRES_USER:-lightrag} -d $${POSTGRES_DATABASE:-lightrag_multitenant} >/dev/null 2>&1; then \
+			echo "$(GREEN)✓ Postgres is ready$(NC)"; \
+			break; \
+		else \
+			echo "$(YELLOW)→ Waiting for Postgres to accept connections... ($$TRIES remaining)$(NC)"; \
+			sleep 2; \
+			TRIES=$$((TRIES-1)); \
+		fi; \
+	done; \
+	if [ $$TRIES -eq 0 ]; then \
+		echo "$(RED)✗ Postgres did not become ready in time — aborting init-db$(NC)"; \
+		exit 1; \
+	fi
 	@echo ""
 	@echo "$(YELLOW)→ Creating database schema and multi-tenant support...$(NC)"
 	docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) exec -T postgres psql -U lightrag -d postgres -c "CREATE DATABASE lightrag_multitenant;" 2>/dev/null || true
@@ -298,6 +322,20 @@ db-reset:
 	@read -p "Are you sure? Type 'yes' to confirm: " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
 		echo "$(YELLOW)Resetting database...$(NC)"; \
+		# Ensure postgres container exists and is accepting connections before running psql commands
+		CID=$$(docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) ps -q postgres 2>/dev/null || echo ""); \
+		if [ -z "$$CID" ]; then \
+			echo "$(YELLOW)→ Postgres service not found; starting postgres...$(NC)"; \
+			docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) up -d postgres >/dev/null 2>&1 || true; \
+		fi; \
+		# Wait for readiness (short loop)
+		TRIES=15; \
+		while [ $$TRIES -gt 0 ]; do \
+			if docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) exec -T postgres pg_isready -U $${POSTGRES_USER:-lightrag} -d $${POSTGRES_DATABASE:-lightrag_multitenant} >/dev/null 2>&1; then \
+				break; \
+			fi; \
+			sleep 1; TRIES=$$((TRIES-1)); \
+		done; \
 		echo "$(YELLOW)→ Terminating existing connections...$(NC)"; \
 		docker compose -f $(DOCKER_COMPOSE_FILE) -p $(PROJECT_NAME) exec -T postgres psql -U lightrag -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'lightrag_multitenant' AND pid <> pg_backend_pid();" 2>/dev/null || true; \
 		echo "$(YELLOW)→ Dropping database...$(NC)"; \

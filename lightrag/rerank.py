@@ -48,7 +48,7 @@ def chunk_documents_for_rerank(
             f"overlap_tokens ({original_overlap}) must be less than max_tokens ({max_tokens}). "
             f"Clamping to {overlap_tokens} to prevent infinite loop."
         )
-    
+
     try:
         from .utils import TiktokenTokenizer
 

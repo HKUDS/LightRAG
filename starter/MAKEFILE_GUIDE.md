@@ -534,8 +534,8 @@ EXPLAIN SELECT * FROM documents WHERE tenant_id='acme-corp' AND kb_id='kb-prod';
 ANALYZE;
 
 # Check table sizes
-SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) 
-FROM pg_tables 
+SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
+FROM pg_tables
 ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 ```
 
@@ -709,6 +709,6 @@ make help
 
 ---
 
-**Last Updated**: November 20, 2025  
-**Makefile Version**: 1.0  
+**Last Updated**: November 20, 2025
+**Makefile Version**: 1.0
 **Status**: Production Ready

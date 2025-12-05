@@ -16,4 +16,3 @@ Task logs - 2025-12-04 12:18
 
 - Lessons/insights:
   - Hiding tenant in headers improves security but requires explicit design for sharing/bookmark features (server-side snapshots) and careful sessionStorage scoping.
-

@@ -366,23 +366,23 @@ export const queryTextStream = async (
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
-  
+
   // Get tenant context from localStorage
   const selectedTenantJson = localStorage.getItem('SELECTED_TENANT');
   const selectedKBJson = localStorage.getItem('SELECTED_KB');
-  
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/x-ndjson',
   };
-  
+
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
   }
-  
+
   // Add tenant context headers
   if (selectedTenantJson) {
     try {
@@ -398,7 +398,7 @@ export const queryTextStream = async (
   } else {
     console.warn('[queryTextStream] No SELECTED_TENANT in localStorage');
   }
-  
+
   if (selectedKBJson) {
     try {
       const selectedKB = JSON.parse(selectedKBJson);

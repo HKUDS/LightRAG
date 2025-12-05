@@ -10,11 +10,11 @@ const webuiPrefix = '/webui/'
 export default defineConfig(({ mode }) => {
   // Load env file based on `mode` in the current working directory.
   const env = loadEnv(mode, process.cwd(), '')
-  
+
   // Backend URL for API proxy (default to local dev server)
   // Use 127.0.0.1 instead of localhost to avoid IPv6 resolution issues
   const backendUrl = env.VITE_BACKEND_URL || 'http://127.0.0.1:9621'
-  
+
   return {
     plugins: [react(), tailwindcss()],
     resolve: {

@@ -118,7 +118,7 @@ pip install lightrag  # for integration tests
 python test_gpt5_nano_compatibility.py
 
 # Or run all tests
-for test in test_*.py; do 
+for test in test_*.py; do
     echo "Running $test..."
     python "$test"
 done
@@ -138,7 +138,7 @@ python -m pytest tests/gpt5_nano_compatibility/ -v
 ### Problem: Parameter Incompatibility
 gpt-5-nano requires different parameter names and constraints than other OpenAI models.
 
-**Issue:** 
+**Issue:**
 - Other models use `max_tokens`
 - gpt-5-nano requires `max_completion_tokens`
 

@@ -337,18 +337,18 @@ persistence:
 env:
   HOST: 0.0.0.0
   PORT: 9621
-  
+
   # LLM Configuration
   LLM_BINDING: openai
   LLM_MODEL: gpt-4o-mini
   LLM_BINDING_HOST: ""
   LLM_BINDING_API_KEY: ""
-  
+
   # Embedding Configuration
   EMBEDDING_BINDING: openai
   EMBEDDING_MODEL: text-embedding-ada-002
   EMBEDDING_DIM: 1536
-  
+
   # Storage Configuration (Production)
   LIGHTRAG_KV_STORAGE: PGKVStorage
   LIGHTRAG_VECTOR_STORAGE: PGVectorStorage

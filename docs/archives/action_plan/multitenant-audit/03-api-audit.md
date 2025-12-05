@@ -1,6 +1,6 @@
 # REST API Multi-Tenant Audit
 
-**Date:** November 29, 2025  
+**Date:** November 29, 2025
 **Status:** In Progress
 
 ---
@@ -181,7 +181,7 @@ async def verify_user_access(
     # TEMPORARY: Admin bypass
     if user_id.lower() == "admin":
         return True  # ⚠️ Security concern!
-    
+
     # Check PostgreSQL membership table
     result = await self.kv_storage.db.query(
         "SELECT has_tenant_access($1, $2, $3) as has_access",
@@ -197,7 +197,7 @@ The admin bypass (`if user_id.lower() == "admin": return True`) is marked as tem
 ## Detailed Findings
 
 ### Finding API-001: Optional Tenant Context Allows Global RAG Access
-**Severity:** High  
+**Severity:** High
 **Location:** `document_routes.py`, `query_routes.py`
 
 **Description:**
@@ -212,7 +212,7 @@ Using `get_tenant_context_optional` allows requests without `X-Tenant-ID` header
 - Add global RAG deprecation warning
 
 ### Finding API-002: User ID Optional in RAG Manager
-**Severity:** Medium  
+**Severity:** Medium
 **Location:** `tenant_rag_manager.py`
 
 **Description:**
@@ -232,7 +232,7 @@ This allows bypassing access control for backward compatibility.
 - Audit all callers to ensure user_id is passed
 
 ### Finding API-003: Admin User Bypass
-**Severity:** High  
+**Severity:** High
 **Location:** `services/tenant_service.py`
 
 **Description:**
@@ -248,7 +248,7 @@ if user_id.lower() == "admin":
 - Log admin access attempts
 
 ### Finding API-004: Default KB Fallback
-**Severity:** Low  
+**Severity:** Low
 **Location:** `dependencies.py`
 
 **Description:**
@@ -334,7 +334,7 @@ curl -X GET http://localhost:9621/documents \
   -H "Authorization: Bearer <token>"
 ```
 
-**Expected with get_tenant_context:** HTTP 400 (Missing tenant_id)  
+**Expected with get_tenant_context:** HTTP 400 (Missing tenant_id)
 **Expected with get_tenant_context_optional:** Uses global RAG (⚠️)
 
 ### Scenario API-T2: Cross-Tenant Access Prevention

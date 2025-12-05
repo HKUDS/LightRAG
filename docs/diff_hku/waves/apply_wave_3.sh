@@ -91,4 +91,3 @@ git cherry-pick -x af4d2a3d
 
 echo "Cherry-picking ef659a1e: Preserve column alignment in XLSX extraction with two-pass processing"
 git cherry-pick -x ef659a1e
-

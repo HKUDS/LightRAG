@@ -240,12 +240,12 @@ curl -X GET http://localhost:9621/api/endpoints
 
 ## 🔑 Key Points
 
-✅ **Production Ready**: Fully tested and verified  
-✅ **Multi-Tenant**: Complete workspace isolation  
-✅ **Fast Search**: Vector and full-text search capability  
-✅ **Graph Support**: Entity relationship management  
-✅ **Persistent**: All data saved across restarts  
-✅ **Monitored**: Health checks on all services  
+✅ **Production Ready**: Fully tested and verified
+✅ **Multi-Tenant**: Complete workspace isolation
+✅ **Fast Search**: Vector and full-text search capability
+✅ **Graph Support**: Entity relationship management
+✅ **Persistent**: All data saved across restarts
+✅ **Monitored**: Health checks on all services
 
 ## 🆘 Need Help?
 
@@ -262,7 +262,7 @@ curl -X GET http://localhost:9621/api/endpoints
 SELECT * FROM pg_indexes WHERE tablename = 'lightrag_vdb_chunks';
 
 -- Analyze query performance
-EXPLAIN ANALYZE SELECT * FROM lightrag_vdb_chunks 
+EXPLAIN ANALYZE SELECT * FROM lightrag_vdb_chunks
 WHERE vector <#> '[0,1,0]'::vector LIMIT 10;
 ```
 
@@ -278,6 +278,6 @@ WHERE vector <#> '[0,1,0]'::vector LIMIT 10;
 
 ---
 
-**Last Updated**: November 20, 2024  
-**Status**: ✅ Ready to Use  
+**Last Updated**: November 20, 2024
+**Status**: ✅ Ready to Use
 **Platform**: macOS/Linux/Windows (with Docker Desktop)

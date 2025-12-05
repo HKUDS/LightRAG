@@ -1,6 +1,6 @@
 # Web UI Multi-Tenant Audit
 
-**Date:** November 29, 2025  
+**Date:** November 29, 2025
 **Status:** In Progress
 
 ---
@@ -130,7 +130,7 @@ useEffect(() => {
 ## Detailed Findings
 
 ### Finding WUI-001: localStorage Security Concern
-**Severity:** Medium  
+**Severity:** Medium
 **Location:** `stores/tenant.ts`, `api/client.ts`
 
 **Description:**
@@ -145,7 +145,7 @@ Tenant context is stored in localStorage as plain JSON. This could:
 - Validate tenant context on each API call
 
 ### Finding WUI-002: Fallback to Default Tenant
-**Severity:** Low  
+**Severity:** Low
 **Location:** `api/tenant.ts`
 
 **Description:**
@@ -169,7 +169,7 @@ This could mask API errors and lead to unexpected behavior.
 - Log API failures for debugging
 
 ### Finding WUI-003: Missing Header Validation
-**Severity:** Low  
+**Severity:** Low
 **Location:** `api/client.ts`
 
 **Description:**

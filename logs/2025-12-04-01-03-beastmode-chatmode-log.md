@@ -6,4 +6,4 @@ Decisions:
 - Opted to group by feature area rather than enumerating all 746 commits inline.
 
 Next steps:
-- Offer to generate per-commit category CSV, or to create premerge/integration branch and attempt automated cherry-pick + tests. 
+- Offer to generate per-commit category CSV, or to create premerge/integration branch and attempt automated cherry-pick + tests.

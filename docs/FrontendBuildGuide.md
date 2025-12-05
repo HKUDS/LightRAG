@@ -205,10 +205,10 @@ cd lightrag_webui && bun run build
 ✅ **CI/CD**: Automatic build in GitHub Actions
 ✅ **Git**: Frontend build output never committed
 =======
-✅ **PyPI users**: No action needed, frontend included  
-✅ **Developers**: Use `pip install -e ".[api]"`, build frontend when needed  
-✅ **CI/CD**: Automatic build in GitHub Actions  
-✅ **Git**: Frontend build output never committed  
+✅ **PyPI users**: No action needed, frontend included
+✅ **Developers**: Use `pip install -e ".[api]"`, build frontend when needed
+✅ **CI/CD**: Automatic build in GitHub Actions
+✅ **Git**: Frontend build output never committed
 >>>>>>> be9e6d16 (Exclude Frontend Build Artifacts from Git Repository)
 
 For questions or issues, please open a GitHub issue.

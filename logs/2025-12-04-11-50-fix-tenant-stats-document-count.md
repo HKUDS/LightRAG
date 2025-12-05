@@ -25,27 +25,27 @@ Updated the SQL query to:
 
 ### Updated SQL Query
 ```sql
-SELECT 
-    t.tenant_id, 
-    t.name, 
-    t.description, 
-    t.created_at, 
+SELECT
+    t.tenant_id,
+    t.name,
+    t.description,
+    t.created_at,
     t.updated_at,
     COALESCE(kb_stats.kb_count, 0) as kb_count,
     COALESCE(doc_stats.doc_count, 0) as total_documents,
     COALESCE(doc_stats.total_size_bytes, 0) as total_size_bytes
 FROM tenants t
 LEFT JOIN (
-    SELECT tenant_id, COUNT(*) as kb_count 
-    FROM knowledge_bases 
+    SELECT tenant_id, COUNT(*) as kb_count
+    FROM knowledge_bases
     GROUP BY tenant_id
 ) kb_stats ON t.tenant_id = kb_stats.tenant_id
 LEFT JOIN (
-    SELECT 
+    SELECT
         SPLIT_PART(workspace, ':', 1) as tenant_id,
-        COUNT(*) as doc_count, 
+        COUNT(*) as doc_count,
         COALESCE(SUM(LENGTH(content)), 0) as total_size_bytes
-    FROM lightrag_doc_full 
+    FROM lightrag_doc_full
     GROUP BY SPLIT_PART(workspace, ':', 1)
 ) doc_stats ON t.tenant_id = doc_stats.tenant_id
 ORDER BY t.created_at DESC

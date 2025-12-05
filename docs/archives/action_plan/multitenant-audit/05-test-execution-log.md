@@ -1,6 +1,6 @@
 # Multi-Tenant Audit - Test Execution Log
 
-**Date:** November 29, 2025  
+**Date:** November 29, 2025
 **Status:** In Progress
 
 ---
@@ -52,7 +52,7 @@
 - Need to verify tenant context is consistently applied to all endpoints
 
 **Finding 2: Query Route Tenant Handling**
-- Location: `lightrag/api/routers/query_routes.py`  
+- Location: `lightrag/api/routers/query_routes.py`
 - The `get_tenant_rag()` dependency falls back to global RAG if no context
 - This could be a security issue if headers are missing
 

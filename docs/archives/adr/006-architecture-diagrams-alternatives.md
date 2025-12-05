@@ -495,6 +495,6 @@ The proposed **single instance, multi-tenant, multi-KB** architecture offers the
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-20  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-20
 **Related Files**: 001-multi-tenant-architecture-overview.md

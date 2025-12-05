@@ -192,7 +192,7 @@ rag = LightRAG(
     llm_model_func=ollama_model_complete,
     llm_model_name="llama3.2:3b",
     embedding_func=lambda texts: ollama_embed(
-        texts, 
+        texts,
         embed_model="nomic-embed-text"
     ),
 )
@@ -462,7 +462,7 @@ async def custom_embedding(texts: list[str]) -> np.ndarray:
     """
     Args:
         texts: List of strings to embed
-        
+
     Returns:
         np.ndarray: Shape (len(texts), embedding_dim)
     """
@@ -564,7 +564,7 @@ rag = LightRAG(
     },
     llm_model_max_async=4,                  # Concurrent LLM calls
     default_llm_timeout=180,                # Timeout (seconds)
-    
+
     # Caching
     enable_llm_cache=True,                  # Cache LLM responses
     enable_llm_cache_for_entity_extract=True,  # Cache extraction
@@ -615,7 +615,7 @@ EMBEDDING_TIMEOUT=30
 # LLM binding options
 --llm-binding openai|ollama|azure_openai|aws_bedrock|lollms
 
-# Embedding binding options  
+# Embedding binding options
 --embedding-binding openai|ollama|azure_openai|aws_bedrock|jina|lollms
 
 # Rerank binding options
@@ -640,14 +640,14 @@ EMBEDDING_TIMEOUT=30
 rag = LightRAG(
     # Use cost-effective model
     llm_model_func=gpt_4o_mini_complete,
-    
+
     # Enable aggressive caching
     enable_llm_cache=True,
     enable_llm_cache_for_entity_extract=True,
-    
+
     # Limit parallel processing
     llm_model_max_async=2,
-    
+
     # Use smaller chunks
     chunk_token_size=800,
 )
@@ -660,14 +660,14 @@ rag = LightRAG(
     # Use best model
     llm_model_func=gpt_4o_complete,
     llm_model_name="gpt-4o",
-    
+
     # More extraction attempts
     entity_extract_max_gleaning=2,
-    
+
     # Larger chunks for context
     chunk_token_size=1500,
     chunk_overlap_token_size=200,
-    
+
     # Enable reranking
     rerank_model_func=jina_rerank,
 )

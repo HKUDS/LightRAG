@@ -44,7 +44,7 @@ check_service() {
     local name=$1
     local port=$2
     local type=$3
-    
+
     if [ "$type" = "docker" ]; then
         local container=$4
         if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then

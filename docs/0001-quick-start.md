@@ -82,7 +82,7 @@ async def main():
     await rag.ainsert("Marie Curie was a physicist who discovered radium. "
                       "She was born in Poland and later moved to France. "
                       "She won the Nobel Prize in Physics in 1903.")
-    
+
     # Query with different modes
     result = await rag.aquery(
         "What did Marie Curie discover?",
@@ -268,13 +268,13 @@ from lightrag import LightRAG
 
 async def process_documents(folder_path: str):
     rag = LightRAG(working_dir="./rag_storage")
-    
+
     # Process all text files
     for file_path in Path(folder_path).glob("*.txt"):
         print(f"Processing: {file_path}")
         with open(file_path, "r") as f:
             await rag.ainsert(f.read())
-    
+
     print("All documents indexed!")
 
 asyncio.run(process_documents("./documents"))
@@ -287,12 +287,12 @@ from lightrag import LightRAG, QueryParam
 
 async def chat():
     rag = LightRAG(working_dir="./rag_storage")
-    
+
     while True:
         question = input("You: ")
         if question.lower() == "quit":
             break
-        
+
         response = await rag.aquery(
             question,
             param=QueryParam(mode="hybrid")
@@ -307,7 +307,7 @@ asyncio.run(chat())
 ```python
 async def batch_query(questions: list):
     rag = LightRAG(working_dir="./rag_storage")
-    
+
     results = []
     for question in questions:
         result = await rag.aquery(
@@ -315,7 +315,7 @@ async def batch_query(questions: list):
             param=QueryParam(mode="hybrid")
         )
         results.append({"question": question, "answer": result})
-    
+
     return results
 
 questions = [
@@ -339,14 +339,14 @@ from lightrag import LightRAG, QueryParam
 async def test():
     # Initialize
     rag = LightRAG(working_dir="./test_rag")
-    
+
     # Insert test document
     await rag.ainsert("Python is a programming language created by Guido van Rossum.")
-    
+
     # Query
     result = await rag.aquery("Who created Python?", param=QueryParam(mode="hybrid"))
     print(f"Answer: {result}")
-    
+
     # Cleanup
     import shutil
     shutil.rmtree("./test_rag")

@@ -259,10 +259,10 @@ export default function DocumentManager() {
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
 
   // Sort state - initialize from route state if available
-  const [sortField, setSortField] = useState<SortField>(() => 
+  const [sortField, setSortField] = useState<SortField>(() =>
     (routeState.sort as SortField) || 'updated_at'
   )
-  const [sortDirection, setSortDirection] = useState<SortDirection>(() => 
+  const [sortDirection, setSortDirection] = useState<SortDirection>(() =>
     routeState.sortDirection || 'desc'
   )
 
@@ -283,11 +283,11 @@ export default function DocumentManager() {
     pending: 1,
     failed: 1,
   });
-  
+
   // Sync state changes to URL (tenant-agnostic)
   useEffect(() => {
     if (!selectedTenant) return
-    
+
     routeState.setState({
       page: pagination.page,
       pageSize: pagination.page_size,
@@ -635,7 +635,7 @@ export default function DocumentManager() {
   // Enhanced error classification
   const classifyError = useCallback((error: any) => {
     // Handle axios Cancel errors (from context guards) - don't show toast
-    if (error.__CANCEL__ || error.name === 'CanceledError' || 
+    if (error.__CANCEL__ || error.name === 'CanceledError' ||
         error.message?.includes('Please select a tenant')) {
       return { type: 'context-missing', shouldRetry: false, shouldShowToast: false };
     }
@@ -723,20 +723,20 @@ export default function DocumentManager() {
     try {
       const storedTenant = localStorage.getItem('SELECTED_TENANT');
       const storedKB = localStorage.getItem('SELECTED_KB');
-      
+
       if (!storedTenant || !storedKB) {
         console.log('[DocumentManager] localStorage tenant context not ready');
         return false;
       }
-      
+
       const parsedTenant = JSON.parse(storedTenant);
       const parsedKB = JSON.parse(storedKB);
-      
+
       if (!parsedTenant?.tenant_id || !parsedKB?.kb_id) {
         console.log('[DocumentManager] localStorage tenant/KB missing required fields');
         return false;
       }
-      
+
       return true;
     } catch (e) {
       console.error('[DocumentManager] Error checking localStorage tenant context', e);
@@ -751,7 +751,7 @@ export default function DocumentManager() {
   ) => {
     try {
       if (!isMountedRef.current) return;
-      
+
       // Guard: Check tenant context before making API calls
       if (!isTenantContextReady()) {
         console.log('[DocumentManager] Skipping refresh - tenant context not ready');
@@ -836,7 +836,7 @@ export default function DocumentManager() {
         if (errorClassification.shouldRetry) {
           recordFailure(err as Error);
         }
-        
+
         // Mark as loaded even on error to stop infinite loading spinner
         // This allows user to see the "No Documents" state and retry
         if (errorClassification.type !== 'context-missing') {
@@ -989,7 +989,7 @@ export default function DocumentManager() {
       console.log('[DocumentManager] Skipping manual refresh - tenant context not ready');
       return;
     }
-    
+
     try {
       setIsRefreshing(true);
 
@@ -1149,23 +1149,23 @@ export default function DocumentManager() {
   // Handle reset document status to pending for retry
   const handleResetToPending = useCallback(async () => {
     if (selectedDocIds.length === 0) return
-    
+
     setIsResetting(true)
     try {
       const response = await resetDocumentStatus({
         doc_ids: selectedDocIds,
         target_status: 'pending'
       })
-      
+
       if (response.status === 'success') {
         toast.success(t('documentPanel.documentManager.resetSuccess', { count: response.reset_count }))
         setSelectedDocIds([])
         // Refresh documents
         startPollingInterval(500)
       } else if (response.status === 'partial') {
-        toast.warning(t('documentPanel.documentManager.resetPartial', { 
-          count: response.reset_count, 
-          failed: response.failed_ids.length 
+        toast.warning(t('documentPanel.documentManager.resetPartial', {
+          count: response.reset_count,
+          failed: response.failed_ids.length
         }))
         setSelectedDocIds([])
         startPollingInterval(500)
@@ -1269,31 +1269,31 @@ export default function DocumentManager() {
       console.log('[DocumentManager] Skipping fetch - not on documents tab');
       return;
     }
-    
+
     // Guard: Must have tenant selected
     if (!selectedTenant?.tenant_id) {
       console.log('[DocumentManager] Skipping fetch - no tenant');
       return;
     }
-    
+
     // Verify localStorage is in sync before making API calls
     // We need to check synchronously and retry a few times if needed
     let attempts = 0;
     const maxAttempts = 10;
     const checkIntervalMs = 50;
-    
+
     const checkAndFetch = () => {
       attempts++;
-      
+
       // Check localStorage directly - this is the source of truth
       try {
         const storedTenant = localStorage.getItem('SELECTED_TENANT');
         const storedKB = localStorage.getItem('SELECTED_KB');
-        
+
         if (storedTenant && storedKB) {
           const parsedTenant = JSON.parse(storedTenant);
           const parsedKB = JSON.parse(storedKB);
-          
+
           // Verify tenant matches what we expect
           if (parsedTenant?.tenant_id === selectedTenant.tenant_id && parsedKB?.kb_id) {
             // Context is ready, proceed with fetch
@@ -1305,7 +1305,7 @@ export default function DocumentManager() {
       } catch (e) {
         console.error('[DocumentManager] Error checking localStorage', e);
       }
-      
+
       // If not ready yet and we haven't exceeded max attempts, try again
       if (attempts < maxAttempts) {
         console.log(`[DocumentManager] Context not ready yet, retry ${attempts}/${maxAttempts}`);
@@ -1316,10 +1316,10 @@ export default function DocumentManager() {
         setHasLoadedOnce(true);
       }
     };
-    
+
     // Start checking after a small initial delay
     const timeoutId = setTimeout(checkAndFetch, 30);
-    
+
     return () => clearTimeout(timeoutId);
   }, [
     currentTab,
@@ -1337,7 +1337,7 @@ export default function DocumentManager() {
   // Also check localStorage as fallback since Zustand state may lag behind
   const hasTenantContext = useMemo(() => {
     if (selectedTenant && selectedKB) return true;
-    
+
     // Check localStorage as fallback
     try {
       const storedTenant = localStorage.getItem('SELECTED_TENANT');
@@ -1347,7 +1347,7 @@ export default function DocumentManager() {
       return false;
     }
   }, [selectedTenant, selectedKB]);
-  
+
   if (!hasTenantContext) {
     return (
       <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">

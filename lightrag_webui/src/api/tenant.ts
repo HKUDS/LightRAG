@@ -28,7 +28,7 @@ export async function fetchTenantsPaginated(
   try {
     const params: Record<string, any> = { page, page_size: pageSize }
     if (search) params.search = search
-    
+
     const response = await apiClient.get('/api/v1/tenants', { params })
     return response.data
   } catch (error) {
@@ -104,8 +104,8 @@ export async function fetchKnowledgeBasesPaginated(
   try {
     const params: Record<string, any> = { page, page_size: pageSize }
     if (search) params.search = search
-    
-    const response = await apiClient.get('/api/v1/knowledge-bases', { 
+
+    const response = await apiClient.get('/api/v1/knowledge-bases', {
       params,
       headers: { 'X-Tenant-ID': tenantId }
     })

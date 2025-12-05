@@ -44,10 +44,10 @@ function App() {
   const setSelectedTenant = useTenantState.use.setSelectedTenant()
   const initializeTenantState = useTenantState.use.initializeFromStorage()
   const multiTenantEnabled = useAuthStore(state => state.multiTenantEnabled)
-  
+
   // Auto-initialize tenant/KB on app load (fixes empty state on refresh)
   useTenantInitialization()
-  
+
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode

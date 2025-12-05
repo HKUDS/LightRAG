@@ -24,8 +24,8 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
         not os.getenv("LLM_BINDING_API_KEY") and not os.getenv("OPENAI_API_KEY"),
-        reason="LLM_BINDING_API_KEY or OPENAI_API_KEY not set"
-    )
+        reason="LLM_BINDING_API_KEY or OPENAI_API_KEY not set",
+    ),
 ]
 
 
@@ -33,6 +33,7 @@ pytestmark = [
 def api_client():
     """Create OpenAI client for tests."""
     from openai import AsyncOpenAI
+
     api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY")
     return AsyncOpenAI(api_key=api_key)
 
@@ -43,9 +44,9 @@ async def test_with_more_tokens(api_client):
         model="gpt-5-nano",
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Say hello"}
+            {"role": "user", "content": "Say hello"},
         ],
-        max_completion_tokens=200
+        max_completion_tokens=200,
     )
     assert response.choices[0].message.content is not None
     print(f"Content: '{response.choices[0].message.content}'")
@@ -58,10 +59,10 @@ async def test_with_low_reasoning_effort(api_client):
         model="gpt-5-nano",
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Say hello"}
+            {"role": "user", "content": "Say hello"},
         ],
         max_completion_tokens=50,
-        reasoning_effort="low"
+        reasoning_effort="low",
     )
     assert response.choices[0].message.content is not None
     print(f"Content: '{response.choices[0].message.content}'")
@@ -70,21 +71,23 @@ async def test_with_low_reasoning_effort(api_client):
 
 # Allow running as standalone script
 if __name__ == "__main__":
+
     async def main():
         from openai import AsyncOpenAI
+
         api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
             print("ERROR: LLM_BINDING_API_KEY or OPENAI_API_KEY not set")
             return
-        
+
         client = AsyncOpenAI(api_key=api_key)
-        
+
         print("Test 1: With 200 max_completion_tokens")
         await test_with_more_tokens(client)
         print()
-        
+
         print("Test 2: With lower reasoning_effort='low'")
         await test_with_low_reasoning_effort(client)
         print()
-    
+
     asyncio.run(main())

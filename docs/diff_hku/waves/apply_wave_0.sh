@@ -310,4 +310,3 @@ git cherry-pick -x a11912ff
 
 echo "Cherry-picking 445adfc9: Add name to lint-and-format job in GitHub workflow"
 git cherry-pick -x 445adfc9
-

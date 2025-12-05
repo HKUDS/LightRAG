@@ -1,9 +1,9 @@
 /**
  * Tenant State Manager
- * 
+ *
  * Centralized module for managing tenant+route state handling.
  * Provides state persistence across tenant switches and URL synchronization.
- * 
+ *
  * Security: Tenant IDs are NEVER exposed in URLs. They are stored in
  * sessionStorage with tenant-scoped keys and provided via X-Tenant-ID header.
  */
@@ -149,7 +149,7 @@ function serializeToURLParams(state: RouteState): URLSearchParams {
 
 /**
  * TenantStateManager class
- * 
+ *
  * Manages tenant+route state with:
  * - URL synchronization (tenant-agnostic)
  * - sessionStorage persistence (tenant-scoped)
@@ -175,7 +175,7 @@ class TenantStateManager {
   setCurrentTenant(tenantId: string | null): void {
     const oldTenantId = this.currentTenantId
     this.currentTenantId = tenantId
-    
+
     if (oldTenantId && tenantId && oldTenantId !== tenantId) {
       this.onTenantSwitch(oldTenantId, tenantId)
     }
@@ -260,10 +260,10 @@ class TenantStateManager {
    */
   syncToURL = debounce((routeName: RouteName, state: RouteState): void => {
     const params = serializeToURLParams(state)
-    const newURL = params.toString() 
+    const newURL = params.toString()
       ? `${window.location.pathname}?${params.toString()}${window.location.hash}`
       : `${window.location.pathname}${window.location.hash}`
-    
+
     // Use replaceState to avoid polluting browser history for filter/sort changes
     window.history.replaceState({ routeName, state }, '', newURL)
   }, 300)
@@ -274,10 +274,10 @@ class TenantStateManager {
    */
   pushToURL(routeName: RouteName, state: RouteState): void {
     const params = serializeToURLParams(state)
-    const newURL = params.toString() 
+    const newURL = params.toString()
       ? `${window.location.pathname}?${params.toString()}${window.location.hash}`
       : `${window.location.pathname}${window.location.hash}`
-    
+
     window.history.pushState({ routeName, state }, '', newURL)
   }
 
@@ -287,7 +287,7 @@ class TenantStateManager {
    */
   onTenantSwitch(oldTenantId: string, newTenantId: string): void {
     console.log(`[TenantStateManager] Tenant switch: ${oldTenantId} -> ${newTenantId}`)
-    
+
     // Clear URL params when switching tenants (tenant-agnostic URLs)
     // The new tenant's state will be loaded from sessionStorage
     const hash = window.location.hash
@@ -308,11 +308,11 @@ class TenantStateManager {
    */
   subscribe(tenantId: string, routeName: RouteName, listener: (state: RouteState) => void): () => void {
     const key = getStorageKey(tenantId, routeName)
-    
+
     if (!this.listeners.has(key)) {
       this.listeners.set(key, new Set())
     }
-    
+
     this.listeners.get(key)!.add(listener)
 
     // Return unsubscribe function

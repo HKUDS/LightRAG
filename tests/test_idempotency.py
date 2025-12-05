@@ -7,9 +7,8 @@ These tests verify that:
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, MagicMock
+
 
 # Mock the document routes module components
 @pytest.fixture
@@ -39,8 +38,10 @@ class TestInsertTextIdempotency:
         )
 
         # Verify the mock returns expected value
-        result = await mock_tenant_rag.doc_status.get_doc_by_external_id("my-external-id")
-        
+        result = await mock_tenant_rag.doc_status.get_doc_by_external_id(
+            "my-external-id"
+        )
+
         assert result is not None
         assert result["id"] == "doc-123"
         assert result["status"] == "processed"
@@ -52,8 +53,10 @@ class TestInsertTextIdempotency:
         mock_tenant_rag.doc_status.get_doc_by_external_id = AsyncMock(return_value=None)
 
         # Verify the mock returns None (no existing doc)
-        result = await mock_tenant_rag.doc_status.get_doc_by_external_id("new-external-id")
-        
+        result = await mock_tenant_rag.doc_status.get_doc_by_external_id(
+            "new-external-id"
+        )
+
         assert result is None
 
     @pytest.mark.asyncio
@@ -61,7 +64,7 @@ class TestInsertTextIdempotency:
         """When no external_id provided, skip idempotency check."""
         # The get_doc_by_external_id should not be called when external_id is None
         mock_tenant_rag.doc_status.get_doc_by_external_id = AsyncMock(return_value=None)
-        
+
         # In the actual implementation, when external_id is None or empty,
         # get_doc_by_external_id is not called
 
@@ -72,6 +75,7 @@ class TestInsertTextsIdempotency:
     @pytest.mark.asyncio
     async def test_external_ids_batch_deduplication(self, mock_tenant_rag):
         """External_ids should be checked for each text in batch."""
+
         # Setup: First text has existing external_id, second is new
         async def mock_get_by_external_id(ext_id):
             if ext_id == "existing-id":
@@ -97,31 +101,30 @@ class TestExternalIdValidation:
     def test_external_id_stripped(self):
         """External_id should be stripped of whitespace."""
         from lightrag.api.routers.document_routes import InsertTextRequest
-        
+
         request = InsertTextRequest(
-            text="Test content",
-            external_id="  my-id-with-spaces  "
+            text="Test content", external_id="  my-id-with-spaces  "
         )
-        
+
         assert request.external_id == "my-id-with-spaces"
 
     def test_external_id_max_length(self):
         """External_id should respect max length."""
         from lightrag.api.routers.document_routes import InsertTextRequest
         from pydantic import ValidationError
-        
+
         # This should fail if external_id is too long
         long_id = "x" * 256  # Exceeds max_length of 255
-        
+
         with pytest.raises(ValidationError):
             InsertTextRequest(text="Test", external_id=long_id)
 
     def test_external_id_optional(self):
         """External_id should be optional."""
         from lightrag.api.routers.document_routes import InsertTextRequest
-        
+
         request = InsertTextRequest(text="Test content")
-        
+
         assert request.external_id is None
 
 
@@ -133,17 +136,20 @@ class TestTenantScopedIdempotency:
         """Same external_id in different tenants should be separate."""
         # In the actual implementation, the workspace includes tenant_id
         # so the same external_id in different tenants won't conflict
-        
+
         # This is a conceptual test - the actual isolation happens
         # because each tenant's doc_status storage has a different workspace
-        
+
         mock_rag_tenant_a = MagicMock()
         mock_rag_tenant_a.doc_status = MagicMock()
         mock_rag_tenant_a.doc_status.workspace = "tenant_a_kb_default"
-        
+
         mock_rag_tenant_b = MagicMock()
         mock_rag_tenant_b.doc_status = MagicMock()
         mock_rag_tenant_b.doc_status.workspace = "tenant_b_kb_default"
-        
+
         # Workspaces should be different
-        assert mock_rag_tenant_a.doc_status.workspace != mock_rag_tenant_b.doc_status.workspace
+        assert (
+            mock_rag_tenant_a.doc_status.workspace
+            != mock_rag_tenant_b.doc_status.workspace
+        )

@@ -82,4 +82,3 @@ All storage backends have comprehensive multi-tenant support:
 1. Fix API test isolation by mocking `parse_args()` in test setup
 2. Consider caching document counts for performance at scale
 3. Add integration tests that run against real PostgreSQL database
-

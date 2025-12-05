@@ -92,7 +92,7 @@ const useTenantStateStoreBase = create<TenantState>()((set, get) => ({
     if (!tenant) {
       console.trace('[TenantStore] Clearing tenant selection')
     }
-    
+
     // IMPORTANT: Update localStorage FIRST before updating store
     // This ensures axios interceptor has correct context when API calls are triggered
     if (tenant) {
@@ -102,7 +102,7 @@ const useTenantStateStoreBase = create<TenantState>()((set, get) => ({
     }
     // Always clear KB selection when tenant changes to prevent mismatch
     localStorage.removeItem('SELECTED_KB')
-    
+
     // Then update the store (which may trigger effects)
     set({ selectedTenant: tenant, selectedKB: null })
   },

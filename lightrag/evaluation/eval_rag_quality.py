@@ -410,7 +410,7 @@ class RAGEvaluator:
             try:
                 # Create standard tqdm progress bar for RAGAS evaluation
                 pbar = tqdm(total=4, desc=f"Eval-{idx}", leave=True)
-                
+
                 eval_results = evaluate(
                     dataset=eval_dataset,
                     metrics=[

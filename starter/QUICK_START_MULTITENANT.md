@@ -279,13 +279,13 @@ WEBUI_PORT=3001
 
 ## 🎯 Key Features
 
-✅ **Multi-Tenant Isolation**: Complete data separation between tenants  
-✅ **Multiple KBs per Tenant**: Each tenant can have multiple knowledge bases  
-✅ **Composite Keys**: Database-level isolation with (tenant_id, kb_id, id)  
-✅ **Vector Search**: pgvector with HNSW indexing  
-✅ **Graph Database**: Apache AGE for entity relationships  
-✅ **Caching**: Redis for LLM response caching  
-✅ **Health Checks**: Automatic service health monitoring  
+✅ **Multi-Tenant Isolation**: Complete data separation between tenants
+✅ **Multiple KBs per Tenant**: Each tenant can have multiple knowledge bases
+✅ **Composite Keys**: Database-level isolation with (tenant_id, kb_id, id)
+✅ **Vector Search**: pgvector with HNSW indexing
+✅ **Graph Database**: Apache AGE for entity relationships
+✅ **Caching**: Redis for LLM response caching
+✅ **Health Checks**: Automatic service health monitoring
 
 ## 📖 More Information
 
@@ -311,6 +311,6 @@ For detailed testing strategies and advanced configuration, see:
 
 ---
 
-**Last Updated**: November 22, 2025  
-**Status**: ✅ Ready to Use - Multi-Tenant Demo Mode Enabled by Default  
+**Last Updated**: November 22, 2025
+**Status**: ✅ Ready to Use - Multi-Tenant Demo Mode Enabled by Default
 **Platform**: macOS/Linux/Windows (with Docker)

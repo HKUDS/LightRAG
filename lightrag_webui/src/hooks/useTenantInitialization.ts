@@ -9,7 +9,7 @@ import type { Tenant, KnowledgeBase } from '@/stores/tenant'
  * Ensures that documents are visible even on initial page load
  * This solves the "empty state on refresh" issue by automatically
  * selecting the first available tenant and KB if none are currently selected
- * 
+ *
  * In single-tenant mode (multiTenantEnabled=false), this hook does nothing
  * as the default tenant is already set by App.tsx
  */
@@ -58,7 +58,7 @@ export function useTenantInitialization() {
       // We re-read from store/localStorage here to ensure we have the latest value
       // in case it was updated during the async fetch
       let currentTenant = useTenantState.getState().selectedTenant
-      
+
       // Fallback: Check localStorage directly if store is empty
       if (!currentTenant) {
         try {
@@ -77,7 +77,7 @@ export function useTenantInitialization() {
       }
 
       console.log('[TenantInit] Current tenant resolved to:', currentTenant?.tenant_id)
-      
+
       if (!currentTenant) {
         const firstTenant = availableTenants[0]
         console.log('[TenantInit] Auto-selecting first tenant:', firstTenant.tenant_id)

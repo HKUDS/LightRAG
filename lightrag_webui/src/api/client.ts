@@ -36,12 +36,12 @@ type ContextRequirement = 'none' | 'tenant' | 'kb'
 
 function getContextRequirement(url: string | undefined): ContextRequirement {
   if (!url) return 'none'
-  
+
   // Check if exempt
   for (const exempt of EXEMPT_ENDPOINTS) {
     if (url.includes(exempt)) return 'none'
   }
-  
+
   // Check if requires KB (which implies Tenant)
   for (const required of KB_REQUIRED_ENDPOINTS) {
     if (url.includes(required)) return 'kb'
@@ -51,7 +51,7 @@ function getContextRequirement(url: string | undefined): ContextRequirement {
   for (const required of TENANT_ONLY_ENDPOINTS) {
     if (url.includes(required)) return 'tenant'
   }
-  
+
   return 'none'
 }
 
@@ -72,12 +72,12 @@ axiosInstance.interceptors.request.use((config) => {
   // We read directly from localStorage to avoid circular dependencies with stores
   const selectedTenantJson = localStorage.getItem('SELECTED_TENANT');
   const selectedKBJson = localStorage.getItem('SELECTED_KB');
-  
+
   let hasTenantContext = false;
   let hasKBContext = false;
   let tenantId: string | null = null;
   let kbId: string | null = null;
-  
+
   if (selectedTenantJson) {
     try {
       const selectedTenant = JSON.parse(selectedTenantJson);
@@ -106,7 +106,7 @@ axiosInstance.interceptors.request.use((config) => {
 
   // WUI-003 FIX: Block requests to tenant-required endpoints without proper context
   const requirement = getContextRequirement(config.url);
-  
+
   if (requirement === 'kb') {
     if (!hasTenantContext || !hasKBContext) {
       const errorMsg = 'Please select a tenant and knowledge base before performing this action.';

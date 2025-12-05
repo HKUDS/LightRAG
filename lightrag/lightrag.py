@@ -1939,7 +1939,7 @@ class LightRAG:
                             # Record processing end time for failed case
                             processing_end_time = int(time.time())
 
-                            # Update document status to failed - wrapped in try/except to ensure we log 
+                            # Update document status to failed - wrapped in try/except to ensure we log
                             # even if the status update fails (e.g., DB connection lost)
                             try:
                                 await self.doc_status.upsert(

@@ -162,10 +162,10 @@ reset-demo-tenants-dry-run:
 	@echo ""
 	@echo "Step 1: show db-reset command in 'starter' (dry-run)"
 	@make -n -C starter db-reset || true
-	@echo "" 
+	@echo ""
 	@echo "Step 2: preview the API-side initializer script (note: script not executed in dry-run)"
 	@echo "  python3 scripts/init_demo_tenants.py"
-	@echo "" 
+	@echo ""
 	@echo "Run 'make reset-demo-tenants' to actually perform the reset and seeding (destructive)."
 
 # Run only the API-side seeding script (non-destructive, does not drop DB)

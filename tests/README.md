@@ -85,7 +85,7 @@ def _normalize_openai_kwargs_for_model(model: str, kwargs: dict[str, Any]) -> No
         if "max_tokens" in kwargs:
             max_tokens = kwargs.pop("max_tokens")
             kwargs["max_completion_tokens"] = int(max(max_tokens * 2.5, 300))
-        
+
         # Remove unsupported parameters
         kwargs.pop("temperature", None)
 ```

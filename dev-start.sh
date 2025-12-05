@@ -89,7 +89,7 @@ load_env() {
             # Export the variable
             export "$key=$value"
         done < "$ENV_FILE"
-        
+
         # Extract Redis port from REDIS_URI if set
         if [ -n "$REDIS_URI" ]; then
             REDIS_PORT=$(echo "$REDIS_URI" | sed -n 's/.*:\([0-9]*\)$/\1/p')
@@ -126,7 +126,7 @@ wait_for_service() {
     local max_attempts=${3:-60}
     local attempt=1
     local log_file=${4:-""}
-    
+
     printf "  ${DIM}Waiting for $name"
     while [ $attempt -le $max_attempts ]; do
         if curl -s "$url" > /dev/null 2>&1; then
@@ -134,7 +134,7 @@ wait_for_service() {
             print_success "$name is ready"
             return 0
         fi
-        
+
         # Check if process is still running (for API server)
         if [ -n "$log_file" ] && [ -f "$log_file" ]; then
             if grep -q "ERROR:" "$log_file" 2>/dev/null; then
@@ -147,7 +147,7 @@ wait_for_service() {
                 return 1
             fi
         fi
-        
+
         echo -n "."
         sleep 1
         attempt=$((attempt + 1))
@@ -258,7 +258,7 @@ assess_and_handle_ports() {
                 print_info "Port $hostport ($service): Our dev container '$container_using' is running (will be restarted by docker-compose)"
                 continue
             fi
-            
+
             print_warning "Port $hostport for $service is used by Docker container: $container_using"
             if [ "$AUTO_CONFIRM" = true ]; then
                 print_step "Stopping container $container_using..."
@@ -285,7 +285,7 @@ assess_and_handle_ports() {
         pid=$(lsof -ti :$hostport -sTCP:LISTEN -P -n 2>/dev/null || true)
         if [ -n "$pid" ]; then
             pname=$(ps -p "$pid" -o comm= 2>/dev/null || echo "<unknown>")
-            
+
             # Check if this is likely our own dev server (Python process on api/webui ports)
             is_our_process=false
             if [ "$service" = "api" ] || [ "$service" = "webui" ]; then
@@ -295,7 +295,7 @@ assess_and_handle_ports() {
                     is_our_process=true
                 fi
             fi
-            
+
             if [ "$is_our_process" = true ]; then
                 print_info "Port $hostport ($service): Our previous dev process PID:$pid - will restart"
                 kill -9 "$pid" 2>/dev/null || true

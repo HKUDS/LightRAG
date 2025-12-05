@@ -1,7 +1,7 @@
 # Merge Readiness Review: `premerge/integration-upstream`
 
-**Date:** December 4, 2025  
-**Branch:** `premerge/integration-upstream`  
+**Date:** December 4, 2025
+**Branch:** `premerge/integration-upstream`
 **Target:** `main`
 
 ---

@@ -14,11 +14,13 @@ from lightrag.api.dependencies import get_admin_context
 
 logger = logging.getLogger(__name__)
 
+
 # Request/Response Models
 class TenantCreateRequest(BaseModel):
     name: str
     description: Optional[str] = ""
     metadata: Optional[dict] = None
+
 
 class TenantResponse(BaseModel):
     tenant_id: str
@@ -30,8 +32,10 @@ class TenantResponse(BaseModel):
     num_documents: int
     storage_used_gb: float
 
+
 class PaginatedTenantResponse(BaseModel):
     """Paginated response for tenants."""
+
     items: List[TenantResponse]
     total: int
     page: int
@@ -40,21 +44,23 @@ class PaginatedTenantResponse(BaseModel):
     has_next: bool
     has_prev: bool
 
+
 def create_admin_routes(tenant_service: TenantService) -> APIRouter:
     """Create admin management routes.
-    
+
     Args:
         tenant_service: Service instance for tenant operations
-        
+
     Returns:
         APIRouter with admin routes
     """
     router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
-    
-    @router.post("/tenants", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
+
+    @router.post(
+        "/tenants", response_model=TenantResponse, status_code=status.HTTP_201_CREATED
+    )
     async def create_tenant(
-        request: TenantCreateRequest,
-        admin_context: dict = Depends(get_admin_context)
+        request: TenantCreateRequest, admin_context: dict = Depends(get_admin_context)
     ):
         """Create a new tenant.
 
@@ -79,36 +85,36 @@ def create_admin_routes(tenant_service: TenantService) -> APIRouter:
             logger.error(f"Error creating tenant: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create tenant"
+                detail="Failed to create tenant",
             )
-            
+
     @router.get("/tenants", response_model=PaginatedTenantResponse)
     async def list_tenants(
         page: int = 1,
         page_size: int = 10,
         search: Optional[str] = None,
-        admin_context: dict = Depends(get_admin_context)
+        admin_context: dict = Depends(get_admin_context),
     ):
         """List all available tenants with pagination.
-        
+
         Useful for tenant selection.
         """
         try:
             # Validate pagination parameters
             page = max(1, page)
             page_size = min(max(1, page_size), 100)  # Max 100 per page
-            
+
             # Get tenants from service
             tenants_data = await tenant_service.list_tenants(
                 skip=(page - 1) * page_size,
                 limit=page_size,
                 search=search,
-                tenant_id_filter=None
+                tenant_id_filter=None,
             )
-            
+
             total_count = tenants_data.get("total", 0)
             tenants_list = tenants_data.get("items", [])
-            
+
             # Convert to response models
             items = [
                 TenantResponse(
@@ -123,10 +129,10 @@ def create_admin_routes(tenant_service: TenantService) -> APIRouter:
                 )
                 for t in tenants_list
             ]
-            
+
             # Calculate pagination metadata
             total_pages = (total_count + page_size - 1) // page_size
-            
+
             return PaginatedTenantResponse(
                 items=items,
                 total=total_count,
@@ -134,13 +140,13 @@ def create_admin_routes(tenant_service: TenantService) -> APIRouter:
                 page_size=page_size,
                 total_pages=total_pages,
                 has_next=page < total_pages,
-                has_prev=page > 1
+                has_prev=page > 1,
             )
         except Exception as e:
             logger.error(f"Error listing tenants: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to list tenants"
+                detail="Failed to list tenants",
             )
 
     return router

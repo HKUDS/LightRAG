@@ -11,7 +11,7 @@ Here is the **battle-tested, production-grade approach** used by top multi-tenan
 The winning strategy is **single database/cluster per data store**, with **row-level / document-level tenant isolation** enforced automatically at the framework level — never trust application code alone.
 
 ### 1. Tenant Identification (The One True Way)
-Use **subdomains only** (`app.tenant-slug.yourdomain.com`)  
+Use **subdomains only** (`app.tenant-slug.yourdomain.com`)
 Combined with **JWT `tenant_id` claim** (validated on every request)
 
 ```python
@@ -31,7 +31,7 @@ async def get_tenant_context(request: Request, redis: Redis = Depends(get_redis)
     # Resolve tenant_id from Redis (cached) or DB
     cache_key = f"tenant:slug:{subdomain}"
     tenant_id = await redis.get(cache_key)
-    
+
     if not tenant_id:
         async with db_session() as session:
             result = await session.execute(
@@ -107,11 +107,11 @@ from uuid import UUID
 
 class TenantDocument(Document):
     tenant_id: UUID
-    
+
     class Settings:
         name = "collection_name"
         use_state_management = True
-        
+
     @classmethod
     def get_motor_collection(cls):
         # Auto-inject tenant filter
@@ -227,17 +227,17 @@ async def list_projects(
 
 ### Summary: The 2025 Winning Stack
 
-- **FastAPI** with global tenant dependency  
-- **PostgreSQL + RLS** (hard isolation)  
-- **MongoDB** with tenant repository wrapper  
-- **Neo4j** with tenant session wrapper or prefixed labels  
-- **Redis** with strict key prefixing  
-- **Subdomain → tenant_id resolution** cached in Redis  
+- **FastAPI** with global tenant dependency
+- **PostgreSQL + RLS** (hard isolation)
+- **MongoDB** with tenant repository wrapper
+- **Neo4j** with tenant session wrapper or prefixed labels
+- **Redis** with strict key prefixing
+- **Subdomain → tenant_id resolution** cached in Redis
 - **Zero trust**: never allow raw queries without tenant context
 
 This exact pattern powers many $100M+ SaaS companies today. It scales to 100k+ tenants with near-zero cross-tenant risk.
 
-## Your Task 
+## Your Task
 
 Make a full audit of the implementation of multi-tenancy in my LightRAG project. Identify any gaps or weaknesses in the current approach compared to the battle-tested approach outlined above. Provide specific recommendations for improvements to ensure robust data isolation, security, and scalability across all data stores used (PostgreSQL, Neo4j, MongoDB, Redis).
 

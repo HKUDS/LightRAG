@@ -1,6 +1,6 @@
 /**
  * Debounce utility function
- * 
+ *
  * Creates a debounced version of a function that delays invoking
  * the function until after `wait` milliseconds have elapsed since
  * the last time the debounced function was invoked.
@@ -26,7 +26,7 @@ export function debounce<T extends (...args: any[]) => any>(
 
 /**
  * Debounce with immediate option
- * 
+ *
  * If `immediate` is true, the function is invoked on the leading edge
  * instead of the trailing edge of the wait interval.
  */

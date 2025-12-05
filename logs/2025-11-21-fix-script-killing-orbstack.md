@@ -15,13 +15,13 @@
 
 1. **Restart OrbStack**:
    - Since the previous run killed it, you must manually restart the OrbStack application.
-   
+
 2. **Run the Test Script**:
 
    ```bash
    cd starter
    ./test_multi_tenant.sh
    ```
-   
+
 3. **Verify**:
    - The script should now gracefully handle the port cleanup without killing the Docker daemon.

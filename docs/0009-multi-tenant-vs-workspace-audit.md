@@ -1,12 +1,12 @@
 # Multi-Tenant vs Workspace Architecture Audit Report
 
-**Date:** 2024-12-05  
-**Status:** ✅ PASSED - No Redundancy Found  
+**Date:** 2024-12-05
+**Status:** ✅ PASSED - No Redundancy Found
 **Author:** AI Audit Agent
 
 ## Executive Summary
 
-This audit evaluates whether the **Multi-Tenant feature** (local HKU implementation) is redundant with the **Workspace feature** (upstream HKUDS/LightRAG). 
+This audit evaluates whether the **Multi-Tenant feature** (local HKU implementation) is redundant with the **Workspace feature** (upstream HKUDS/LightRAG).
 
 **Verdict: NOT REDUNDANT** - The features serve different purposes in a well-designed layered architecture:
 
@@ -113,13 +113,13 @@ async def get_rag_instance(self, tenant_id: str, kb_id: str, user_id: str):
     # SECURITY: Validate identifiers
     tenant_id = validate_identifier(tenant_id, "tenant_id")
     kb_id = validate_identifier(kb_id, "kb_id")
-    
+
     # Create composite workspace
     tenant_working_dir, composite_workspace = validate_working_directory(
         self.base_working_dir, tenant_id, kb_id
     )
     # composite_workspace = f"{tenant_id}:{kb_id}"
-    
+
     # Create RAG instance with composite workspace
     instance = LightRAG(
         working_dir=tenant_working_dir,
@@ -165,13 +165,13 @@ CREATE TABLE user_tenant_memberships (
 -- LIGHTRAG_* tables have generated columns to extract tenant/kb
 ALTER TABLE LIGHTRAG_DOC_FULL ADD COLUMN
     tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-        CASE WHEN workspace LIKE '%:%' 
-             THEN SPLIT_PART(workspace, ':', 1) 
+        CASE WHEN workspace LIKE '%:%'
+             THEN SPLIT_PART(workspace, ':', 1)
              ELSE workspace END
     ) STORED,
     kb_id VARCHAR(255) GENERATED ALWAYS AS (
-        CASE WHEN workspace LIKE '%:%' 
-             THEN SPLIT_PART(workspace, ':', 2) 
+        CASE WHEN workspace LIKE '%:%'
+             THEN SPLIT_PART(workspace, ':', 2)
              ELSE 'default' END
     ) STORED;
 ```
@@ -300,7 +300,7 @@ async def delete_tenant(self, tenant_id: str) -> bool:
     kbs_result = await self.list_knowledge_bases(tenant_id)
     for kb in kbs_result.get("items", []):
         await self.delete_knowledge_base(tenant_id, kb.kb_id)
-    
+
     # NEW: Clean up LIGHTRAG_* tables
     if hasattr(self.kv_storage, 'db') and self.kv_storage.db:
         await self.kv_storage.db.execute(
@@ -308,7 +308,7 @@ async def delete_tenant(self, tenant_id: str) -> bool:
             [f"{tenant_id}:%"]
         )
         # Repeat for other LIGHTRAG_* tables...
-    
+
     # Existing: delete tenant metadata
     await self.kv_storage.delete([f"{self.tenant_namespace}:{tenant_id}"])
     return True

@@ -1,6 +1,6 @@
 /**
  * Tests for TenantStateManager
- * 
+ *
  * These tests verify the tenant state management functionality including:
  * - State persistence to sessionStorage
  * - URL synchronization (tenant-agnostic)
@@ -65,7 +65,7 @@ describe('TenantStateManager', () => {
     mockSessionStorage.clear()
     mockReplaceState.mockClear()
     mockPushState.mockClear()
-    
+
     // Reset location
     mockLocation.pathname = '/documents'
     mockLocation.search = ''
@@ -79,7 +79,7 @@ describe('TenantStateManager', () => {
   describe('getState', () => {
     it('should return default state for new tenant/route', () => {
       const state = tenantStateManager.getState('tenant-123', 'documents')
-      
+
       expect(state).toEqual({
         page: 1,
         pageSize: 10,
@@ -93,10 +93,10 @@ describe('TenantStateManager', () => {
     it('should return cached state from memory', () => {
       // Set state first
       tenantStateManager.setState('tenant-123', 'documents', { page: 5 })
-      
+
       // Get state should return the cached value
       const state = tenantStateManager.getState('tenant-123', 'documents')
-      
+
       expect(state.page).toBe(5)
     })
 
@@ -111,7 +111,7 @@ describe('TenantStateManager', () => {
         'lightrag:tenant:tenant-456:route:documents',
         JSON.stringify(storedState)
       )
-      
+
       // Storage is being used
       expect(mockSessionStorage.getItem('lightrag:tenant:tenant-456:route:documents')).toBeTruthy()
     })
@@ -123,7 +123,7 @@ describe('TenantStateManager', () => {
         page: 10,
         filters: { status: 'active' },
       })
-      
+
       const state = tenantStateManager.getState('tenant-123', 'documents')
       expect(state.page).toBe(10)
       expect(state.filters).toEqual({ status: 'active' })
@@ -132,7 +132,7 @@ describe('TenantStateManager', () => {
     it('should merge state with existing state', () => {
       tenantStateManager.setState('tenant-123', 'documents', { page: 5 })
       tenantStateManager.setState('tenant-123', 'documents', { pageSize: 50 })
-      
+
       const state = tenantStateManager.getState('tenant-123', 'documents')
       expect(state.page).toBe(5)
       expect(state.pageSize).toBe(50)
@@ -142,9 +142,9 @@ describe('TenantStateManager', () => {
   describe('hydrateFromURL', () => {
     it('should parse URL query parameters', () => {
       mockLocation.search = '?kb=backup&page=3&pageSize=25&sort=created_at&sortDirection=asc'
-      
+
       const state = tenantStateManager.hydrateFromURL()
-      
+
       expect(state.currentKB).toBe('backup')
       expect(state.page).toBe(3)
       expect(state.pageSize).toBe(25)
@@ -154,9 +154,9 @@ describe('TenantStateManager', () => {
 
     it('should parse filters from URL', () => {
       mockLocation.search = '?filters=status:active,owner:me'
-      
+
       const state = tenantStateManager.hydrateFromURL()
-      
+
       expect(state.filters).toEqual({
         status: 'active',
         owner: 'me',
@@ -165,9 +165,9 @@ describe('TenantStateManager', () => {
 
     it('should parse view mode from URL', () => {
       mockLocation.search = '?view=card'
-      
+
       const state = tenantStateManager.hydrateFromURL()
-      
+
       expect(state.viewMode).toBe('card')
     })
   })
@@ -181,12 +181,12 @@ describe('TenantStateManager', () => {
         sort: 'created_at',
         sortDirection: 'asc',
       }
-      
+
       tenantStateManager.syncToURL('documents', state)
-      
+
       // Wait for debounce
       await new Promise(resolve => setTimeout(resolve, 350))
-      
+
       expect(mockReplaceState.mock.calls.length).toBeGreaterThan(0)
     })
 
@@ -195,12 +195,12 @@ describe('TenantStateManager', () => {
         currentKB: 'master',
         page: 2,
       }
-      
+
       tenantStateManager.syncToURL('documents', state)
-      
+
       // Wait for debounce
       await new Promise(resolve => setTimeout(resolve, 350))
-      
+
       // Verify the URL does not contain tenant information
       if (mockReplaceState.mock.calls.length > 0) {
         const call = mockReplaceState.mock.calls[0] as unknown[]
@@ -216,10 +216,10 @@ describe('TenantStateManager', () => {
   describe('onTenantSwitch', () => {
     it('should clear URL params when switching tenants', () => {
       mockLocation.search = '?page=5&filters=status:active'
-      
+
       tenantStateManager.setCurrentTenant('tenant-a')
       tenantStateManager.setCurrentTenant('tenant-b')
-      
+
       // The URL should be cleared on tenant switch
       // This is tested by the tenant switch behavior
       expect(true).toBe(true) // Placeholder - actual behavior tested via integration
@@ -234,12 +234,12 @@ describe('TenantStateManager', () => {
         pageSize: 25,
         sort: 'updated_at',
       })
-      
+
       // Set URL params (these should take precedence)
       mockLocation.search = '?page=10'
-      
+
       const merged = tenantStateManager.mergeWithURL('tenant-123', 'documents')
-      
+
       // URL page should override stored page
       expect(merged.page).toBe(10)
       // But stored pageSize should be preserved
@@ -252,9 +252,9 @@ describe('TenantStateManager', () => {
       tenantStateManager.setState('tenant-to-clear', 'documents', { page: 5 })
       tenantStateManager.setState('tenant-to-clear', 'knowledge-graph', { viewMode: 'graph' })
       tenantStateManager.setState('other-tenant', 'documents', { page: 10 })
-      
+
       tenantStateManager.clearTenantState('tenant-to-clear')
-      
+
       // Other tenant's state should be preserved
       const otherState = tenantStateManager.getState('other-tenant', 'documents')
       expect(otherState.page).toBe(10)
@@ -264,9 +264,9 @@ describe('TenantStateManager', () => {
   describe('lastSelectedKB', () => {
     it('should save and retrieve last selected KB for tenant', () => {
       tenantStateManager.setLastSelectedKB('tenant-123', 'backup-kb')
-      
+
       const lastKB = tenantStateManager.getLastSelectedKB('tenant-123')
-      
+
       expect(lastKB).toBe('backup-kb')
     })
   })
@@ -279,11 +279,11 @@ describe('Security: Tenant ID not exposed in URL', () => {
       page: 1,
       pageSize: 10,
     }
-    
+
     // This is a key security requirement from the spec
     // URLs must be tenant-agnostic
     tenantStateManager.syncToURL('documents', state)
-    
+
     // The URL should only contain UI state, not tenant info
     // Tenant context comes from X-Tenant-ID header
     expect(true).toBe(true) // Verified via syncToURL tests above

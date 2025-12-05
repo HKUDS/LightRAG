@@ -4,7 +4,7 @@
 
 - **Docker Configuration**:
   - Updated `starter/docker-compose.yml` postgres healthcheck to explicitly specify the database name (`-d ${POSTGRES_DATABASE:-lightrag_multitenant}`). This fixes the `FATAL: database "lightrag" does not exist` errors in the logs.
-  
+
 - **Test Script**:
   - Updated `starter/test_multi_tenant.sh` to check for and kill any process holding port 9621 before starting containers. This resolves the `Bind for 0.0.0.0:9621 failed` error.
 
@@ -21,7 +21,7 @@
    cd starter
    ./test_multi_tenant.sh
    ```
-   
+
 2. **Verify Fixes**:
    - Watch the logs (via `docker-compose logs -f` if needed) to ensure no more "database does not exist" errors appear.
    - Confirm the API container starts successfully without port conflict errors.

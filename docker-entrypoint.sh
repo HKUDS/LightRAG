@@ -14,7 +14,7 @@ wait_for_server() {
     echo "Waiting for server to be ready..."
     max_attempts=30
     attempt=1
-    
+
     while [ $attempt -le $max_attempts ]; do
         # Check if the port is listening (simpler check that doesn't require auth)
         if nc -z localhost ${PORT:-9621} 2>/dev/null || timeout 1 bash -c "cat < /dev/null > /dev/tcp/localhost/${PORT:-9621}" 2>/dev/null; then
@@ -26,7 +26,7 @@ wait_for_server() {
         sleep 1
         attempt=$((attempt + 1))
     done
-    
+
     echo "⚠ Server startup check timed out after $max_attempts seconds"
     return 0  # Continue anyway
 }
@@ -52,7 +52,7 @@ if [ "${INIT_DEMO_TENANTS}" = "true" ] || [ "${INIT_DEMO_TENANTS}" = "1" ]; then
     echo ""
     echo "📚 Initializing demo tenants..."
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
+
     if [ -f /app/scripts/init_demo_tenants.py ]; then
         python /app/scripts/init_demo_tenants.py || echo "⚠ Demo tenant initialization completed with warnings"
         echo ""

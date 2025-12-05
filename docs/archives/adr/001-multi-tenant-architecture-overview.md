@@ -161,7 +161,7 @@ GET    /api/v1/tenants/{tenant_id}/knowledge-bases/{kb_id}/graph
 ```python
 # FastAPI dependency to extract and validate tenant context
 async def get_tenant_context(
-    tenant_id: str, 
+    tenant_id: str,
     kb_id: str,
     token: str = Depends(get_auth_token)
 ) -> TenantContext:
@@ -222,7 +222,7 @@ See `002-implementation-strategy.md` for detailed step-by-step implementation gu
    - Database schema changes
    - Tenant/KB models
    - Storage access layer updates
-   
+
 2. **Phase 2 (2-3 weeks)**: API layer
    - Tenant-aware routing
    - Request/response models
@@ -296,7 +296,7 @@ See `002-implementation-strategy.md` for detailed step-by-step implementation gu
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-20  
-**Author**: Architecture Design Process  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-20
+**Author**: Architecture Design Process
 **Status**: Proposed - Awaiting Review and Approval

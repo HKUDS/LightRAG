@@ -297,12 +297,12 @@ curl -X POST http://localhost:9621/query \
 psql -h localhost -U lightrag -d lightrag_test
 
 -- Check tenant_id and kb_id in document tables
-SELECT tenant_id, kb_id, id, content_summary 
-FROM lightrag_doc_status 
+SELECT tenant_id, kb_id, id, content_summary
+FROM lightrag_doc_status
 ORDER BY tenant_id, kb_id;
 
 -- Verify no cross-tenant data
-SELECT COUNT(*) FROM lightrag_doc_status 
+SELECT COUNT(*) FROM lightrag_doc_status
 WHERE tenant_id = 'tenant_a' AND kb_id IN (
   SELECT kb_id FROM lightrag_doc_status WHERE tenant_id = 'tenant_b'
 );
@@ -316,7 +316,7 @@ redis-cli
 # List keys for tenant A
 KEYS "tenant_a:*"
 
-# List keys for tenant B  
+# List keys for tenant B
 KEYS "tenant_b:*"
 
 # Verify no overlap

@@ -77,7 +77,11 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 
 # Multi-tenant mode configuration
 # Set LIGHTRAG_MULTI_TENANT=true to enable multi-tenant mode with tenant selection UI
-multi_tenant_enabled = os.getenv("LIGHTRAG_MULTI_TENANT", "false").lower() in ("true", "1", "yes")
+multi_tenant_enabled = os.getenv("LIGHTRAG_MULTI_TENANT", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -861,7 +865,7 @@ def create_app(args):
             # Create TenantService - will use rag.full_docs for db access
             # The db pool is initialized in the lifespan context
             tenant_service = TenantService(rag.full_docs)
-            
+
             # Initialize tenant RAG manager with template RAG
             rag_manager = TenantRAGManager(
                 base_working_dir=args.working_dir,
@@ -869,11 +873,11 @@ def create_app(args):
                 template_rag=rag,
                 max_cached_instances=100,
             )
-            
+
             # Store in app.state for use by dependencies
             app.state.tenant_service = tenant_service
             app.state.rag_manager = rag_manager
-            
+
             logger.info("Multi-tenant mode enabled - tenant components initialized")
         except Exception as e:
             logger.error(f"Failed to initialize multi-tenant components: {e}")
@@ -888,7 +892,9 @@ def create_app(args):
             rag_manager=rag_manager,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k, rag_manager=rag_manager))
+    app.include_router(
+        create_query_routes(rag, api_key, args.top_k, rag_manager=rag_manager)
+    )
     app.include_router(create_graph_routes(rag, api_key, rag_manager=rag_manager))
 
     # Add Ollama API routes
@@ -984,18 +990,24 @@ def create_app(args):
         try:
             # Prefer config-level setting when available
             from lightrag.api.config import SUPER_ADMIN_USERS
+
             if SUPER_ADMIN_USERS:
-                super_admins = [u.strip().lower() for u in SUPER_ADMIN_USERS.split(",") if u.strip()]
+                super_admins = [
+                    u.strip().lower() for u in SUPER_ADMIN_USERS.split(",") if u.strip()
+                ]
             else:
                 super_admins = []
         except Exception:
             # Fallback to env var (None = default 'admin', empty string = no super-admins)
             import os
+
             env_super_admins = os.environ.get("LIGHTRAG_SUPER_ADMIN_USERS")
             if env_super_admins is None:
                 super_admins = ["admin"]
             elif env_super_admins.strip():
-                super_admins = [u.strip().lower() for u in env_super_admins.split(",") if u.strip()]
+                super_admins = [
+                    u.strip().lower() for u in env_super_admins.split(",") if u.strip()
+                ]
             else:
                 super_admins = []
 

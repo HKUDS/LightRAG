@@ -3,10 +3,10 @@
 -- Version: 2.0.0
 -- Date: December 4, 2025
 -- Purpose: Rollback the FK infrastructure migration
--- 
+--
 -- IMPORTANT: This will remove generated columns, triggers, and indexes.
 --            The original workspace column and all data remain intact.
--- 
+--
 -- Usage:
 --   PGPASSWORD=lightrag123 psql -h localhost -p 15432 -U lightrag -d lightrag_multitenant -f rollback_v2.0.0.sql
 -- ============================================================================
@@ -112,8 +112,8 @@ ALTER TABLE lightrag_llm_cache DROP COLUMN IF EXISTS kb_id;
 -- STEP 5: Update migration status
 -- ============================================================================
 
-UPDATE schema_migrations 
-SET status = 'rolled_back', applied_at = NOW() 
+UPDATE schema_migrations
+SET status = 'rolled_back', applied_at = NOW()
 WHERE version = '2.0.0';
 
 \echo 'Updated migration status to rolled_back'

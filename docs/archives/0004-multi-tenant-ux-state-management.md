@@ -93,7 +93,7 @@ function DocumentManager() {
     setFilters,
     resetState,
   } = useRouteState('documents')
-  
+
   // State changes automatically sync to URL and sessionStorage
 }
 ```
@@ -160,15 +160,15 @@ For optimal performance, the following indexes are created:
 
 ```sql
 -- Pagination indexes
-CREATE INDEX idx_doc_status_workspace_status_updated_at 
+CREATE INDEX idx_doc_status_workspace_status_updated_at
   ON LIGHTRAG_DOC_STATUS (workspace, status, updated_at DESC);
 
-CREATE INDEX idx_doc_status_workspace_status_created_at 
+CREATE INDEX idx_doc_status_workspace_status_created_at
   ON LIGHTRAG_DOC_STATUS (workspace, status, created_at DESC);
 
 -- Idempotency index
-CREATE INDEX idx_doc_status_workspace_external_id 
-  ON LIGHTRAG_DOC_STATUS (workspace, (metadata->>'external_id')) 
+CREATE INDEX idx_doc_status_workspace_external_id
+  ON LIGHTRAG_DOC_STATUS (workspace, (metadata->>'external_id'))
   WHERE metadata->>'external_id' IS NOT NULL;
 ```
 

@@ -1,6 +1,6 @@
 /**
  * React hook for tenant state management
- * 
+ *
  * Provides easy access to tenantStateManager within React components
  * with automatic subscription and cleanup.
  */
@@ -11,7 +11,7 @@ import { tenantStateManager, RouteState, RouteName } from '@/services/tenantStat
 
 /**
  * Hook to get and manage route state for the current tenant
- * 
+ *
  * @param routeName - The route name to manage state for
  * @returns Object with state, setState, and utility functions
  */
@@ -49,9 +49,9 @@ export function useRouteState(routeName: RouteName) {
   // Update state and persist
   const setState = useCallback((updates: Partial<RouteState>) => {
     if (!tenantId) return
-    
+
     tenantStateManager.setState(tenantId, routeName, updates)
-    
+
     // Also sync to URL (debounced internally)
     const newState = tenantStateManager.getState(tenantId, routeName)
     tenantStateManager.syncToURL(routeName, newState)
@@ -60,7 +60,7 @@ export function useRouteState(routeName: RouteName) {
   // Push state to URL (creates history entry)
   const pushState = useCallback((updates: Partial<RouteState>) => {
     if (!tenantId) return
-    
+
     tenantStateManager.setState(tenantId, routeName, updates)
     const newState = tenantStateManager.getState(tenantId, routeName)
     tenantStateManager.pushToURL(routeName, newState)
@@ -99,11 +99,11 @@ export function useRouteState(routeName: RouteName) {
     // Convenience setters
     setPage: useCallback((p: number) => setState({ page: p }), [setState]),
     setPageSize: useCallback((ps: number) => setState({ pageSize: ps, page: 1 }), [setState]),
-    setSort: useCallback((s: string, dir?: 'asc' | 'desc') => 
+    setSort: useCallback((s: string, dir?: 'asc' | 'desc') =>
       setState({ sort: s, sortDirection: dir }), [setState]),
-    setFilters: useCallback((f: Record<string, string>) => 
+    setFilters: useCallback((f: Record<string, string>) =>
       setState({ filters: f, page: 1 }), [setState]),
-    setViewMode: useCallback((vm: 'list' | 'card' | 'graph') => 
+    setViewMode: useCallback((vm: 'list' | 'card' | 'graph') =>
       setState({ viewMode: vm }), [setState]),
     setQuery: useCallback((q: string) => setState({ query: q }), [setState]),
     setCurrentKB: useCallback((kb: string) => {
@@ -155,7 +155,7 @@ export function useShareableURL(routeName: RouteName) {
 
   const url = useMemo(() => {
     const params = new URLSearchParams()
-    
+
     if (state.currentKB) params.set('kb', state.currentKB)
     if (state.page && state.page !== 1) params.set('page', state.page.toString())
     if (state.pageSize && state.pageSize !== 10) params.set('pageSize', state.pageSize.toString())
@@ -163,7 +163,7 @@ export function useShareableURL(routeName: RouteName) {
     if (state.sortDirection) params.set('sortDirection', state.sortDirection)
     if (state.viewMode && state.viewMode !== 'list') params.set('view', state.viewMode)
     if (state.query) params.set('q', state.query)
-    
+
     if (state.filters && Object.keys(state.filters).length > 0) {
       const filterStr = Object.entries(state.filters)
         .filter(([_, v]) => v)

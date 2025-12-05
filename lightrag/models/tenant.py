@@ -9,6 +9,7 @@ from enum import Enum
 
 class Role(str, Enum):
     """User roles in the multi-tenant system."""
+
     ADMIN = "admin"
     EDITOR = "editor"
     VIEWER = "viewer"
@@ -17,22 +18,23 @@ class Role(str, Enum):
 
 class Permission(str, Enum):
     """Permissions in the multi-tenant system."""
+
     # Tenant-level permissions
     MANAGE_TENANT = "tenant:manage"
     MANAGE_MEMBERS = "tenant:manage_members"
     MANAGE_BILLING = "tenant:manage_billing"
-    
+
     # KB-level permissions
     CREATE_KB = "kb:create"
     DELETE_KB = "kb:delete"
     MANAGE_KB = "kb:manage"
-    
+
     # Document-level permissions
     CREATE_DOCUMENT = "document:create"
     UPDATE_DOCUMENT = "document:update"
     DELETE_DOCUMENT = "document:delete"
     READ_DOCUMENT = "document:read"
-    
+
     # Query permissions
     RUN_QUERY = "query:run"
     ACCESS_KB = "kb:access"
@@ -66,6 +68,7 @@ ROLE_PERMISSIONS = {
 @dataclass
 class ResourceQuota:
     """Resource limits for a tenant."""
+
     max_documents: int = 10000
     max_storage_gb: float = 100.0
     max_concurrent_queries: int = 10
@@ -78,31 +81,32 @@ class ResourceQuota:
 @dataclass
 class TenantConfig:
     """Per-tenant configuration for models and parameters."""
+
     # Model selection
     llm_model: str = "gpt-4o-mini"
     embedding_model: str = "bge-m3:latest"
     rerank_model: Optional[str] = None
-    
+
     # LLM parameters
     llm_model_kwargs: Dict[str, Any] = field(default_factory=dict)
     llm_temperature: float = 1.0
     llm_max_tokens: int = 4096
-    
+
     # Embedding parameters
     embedding_dim: int = 1024
     embedding_batch_num: int = 10
-    
+
     # Query defaults
     top_k: int = 40
     chunk_top_k: int = 20
     cosine_threshold: float = 0.2
     enable_llm_cache: bool = True
     enable_rerank: bool = True
-    
+
     # Chunking defaults
     chunk_size: int = 1200
     chunk_overlap: int = 100
-    
+
     # Custom tenant metadata
     custom_metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -110,6 +114,7 @@ class TenantConfig:
 @dataclass
 class KBConfig:
     """Per-knowledge-base configuration (overrides tenant defaults)."""
+
     # Only include fields that override tenant config
     top_k: Optional[int] = None
     chunk_size: Optional[int] = None
@@ -120,29 +125,30 @@ class KBConfig:
 @dataclass
 class Tenant:
     """Represents a tenant in the multi-tenant system."""
+
     tenant_id: str = field(default_factory=lambda: str(uuid4()))
     tenant_name: str = ""
     description: Optional[str] = None
-    
+
     # Configuration
     config: TenantConfig = field(default_factory=TenantConfig)
     quota: ResourceQuota = field(default_factory=ResourceQuota)
-    
+
     # Lifecycle
     is_active: bool = True
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
-    
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Statistics
     kb_count: int = 0
     total_documents: int = 0
     total_storage_mb: float = 0.0
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return {
@@ -182,38 +188,39 @@ class Tenant:
 @dataclass
 class KnowledgeBase:
     """Represents a knowledge base within a tenant."""
+
     kb_id: str = field(default_factory=lambda: str(uuid4()))
     tenant_id: str = ""
     kb_name: str = ""
     description: Optional[str] = None
-    
+
     # Status and lifecycle
     is_active: bool = True
     status: str = "ready"  # ready | indexing | error
-    
+
     # Statistics
     document_count: int = 0
     entity_count: int = 0
     relationship_count: int = 0
     chunk_count: int = 0
     storage_used_mb: float = 0.0
-    
+
     # Indexing info
     last_indexed_at: Optional[datetime] = None
     index_version: int = 1
-    
+
     # Configuration (can override tenant defaults)
     config: Optional[KBConfig] = None
-    
+
     # Timestamps
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
-    
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return {
@@ -228,7 +235,9 @@ class KnowledgeBase:
             "relationship_count": self.relationship_count,
             "chunk_count": self.chunk_count,
             "storage_used_mb": self.storage_used_mb,
-            "last_indexed_at": self.last_indexed_at.isoformat() if self.last_indexed_at else None,
+            "last_indexed_at": self.last_indexed_at.isoformat()
+            if self.last_indexed_at
+            else None,
             "index_version": self.index_version,
             "config": self.config.__dict__ if self.config else None,
             "created_at": self.created_at.isoformat(),
@@ -242,34 +251,35 @@ class KnowledgeBase:
 @dataclass
 class TenantContext:
     """Request-scoped tenant context injected into all request handlers."""
+
     tenant_id: str
     kb_id: str
     user_id: str
     role: str  # admin | editor | viewer | viewer:read-only
-    
+
     # Authorization
     permissions: Dict[str, bool] = field(default_factory=dict)
     knowledge_base_ids: List[str] = field(default_factory=list)  # Accessible KBs
-    
+
     # Request tracking
     request_id: str = field(default_factory=lambda: str(uuid4()))
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
-    
+
     # Computed properties
     @property
     def workspace_namespace(self) -> str:
         """Backward compatible workspace namespace."""
         return f"{self.tenant_id}_{self.kb_id}"
-    
+
     def can_access_kb(self, kb_id: str) -> bool:
         """Check if user can access specific KB."""
         return kb_id in self.knowledge_base_ids or "*" in self.knowledge_base_ids
-    
+
     def has_permission(self, permission: str) -> bool:
         """Check if user has specific permission."""
         return self.permissions.get(permission, False)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         return {

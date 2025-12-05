@@ -61,7 +61,7 @@ const LoginPage = () => {
 
         // Check auth status
         const status = await getAuthStatus()
-        
+
         // Update multi-tenant status in AuthStore immediately
         const isMultiTenant = status.multi_tenant_enabled ?? false
         useAuthStore.getState().setMultiTenantEnabled(isMultiTenant)
@@ -186,14 +186,14 @@ const LoginPage = () => {
       setLoading(true)
       const status = await getAuthStatus()
       const isMultiTenant = status.multi_tenant_enabled ?? false
-      
+
       // In single-tenant mode, tenant selection is not required
       if (isMultiTenant && !selectedTenant) {
         toast.error(t('login.selectTenantError', 'Please select a tenant to continue'))
         setLoading(false)
         return
       }
-      
+
       if (status.access_token) {
         login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null, isMultiTenant)
         if (status.message) {

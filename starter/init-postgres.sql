@@ -2,16 +2,16 @@
 -- LightRAG Multi-Tenant PostgreSQL Schema Initialization
 -- Version: 3.0.0
 -- Date: December 4, 2025
--- 
+--
 -- This script initializes the PostgreSQL database with multi-tenant support.
 -- It is automatically executed when PostgreSQL container starts.
--- 
+--
 -- Architecture:
 --   • LIGHTRAG_* tables: Core storage with workspace-based multi-tenancy
 --   • tenants/knowledge_bases: Metadata registry for API layer
 --   • Generated columns: Auto-extract tenant_id/kb_id from workspace
 --   • Auto-sync triggers: Auto-register tenants/KBs on data insert
--- 
+--
 -- Features:
 --   • pgvector support for embeddings
 --   • Automatic indexes for performance
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 -- ============================================================================
 -- Tenants Table
--- 
+--
 -- Stores tenant information for multi-tenant system
 -- Each tenant represents an organization, customer, or project
 -- ============================================================================
@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(tenant_id);
 
 -- ============================================================================
 -- Knowledge Bases Table
--- 
+--
 -- Stores knowledge base metadata for each tenant
 -- Each tenant can have multiple KBs (prod, dev, staging, etc.)
 -- ============================================================================
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_kbs_tenant ON knowledge_bases(tenant_id);
 
 -- ============================================================================
 -- LIGHTRAG Core Storage Tables
--- 
+--
 -- These are the PRODUCTION storage tables used by postgres_impl.py.
 -- They use workspace-based multi-tenancy: workspace = "{tenant_id}:{kb_id}"
 -- Generated columns auto-extract tenant_id and kb_id for queries.
@@ -321,7 +321,7 @@ CREATE INDEX IF NOT EXISTS idx_lightrag_full_relations_tenant_kb ON LIGHTRAG_FUL
 
 -- ============================================================================
 -- Auto-Sync Trigger Function
--- 
+--
 -- Automatically registers tenants and knowledge bases when data is inserted
 -- into any LIGHTRAG_* table with a workspace column
 -- ============================================================================
@@ -335,22 +335,22 @@ BEGIN
     -- Extract tenant_id and kb_id from workspace
     v_tenant_id := SPLIT_PART(NEW.workspace, ':', 1);
     v_kb_id := SPLIT_PART(NEW.workspace, ':', 2);
-    
+
     -- Skip if workspace doesn't contain colon (old format)
     IF v_kb_id = '' OR v_kb_id IS NULL THEN
         RETURN NEW;
     END IF;
-    
+
     -- Insert tenant if not exists
     INSERT INTO tenants (tenant_id, name, created_at, updated_at)
     VALUES (v_tenant_id, v_tenant_id, NOW(), NOW())
     ON CONFLICT (tenant_id) DO NOTHING;
-    
+
     -- Insert knowledge base if not exists
     INSERT INTO knowledge_bases (tenant_id, kb_id, name, created_at, updated_at)
     VALUES (v_tenant_id, v_kb_id, v_kb_id, NOW(), NOW())
     ON CONFLICT (tenant_id, kb_id) DO NOTHING;
-    
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -434,16 +434,16 @@ BEGIN
     SELECT role INTO v_user_role
     FROM user_tenant_memberships
     WHERE user_id = p_user_id AND tenant_id = p_tenant_id;
-    
+
     -- If no membership found, check if tenant is public
     IF v_user_role IS NULL THEN
         RETURN EXISTS (
-            SELECT 1 FROM tenants 
-            WHERE tenant_id = p_tenant_id 
+            SELECT 1 FROM tenants
+            WHERE tenant_id = p_tenant_id
             AND (metadata->>'is_public')::boolean = true
         );
     END IF;
-    
+
     -- Role hierarchy: owner(4) > admin(3) > editor(2) > viewer(1)
     v_role_hierarchy := CASE v_user_role
         WHEN 'owner' THEN 4
@@ -452,7 +452,7 @@ BEGIN
         WHEN 'viewer' THEN 1
         ELSE 0
     END;
-    
+
     v_required_hierarchy := CASE p_required_role
         WHEN 'owner' THEN 4
         WHEN 'admin' THEN 3
@@ -460,7 +460,7 @@ BEGIN
         WHEN 'viewer' THEN 1
         ELSE 0
     END;
-    
+
     RETURN v_role_hierarchy >= v_required_hierarchy;
 END;
 $$ LANGUAGE plpgsql;

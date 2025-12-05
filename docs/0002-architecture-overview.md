@@ -74,20 +74,20 @@ graph TB
         Routes[Routers]
         Auth[Auth Handler]
     end
-    
+
     subgraph "Core Engine"
         LR[LightRAG Class]
         OP[Operate Module]
         PM[Prompt Templates]
     end
-    
+
     subgraph "Storage Abstractions"
         BKV[BaseKVStorage]
         BVS[BaseVectorStorage]
         BGS[BaseGraphStorage]
         DSS[DocStatusStorage]
     end
-    
+
     subgraph "Implementations"
         PG[PostgreSQL]
         MG[MongoDB]
@@ -98,14 +98,14 @@ graph TB
         ML[Milvus]
         FS[FAISS]
     end
-    
+
     subgraph "LLM Layer"
         OAI[OpenAI]
         OLL[Ollama]
         AZ[Azure OpenAI]
         BD[Bedrock]
     end
-    
+
     API --> Routes
     Routes --> Auth
     Routes --> LR
@@ -115,7 +115,7 @@ graph TB
     LR --> BVS
     LR --> BGS
     LR --> DSS
-    
+
     BKV --> PG
     BKV --> MG
     BKV --> RD
@@ -127,7 +127,7 @@ graph TB
     BGS --> N4J
     BGS --> NX
     BGS --> MG
-    
+
     OP --> OAI
     OP --> OLL
     OP --> AZ
@@ -287,15 +287,15 @@ class NameSpace:
     KV_STORE_LLM_RESPONSE_CACHE = "llm_response_cache"  # LLM caching
     KV_STORE_FULL_ENTITIES = "full_entities"   # Entity metadata
     KV_STORE_FULL_RELATIONS = "full_relations" # Relation metadata
-    
+
     # Vector Stores
     VECTOR_STORE_ENTITIES = "entities"         # Entity embeddings
     VECTOR_STORE_RELATIONSHIPS = "relationships"  # Relation embeddings
     VECTOR_STORE_CHUNKS = "chunks"             # Chunk embeddings
-    
+
     # Graph Store
     GRAPH_STORE_CHUNK_ENTITY_RELATION = "chunk_entity_relation"
-    
+
     # Document Status
     DOC_STATUS = "doc_status"
 ```
@@ -532,26 +532,26 @@ sequenceDiagram
 
     C->>API: POST /query {query, mode}
     API->>LR: aquery(query, params)
-    
+
     alt mode != bypass
         LR->>KW: Extract keywords
         KW->>LLM: Keyword extraction prompt
         LLM-->>KW: {high_level, low_level}
-        
+
         par Parallel Retrieval
             LR->>VDB: Search entities/relations/chunks
             LR->>GDB: Get graph neighbors
         end
-        
+
         VDB-->>LR: Entity/Relation matches
         GDB-->>LR: Graph context
-        
+
         LR->>LR: Merge & deduplicate context
         opt Rerank enabled
             LR->>LR: Rerank chunks
         end
     end
-    
+
     LR->>LLM: Generate response
     LLM-->>LR: Response text
     LR-->>API: QueryResult

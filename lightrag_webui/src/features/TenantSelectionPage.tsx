@@ -21,7 +21,7 @@ export default function TenantSelectionPage({ onSelect }: TenantSelectionPagePro
   const [totalPages, setTotalPages] = useState(1)
   const [error, setError] = useState<string | null>(null)
   const setSelectedTenant = useTenantState.use.setSelectedTenant()
-  
+
   // Track last selected tenant ID
   const [lastTenantId] = useState<string | null>(() => {
     try {
@@ -56,21 +56,21 @@ export default function TenantSelectionPage({ onSelect }: TenantSelectionPagePro
   const handleSelect = (tenant: Tenant) => {
     // Set in store (which handles localStorage)
     setSelectedTenant(tenant)
-    
+
     // Save as last selected tenant for next time
     try {
       sessionStorage.setItem(LAST_TENANT_KEY, tenant.tenant_id)
     } catch (e) {
       console.warn('Failed to save last tenant', e)
     }
-    
+
     onSelect(tenant)
   }
-  
+
   // Sort tenants to show last selected first
   const sortedTenants = useMemo(() => {
     if (!lastTenantId) return tenants
-    
+
     return [...tenants].sort((a, b) => {
       if (a.tenant_id === lastTenantId) return -1
       if (b.tenant_id === lastTenantId) return 1
@@ -116,8 +116,8 @@ export default function TenantSelectionPage({ onSelect }: TenantSelectionPagePro
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {sortedTenants.map((tenant) => (
-              <Card 
-                key={tenant.tenant_id} 
+              <Card
+                key={tenant.tenant_id}
                 className={`cursor-pointer hover:border-primary hover:shadow-lg transition-all duration-200 ${
                   isLastSelected(tenant.tenant_id) ? 'border-primary/50 bg-primary/5 ring-2 ring-primary/20' : ''
                 }`}
@@ -167,7 +167,7 @@ export default function TenantSelectionPage({ onSelect }: TenantSelectionPagePro
                 </CardContent>
               </Card>
             ))}
-            
+
             {tenants.length === 0 && !loading && (
               <div className="col-span-full text-center py-12 text-muted-foreground">
                 No tenants found matching your search.
@@ -178,9 +178,9 @@ export default function TenantSelectionPage({ onSelect }: TenantSelectionPagePro
 
         {totalPages > 1 && (
           <div className="flex justify-center space-x-2 mt-8">
-            <Button 
-              variant="outline" 
-              disabled={page <= 1} 
+            <Button
+              variant="outline"
+              disabled={page <= 1}
               onClick={() => setPage(p => p - 1)}
             >
               Previous
@@ -188,9 +188,9 @@ export default function TenantSelectionPage({ onSelect }: TenantSelectionPagePro
             <div className="flex items-center px-4 text-sm">
               Page {page} of {totalPages}
             </div>
-            <Button 
-              variant="outline" 
-              disabled={page >= totalPages} 
+            <Button
+              variant="outline"
+              disabled={page >= totalPages}
               onClick={() => setPage(p => p + 1)}
             >
               Next

@@ -222,11 +222,11 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
 
 class OllamaAPI:
     def __init__(
-        self, 
-        rag: LightRAG, 
-        top_k: int = 60, 
+        self,
+        rag: LightRAG,
+        top_k: int = 60,
         api_key: Optional[str] = None,
-        rag_manager: Optional[TenantRAGManager] = None
+        rag_manager: Optional[TenantRAGManager] = None,
     ):
         self.rag = rag
         self.rag_manager = rag_manager
@@ -239,17 +239,24 @@ class OllamaAPI:
     def setup_routes(self):
         # Create combined auth dependency for Ollama API routes
         combined_auth = get_combined_auth_dependency(self.api_key)
-        
+
         # Create get_tenant_rag dependency for tenant-aware operations
         async def get_tenant_rag(
-            tenant_context: Optional[TenantContext] = Depends(get_tenant_context_optional)
+            tenant_context: Optional[TenantContext] = Depends(
+                get_tenant_context_optional
+            ),
         ) -> LightRAG:
             """Dependency to get tenant-specific RAG instance for Ollama operations"""
-            if self.rag_manager and tenant_context and tenant_context.tenant_id and tenant_context.kb_id:
+            if (
+                self.rag_manager
+                and tenant_context
+                and tenant_context.tenant_id
+                and tenant_context.kb_id
+            ):
                 return await self.rag_manager.get_rag_instance(
-                    tenant_context.tenant_id, 
+                    tenant_context.tenant_id,
                     tenant_context.kb_id,
-                    tenant_context.user_id
+                    tenant_context.user_id,
                 )
             return self.rag
 
@@ -309,8 +316,7 @@ class OllamaAPI:
             "/generate", dependencies=[Depends(combined_auth)], include_in_schema=True
         )
         async def generate(
-            raw_request: Request,
-            tenant_rag: LightRAG = Depends(get_tenant_rag)
+            raw_request: Request, tenant_rag: LightRAG = Depends(get_tenant_rag)
         ):
             """Handle generate completion requests acting as an Ollama model (tenant-scoped).
             For compatibility purpose, the request is not processed by LightRAG,
@@ -489,8 +495,7 @@ class OllamaAPI:
             "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
         )
         async def chat(
-            raw_request: Request,
-            tenant_rag: LightRAG = Depends(get_tenant_rag)
+            raw_request: Request, tenant_rag: LightRAG = Depends(get_tenant_rag)
         ):
             """Process chat completion requests by acting as an Ollama model (tenant-scoped).
             Routes user queries through LightRAG by selecting query mode based on query prefix.
@@ -545,7 +550,9 @@ class OllamaAPI:
                     # Determine if the request is prefix with "/bypass"
                     if mode == SearchMode.bypass:
                         if request.system:
-                            tenant_rag.llm_model_kwargs["system_prompt"] = request.system
+                            tenant_rag.llm_model_kwargs["system_prompt"] = (
+                                request.system
+                            )
                         response = await tenant_rag.llm_model_func(
                             cleaned_query,
                             stream=True,
@@ -707,7 +714,9 @@ class OllamaAPI:
                     )
                     if match_result or mode == SearchMode.bypass:
                         if request.system:
-                            tenant_rag.llm_model_kwargs["system_prompt"] = request.system
+                            tenant_rag.llm_model_kwargs["system_prompt"] = (
+                                request.system
+                            )
 
                         response_text = await tenant_rag.llm_model_func(
                             cleaned_query,

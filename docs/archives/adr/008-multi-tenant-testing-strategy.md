@@ -216,10 +216,10 @@ curl -X POST http://localhost:8000/api/v1/query \
 **Database Verification**:
 ```sql
 -- Verify tenant isolation at SQL level
-SELECT COUNT(*) FROM lightrag_doc_full 
+SELECT COUNT(*) FROM lightrag_doc_full
 WHERE tenant_id = 'acme-corp' AND kb_id = 'kb-prod';  -- Count acme-corp documents
 
-SELECT COUNT(*) FROM lightrag_doc_full 
+SELECT COUNT(*) FROM lightrag_doc_full
 WHERE tenant_id = 'techstart' AND kb_id = 'kb-main';  -- Count techstart documents
 
 -- Verify no cross-tenant data in single query
@@ -299,12 +299,12 @@ Creates the demo tenants and KBs when `MULTITENANT_MODE=demo`:
 -- This is handled via environment variable in docker-entrypoint
 
 INSERT INTO tenants (tenant_id, tenant_name, description, is_active)
-VALUES 
+VALUES
   ('acme-corp', 'ACME Corporation', 'Demo tenant 1: Large enterprise', true),
   ('techstart', 'TechStart Inc', 'Demo tenant 2: Startup', true);
 
 INSERT INTO knowledge_bases (kb_id, tenant_id, kb_name, description, is_active)
-VALUES 
+VALUES
   ('kb-prod', 'acme-corp', 'Production KB', 'Live production data', true),
   ('kb-dev', 'acme-corp', 'Development KB', 'Dev/staging data', true),
   ('kb-main', 'techstart', 'Main KB', 'Primary knowledge base', true),
@@ -514,7 +514,7 @@ make db-backup
 sed -i 's/MULTITENANT_MODE=on/MULTITENANT_MODE=off/' .env
 
 # 3. Extract single tenant data
-# SELECT * FROM lightrag_doc_full WHERE tenant_id='default' 
+# SELECT * FROM lightrag_doc_full WHERE tenant_id='default'
 # INTO workspace-based tables
 
 # 4. Restart services
@@ -574,9 +574,9 @@ Before considering the ADR complete:
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-22  
-**Author**: Architecture Design Process  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-22
+**Author**: Architecture Design Process
 **Status**: Proposed - Ready for Implementation Review
 
 **Implementation Notes**:

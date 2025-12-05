@@ -17,7 +17,7 @@ The `queryTextStream` function in `lightrag_webui/src/api/lightrag.ts` (lines 31
 ## Solution Implemented
 Modified `queryTextStream` in `lightrag_webui/src/api/lightrag.ts` to:
 1. Read `SELECTED_TENANT` from localStorage and parse the tenant_id
-2. Read `SELECTED_KB` from localStorage and parse the kb_id  
+2. Read `SELECTED_KB` from localStorage and parse the kb_id
 3. Add `X-Tenant-ID` header if tenant_id is available
 4. Add `X-KB-ID` header if kb_id is available
 5. Include proper error handling with console logging

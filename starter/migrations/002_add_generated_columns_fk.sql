@@ -3,13 +3,13 @@
 -- Version: 2.0.0 (Consolidated)
 -- Date: December 4, 2025
 -- Purpose: Add generated columns, indexes, and auto-sync triggers to LIGHTRAG_* tables
--- 
+--
 -- This script implements the HYBRID APPROACH recommended by the audit:
 -- - Keep LIGHTRAG_* tables as the authoritative storage
 -- - Add generated columns for tenant_id and kb_id extraction from workspace
 -- - Add indexes for query performance
 -- - Add triggers to auto-register tenants/KBs
--- 
+--
 -- Usage:
 --   PGPASSWORD=lightrag123 psql -h localhost -p 15432 -U lightrag -d lightrag_multitenant -f 002_add_generated_columns_fk.sql
 -- ============================================================================
@@ -33,153 +33,153 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- ============================================================================
 
 -- LIGHTRAG_DOC_FULL
-ALTER TABLE lightrag_doc_full 
+ALTER TABLE lightrag_doc_full
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_doc_full 
+ALTER TABLE lightrag_doc_full
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_DOC_CHUNKS
-ALTER TABLE lightrag_doc_chunks 
+ALTER TABLE lightrag_doc_chunks
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_doc_chunks 
+ALTER TABLE lightrag_doc_chunks
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_DOC_STATUS
-ALTER TABLE lightrag_doc_status 
+ALTER TABLE lightrag_doc_status
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_doc_status 
+ALTER TABLE lightrag_doc_status
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_VDB_CHUNKS
-ALTER TABLE lightrag_vdb_chunks 
+ALTER TABLE lightrag_vdb_chunks
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_vdb_chunks 
+ALTER TABLE lightrag_vdb_chunks
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_VDB_ENTITY
-ALTER TABLE lightrag_vdb_entity 
+ALTER TABLE lightrag_vdb_entity
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_vdb_entity 
+ALTER TABLE lightrag_vdb_entity
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_VDB_RELATION
-ALTER TABLE lightrag_vdb_relation 
+ALTER TABLE lightrag_vdb_relation
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_vdb_relation 
+ALTER TABLE lightrag_vdb_relation
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_FULL_ENTITIES
-ALTER TABLE lightrag_full_entities 
+ALTER TABLE lightrag_full_entities
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_full_entities 
+ALTER TABLE lightrag_full_entities
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_FULL_RELATIONS
-ALTER TABLE lightrag_full_relations 
+ALTER TABLE lightrag_full_relations
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_full_relations 
+ALTER TABLE lightrag_full_relations
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
 ) STORED;
 
 -- LIGHTRAG_LLM_CACHE
-ALTER TABLE lightrag_llm_cache 
+ALTER TABLE lightrag_llm_cache
 ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 1)
         ELSE workspace
     END
 ) STORED;
 
-ALTER TABLE lightrag_llm_cache 
+ALTER TABLE lightrag_llm_cache
 ADD COLUMN IF NOT EXISTS kb_id VARCHAR(255) GENERATED ALWAYS AS (
-    CASE 
+    CASE
         WHEN workspace LIKE '%:%' THEN SPLIT_PART(workspace, ':', 2)
         ELSE 'default'
     END
@@ -230,22 +230,22 @@ BEGIN
     -- Extract tenant_id and kb_id from workspace
     v_tenant_id := SPLIT_PART(NEW.workspace, ':', 1);
     v_kb_id := SPLIT_PART(NEW.workspace, ':', 2);
-    
+
     -- Skip if workspace doesn't contain colon (old format)
     IF v_kb_id = '' OR v_kb_id IS NULL THEN
         RETURN NEW;
     END IF;
-    
+
     -- Insert tenant if not exists (use tenant_id column, not id)
     INSERT INTO tenants (tenant_id, name, created_at, updated_at)
     VALUES (v_tenant_id, v_tenant_id, NOW(), NOW())
     ON CONFLICT (tenant_id) DO NOTHING;
-    
+
     -- Insert knowledge base if not exists
     INSERT INTO knowledge_bases (tenant_id, kb_id, name, created_at, updated_at)
     VALUES (v_tenant_id, v_kb_id, v_kb_id, NOW(), NOW())
     ON CONFLICT (tenant_id, kb_id) DO NOTHING;
-    
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

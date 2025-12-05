@@ -15,11 +15,11 @@ to ensure proper tenant isolation at the database level.
 
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
 
 # ============================================================================
 # TABLE DDL TEMPLATES WITH TENANT SUPPORT
 # ============================================================================
+
 
 def get_updated_tables_dict() -> Dict[str, Dict[str, str]]:
     # Returns the updated TABLES dictionary with tenant_id and kb_id columns.
@@ -29,7 +29,7 @@ def get_updated_tables_dict() -> Dict[str, Dict[str, str]]:
     # - Composite PRIMARY KEY on (tenant_id, kb_id, workspace, id)
     # - Composite indexes for common query patterns
     embedding_dim = int(os.environ.get("EMBEDDING_DIM", 1024))
-    
+
     return {
         "LIGHTRAG_DOC_FULL": {
             "ddl": """CREATE TABLE LIGHTRAG_DOC_FULL (
@@ -181,11 +181,14 @@ def get_updated_tables_dict() -> Dict[str, Dict[str, str]]:
 # SQL TEMPLATE BUILDERS WITH TENANT FILTERING
 # ============================================================================
 
+
 class TenantSQLBuilder:
     # Helper class for building tenant-aware SQL queries
-    
+
     @staticmethod
-    def add_tenant_filter(sql: str, table_alias: str = "", param_index: int = 1) -> Tuple[str, int]:
+    def add_tenant_filter(
+        sql: str, table_alias: str = "", param_index: int = 1
+    ) -> Tuple[str, int]:
         # Add tenant_id and kb_id filters to a WHERE clause.
         # Args:
         #     sql: Original SQL query
@@ -194,21 +197,20 @@ class TenantSQLBuilder:
         # Returns:
         #     Tuple of (modified_sql, next_param_index)
         prefix = f"{table_alias}." if table_alias else ""
-        tenant_filter = f"{prefix}tenant_id=${param_index} AND {prefix}kb_id=${param_index + 1}"
-        
+        tenant_filter = (
+            f"{prefix}tenant_id=${param_index} AND {prefix}kb_id=${param_index + 1}"
+        )
+
         if "WHERE" in sql:
             sql = sql.replace("WHERE", f"WHERE {tenant_filter} AND", 1)
         else:
             sql += f" WHERE {tenant_filter}"
-        
+
         return sql, param_index + 2
-    
+
     @staticmethod
     def build_filtered_query(
-        base_query: str,
-        tenant_id: str,
-        kb_id: str,
-        additional_params: List[Any] = None
+        base_query: str, tenant_id: str, kb_id: str, additional_params: List[Any] = None
     ) -> Tuple[str, List[Any]]:
         # Build a complete query with tenant filtering.
         # Args:
@@ -228,7 +230,10 @@ class TenantSQLBuilder:
 # MIGRATION UTILITIES
 # ============================================================================
 
-async def add_tenant_columns_migration(db, table_name: str, tenant_id: str = "default", kb_id: str = "default"):
+
+async def add_tenant_columns_migration(
+    db, table_name: str, tenant_id: str = "default", kb_id: str = "default"
+):
     # Migrate existing table to add tenant_id and kb_id columns.
     # This migration:
     # 1. Adds tenant_id and kb_id columns (if not exist)
@@ -248,7 +253,7 @@ async def add_tenant_columns_migration(db, table_name: str, tenant_id: str = "de
         WHERE table_name = '{table_name.lower()}' AND column_name = 'tenant_id'
         """
         exists = await db.query(check_sql)
-        
+
         if not exists:
             # Add tenant_id and kb_id columns
             alter_sql = f"""
@@ -257,12 +262,13 @@ async def add_tenant_columns_migration(db, table_name: str, tenant_id: str = "de
             ADD COLUMN kb_id VARCHAR(255) NOT NULL DEFAULT '{kb_id}'
             """
             await db.execute(alter_sql)
-            
+
             # Update existing primary key and constraints
             # This is table-specific, handled in migration methods
-            
+
     except Exception as e:
         from lightrag.utils import logger
+
         logger.warning(f"Failed to migrate {table_name}: {e}")
 
 
@@ -282,6 +288,7 @@ def get_composite_key(tenant_id: str, kb_id: str, *args) -> str:
 # INDEX CREATION HELPERS
 # ============================================================================
 
+
 def get_tenant_indexes(table_name: str) -> List[Dict[str, str]]:
     # Get recommended composite indexes for multi-tenant tables.
     # Args:
@@ -292,15 +299,15 @@ def get_tenant_indexes(table_name: str) -> List[Dict[str, str]]:
     indexes = [
         {
             "name": f"idx_{base_name}_tenant_kb",
-            "sql": f"CREATE INDEX IF NOT EXISTS idx_{base_name}_tenant_kb ON {table_name}(tenant_id, kb_id)"
+            "sql": f"CREATE INDEX IF NOT EXISTS idx_{base_name}_tenant_kb ON {table_name}(tenant_id, kb_id)",
         },
         {
             "name": f"idx_{base_name}_tenant_kb_id",
-            "sql": f"CREATE INDEX IF NOT EXISTS idx_{base_name}_tenant_kb_id ON {table_name}(tenant_id, kb_id, id)"
+            "sql": f"CREATE INDEX IF NOT EXISTS idx_{base_name}_tenant_kb_id ON {table_name}(tenant_id, kb_id, id)",
         },
         {
             "name": f"idx_{base_name}_tenant_kb_workspace",
-            "sql": f"CREATE INDEX IF NOT EXISTS idx_{base_name}_tenant_kb_workspace ON {table_name}(tenant_id, kb_id, workspace)"
+            "sql": f"CREATE INDEX IF NOT EXISTS idx_{base_name}_tenant_kb_workspace ON {table_name}(tenant_id, kb_id, workspace)",
         },
     ]
     return indexes
@@ -310,11 +317,12 @@ def get_tenant_indexes(table_name: str) -> List[Dict[str, str]]:
 # HELPER METHODS FOR STORAGE CLASSES
 # ============================================================================
 
+
 def ensure_tenant_context(
     tenant_id: Optional[str] = None,
     kb_id: Optional[str] = None,
     default_tenant: str = "default",
-    default_kb: str = "default"
+    default_kb: str = "default",
 ) -> Tuple[str, str]:
     # Ensure tenant and KB IDs are set, using defaults if necessary.
     # Args:
@@ -324,7 +332,4 @@ def ensure_tenant_context(
     #     default_kb: Default KB ID if not provided
     # Returns:
     #     Tuple of (tenant_id, kb_id)
-    return (
-        tenant_id or default_tenant,
-        kb_id or default_kb
-    )
+    return (tenant_id or default_tenant, kb_id or default_kb)

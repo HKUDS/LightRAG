@@ -503,8 +503,8 @@ Contributions are welcome! Please refer to the main LightRAG repository for cont
 
 ---
 
-**Last Updated**: November 20, 2025  
-**Status**: Production Ready  
+**Last Updated**: November 20, 2025
+**Status**: Production Ready
 **Version**: 1.0
 
 For more information about multi-tenant features, see the architecture documentation in `docs/0001-multi-tenant-architecture.md`

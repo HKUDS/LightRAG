@@ -50,7 +50,7 @@ async def get_tenant_context(
 ) -> TenantContext:
     # Decode and validate token
     token_data = token_service.validate_token(authorization)
-    
+
     # CRITICAL: Verify tenant in token matches path parameter
     if token_data["tenant_id"] != tenant_id:
         logger.warning(
@@ -59,11 +59,11 @@ async def get_tenant_context(
             extra={"user_id": token_data["sub"], "request_id": request_id}
         )
         raise HTTPException(status_code=403, detail="Tenant mismatch")
-    
+
     # Verify KB accessibility
     if kb_id not in token_data["knowledge_base_ids"] and "*" not in token_data["knowledge_base_ids"]:
         raise HTTPException(status_code=403, detail="KB not accessible")
-    
+
     return TenantContext(tenant_id=tenant_id, kb_id=kb_id, ...)
 
 # 2. Storage layer filtering (defense in depth)
@@ -78,7 +78,7 @@ async def query_with_tenant_filter(
         sql += " AND tenant_id = ? AND kb_id = ?"
     else:
         sql += " WHERE tenant_id = ? AND kb_id = ?"
-    
+
     params.extend([tenant_id, kb_id])
     return await execute(sql, params)
 
@@ -112,23 +112,23 @@ def validate_token(token: str) -> TokenPayload:
             algorithms=["HS256"],  # Only allow expected algorithms
             options={"verify_signature": True}
         )
-        
+
         # Verify required claims
         required_claims = ["sub", "tenant_id", "exp", "iat"]
         for claim in required_claims:
             if claim not in payload:
                 raise jwt.InvalidTokenError(f"Missing claim: {claim}")
-        
+
         # Check expiration
         if payload["exp"] < time.time():
             raise jwt.ExpiredSignatureError("Token expired")
-        
+
         # Check issued-at time (prevent tokens from future)
         if payload["iat"] > time.time() + 60:  # 60 second clock skew tolerance
             raise jwt.InvalidTokenError("Token issued in future")
-        
+
         return TokenPayload(**payload)
-    
+
     except jwt.DecodeError as e:
         logger.warning(f"Invalid token signature: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -173,10 +173,10 @@ class RateLimitMiddleware:
     async def __call__(self, request: Request, call_next):
         tenant_id = request.path_params.get("tenant_id")
         rate_limit_key = f"tenant:{tenant_id}:rateimit"
-        
+
         if await redis.incr(rate_limit_key) > RATE_LIMIT:
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        
+
         redis.expire(rate_limit_key, 60)
         return await call_next(request)
 ```
@@ -243,20 +243,20 @@ class TenantRateLimiter:
     async def check_limit(self, tenant_id: str, operation: str):
         key = f"limit:{tenant_id}:{operation}"
         current = await redis.get(key)
-        
+
         limits = {
             "query": 100,      # 100 queries per minute
             "document_add": 10, # 10 documents per hour
             "api_call": 1000,   # 1000 API calls per hour
         }
-        
+
         if int(current or 0) >= limits[operation]:
             raise HTTPException(
                 status_code=429,
                 detail="Rate limit exceeded",
                 headers={"Retry-After": "60"}
             )
-        
+
         pipe = redis.pipeline()
         pipe.incr(key)
         pipe.expire(key, 60)
@@ -265,17 +265,17 @@ class TenantRateLimiter:
 # 2. Query complexity limits
 async def validate_query_complexity(query_param: QueryParam):
     complexity_score = 0
-    
+
     # Penalize expensive operations
     if query_param.mode == "global":
         complexity_score += 10
     if query_param.top_k > 50:
         complexity_score += query_param.top_k - 50
-    
+
     # Check against quota
     tenant = await get_current_tenant()
     max_complexity = tenant.quota.max_monthly_api_calls
-    
+
     if complexity_score > max_complexity:
         raise HTTPException(status_code=429, detail="Quota exceeded")
 
@@ -284,7 +284,7 @@ async def validate_query_complexity(query_param: QueryParam):
 class DatabasePool:
     def __init__(self, max_connections: int = 50):
         self.pool = create_pool(max_size=max_connections)
-    
+
     async def execute(self, query: str, params: List):
         async with self.pool.acquire() as conn:
             return await conn.execute(query, params)
@@ -310,7 +310,7 @@ def sanitize_for_logging(data: Any) -> Any:
         "password", "api_key", "secret", "token", "auth_header",
         "llm_binding_api_key", "embedding_binding_api_key"
     }
-    
+
     if isinstance(data, dict):
         return {
             k: "***REDACTED***" if k in sensitive_fields else v
@@ -365,12 +365,12 @@ Attacker replays: Same request multiple times
 class TokenBlacklist:
     def __init__(self):
         self.blacklist = set()
-    
+
     async def revoke_token(self, jti: str):
         self.blacklist.add(jti)
         # Expire after token expiration time
         scheduler.schedule_removal(jti, expiration_time)
-    
+
     async def is_revoked(self, jti: str) -> bool:
         return jti in self.blacklist
 
@@ -379,16 +379,16 @@ class IdempotencyMiddleware:
     async def __call__(self, request: Request, call_next):
         if request.method in ["POST", "PUT", "DELETE"]:
             idempotency_key = request.headers.get("Idempotency-Key")
-            
+
             if idempotency_key:
                 # Check if already processed
                 cached_response = await redis.get(f"idempotency:{idempotency_key}")
                 if cached_response:
                     return JSONResponse(cached_response)
-                
+
                 # Process request
                 response = await call_next(request)
-                
+
                 # Cache response
                 await redis.setex(
                     f"idempotency:{idempotency_key}",
@@ -396,7 +396,7 @@ class IdempotencyMiddleware:
                     response.body
                 )
                 return response
-        
+
         return await call_next(request)
 
 # 3. Timestamp validation
@@ -404,10 +404,10 @@ async def validate_request_timestamp(request: Request):
     timestamp = request.headers.get("X-Timestamp")
     if not timestamp:
         raise HTTPException(status_code=400, detail="Missing timestamp")
-    
+
     request_time = datetime.fromisoformat(timestamp)
     current_time = datetime.utcnow()
-    
+
     # Reject requests older than 5 minutes
     if abs((current_time - request_time).total_seconds()) > 300:
         raise HTTPException(status_code=400, detail="Request expired")
@@ -422,17 +422,17 @@ async def validate_request_timestamp(request: Request):
 class JWTSettings:
     # Use RS256 (asymmetric) in production instead of HS256
     ALGORITHM = "RS256"  # Production: asymmetric
-    
+
     # Generate key pair:
     # openssl genrsa -out private_key.pem 2048
     # openssl rsa -in private_key.pem -pubout -out public_key.pem
     PRIVATE_KEY = load_private_key()
     PUBLIC_KEY = load_public_key()
-    
+
     # Token expiration times (keep short)
     ACCESS_TOKEN_EXPIRE_MINUTES = 15
     REFRESH_TOKEN_EXPIRE_DAYS = 7
-    
+
     # Token claims validation
     REQUIRED_CLAIMS = ["sub", "tenant_id", "exp", "iat", "jti"]
 ```
@@ -443,13 +443,13 @@ class JWTSettings:
 class APIKeySettings:
     # Use bcrypt for hashing API keys
     HASH_ALGORITHM = "bcrypt"
-    
+
     # Require minimum key length
     MIN_KEY_LENGTH = 32
-    
+
     # Key rotation policy
     KEY_ROTATION_DAYS = 90
-    
+
     # Revocation tracking
     TRACK_REVOKED_KEYS = True
     REVOKED_KEY_RETENTION_DAYS = 30
@@ -462,7 +462,7 @@ class APIKeySettings:
 if settings.environment == "production":
     # Force HTTPS redirect
     app.add_middleware(HTTPSRedirectMiddleware)
-    
+
     # HSTS header (1 year)
     app.add_middleware(
         BaseHTTPMiddleware,
@@ -512,7 +512,7 @@ class AuditLog(BaseModel):
 async def log_audit_event(event: AuditLog):
     # Store in append-only log storage
     await audit_storage.insert(event.dict())
-    
+
     # Also emit to audit stream for real-time monitoring
     await audit_event_stream.publish(event)
 
@@ -589,6 +589,6 @@ AUDIT_EVENTS = [
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-20  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-20
 **Related Files**: 004-api-design.md, 002-implementation-strategy.md

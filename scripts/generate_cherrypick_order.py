@@ -11,6 +11,7 @@ Usage:
   python scripts/generate_cherrypick_order.py
 
 """
+
 import csv
 from pathlib import Path
 from datetime import datetime
@@ -82,15 +83,17 @@ def main():
             cat = (r.get("category") or "").strip() or "other"
             priority_idx = priority_map.get(cat, max(priority_map.values()) + 1)
             date_val = parse_date((r.get("auth_date") or "").strip())
-            rows.append({
-                "commit": r.get("commit"),
-                "auth_date": r.get("auth_date"),
-                "author": r.get("author"),
-                "subject": r.get("subject"),
-                "category": cat,
-                "priority_idx": priority_idx,
-                "date_val": date_val,
-            })
+            rows.append(
+                {
+                    "commit": r.get("commit"),
+                    "auth_date": r.get("auth_date"),
+                    "author": r.get("author"),
+                    "subject": r.get("subject"),
+                    "category": cat,
+                    "priority_idx": priority_idx,
+                    "date_val": date_val,
+                }
+            )
 
     # Sort by priority_idx then date_val then commit
     rows.sort(key=lambda x: (x["priority_idx"], x["date_val"], x["commit"]))
@@ -98,26 +101,30 @@ def main():
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow([
-            "commit",
-            "auth_date",
-            "author",
-            "subject",
-            "category",
-            "priority_idx",
-            "git_cherry_pick_cmd",
-        ])
+        writer.writerow(
+            [
+                "commit",
+                "auth_date",
+                "author",
+                "subject",
+                "category",
+                "priority_idx",
+                "git_cherry_pick_cmd",
+            ]
+        )
         for r in rows:
             cmd = f"git cherry-pick {r['commit']}"
-            writer.writerow([
-                r["commit"],
-                r["auth_date"],
-                r["author"],
-                r["subject"],
-                r["category"],
-                r["priority_idx"],
-                cmd,
-            ])
+            writer.writerow(
+                [
+                    r["commit"],
+                    r["auth_date"],
+                    r["author"],
+                    r["subject"],
+                    r["category"],
+                    r["priority_idx"],
+                    cmd,
+                ]
+            )
 
     print("Wrote ordered cherry-pick CSV to:", OUT)
     return 0

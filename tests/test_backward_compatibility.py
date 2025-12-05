@@ -53,10 +53,10 @@ class TestStorageLayerBackwardCompatibility:
         namespace = DummyStorage(namespace="test", workspace="ws", global_config={})
 
         # Should have workspace set
-        assert hasattr(namespace, 'workspace')
+        assert hasattr(namespace, "workspace")
 
         # tenant_id should be optional (getattr should return None)
-        tenant_id = getattr(namespace, 'tenant_id', None)
+        tenant_id = getattr(namespace, "tenant_id", None)
         assert tenant_id is None
 
     def test_storage_namespace_backward_compat_workspace_only(self):
@@ -71,14 +71,16 @@ class TestStorageLayerBackwardCompatibility:
                 return {"status": "success", "message": "dropped"}
 
         # Legacy usage: creating namespace with just workspace (using dummy concrete class)
-        namespace = DummyStorage(namespace="test", workspace="test-workspace", global_config={})
-        
+        namespace = DummyStorage(
+            namespace="test", workspace="test-workspace", global_config={}
+        )
+
         # Should work without errors
         assert namespace.workspace == "test-workspace"
-        
+
         # tenant_id and kb_id should not be required
-        assert getattr(namespace, 'tenant_id', None) is None
-        assert getattr(namespace, 'kb_id', None) is None
+        assert getattr(namespace, "tenant_id", None) is None
+        assert getattr(namespace, "kb_id", None) is None
 
 
 class TestAuthenticationBackwardCompatibility:
@@ -92,9 +94,9 @@ class TestAuthenticationBackwardCompatibility:
         token = auth_handler.create_token(
             username="test_user",
             role="admin",
-            metadata={}  # No tenant info
+            metadata={},  # No tenant info
         )
-        
+
         # Token should be valid
         assert token is not None
         assert isinstance(token, str)
@@ -107,12 +109,9 @@ class TestAuthenticationBackwardCompatibility:
         token = auth_handler.create_token(
             username="test_user",
             role="admin",
-            metadata={
-                "tenant_id": "tenant-123",
-                "kb_id": "kb-456"
-            }
+            metadata={"tenant_id": "tenant-123", "kb_id": "kb-456"},
         )
-        
+
         # Token should be valid
         assert token is not None
         assert isinstance(token, str)
@@ -151,7 +150,9 @@ class TestTenantServiceOptionalUsage:
                 return None
 
         # Should initialize with a KV storage instance
-        service = TenantService(FakeKV(namespace="kv", workspace="kv", global_config={}))
+        service = TenantService(
+            FakeKV(namespace="kv", workspace="kv", global_config={})
+        )
         assert service is not None
 
     @pytest.mark.asyncio
@@ -163,7 +164,11 @@ class TestTenantServiceOptionalUsage:
 
         class FakeKV(BaseKVStorage):
             def __init__(self, namespace, workspace, global_config):
-                super().__init__(namespace=namespace, workspace=workspace, global_config=global_config)
+                super().__init__(
+                    namespace=namespace,
+                    workspace=workspace,
+                    global_config=global_config,
+                )
                 self.store: dict[str, dict] = {}
 
             async def index_done_callback(self) -> None:
@@ -190,15 +195,15 @@ class TestTenantServiceOptionalUsage:
                 for i in ids:
                     self.store.pop(i, None)
 
-        service = TenantService(FakeKV(namespace="kv", workspace="kv", global_config={}))
-        
+        service = TenantService(
+            FakeKV(namespace="kv", workspace="kv", global_config={})
+        )
+
         # Create a tenant
         tenant = await service.create_tenant(
-            tenant_name="Test Tenant",
-            description="Test Description",
-            metadata={}
+            tenant_name="Test Tenant", description="Test Description", metadata={}
         )
-        
+
         assert tenant is not None
         assert tenant.tenant_name == "Test Tenant"
         assert tenant.tenant_id is not None
@@ -210,8 +215,7 @@ class TestTenantServiceOptionalUsage:
 
         # Update the tenant
         updated = await service.update_tenant(
-            tenant.tenant_id,
-            tenant_name="Updated Name"
+            tenant.tenant_id, tenant_name="Updated Name"
         )
         assert updated is not None
         assert updated.tenant_name == "Updated Name"
@@ -242,28 +246,36 @@ class TestMultiTenantOptionalness:
         class FakeKV(BaseKVStorage):
             async def index_done_callback(self) -> None:
                 return None
+
             async def drop(self) -> dict[str, str]:
                 return {"status": "success", "message": "dropped"}
+
             async def get_by_id(self, id: str):
                 return None
+
             async def get_by_ids(self, ids: list[str]):
                 return []
+
             async def filter_keys(self, keys: set[str]) -> set[str]:
                 return set()
+
             async def upsert(self, data: dict[str, dict]):
                 return None
+
             async def delete(self, ids: list[str]) -> None:
                 return None
 
-        service = TenantService(FakeKV(namespace="kv", workspace="kv", global_config={}))
-        
+        service = TenantService(
+            FakeKV(namespace="kv", workspace="kv", global_config={})
+        )
+
         # Register tenant routes
         router = create_tenant_routes(service)
         app.include_router(router)
-        
+
         # App should initialize without errors
         client = TestClient(app)
-        
+
         # Tenant endpoints should exist
         response = client.options("/api/v1/tenants")
         # Should return some response (method not allowed or similar)

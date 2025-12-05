@@ -1,7 +1,7 @@
 # Task Log: Pipeline Screen Tenant Filtering Fix
 
-**Date**: 2024-12-05 02:00  
-**Mode**: beastmode-chatmode  
+**Date**: 2024-12-05 02:00
+**Mode**: beastmode-chatmode
 **Task**: Fix pipeline screen not being filtered by tenant and KB
 
 ## Summary
@@ -38,7 +38,7 @@ Implemented multi-tenant support for document routes to ensure the pipeline scre
 ## Next Steps
 
 - Consider updating graph routes (`graph_routes.py`) for tenant-aware graph operations
-- Consider updating query routes (`query_routes.py`) for tenant-aware queries  
+- Consider updating query routes (`query_routes.py`) for tenant-aware queries
 - Write/upload operations (upload, delete, etc.) may need similar tenant-aware treatment
 
 ## Lessons/Insights

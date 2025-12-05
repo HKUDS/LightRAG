@@ -20,21 +20,21 @@ class Tenant:
     tenant_id: str  # UUID: e.g., "550e8400-e29b-41d4-a716-446655440000"
     tenant_name: str  # Display name: e.g., "Acme Corp"
     description: Optional[str]  # Free-text description
-    
+
     # Configuration
     config: TenantConfig
     quota: ResourceQuota
-    
+
     # Lifecycle
     is_active: bool = True
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
     updated_by: Optional[str]
-    
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Statistics
     kb_count: int = 0
     total_documents: int = 0
@@ -53,29 +53,29 @@ class KnowledgeBase:
     tenant_id: str  # Foreign key to Tenant
     kb_name: str  # Display name: e.g., "Product Documentation"
     description: Optional[str]
-    
+
     # Status and lifecycle
     is_active: bool = True
     status: str = "ready"  # ready | indexing | error
-    
+
     # Statistics
     document_count: int = 0
     entity_count: int = 0
     relationship_count: int = 0
     chunk_count: int = 0
     storage_used_mb: float = 0.0
-    
+
     # Indexing info
     last_indexed_at: Optional[datetime] = None
     index_version: int = 1
-    
+
     # Configuration (can override tenant defaults)
     config: Optional[KBConfig] = None
-    
+
     # Timestamps
     created_at: datetime
     updated_at: datetime
-    
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 ```
@@ -89,27 +89,27 @@ class TenantConfig:
     llm_model: str = "gpt-4o-mini"
     embedding_model: str = "bge-m3:latest"
     rerank_model: Optional[str] = None
-    
+
     # LLM parameters
     llm_model_kwargs: Dict[str, Any] = field(default_factory=dict)
     llm_temperature: float = 1.0
     llm_max_tokens: int = 4096
-    
+
     # Embedding parameters
     embedding_dim: int = 1024
     embedding_batch_num: int = 10
-    
+
     # Query defaults
     top_k: int = 40
     chunk_top_k: int = 20
     cosine_threshold: float = 0.2
     enable_llm_cache: bool = True
     enable_rerank: bool = True
-    
+
     # Chunking defaults
     chunk_size: int = 1200
     chunk_overlap: int = 100
-    
+
     # Custom tenant metadata
     custom_metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -146,26 +146,26 @@ class TenantContext:
     kb_id: str
     user_id: str
     role: str  # admin | editor | viewer | viewer:read-only
-    
+
     # Authorization
     permissions: Dict[str, bool] = field(default_factory=dict)
     knowledge_base_ids: List[str] = field(default_factory=list)  # Accessible KBs
-    
+
     # Request tracking
     request_id: str = field(default_factory=lambda: str(uuid4()))
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
-    
+
     # Computed properties
     @property
     def workspace_namespace(self) -> str:
         """Backward compatible workspace namespace"""
         return f"{self.tenant_id}_{self.kb_id}"
-    
+
     def can_access_kb(self, kb_id: str) -> bool:
         """Check if user can access specific KB"""
         return kb_id in self.knowledge_base_ids or "*" in self.knowledge_base_ids
-    
+
     def has_permission(self, permission: str) -> bool:
         """Check if user has specific permission"""
         return self.permissions.get(permission, False)
@@ -331,17 +331,17 @@ CREATE INDEX idx_rel_tenant_source ON relationships(tenant_id, kb_id, source_ent
 
 ```sql
 -- Get all documents for a tenant/KB
-SELECT * FROM documents 
+SELECT * FROM documents
 WHERE tenant_id = $1 AND kb_id = $2 AND is_active = true;
 
 -- Get all chunks for a document (with tenant isolation)
-SELECT * FROM chunks 
+SELECT * FROM chunks
 WHERE tenant_id = $1 AND kb_id = $2 AND doc_id = $3
 ORDER BY chunk_index;
 
 -- Search entities by name and type (tenant-scoped)
-SELECT * FROM entities 
-WHERE tenant_id = $1 AND kb_id = $2 
+SELECT * FROM entities
+WHERE tenant_id = $1 AND kb_id = $2
 AND entity_name ILIKE '%' || $3 || '%'
 AND entity_type = $4;
 
@@ -484,18 +484,18 @@ class Permission(str, Enum):
     MANAGE_TENANT = "tenant:manage"
     MANAGE_MEMBERS = "tenant:manage_members"
     MANAGE_BILLING = "tenant:manage_billing"
-    
+
     # KB-level permissions
     CREATE_KB = "kb:create"
     DELETE_KB = "kb:delete"
     MANAGE_KB = "kb:manage"
-    
+
     # Document-level permissions
     CREATE_DOCUMENT = "document:create"
     UPDATE_DOCUMENT = "document:update"
     DELETE_DOCUMENT = "document:delete"
     READ_DOCUMENT = "document:read"
-    
+
     # Query permissions
     RUN_QUERY = "query:run"
     ACCESS_KB = "kb:access"
@@ -587,7 +587,7 @@ class TenantValidator:
     def validate_tenant_id(tenant_id: str) -> bool:
         """Validate tenant ID format (UUID)"""
         return bool(UUID(tenant_id))
-    
+
     @staticmethod
     def validate_tenant_name(name: str) -> bool:
         """Validate tenant name"""
@@ -598,7 +598,7 @@ class KBValidator:
     def validate_kb_id(kb_id: str) -> bool:
         """Validate KB ID format"""
         return bool(UUID(kb_id))
-    
+
     @staticmethod
     def validate_kb_name(name: str, tenant_id: str) -> bool:
         """Validate KB name is unique within tenant"""
@@ -628,6 +628,6 @@ class EntityValidator:
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-20  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-20
 **Related Files**: 002-implementation-strategy.md, 004-api-design.md

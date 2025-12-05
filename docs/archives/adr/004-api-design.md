@@ -67,7 +67,7 @@ async def validate_token(token: str) -> TokenPayload:
         exp_time = datetime.fromtimestamp(payload["exp"])
         if datetime.utcnow() > exp_time:
             raise HTTPException(status_code=401, detail="Token expired")
-        
+
         return TokenPayload(**payload)
     except jwt.DecodeError:
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -202,7 +202,7 @@ async def update_tenant(
     """Update tenant configuration"""
     if not has_permission(tenant_context, "tenant:manage"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     tenant = await tenant_service.update_tenant(
         tenant_id=tenant_context.tenant_id,
         **request.dict(exclude_none=True)
@@ -222,7 +222,7 @@ async def create_knowledge_base(
     """Create a knowledge base in a tenant"""
     if not has_permission(tenant_context, "kb:create"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     kb = await tenant_service.create_knowledge_base(
         tenant_id=tenant_context.tenant_id,
         kb_name=request.kb_name,
@@ -268,7 +268,7 @@ async def delete_knowledge_base(
     """Delete a knowledge base"""
     if not has_permission(tenant_context, "kb:delete"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     await tenant_service.delete_knowledge_base(
         tenant_id=tenant_context.tenant_id,
         kb_id=kb_id
@@ -291,19 +291,19 @@ async def add_document(
 ) -> DocumentAddResponse:
     """
     Add a document to a knowledge base.
-    
+
     Returns a track_id for monitoring progress via websocket or polling.
     """
     if not has_permission(tenant_context, "document:create"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Validate file
     if not is_allowed_file(file.filename):
         raise HTTPException(status_code=400, detail="File type not allowed")
-    
+
     # Get tenant-specific RAG instance
     rag = await rag_manager.get_rag_instance(tenant_id, kb_id)
-    
+
     # Start document processing (async)
     track_id = generate_track_id()
     asyncio.create_task(
@@ -315,7 +315,7 @@ async def add_document(
             tenant_context=tenant_context
         )
     )
-    
+
     return DocumentAddResponse(
         status="processing",
         track_id=track_id,
@@ -363,19 +363,19 @@ async def delete_document(
     """Delete a document from knowledge base"""
     if not has_permission(tenant_context, "document:delete"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Verify document belongs to this tenant/KB
     doc = await doc_service.get_document(doc_id, tenant_context.tenant_id, tenant_context.kb_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     # Delete from RAG
     rag = await rag_manager.get_rag_instance(
         tenant_context.tenant_id,
         tenant_context.kb_id
     )
     await rag.adelete_by_doc_id(doc_id)
-    
+
     return {"status": "success", "message": "Document deleted"}
 ```
 
@@ -391,22 +391,22 @@ async def query_knowledge_base(
 ) -> QueryResponse:
     """
     Execute a query against a knowledge base.
-    
+
     Returns the generated response with optional references.
     """
     if not has_permission(tenant_context, "query:run"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Validate query
     if len(request.query) < 3:
         raise HTTPException(status_code=400, detail="Query too short")
-    
+
     # Get tenant-specific RAG instance
     rag = await rag_manager.get_rag_instance(
         tenant_context.tenant_id,
         tenant_context.kb_id
     )
-    
+
     # Execute query with tenant context
     result = await rag.aquery(
         query=request.query,
@@ -416,7 +416,7 @@ async def query_knowledge_base(
             stream=False
         )
     )
-    
+
     return QueryResponse(
         response=result.response,
         references=result.references if request.include_references else None,
@@ -450,19 +450,19 @@ async def query_knowledge_base_stream(
 ) -> StreamingResponse:
     """
     Execute a query with streaming response.
-    
+
     Returns Server-Sent Events (SSE) with streamed tokens and metadata.
     """
     if not has_permission(tenant_context, "query:run"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     async def stream_response():
         # Get RAG instance
         rag = await rag_manager.get_rag_instance(
             tenant_context.tenant_id,
             tenant_context.kb_id
         )
-        
+
         # Stream the response
         async for chunk in rag.aquery_stream(
             query=request.query,
@@ -474,7 +474,7 @@ async def query_knowledge_base_stream(
         ):
             # Emit Server-Sent Event
             yield f"data: {json.dumps(chunk)}\n\n"
-    
+
     return StreamingResponse(
         stream_response(),
         media_type="text/event-stream"
@@ -491,22 +491,22 @@ async def query_knowledge_base_data(
 ) -> QueryDataResponse:
     """
     Execute a query and return full context data.
-    
+
     Returns entities, relationships, chunks, and references.
     """
     if not has_permission(tenant_context, "query:run"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     rag = await rag_manager.get_rag_instance(
         tenant_context.tenant_id,
         tenant_context.kb_id
     )
-    
+
     result = await rag.aquery_with_data(
         query=request.query,
         param=QueryParam(mode=request.mode or "mix", top_k=request.top_k or 40)
     )
-    
+
     return QueryDataResponse(
         status="success",
         message="Query executed successfully",
@@ -545,17 +545,17 @@ async def get_graph(
     """Get knowledge graph visualization data"""
     if not has_permission(tenant_context, "kb:access"):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     rag = await rag_manager.get_rag_instance(
         tenant_context.tenant_id,
         tenant_context.kb_id
     )
-    
+
     graph_data = await rag.get_graph(
         max_nodes=max_nodes,
         entity_type=entity_type
     )
-    
+
     return GraphResponse(
         nodes=graph_data.nodes,
         edges=graph_data.edges,
@@ -635,7 +635,7 @@ class RateLimitConfig:
     QUERIES_PER_MINUTE = 100
     DOCUMENTS_PER_HOUR = 50
     API_CALLS_PER_MONTH = 100000
-    
+
     # Global
     GLOBAL_QPS = 10000  # Queries per second
 
@@ -652,7 +652,7 @@ async def query_with_rate_limit(
         limit=RateLimitConfig.QUERIES_PER_MINUTE,
         window=60
     )
-    
+
     # Execute query
     # ...
 ```
@@ -717,6 +717,6 @@ curl -X POST https://lightrag.example.com/api/v1/tenants/acme/knowledge-bases/do
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-20  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-20
 **Related Files**: 001-multi-tenant-architecture-overview.md, 002-implementation-strategy.md

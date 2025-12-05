@@ -489,40 +489,40 @@ CORS_ORIGINS=*
 class LightRAG:
     # Directory configuration
     working_dir: str = "./rag_storage"
-    
+
     # LLM configuration
     llm_model_name: str = "gpt-4o-mini"
     llm_model_func: Callable = openai_complete_if_cache
     llm_model_max_async: int = 4
     llm_model_max_token_size: int = 32768
     llm_model_kwargs: dict = field(default_factory=dict)
-    
+
     # Embedding configuration
     embedding_model_name: str = "text-embedding-ada-002"
     embedding_func: EmbeddingFunc = None
     embedding_batch_num: int = 10
     embedding_func_max_async: int = 8
-    
+
     # Chunking configuration
     chunk_token_size: int = 1200
     chunk_overlap_token_size: int = 100
     tiktoken_model_name: str = "gpt-4o"
-    
+
     # Entity extraction
     entity_extract_max_gleaning: int = 1
     entity_summary_to_max_tokens: int = 1200
-    
+
     # Storage backends
     kv_storage: str = "JsonKVStorage"
     vector_storage: str = "NanoVectorDBStorage"
     graph_storage: str = "NetworkXStorage"
     doc_status_storage: str = "JsonDocStatusStorage"
-    
+
     # Advanced options
     enable_llm_cache: bool = True
     enable_llm_cache_for_entity_extract: bool = True
     auto_manage_storages_states: bool = True
-    
+
     # Namespace (for multi-tenancy)
     namespace: str = None
 ```

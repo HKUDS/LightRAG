@@ -178,16 +178,16 @@ test_exists() {
 
 show_help() {
     print_banner
-    
+
     echo -e "${BOLD}USAGE${NC}"
     echo "    $0 [OPTIONS] [TESTS...]"
     echo ""
-    
+
     echo -e "${BOLD}DESCRIPTION${NC}"
     echo "    Run end-to-end tests for LightRAG multi-tenant functionality."
     echo "    Supports multiple storage backends and individual test selection."
     echo ""
-    
+
     echo -e "${BOLD}OPTIONS${NC}"
     echo -e "    ${GREEN}-b, --backend${NC} <type>"
     echo "        Storage backend to test. Options: file, postgres, all"
@@ -264,7 +264,7 @@ show_help() {
     echo -e "    ${GREEN}--version${NC}"
     echo "        Show version information"
     echo ""
-    
+
     echo -e "${BOLD}EXAMPLES${NC}"
     echo -e "    ${DIM}# Run all tests with file backend (default)${NC}"
     echo "    $0"
@@ -317,7 +317,7 @@ show_help() {
     echo -e "    ${DIM}# Reset database before each test run${NC}"
     echo "    $0 --reset-db"
     echo ""
-    
+
     echo -e "${BOLD}ENVIRONMENT VARIABLES${NC}"
     echo "    OPENAI_API_KEY       OpenAI API key (required for --openai)"
     echo "    LIGHTRAG_API_URL     API URL (default: http://localhost:9621)"
@@ -329,7 +329,7 @@ show_help() {
     echo "    POSTGRES_PASSWORD    PostgreSQL password"
     echo "    POSTGRES_DATABASE    PostgreSQL database (default: lightrag_multitenant)"
     echo ""
-    
+
     echo -e "${BOLD}EXIT CODES${NC}"
     echo "    0    All tests passed"
     echo "    1    One or more tests failed"
@@ -343,7 +343,7 @@ show_version() {
 
 list_available() {
     print_banner
-    
+
     echo -e "${BOLD}📋 AVAILABLE TESTS${NC}"
     print_separator
     for i in "${!TEST_KEYS[@]}"; do
@@ -353,7 +353,7 @@ list_available() {
         echo -e "    ${DIM}${TEST_DESCS[$i]}${NC}"
         echo ""
     done
-    
+
     echo -e "${BOLD}💾 AVAILABLE BACKENDS${NC}"
     print_separator
     for i in "${!BACKEND_KEYS[@]}"; do
@@ -370,10 +370,10 @@ list_available() {
 
 interactive_menu() {
     print_banner
-    
+
     echo -e "${BOLD}🎮 INTERACTIVE MODE${NC}"
     print_separator
-    
+
     # Select Backend
     echo -e "\n${BOLD}Select Storage Backend:${NC}"
     echo "  1) file     - File-based storage (JSON, NetworkX, NanoVectorDB)"
@@ -381,13 +381,13 @@ interactive_menu() {
     echo "  3) all      - Test both backends"
     echo ""
     read -p "Enter choice [1-3] (default: 1): " backend_choice
-    
+
     case "$backend_choice" in
         2) BACKEND="postgres" ;;
         3) BACKEND="all" ;;
         *) BACKEND="file" ;;
     esac
-    
+
     # Select Tests
     echo -e "\n${BOLD}Select Tests to Run:${NC}"
     echo "  1) all       - Run all tests"
@@ -397,12 +397,12 @@ interactive_menu() {
     echo "  5) custom    - Select multiple tests"
     echo ""
     read -p "Enter choice [1-5] (default: 1): " test_choice
-    
+
     case "$test_choice" in
         2) SELECTED_TESTS="isolation" ;;
         3) SELECTED_TESTS="deletion" ;;
         4) SELECTED_TESTS="mixed" ;;
-        5) 
+        5)
             echo ""
             echo "Select tests (space-separated, e.g., '1 3'):"
             echo "  1) isolation"
@@ -421,10 +421,10 @@ interactive_menu() {
             ;;
         *) SELECTED_TESTS="" ;;  # Empty means all
     esac
-    
+
     # Advanced Options
     echo -e "\n${BOLD}Advanced Options:${NC}"
-    
+
     read -p "Use OpenAI models? [y/N]: " openai_choice
     if [[ "$openai_choice" =~ ^[Yy] ]]; then
         USE_OPENAI="true"
@@ -437,23 +437,23 @@ interactive_menu() {
             log_warning "OPENAI_API_KEY not set. Please set it before running tests."
         fi
     fi
-    
+
     read -p "Reset database before tests? [y/N]: " reset_choice
     [[ "$reset_choice" =~ ^[Yy] ]] && RESET_DB="true"
-    
+
     read -p "Enable verbose output? [y/N]: " verbose_choice
     [[ "$verbose_choice" =~ ^[Yy] ]] && VERBOSE="true"
-    
+
     read -p "Keep server running after tests? [y/N]: " keep_choice
     [[ "$keep_choice" =~ ^[Yy] ]] && KEEP_SERVER="true"
-    
+
     # Custom LLM Model (only if not using OpenAI)
     if [[ "$USE_OPENAI" != "true" ]]; then
         echo ""
         read -p "LLM Model (default: $LLM_MODEL): " custom_llm
         [[ -n "$custom_llm" ]] && LLM_MODEL="$custom_llm"
     fi
-    
+
     # Confirmation
     echo ""
     print_separator
@@ -472,7 +472,7 @@ interactive_menu() {
     echo "  Keep Server: $KEEP_SERVER"
     print_separator
     echo ""
-    
+
     read -p "Proceed with these settings? [Y/n]: " confirm
     if [[ "$confirm" =~ ^[Nn] ]]; then
         echo "Aborted."
@@ -489,7 +489,7 @@ cleanup_server() {
         log_debug "Skipping server cleanup (--skip-server)"
         return 0
     fi
-    
+
     if lsof -i :$SERVER_PORT > /dev/null 2>&1; then
         log_info "Stopping existing server on port $SERVER_PORT..."
         lsof -i :$SERVER_PORT | grep -i python | awk '{print $2}' | xargs kill -9 2>/dev/null || true
@@ -503,21 +503,21 @@ start_server() {
         log_debug "Skipping server start (--skip-server)"
         return 0
     fi
-    
+
     log_step "Starting LightRAG Server"
-    
+
     cd "$PROJECT_ROOT"
-    
+
     if [[ "$VERBOSE" == "true" ]]; then
         python -m lightrag.api.lightrag_server --port "$SERVER_PORT" 2>&1 | tee "$LOG_FILE" &
     else
         nohup python -m lightrag.api.lightrag_server --port "$SERVER_PORT" > "$LOG_FILE" 2>&1 &
     fi
-    
+
     SERVER_PID=$!
     echo "$SERVER_PID" > /tmp/lightrag_test_server.pid
     log_debug "Server PID: $SERVER_PID"
-    
+
     # Wait for server to be ready
     log_info "Waiting for server to be ready..."
     local count=0
@@ -536,7 +536,7 @@ start_server() {
         count=$((count + 1))
         log_debug "Waiting... ($count/$SERVER_TIMEOUT)"
     done
-    
+
     log_error "Server failed to start within $SERVER_TIMEOUT seconds"
     log_error "Check $LOG_FILE for details"
     if [[ -f "$LOG_FILE" ]]; then
@@ -564,13 +564,13 @@ start_log_tail() {
     if [[ "$QUIET" == "true" ]]; then
         return 0
     fi
-    
+
     # Kill any existing tail process
     stop_log_tail
-    
+
     echo -e "${DIM}──────────────────────────────────────────────────────────────────────${NC}"
     echo -e "${DIM}📋 Server Log (live):${NC}"
-    
+
     # Start tail in background, filtering for important messages
     tail -f "$LOG_FILE" 2>/dev/null | grep --line-buffered -E "(INFO|ERROR|WARNING|Processing|Embedding|LLM|Extracting|document)" | while read line; do
         # Colorize the output
@@ -607,15 +607,15 @@ stop_server() {
         log_debug "Skipping server stop (--skip-server)"
         return 0
     fi
-    
+
     # Stop log tail first
     stop_log_tail
-    
+
     if [[ "$KEEP_SERVER" == "true" ]]; then
         log_info "Keeping server running (--keep-server)"
         return 0
     fi
-    
+
     if [[ -f /tmp/lightrag_test_server.pid ]]; then
         local pid=$(cat /tmp/lightrag_test_server.pid)
         if kill -0 "$pid" 2>/dev/null; then
@@ -634,25 +634,25 @@ stop_server() {
 
 reset_postgres_database() {
     log_step "Resetting PostgreSQL Database"
-    
+
     local pg_host="${POSTGRES_HOST:-localhost}"
     local pg_port="${POSTGRES_PORT:-5432}"
     local pg_user="${POSTGRES_USER:-lightrag}"
     local pg_pass="${POSTGRES_PASSWORD:-lightrag_secure_password}"
     local pg_db="${POSTGRES_DATABASE:-lightrag_multitenant}"
-    
+
     # Check if psql is available
     if ! command -v psql &> /dev/null; then
         log_warning "psql not found. Skipping database reset."
         log_info "Install PostgreSQL client or reset manually."
         return 0
     fi
-    
+
     export PGPASSWORD="$pg_pass"
-    
+
     # Drop and recreate tables for multi-tenant data
     log_info "Clearing tenant data from PostgreSQL..."
-    
+
     # Try to truncate/delete data from known tables
     psql -h "$pg_host" -p "$pg_port" -U "$pg_user" -d "$pg_db" -q << EOF 2>/dev/null || true
 -- Drop all AGE graphs
@@ -664,7 +664,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'ag_catalog') THEN
         -- Set search path to include ag_catalog
         PERFORM set_config('search_path', 'ag_catalog,public', false);
-        
+
         FOR g IN SELECT name FROM ag_catalog.ag_graph LOOP
             PERFORM drop_graph(g.name, true);
             RAISE NOTICE 'Dropped graph: %', g.name;
@@ -677,10 +677,10 @@ DO \$\$
 DECLARE
     t TEXT;
 BEGIN
-    FOR t IN 
-        SELECT tablename FROM pg_tables 
-        WHERE schemaname = 'public' 
-        AND (tablename LIKE '%tenant%' OR tablename LIKE '%kb%' OR tablename LIKE '%chunk%' 
+    FOR t IN
+        SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public'
+        AND (tablename LIKE '%tenant%' OR tablename LIKE '%kb%' OR tablename LIKE '%chunk%'
              OR tablename LIKE '%entity%' OR tablename LIKE '%relation%' OR tablename LIKE '%document%')
     LOOP
         EXECUTE 'TRUNCATE TABLE ' || quote_ident(t) || ' CASCADE';
@@ -688,15 +688,15 @@ BEGIN
     END LOOP;
 END \$\$;
 EOF
-    
+
     unset PGPASSWORD
-    
+
     log_success "PostgreSQL database reset complete"
 }
 
 reset_file_storage() {
     log_step "Resetting File Storage"
-    
+
     if [[ -d "$PROJECT_ROOT/rag_storage" ]]; then
         log_info "Removing rag_storage directory..."
         rm -rf "$PROJECT_ROOT/rag_storage"
@@ -712,9 +712,9 @@ reset_file_storage() {
 
 configure_environment() {
     local backend_type=$1
-    
+
     log_step "Configuring Environment for $backend_type"
-    
+
     # Common settings
     export LLM_BINDING="$LLM_BINDING"
     export LLM_MODEL="$LLM_MODEL"
@@ -723,33 +723,33 @@ configure_environment() {
     export EMBEDDING_DIM="$EMBEDDING_DIM"
     export LIGHTRAG_API_KEY="${LIGHTRAG_API_KEY:-admin123}"
     export AUTH_ACCOUNTS="${AUTH_ACCOUNTS:-admin:admin123}"
-    
+
     # Performance Tuning (Increased for testing)
     export MAX_ASYNC=4
     export EMBEDDING_FUNC_MAX_ASYNC=4
     export MAX_PARALLEL_INSERT=4
     export WORKERS=1  # Keep uvicorn workers at 1 to avoid DB lock issues in tests, but increase async tasks
-    
+
     case "$backend_type" in
         file)
             export LIGHTRAG_KV_STORAGE="JsonKVStorage"
             export LIGHTRAG_DOC_STATUS_STORAGE="JsonDocStatusStorage"
             export LIGHTRAG_GRAPH_STORAGE="NetworkXStorage"
             export LIGHTRAG_VECTOR_STORAGE="NanoVectorDBStorage"
-            
+
             log_info "Cleaning up local storage..."
             rm -rf "$PROJECT_ROOT/rag_storage"
             ;;
-            
+
         postgres)
             export LIGHTRAG_KV_STORAGE="PGKVStorage"
             export LIGHTRAG_DOC_STATUS_STORAGE="PGDocStatusStorage"
             export LIGHTRAG_GRAPH_STORAGE="PGGraphStorage"
             export LIGHTRAG_VECTOR_STORAGE="PGVectorStorage"
-            
+
             # Docker defaults - these match docker-compose.e2e.yml
             # Uses non-standard port 15432 to avoid conflicts
-            
+
             if [[ "$SKIP_DOCKER" != "true" ]]; then
                 # Force ports when using Docker to match docker-compose.e2e.yml
                 export POSTGRES_HOST="localhost"
@@ -757,7 +757,7 @@ configure_environment() {
                 export POSTGRES_USER="lightrag"
                 export POSTGRES_PASSWORD="lightrag123"
                 export POSTGRES_DATABASE="lightrag_multitenant"
-                
+
                 log_info "Using Docker PostgreSQL at $POSTGRES_HOST:$POSTGRES_PORT"
             else
                 # Use env vars or defaults for external
@@ -766,21 +766,21 @@ configure_environment() {
                 export POSTGRES_USER="${POSTGRES_USER:-lightrag}"
                 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-lightrag123}"
                 export POSTGRES_DATABASE="${POSTGRES_DATABASE:-lightrag_multitenant}"
-                
+
                 log_warning "Using external PostgreSQL at $POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DATABASE"
             fi
-            
+
             if [[ "$RESET_DB" == "true" ]]; then
                 reset_postgres_database
             fi
             ;;
-            
+
         *)
             log_error "Unknown backend: $backend_type"
             return 1
             ;;
     esac
-    
+
     if [[ "$VERBOSE" == "true" ]]; then
         echo -e "${DIM}Environment Variables:${NC}"
         echo "  LIGHTRAG_KV_STORAGE=$LIGHTRAG_KV_STORAGE"
@@ -791,7 +791,7 @@ configure_environment() {
         echo "  EMBEDDING_BINDING=$EMBEDDING_BINDING"
         echo "  EMBEDDING_MODEL=$EMBEDDING_MODEL"
     fi
-    
+
     log_success "Environment configured for $backend_type"
 }
 
@@ -807,13 +807,13 @@ check_docker() {
         log_info "Please install Docker: https://docs.docker.com/get-docker/"
         return 1
     fi
-    
+
     if ! docker info &> /dev/null; then
         log_error "Docker daemon is not running"
         log_info "Please start Docker Desktop or the Docker daemon"
         return 1
     fi
-    
+
     # Check for docker compose (v2) or docker-compose (v1)
     if docker compose version &> /dev/null; then
         DOCKER_COMPOSE_CMD="docker compose"
@@ -824,49 +824,49 @@ check_docker() {
         log_info "Please install Docker Compose: https://docs.docker.com/compose/install/"
         return 1
     fi
-    
+
     log_debug "Using: $DOCKER_COMPOSE_CMD"
     return 0
 }
 
 start_docker_services() {
     local backend=$1
-    
+
     if [[ "$SKIP_DOCKER" == "true" ]]; then
         log_debug "Skipping Docker services (--skip-docker)"
         return 0
     fi
-    
+
     # Only start Docker for postgres backend
     if [[ "$backend" != "postgres" ]]; then
         log_debug "Docker services not needed for $backend backend"
         return 0
     fi
-    
+
     log_step "Starting Docker Services"
-    
+
     if ! check_docker; then
         return 1
     fi
-    
+
     # Check if docker-compose file exists
     if [[ ! -f "$DOCKER_COMPOSE_FILE" ]]; then
         log_error "Docker Compose file not found: $DOCKER_COMPOSE_FILE"
         return 1
     fi
-    
+
     cd "$SCRIPT_DIR"
-    
+
     # Stop any existing containers first
     log_info "Stopping any existing containers..."
     $DOCKER_COMPOSE_CMD -f "$DOCKER_COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
-    
+
     # Remove existing volume if reset is requested
     if [[ "$RESET_DB" == "true" ]]; then
         log_info "Removing existing data volumes..."
         $DOCKER_COMPOSE_CMD -f "$DOCKER_COMPOSE_FILE" down -v 2>/dev/null || true
     fi
-    
+
     # Start services
     log_info "Starting PostgreSQL and Redis containers..."
     if [[ "$VERBOSE" == "true" ]]; then
@@ -874,30 +874,30 @@ start_docker_services() {
     else
         $DOCKER_COMPOSE_CMD -f "$DOCKER_COMPOSE_FILE" up -d --build 2>&1 | grep -v "^$" || true
     fi
-    
+
     # Wait for services to be healthy
     log_info "Waiting for services to be healthy..."
     local count=0
     while [[ $count -lt $DOCKER_TIMEOUT ]]; do
         local pg_healthy=$(docker inspect --format='{{.State.Health.Status}}' lightrag-e2e-postgres 2>/dev/null || echo "not_found")
         local redis_healthy=$(docker inspect --format='{{.State.Health.Status}}' lightrag-e2e-redis 2>/dev/null || echo "not_found")
-        
+
         log_debug "PostgreSQL: $pg_healthy, Redis: $redis_healthy"
-        
+
         if [[ "$pg_healthy" == "healthy" && "$redis_healthy" == "healthy" ]]; then
             log_success "Docker services are ready!"
-            
+
             # Display connection info
             echo -e "${DIM}  PostgreSQL: localhost:15432 (user: lightrag, db: lightrag_multitenant)${NC}"
             echo -e "${DIM}  Redis:      localhost:16379${NC}"
             return 0
         fi
-        
+
         sleep 2
         count=$((count + 2))
         log_debug "Waiting... ($count/$DOCKER_TIMEOUT)"
     done
-    
+
     log_error "Docker services failed to become healthy within $DOCKER_TIMEOUT seconds"
     log_info "Checking container logs..."
     echo -e "${DIM}PostgreSQL logs:${NC}"
@@ -910,20 +910,20 @@ stop_docker_services() {
         log_debug "Skipping Docker cleanup (--skip-docker)"
         return 0
     fi
-    
+
     if [[ "$KEEP_DOCKER" == "true" ]]; then
         log_info "Keeping Docker containers running (--keep-docker)"
         return 0
     fi
-    
+
     if ! command -v docker &> /dev/null; then
         return 0
     fi
-    
+
     log_step "Stopping Docker Services"
-    
+
     cd "$SCRIPT_DIR"
-    
+
     if [[ -f "$DOCKER_COMPOSE_FILE" ]]; then
         if docker compose version &> /dev/null; then
             docker compose -f "$DOCKER_COMPOSE_FILE" down 2>/dev/null || true
@@ -936,18 +936,18 @@ stop_docker_services() {
 
 docker_status() {
     log_step "Docker Service Status"
-    
+
     if ! command -v docker &> /dev/null; then
         log_warning "Docker is not installed"
         return 0
     fi
-    
+
     echo ""
     echo -e "${BOLD}Container Status:${NC}"
-    
+
     local pg_status=$(docker inspect --format='{{.State.Status}} ({{.State.Health.Status}})' lightrag-e2e-postgres 2>/dev/null || echo "not running")
     local redis_status=$(docker inspect --format='{{.State.Status}} ({{.State.Health.Status}})' lightrag-e2e-redis 2>/dev/null || echo "not running")
-    
+
     echo "  PostgreSQL: $pg_status"
     echo "  Redis:      $redis_status"
 }
@@ -969,7 +969,7 @@ get_tests_to_run() {
 run_single_test() {
     local test_key=$1
     local backend=$2
-    
+
     # Find test index
     local idx=-1
     for i in "${!TEST_KEYS[@]}"; do
@@ -978,34 +978,34 @@ run_single_test() {
             break
         fi
     done
-    
+
     if [[ $idx -eq -1 ]]; then
         log_error "Unknown test: $test_key"
         return 1
     fi
-    
+
     local file="${TEST_FILES[$idx]}"
     local name="${TEST_NAMES[$idx]}"
     local test_file="$SCRIPT_DIR/$file"
-    
+
     if [[ ! -f "$test_file" ]]; then
         log_error "Test file not found: $test_file"
         return 1
     fi
-    
+
     echo ""
     print_separator
     echo -e "${BOLD}🧪 Running: ${name}${NC}"
     echo -e "${DIM}   File: $file | Backend: $backend${NC}"
     print_separator
-    
+
     # Start log tailing if requested
     if [[ "$SHOW_LOGS" == "true" ]]; then
         start_log_tail
     fi
-    
+
     cd "$PROJECT_ROOT"
-    
+
     local test_result=0
     if python "$test_file"; then
         log_success "$name PASSED"
@@ -1014,13 +1014,13 @@ run_single_test() {
         log_error "$name FAILED"
         test_result=1
     fi
-    
+
     # Stop log tailing
     if [[ "$SHOW_LOGS" == "true" ]]; then
         stop_log_tail
         echo -e "${DIM}──────────────────────────────────────────────────────────────────────${NC}"
     fi
-    
+
     return $test_result
 }
 
@@ -1029,9 +1029,9 @@ run_test_suite() {
     local passed=0
     local failed=0
     local test_results=""
-    
+
     log_step "Running Test Suite for Backend: $backend"
-    
+
     # Start Docker services for postgres backend
     if [[ "$backend" == "postgres" ]]; then
         if ! start_docker_services "$backend"; then
@@ -1039,28 +1039,28 @@ run_test_suite() {
             return 1
         fi
     fi
-    
+
     cleanup_server
     configure_environment "$backend"
-    
+
     if ! start_server; then
         log_error "Failed to start server"
         return 1
     fi
-    
+
     local tests_to_run=$(get_tests_to_run)
     local total=0
     local current=0
-    
+
     # Count total tests
     for test_key in $tests_to_run; do
         total=$((total + 1))
     done
-    
+
     for test_key in $tests_to_run; do
         current=$((current + 1))
         echo -e "\n${CYAN}[$current/$total]${NC}"
-        
+
         if run_single_test "$test_key" "$backend"; then
             passed=$((passed + 1))
             test_results="$test_results\n  ${GREEN}✅ $test_key${NC}"
@@ -1069,9 +1069,9 @@ run_test_suite() {
             test_results="$test_results\n  ${RED}❌ $test_key${NC}"
         fi
     done
-    
+
     stop_server
-    
+
     # Print summary
     echo ""
     print_separator
@@ -1081,7 +1081,7 @@ run_test_suite() {
     print_separator
     echo -e "  Total: $total | ${GREEN}Passed: $passed${NC} | ${RED}Failed: $failed${NC}"
     print_separator
-    
+
     if [[ $failed -eq 0 ]]; then
         echo -e "\n${GREEN}🎉 All tests passed for $backend!${NC}"
         return 0
@@ -1097,10 +1097,10 @@ run_test_suite() {
 
 show_dry_run() {
     print_banner
-    
+
     echo -e "${BOLD}🔍 DRY RUN - Configuration Preview${NC}"
     print_separator
-    
+
     echo -e "\n${BOLD}Selected Backend(s):${NC}"
     if [[ "$BACKEND" == "all" ]]; then
         echo "  - file"
@@ -1108,7 +1108,7 @@ show_dry_run() {
     else
         echo "  - $BACKEND"
     fi
-    
+
     echo -e "\n${BOLD}Selected Tests:${NC}"
     local tests_to_run=$(get_tests_to_run)
     for test_key in $tests_to_run; do
@@ -1123,20 +1123,20 @@ show_dry_run() {
             echo "  - $test_key (${TEST_FILES[$idx]})"
         fi
     done
-    
+
     echo -e "\n${BOLD}Model Configuration:${NC}"
     echo "  LLM Binding:       $LLM_BINDING"
     echo "  LLM Model:         $LLM_MODEL"
     echo "  Embedding Binding: $EMBEDDING_BINDING"
     echo "  Embedding Model:   $EMBEDDING_MODEL"
     echo "  Embedding Dim:     $EMBEDDING_DIM"
-    
+
     echo -e "\n${BOLD}Server Configuration:${NC}"
     echo "  Port:        $SERVER_PORT"
     echo "  Skip Server: $SKIP_SERVER"
     echo "  Keep Server: $KEEP_SERVER"
     echo "  Reset DB:    $RESET_DB"
-    
+
     echo -e "\n${BOLD}Docker Configuration:${NC}"
     echo "  Skip Docker: $SKIP_DOCKER"
     echo "  Keep Docker: $KEEP_DOCKER"
@@ -1147,12 +1147,12 @@ show_dry_run() {
             echo -e "  ${YELLOW}Using external PostgreSQL & Redis${NC}"
         fi
     fi
-    
+
     echo -e "\n${BOLD}Output Options:${NC}"
     echo "  Verbose:   $VERBOSE"
     echo "  Quiet:     $QUIET"
     echo "  Show Logs: $SHOW_LOGS"
-    
+
     if [[ "$USE_OPENAI" == "true" ]]; then
         echo ""
         if [[ -n "$OPENAI_API_KEY" ]]; then
@@ -1161,7 +1161,7 @@ show_dry_run() {
             echo -e "  ${RED}OpenAI API Key: NOT SET ✗${NC}"
         fi
     fi
-    
+
     print_separator
     echo -e "\n${DIM}To run these tests, remove the --dry-run flag${NC}"
 }
@@ -1288,20 +1288,20 @@ parse_args() {
                 ;;
         esac
     done
-    
+
     # Validate OpenAI API key if using OpenAI
     if [[ "$USE_OPENAI" == "true" && -z "$OPENAI_API_KEY" ]]; then
         log_warning "OPENAI_API_KEY environment variable is not set"
         log_info "Please set it before running: export OPENAI_API_KEY=your-key"
     fi
-    
+
     # Validate backend
     if [[ "$BACKEND" != "file" && "$BACKEND" != "postgres" && "$BACKEND" != "all" ]]; then
         log_error "Invalid backend: $BACKEND"
         echo "Valid backends: file, postgres, all"
         exit 2
     fi
-    
+
     # Validate selected tests
     if [[ -n "$SELECTED_TESTS" ]]; then
         for test in $(echo "$SELECTED_TESTS" | tr ',' ' '); do
@@ -1321,7 +1321,7 @@ parse_args() {
             fi
         done
     fi
-    
+
     # Handle "all" in tests
     if [[ "$SELECTED_TESTS" == "all" ]]; then
         SELECTED_TESTS=""
@@ -1339,7 +1339,7 @@ run_start_only_mode() {
     echo -e "${BOLD}  🚀 SERVER-ONLY MODE${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    
+
     # Display configuration
     echo -e "  ${WHITE}Backend:${NC}     ${GREEN}$BACKEND${NC}"
     if [[ "$USE_OPENAI" == "true" ]]; then
@@ -1351,10 +1351,10 @@ run_start_only_mode() {
     fi
     echo -e "  ${WHITE}Port:${NC}        ${GREEN}$SERVER_PORT${NC}"
     echo ""
-    
+
     # Set up trap for cleanup on exit
     trap 'echo ""; log_info "Shutting down..."; stop_server; stop_docker_services; exit 0' INT TERM
-    
+
     # Start Docker services if needed for postgres
     if [[ "$BACKEND" == "postgres" && "$SKIP_DOCKER" != "true" ]]; then
         if ! start_docker_services "$BACKEND"; then
@@ -1362,21 +1362,21 @@ run_start_only_mode() {
             exit 1
         fi
     fi
-    
+
     # Configure environment
     if ! configure_environment "$BACKEND"; then
         log_error "Failed to configure environment"
         stop_docker_services
         exit 1
     fi
-    
+
     # Start server
     if ! start_server; then
         log_error "Failed to start server"
         stop_docker_services
         exit 1
     fi
-    
+
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BOLD}  ✅ LightRAG Server is Running${NC}"
@@ -1384,13 +1384,13 @@ run_start_only_mode() {
     echo ""
     echo -e "  Press ${BOLD}Ctrl+C${NC} to stop the server and exit"
     echo ""
-    
+
     if [[ "$BACKEND" == "postgres" ]]; then
         echo -e "  ${DIM}PostgreSQL: localhost:15432 (user: lightrag, db: lightrag_multitenant)${NC}"
         echo -e "  ${DIM}Redis:      localhost:16379${NC}"
         echo ""
     fi
-    
+
     # Show live logs if requested
     if [[ "$SHOW_LOGS" == "true" ]]; then
         echo -e "${DIM}──────────────────────────────────────────────────────────────────────${NC}"
@@ -1400,7 +1400,7 @@ run_start_only_mode() {
         echo -e "  ${DIM}Tip: Use --logs to see live server output${NC}"
         echo -e "  ${DIM}Log file: $LOG_FILE${NC}"
         echo ""
-        
+
         # Wait indefinitely
         while true; do
             sleep 60
@@ -1426,60 +1426,60 @@ show_configuration() {
     echo -e "  ${WHITE}Embedding Binding:${NC} ${GREEN}$EMBEDDING_BINDING${NC}"
     echo -e "  ${WHITE}Embedding Model:${NC}   ${GREEN}$EMBEDDING_MODEL${NC}"
     echo -e "  ${WHITE}Embedding Dim:${NC}     ${GREEN}$EMBEDDING_DIM${NC}"
-    
+
     if [[ "$BACKEND" != "all" ]]; then
         echo -e "  ${WHITE}Backend:${NC}           ${GREEN}$BACKEND${NC}"
     else
         echo -e "  ${WHITE}Backend:${NC}           ${GREEN}all (file, postgres)${NC}"
     fi
-    
+
     echo -e "  ${WHITE}Server Port:${NC}       ${GREEN}$SERVER_PORT${NC}"
     echo ""
 }
 
 main() {
     parse_args "$@"
-    
+
     # Interactive mode
     if [[ "$INTERACTIVE" == "true" ]]; then
         interactive_menu
     fi
-    
+
     # Dry run mode
     if [[ "$DRY_RUN" == "true" ]]; then
         show_dry_run
         exit 0
     fi
-    
+
     # Print banner unless quiet
     if [[ "$QUIET" != "true" ]]; then
         print_banner
         show_configuration
     fi
-    
+
     # Start-only mode: start server and wait
     if [[ "$START_ONLY" == "true" ]]; then
         run_start_only_mode
         exit 0
     fi
-    
+
     # Track overall results
     local overall_result=0
     local backend_results=""
-    
+
     # Set up trap for cleanup
     trap 'stop_server; stop_docker_services; exit' INT TERM
-    
+
     # Run tests for selected backend(s)
     if [[ "$BACKEND" == "all" ]]; then
         log_step "Running tests on ALL backends"
-        
+
         for backend in file postgres; do
             echo ""
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "${CYAN}                    BACKEND: ${BOLD}$backend${NC}"
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            
+
             if run_test_suite "$backend"; then
                 backend_results="$backend_results\n  ${GREEN}✅ $backend${NC}"
             else
@@ -1487,14 +1487,14 @@ main() {
                 overall_result=1
             fi
         done
-        
+
         # Print overall summary
         echo ""
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${BOLD}                    OVERALL RESULTS${NC}"
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "$backend_results"
-        
+
         if [[ $overall_result -eq 0 ]]; then
             echo -e "\n${GREEN}🏆 ALL BACKENDS PASSED!${NC}"
         else
@@ -1505,12 +1505,12 @@ main() {
             overall_result=1
         fi
     fi
-    
+
     # Stop Docker services if we started them
     if [[ "$BACKEND" == "postgres" || "$BACKEND" == "all" ]]; then
         stop_docker_services
     fi
-    
+
     exit $overall_result
 }
 

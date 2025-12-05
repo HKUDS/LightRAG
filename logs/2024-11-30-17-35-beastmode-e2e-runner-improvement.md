@@ -1,7 +1,7 @@
 # Task Log: E2E Test Script Runner Improvement
 
-**Date**: 2024-11-30-17-35  
-**Mode**: beastmode-chatmode  
+**Date**: 2024-11-30-17-35
+**Mode**: beastmode-chatmode
 **Task**: Improve e2e test script runner with better UX, backend selection, and test case filtering
 
 ## Actions

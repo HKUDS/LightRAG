@@ -23,23 +23,23 @@ export const queryTextStream = async (
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
-  
+
   // Get tenant context from localStorage
   const selectedTenantJson = localStorage.getItem('SELECTED_TENANT');
   const selectedKBJson = localStorage.getItem('SELECTED_KB');
-  
+
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     'Accept': 'application/x-ndjson',
   };
-  
+
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
   }
-  
+
   // Add tenant context headers
   if (selectedTenantJson) {
     try {
@@ -51,7 +51,7 @@ export const queryTextStream = async (
       console.error('[queryTextStream] Failed to parse selected tenant:', e);
     }
   }
-  
+
   if (selectedKBJson) {
     try {
       const selectedKB = JSON.parse(selectedKBJson);
@@ -69,7 +69,7 @@ export const queryTextStream = async (
       headers: headers,
       body: JSON.stringify(request),
     });
-    
+
     // ... rest of the function
   }
 };
@@ -97,7 +97,7 @@ async def get_tenant_rag(tenant_context: Optional[TenantContext] = Depends(get_t
     """Dependency to get tenant-specific RAG instance for query operations"""
     if rag_manager and tenant_context and tenant_context.tenant_id and tenant_context.kb_id:
         return await rag_manager.get_rag_instance(
-            tenant_context.tenant_id, 
+            tenant_context.tenant_id,
             tenant_context.kb_id,
             tenant_context.user_id  # Pass user_id for security validation
         )
@@ -106,7 +106,7 @@ async def get_tenant_rag(tenant_context: Optional[TenantContext] = Depends(get_t
 
 This ensures:
 - `/query` endpoint uses tenant-specific RAG
-- `/query/stream` endpoint uses tenant-specific RAG  
+- `/query/stream` endpoint uses tenant-specific RAG
 - `/query/data` endpoint uses tenant-specific RAG
 
 ## How Tenant Context Flows

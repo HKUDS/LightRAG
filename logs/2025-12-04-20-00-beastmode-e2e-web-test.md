@@ -1,7 +1,7 @@
 # Task Log: E2E and Web Testing with Playwright
 
-**Date:** 2025-12-04 20:00  
-**Mode:** Beastmode  
+**Date:** 2025-12-04 20:00
+**Mode:** Beastmode
 **Task:** E2E and Web UI Testing with make dev + Playwright MCP
 
 ---

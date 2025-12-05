@@ -17,7 +17,7 @@ Fixed the following endpoints to use `tenant_rag: LightRAG = Depends(get_tenant_
 
 1. **POST /documents/upload** - File upload now uses tenant-specific RAG
 2. **POST /documents/scan** - Directory scan now uses tenant-specific RAG
-3. **POST /documents/text** - Text insertion now uses tenant-specific RAG  
+3. **POST /documents/text** - Text insertion now uses tenant-specific RAG
 4. **POST /documents/texts** - Batch text insertion now uses tenant-specific RAG
 5. **DELETE /documents** (clear_documents) - Clear all now uses tenant-specific RAG
 6. **DELETE /documents/delete** - Delete by ID now uses tenant-specific RAG

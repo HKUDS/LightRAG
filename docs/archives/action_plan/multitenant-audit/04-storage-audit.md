@@ -1,6 +1,6 @@
 # Storage Layer Multi-Tenant Audit
 
-**Date:** November 29, 2025  
+**Date:** November 29, 2025
 **Status:** In Progress
 
 ---
@@ -199,7 +199,7 @@ def create_tenant_collection_name(base_name: str, tenant_id: str, kb_id: str) ->
 ## Detailed Findings
 
 ### Finding STG-001: No kb_id in ContextVar
-**Severity:** Medium  
+**Severity:** Medium
 **Location:** `utils_context.py`
 
 **Description:**
@@ -209,7 +209,7 @@ Only `tenant_id` is stored in ContextVar. The `kb_id` must be passed explicitly,
 Add `kb_id_var: ContextVar[Optional[str]]` for complete context propagation.
 
 ### Finding STG-002: Simple SQL String Replacement
-**Severity:** Low  
+**Severity:** Low
 **Location:** `postgres_tenant_support.py`
 
 **Description:**
@@ -227,7 +227,7 @@ This could fail on:
 Use proper SQL parsing or ORM-based filtering.
 
 ### Finding STG-003: Redis Key Collision Risk
-**Severity:** Low  
+**Severity:** Low
 **Location:** `redis_tenant_support.py`
 
 **Description:**
@@ -244,7 +244,7 @@ The `split(2)` handles this correctly, but there's no validation preventing `:` 
 Validate that tenant_id and kb_id don't contain the separator character.
 
 ### Finding STG-004: RLS Setting Not Always Applied
-**Severity:** Medium  
+**Severity:** Medium
 **Location:** `postgres_impl.py`
 
 **Description:**
@@ -261,7 +261,7 @@ If `get_current_tenant_id()` returns None, RLS may block all access.
 Ensure tenant context is always set before any database operation.
 
 ### Finding STG-005: Vector Metadata Not Indexed
-**Severity:** Low  
+**Severity:** Low
 **Location:** Vector DB implementations
 
 **Description:**
@@ -283,8 +283,8 @@ SELECT COUNT(*) FROM lightrag_doc_status WHERE tenant_id IS NULL;
 -- Expected: 0
 
 -- Verify no cross-tenant data
-SELECT tenant_id, kb_id, COUNT(*) 
-FROM lightrag_doc_status 
+SELECT tenant_id, kb_id, COUNT(*)
+FROM lightrag_doc_status
 GROUP BY tenant_id, kb_id;
 -- Each row should show isolated counts
 

@@ -92,12 +92,12 @@ class RelationCreateRequest(BaseModel):
 
 
 def create_graph_routes(
-    rag: LightRAG, 
+    rag: LightRAG,
     api_key: Optional[str] = None,
     rag_manager: Optional["TenantRAGManager"] = None,
 ):
     """Create graph routes with optional multi-tenant support.
-    
+
     Args:
         rag: Default/global LightRAG instance
         api_key: Optional API key for authentication
@@ -106,32 +106,37 @@ def create_graph_routes(
     # Import here to avoid circular dependencies
     from lightrag.api.dependencies import get_tenant_context_optional
     from lightrag.models.tenant import TenantContext
-    
+
     combined_auth = get_combined_auth_dependency(api_key)
-    
+
     async def get_tenant_rag(
-        tenant_context: Optional[TenantContext] = Depends(get_tenant_context_optional)
+        tenant_context: Optional[TenantContext] = Depends(get_tenant_context_optional),
     ) -> LightRAG:
         """Dependency to get tenant-specific RAG instance for graph operations.
-        
+
         In multi-tenant mode (when rag_manager is provided), returns tenant-specific RAG.
         Otherwise, falls back to the global RAG instance.
         """
-        if rag_manager and tenant_context and tenant_context.tenant_id and tenant_context.kb_id:
+        if (
+            rag_manager
+            and tenant_context
+            and tenant_context.tenant_id
+            and tenant_context.kb_id
+        ):
             try:
                 return await rag_manager.get_rag_instance(
-                    tenant_context.tenant_id, 
+                    tenant_context.tenant_id,
                     tenant_context.kb_id,
-                    tenant_context.user_id
+                    tenant_context.user_id,
                 )
             except Exception as e:
-                logger.warning(f"Failed to get tenant RAG instance: {e}, falling back to global")
+                logger.warning(
+                    f"Failed to get tenant RAG instance: {e}, falling back to global"
+                )
         return rag
 
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
-    async def get_graph_labels(
-        tenant_rag: LightRAG = Depends(get_tenant_rag)
-    ):
+    async def get_graph_labels(tenant_rag: LightRAG = Depends(get_tenant_rag)):
         """
         Get all graph labels
 
@@ -164,7 +169,9 @@ def create_graph_routes(
             List[str]: List of popular labels sorted by degree (highest first)
         """
         try:
-            return await tenant_rag.chunk_entity_relation_graph.get_popular_labels(limit)
+            return await tenant_rag.chunk_entity_relation_graph.get_popular_labels(
+                limit
+            )
         except Exception as e:
             logger.error(f"Error getting popular labels: {str(e)}")
             logger.error(traceback.format_exc())

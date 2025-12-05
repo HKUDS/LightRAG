@@ -21,7 +21,7 @@ FROM node:20-alpine3.20
 
 WORKDIR /app
 
-# Install serve to run the application  
+# Install serve to run the application
 RUN npm install -g serve
 
 # The vite config outputs to dist

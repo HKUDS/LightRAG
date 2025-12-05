@@ -56,4 +56,3 @@ RUN ls -la /usr/lib/postgresql/15/lib/vector.so && \
 
 # Start PostgreSQL with AGE shared library loaded
 CMD ["postgres", "-c", "shared_preload_libraries=age"]
-

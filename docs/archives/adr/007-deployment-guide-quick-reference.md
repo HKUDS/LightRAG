@@ -221,44 +221,44 @@ services:
       # Tenant Configuration
       TENANT_ENABLED: "true"
       MAX_CACHED_INSTANCES: "100"
-      
+
       # Storage Configuration
       LIGHTRAG_KV_STORAGE: "PGKVStorage"
       LIGHTRAG_VECTOR_STORAGE: "PGVectorStorage"
       LIGHTRAG_GRAPH_STORAGE: "PGGraphStorage"
-      
+
       # Database
       PG_HOST: "postgres"
       PG_DATABASE: "lightrag"
       PG_USER: "postgres"
       PG_PASSWORD: "secret"
-      
+
       # LLM Configuration
       LLM_BINDING: "openai"
       LLM_MODEL: "gpt-4o-mini"
       LLM_BINDING_API_KEY: "${OPENAI_API_KEY}"
-      
+
       # Embedding Configuration
       EMBEDDING_BINDING: "openai"
       EMBEDDING_MODEL: "text-embedding-3-small"
       EMBEDDING_DIM: "1536"
-      
+
       # Authentication
       JWT_ALGORITHM: "HS256"
       TOKEN_SECRET: "your-secret-key-change-in-production"
       TOKEN_EXPIRE_HOURS: "24"
-      
+
       # API
       CORS_ORIGINS: "*"
       LOG_LEVEL: "INFO"
-    
+
     ports:
       - "9621:9621"
-    
+
     depends_on:
       - postgres
       - redis
-    
+
     volumes:
       - ./rag_storage:/app/rag_storage
 ```
@@ -510,8 +510,8 @@ Multi-tenant implementation is successful when:
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-11-20  
-**Deployment Timeline**: 4 weeks  
-**Success Criteria**: All items checked off  
+**Document Version**: 1.0
+**Last Updated**: 2025-11-20
+**Deployment Timeline**: 4 weeks
+**Success Criteria**: All items checked off
 **Status**: Ready for Implementation

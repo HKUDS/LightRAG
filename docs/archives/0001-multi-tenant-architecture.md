@@ -2,8 +2,8 @@
 
 > A comprehensive guide to understanding, activating, and implementing multi-tenant support across all storage backends
 
-**Last Updated**: November 20, 2025  
-**Status**: Production Ready  
+**Last Updated**: November 20, 2025
+**Status**: Production Ready
 **Audience**: Developers, DevOps Engineers, System Architects
 
 ---
@@ -83,7 +83,7 @@ graph TD
     E --> L["Entities & Relations"]
     F --> M["Documents"]
     G --> N["Entities & Relations"]
-    
+
     style A fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
     style B fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#38006B
     style C fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#38006B
@@ -198,7 +198,7 @@ graph TB
         KV["Key-Value"]
         Vector["Vector"]
         Graph["Graph"]
-        
+
         PG["PostgreSQL"]
         Mongo["MongoDB"]
         Redis["Redis"]
@@ -210,7 +210,7 @@ graph TB
         Memgraph["Memgraph"]
         NetworkX["NetworkX"]
     end
-    
+
     subgraph "Support Modules"
         PGSupport["postgres_tenant<br/>_support.py"]
         MongoSupport["mongo_tenant<br/>_support.py"]
@@ -218,7 +218,7 @@ graph TB
         VectorSupport["vector_tenant<br/>_support.py"]
         GraphSupport["graph_tenant<br/>_support.py"]
     end
-    
+
     Relational --> PG
     Document --> Mongo
     KV --> Redis
@@ -229,7 +229,7 @@ graph TB
     Graph --> Neo4j
     Graph --> Memgraph
     Graph --> NetworkX
-    
+
     PG -.-> PGSupport
     Mongo -.-> MongoSupport
     Redis -.-> RedisSupport
@@ -240,7 +240,7 @@ graph TB
     Neo4j -.-> GraphSupport
     Memgraph -.-> GraphSupport
     NetworkX -.-> GraphSupport
-    
+
     style Relational fill:#F1F8E9,stroke:#558B2F,stroke-width:2px,color:#33691E
     style Document fill:#ECE7F3,stroke:#7B1FA2,stroke-width:2px,color:#4A148C
     style KV fill:#E0F2F1,stroke:#00897B,stroke-width:2px,color:#004D40
@@ -338,7 +338,7 @@ Multi-tenant support is **built-in** and **automatically enabled**. Here's how t
 # For PostgreSQL
 from lightrag.kg.postgres_tenant_support import TenantSQLBuilder
 
-# For MongoDB  
+# For MongoDB
 from lightrag.kg.mongo_tenant_support import MongoTenantHelper
 
 # For Redis
@@ -500,20 +500,20 @@ async def get_documents(
     db = Depends(get_db)
 ):
     """Get documents for a specific tenant/kb"""
-    
+
     # Build tenant-scoped query
     query = "SELECT id, title, content FROM documents"
-    
+
     filtered_sql, params = TenantSQLBuilder.build_filtered_query(
         base_query=query,
         tenant_id=tenant_id,
         kb_id=kb_id,
         additional_params=[]
     )
-    
+
     # Execute (tenant context enforced at storage layer)
     documents = await db.query(filtered_sql, params)
-    
+
     return {
         "tenant": tenant_id,
         "kb": kb_id,
@@ -531,20 +531,20 @@ async def add_document(
     db = Depends(get_db)
 ):
     """Add a document for a specific tenant/kb"""
-    
+
     # Composite key: (tenant_id, kb_id, doc_id)
     query = """
         INSERT INTO documents (tenant_id, kb_id, id, content)
         VALUES (:tenant_id, :kb_id, :id, :content)
     """
-    
+
     result = await db.execute(query, {
         "tenant_id": tenant_id,
         "kb_id": kb_id,
         "id": doc_id,
         "content": content
     })
-    
+
     return {
         "status": "created",
         "tenant": tenant_id,
@@ -740,7 +740,7 @@ async def get_documents(db):
 # Solution
 async def get_documents(db, tenant_id: str = Header(...)):
     from lightrag.kg.postgres_tenant_support import TenantSQLBuilder
-    
+
     query = "SELECT * FROM documents"
     filtered_sql, params = TenantSQLBuilder.build_filtered_query(
         query, tenant_id, "kb-prod"
@@ -780,8 +780,8 @@ for index_sql in indexes:
 
 # Verify
 ANALYZE documents;  -- Update statistics
-EXPLAIN SELECT * FROM documents 
-    WHERE tenant_id='acme-corp' 
+EXPLAIN SELECT * FROM documents
+    WHERE tenant_id='acme-corp'
     AND kb_id='kb-prod';  -- Check query plan
 ```
 
@@ -867,7 +867,7 @@ logging.getLogger().addHandler(handler)
 
 ```python
 # PostgreSQL - Composite index on all three columns
-CREATE INDEX idx_doc_tenant_kb_id 
+CREATE INDEX idx_doc_tenant_kb_id
 ON documents(tenant_id, kb_id, id);
 
 # For range queries
@@ -893,21 +893,21 @@ db.documents.createIndex({
 
 ```python
 # Good: Specific tenant filter
-SELECT * FROM documents 
-WHERE tenant_id='acme-corp' 
+SELECT * FROM documents
+WHERE tenant_id='acme-corp'
 AND kb_id='kb-prod'
 AND status='active'
 ORDER BY created_at DESC;
 
 # Bad: Full table scan
-SELECT * FROM documents 
+SELECT * FROM documents
 WHERE status='active'
 ORDER BY created_at DESC;
 
 # Good: Use indexes
-EXPLAIN SELECT * FROM documents 
-WHERE tenant_id='acme-corp' 
-AND kb_id='kb-prod' 
+EXPLAIN SELECT * FROM documents
+WHERE tenant_id='acme-corp'
+AND kb_id='kb-prod'
 AND created_at > NOW() - INTERVAL '7 days';
 
 # Result should show: "Index Scan" (not "Seq Scan")
@@ -968,6 +968,6 @@ AND created_at > NOW() - INTERVAL '7 days';
 
 ---
 
-**Status**: Production Ready  
-**Last Updated**: November 20, 2025  
+**Status**: Production Ready
+**Last Updated**: November 20, 2025
 **Questions?** Check the Troubleshooting section or review code examples

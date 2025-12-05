@@ -5,7 +5,7 @@ Continued from previous session to complete locale file updates and fix remainin
 
 ## Actions
 - Updated zh_TW.json with Traditional Chinese translations for 4 new keys
-- Updated fr.json with French translations for 4 new keys  
+- Updated fr.json with French translations for 4 new keys
 - Updated ar.json with Arabic translations for 4 new keys
 - Fixed zh.json JSON syntax error (unescaped quotes in emptyHint value)
 - Added missing new keys to zh.json (emptyWithPipelineTitle, emptyWithPipelineDescription, scanForDocuments, viewPipeline)

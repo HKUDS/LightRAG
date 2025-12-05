@@ -57,7 +57,7 @@
 - All modified Python modules import correctly
 - Configuration values confirmed working:
   - `MULTI_TENANT_STRICT_MODE`: True
-  - `REQUIRE_USER_AUTH`: True  
+  - `REQUIRE_USER_AUTH`: True
   - `SUPER_ADMIN_USERS`: "" (configurable via env var)
 
 **Pre-existing Issues Discovered (Not Caused By Our Changes):**

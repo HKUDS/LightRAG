@@ -62,24 +62,24 @@ Updated the SQL query in `list_tenants` to use LEFT JOINs to compute:
 
 Updated SQL query:
 ```sql
-SELECT 
-    t.tenant_id, 
-    t.name, 
-    t.description, 
-    t.created_at, 
+SELECT
+    t.tenant_id,
+    t.name,
+    t.description,
+    t.created_at,
     t.updated_at,
     COALESCE(kb_stats.kb_count, 0) as kb_count,
     COALESCE(doc_stats.doc_count, 0) as total_documents,
     COALESCE(doc_stats.total_size_bytes, 0) as total_size_bytes
 FROM tenants t
 LEFT JOIN (
-    SELECT tenant_id, COUNT(*) as kb_count 
-    FROM knowledge_bases 
+    SELECT tenant_id, COUNT(*) as kb_count
+    FROM knowledge_bases
     GROUP BY tenant_id
 ) kb_stats ON t.tenant_id = kb_stats.tenant_id
 LEFT JOIN (
     SELECT tenant_id, COUNT(*) as doc_count, COALESCE(SUM(file_size), 0) as total_size_bytes
-    FROM documents 
+    FROM documents
     GROUP BY tenant_id
 ) doc_stats ON t.tenant_id = doc_stats.tenant_id
 ORDER BY t.created_at DESC

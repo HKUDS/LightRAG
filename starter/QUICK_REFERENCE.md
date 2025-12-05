@@ -399,6 +399,6 @@ docker compose -p lightrag-multitenant exec redis redis-cli -a redis_secure_pass
 
 ---
 
-**Version**: 1.0  
-**Last Updated**: November 20, 2025  
+**Version**: 1.0
+**Last Updated**: November 20, 2025
 **Status**: Production Ready

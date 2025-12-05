@@ -17,4 +17,3 @@ Task logs - 2025-12-04 12:45
 - Notes and recommendations:
   - Keep tenant IDs out of URLs and ensure server-side validation.
   - Keep tenant identifiers opaque (UUID/numeric internal) and avoid storing secrets in client storage.
-

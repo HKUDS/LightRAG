@@ -349,7 +349,7 @@ class Tenant:
     updated_at: datetime                # Last update
     created_by: Optional[str]           # Creator user ID
     metadata: Dict[str, Any]            # Custom metadata
-    
+
     # Statistics
     kb_count: int = 0
     total_documents: int = 0
@@ -365,27 +365,27 @@ class TenantConfig:
     llm_model: str = "gpt-4o-mini"
     embedding_model: str = "bge-m3:latest"
     rerank_model: Optional[str] = None
-    
+
     # LLM parameters
     llm_model_kwargs: Dict = {}
     llm_temperature: float = 1.0
     llm_max_tokens: int = 4096
-    
+
     # Embedding
     embedding_dim: int = 1024
     embedding_batch_num: int = 10
-    
+
     # Query defaults
     top_k: int = 40
     chunk_top_k: int = 20
     cosine_threshold: float = 0.2
     enable_llm_cache: bool = True
     enable_rerank: bool = True
-    
+
     # Chunking
     chunk_size: int = 1200
     chunk_overlap: int = 100
-    
+
     # Custom metadata (storage backends, etc.)
     custom_metadata: Dict = {}
 ```
@@ -418,7 +418,7 @@ class KnowledgeBase:
     created_at: datetime                # Creation timestamp
     updated_at: datetime                # Last update
     created_by: Optional[str]           # Creator user ID
-    
+
     # Statistics
     document_count: int = 0
     entity_count: int = 0
@@ -440,7 +440,7 @@ class TenantContext:
     user_id: str                        # Authenticated user
     role: Role                          # User's role
     permissions: List[Permission]       # Effective permissions
-    
+
     def has_permission(self, permission: Permission) -> bool:
         """Check if context has specific permission."""
         return permission in self.permissions
@@ -575,16 +575,16 @@ from lightrag.models.tenant import TenantConfig, Role
 async def setup_multi_tenant():
     # 1. Initialize global components
     from lightrag.kg.postgres_impl import PGKVStorage
-    
+
     kv_storage = PGKVStorage(
         namespace="system",
         global_config={"postgres_url": "postgresql://..."}
     )
     await kv_storage.initialize()
-    
+
     # 2. Initialize tenant service
     tenant_service = TenantService(kv_storage)
-    
+
     # 3. Create template RAG (for configuration inheritance)
     template_rag = LightRAG(
         working_dir="./rag_storage",
@@ -593,7 +593,7 @@ async def setup_multi_tenant():
         vector_storage="PGVectorStorage",
         graph_storage="Neo4JStorage"
     )
-    
+
     # 4. Initialize tenant manager
     manager = TenantRAGManager(
         base_working_dir="./rag_storage",
@@ -601,7 +601,7 @@ async def setup_multi_tenant():
         template_rag=template_rag,
         max_cached_instances=100
     )
-    
+
     # 5. Create tenant
     tenant = await tenant_service.create_tenant(
         tenant_name="Acme Corp",
@@ -611,34 +611,34 @@ async def setup_multi_tenant():
         ),
         created_by="admin@acme.com"
     )
-    
+
     # 6. Create knowledge base
     kb = await tenant_service.create_knowledge_base(
         tenant_id=tenant.tenant_id,
         kb_name="Product Docs",
         created_by="admin@acme.com"
     )
-    
+
     # 7. Add user
     await tenant_service.add_user_to_tenant(
         user_id="user@acme.com",
         tenant_id=tenant.tenant_id,
         role="editor"
     )
-    
+
     # 8. Get tenant-specific RAG instance
     rag = await manager.get_rag_instance(
         tenant_id=tenant.tenant_id,
         kb_id=kb.kb_id,
         user_id="user@acme.com"
     )
-    
+
     # 9. Use normally
     await rag.ainsert("Product documentation content...")
     result = await rag.aquery("How do I use the product?")
-    
+
     print(f"Answer: {result}")
-    
+
     # 10. Cleanup
     await manager.cleanup_all()
 

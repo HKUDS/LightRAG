@@ -280,4 +280,3 @@ git cherry-pick -x 8e50eef5
 
 echo "Cherry-picking f0d67f16: Merge branch 'cohere-rerank'"
 git cherry-pick -x f0d67f16
-

@@ -154,10 +154,10 @@ from lightrag import LightRAG
 
 rag = LightRAG(
     working_dir="./rag_storage",
-    
+
     # All PostgreSQL backends
     kv_storage="PGKVStorage",
-    vector_storage="PGVectorStorage", 
+    vector_storage="PGVectorStorage",
     graph_storage="PGGraphStorage",
     doc_status_storage="PGDocStatusStorage",
 )
@@ -202,7 +202,7 @@ CREATE TABLE LIGHTRAG_DOC_FULL (
     PRIMARY KEY (workspace, id)
 );
 
--- Chunks table  
+-- Chunks table
 CREATE TABLE LIGHTRAG_DOC_CHUNKS (
     workspace VARCHAR(1024) NOT NULL,
     id VARCHAR(255) NOT NULL,
@@ -262,12 +262,12 @@ CREATE TABLE LIGHTRAG_GRAPH_EDGES (
 
 ```sql
 -- HNSW index (recommended for accuracy)
-CREATE INDEX ON LIGHTRAG_VDB_ENTITY 
+CREATE INDEX ON LIGHTRAG_VDB_ENTITY
 USING hnsw (content_vector vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
 
 -- IVFFlat index (faster but less accurate)
-CREATE INDEX ON LIGHTRAG_VDB_ENTITY 
+CREATE INDEX ON LIGHTRAG_VDB_ENTITY
 USING ivfflat (content_vector vector_cosine_ops)
 WITH (lists = 100);
 ```
@@ -283,11 +283,11 @@ from lightrag import LightRAG
 
 rag = LightRAG(
     working_dir="./rag_storage",
-    
+
     # All MongoDB backends
     kv_storage="MongoKVStorage",
     vector_storage="MongoVectorDBStorage",
-    graph_storage="MongoGraphStorage", 
+    graph_storage="MongoGraphStorage",
     doc_status_storage="MongoDocStatusStorage",
 )
 ```
@@ -377,7 +377,7 @@ from lightrag import LightRAG
 
 rag = LightRAG(
     working_dir="./rag_storage",
-    
+
     # Neo4j for graph, other backends for KV/Vector
     kv_storage="PGKVStorage",           # or JsonKVStorage
     vector_storage="PGVectorStorage",    # or other vector DB
@@ -436,7 +436,7 @@ LIMIT $max_nodes
 
 -- Search nodes
 MATCH (n:Entity)
-WHERE n.workspace = $workspace 
+WHERE n.workspace = $workspace
   AND toLower(n.entity_id) CONTAINS toLower($query)
 RETURN n.entity_id
 ORDER BY n.degree DESC
@@ -454,7 +454,7 @@ from lightrag import LightRAG
 
 rag = LightRAG(
     working_dir="./rag_storage",
-    
+
     kv_storage="RedisKVStorage",
     vector_storage="NanoVectorDBStorage",  # Redis doesn't have vector
     graph_storage="NetworkXStorage",       # Redis doesn't have graph
@@ -499,7 +499,7 @@ from lightrag import LightRAG
 
 rag = LightRAG(
     working_dir="./rag_storage",
-    
+
     # All file-based (default)
     kv_storage="JsonKVStorage",
     vector_storage="NanoVectorDBStorage",
@@ -649,19 +649,19 @@ rag = LightRAG(
     # Working directory
     working_dir="./rag_storage",
     workspace="my_project",  # Multi-tenant namespace
-    
+
     # Storage backends
     kv_storage="PGKVStorage",
     vector_storage="PGVectorStorage",
     graph_storage="PGGraphStorage",
     doc_status_storage="PGDocStatusStorage",
-    
+
     # Vector DB options
     vector_db_storage_cls_kwargs={
         "cosine_better_than_threshold": 0.2,
         # Backend-specific options...
     },
-    
+
     # Processing
     chunk_token_size=1200,
     chunk_overlap_token_size=100,

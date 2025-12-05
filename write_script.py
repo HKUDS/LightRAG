@@ -1,4 +1,3 @@
-
 content = r"""#!/bin/bash
 
 # ==============================================================================
@@ -36,7 +35,7 @@ while [[ "$#" -gt 0 ]]; do
         -b|--backend) BACKEND="$2"; shift ;;
         -m|--model) LLM_MODEL="$2"; shift ;;
         -d|--dim) EMBEDDING_DIM="$2"; shift ;;
-        -h|--help) 
+        -h|--help)
             grep "^# " "$0" | cut -c 3-
             exit 0
             ;;
@@ -62,7 +61,7 @@ cleanup_server() {
 # Function to configure environment
 configure_env() {
     local backend_type=$1
-    
+
     # Common Env Vars
     export LLM_BINDING="ollama"
     export LLM_MODEL="$LLM_MODEL"
@@ -71,39 +70,39 @@ configure_env() {
     export EMBEDDING_DIM="$EMBEDDING_DIM"
     export LIGHTRAG_API_KEY="admin123"
     export AUTH_ACCOUNTS="admin:admin123"
-    
+
     echo -e "\n${BLUE}Configuring for Backend: $backend_type${NC}"
-    
+
     if [ "$backend_type" == "file" ]; then
         export LIGHTRAG_KV_STORAGE="JsonKVStorage"
         export LIGHTRAG_DOC_STATUS_STORAGE="JsonDocStatusStorage"
         export LIGHTRAG_GRAPH_STORAGE="NetworkXStorage"
         export LIGHTRAG_VECTOR_STORAGE="NanoVectorDBStorage"
-        
+
         # Clean up file storage
         echo "Cleaning up local storage (rag_storage)..."
         rm -rf rag_storage
-        
+
     elif [ "$backend_type" == "postgres" ]; then
         export LIGHTRAG_KV_STORAGE="PGKVStorage"
         export LIGHTRAG_DOC_STATUS_STORAGE="PGDocStatusStorage"
         export LIGHTRAG_GRAPH_STORAGE="PGGraphStorage"
         export LIGHTRAG_VECTOR_STORAGE="PGVectorStorage"
-        
+
         # Ensure Postgres vars are set (defaults if not in env)
         export POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
         export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
         export POSTGRES_USER="${POSTGRES_USER:-lightrag}"
         export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-lightrag_secure_password}"
         export POSTGRES_DATABASE="${POSTGRES_DATABASE:-lightrag_multitenant}"
-        
+
         echo "⚠️  Ensure Postgres is running at $POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DATABASE"
-        
+
     else
         echo -e "${RED}Unknown backend: $backend_type${NC}"
         exit 1
     fi
-    
+
     echo "Environment Configured:"
     echo "  STORAGE: $backend_type"
     echo "  LLM: $LLM_MODEL"
@@ -132,34 +131,34 @@ wait_for_server() {
 # Function to run tests
 run_test_suite() {
     local backend_name=$1
-    
+
     cleanup_server
     configure_env "$backend_name"
-    
+
     echo "Starting server..."
     nohup python -m lightrag.api.lightrag_server --port $SERVER_PORT > server.log 2>&1 &
     SERVER_PID=$!
     echo "Server PID: $SERVER_PID"
-    
+
     if ! wait_for_server; then
         kill $SERVER_PID 2>/dev/null
         return 1
     fi
-    
+
     FAILURES=0
-    
+
     # List of tests to run
     TESTS=(
         "e2e/test_multitenant_isolation.py"
         "e2e/test_deletion.py"
         "e2e/test_mixed_operations.py"
     )
-    
+
     for test_script in "${TESTS[@]}"; do
         echo -e "\n${BLUE}==================================================${NC}"
         echo -e "${BLUE}Running $test_script [$backend_name]...${NC}"
         echo -e "${BLUE}==================================================${NC}"
-        
+
         python "$test_script"
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ $test_script Passed!${NC}"
@@ -168,11 +167,11 @@ run_test_suite() {
             ((FAILURES++))
         fi
     done
-    
+
     echo "Cleaning up server..."
     kill $SERVER_PID
     wait $SERVER_PID 2>/dev/null
-    
+
     if [ $FAILURES -eq 0 ]; then
         echo -e "${GREEN}🎉 All tests passed for $backend_name!${NC}"
         return 0
@@ -185,15 +184,15 @@ run_test_suite() {
 # Main Execution Logic
 if [ "$BACKEND" == "all" ]; then
     echo "Running tests for ALL backends..."
-    
+
     # Run File
     run_test_suite "file"
     FILE_EXIT=$?
-    
+
     # Run Postgres
     run_test_suite "postgres"
     PG_EXIT=$?
-    
+
     if [ $FILE_EXIT -eq 0 ] && [ $PG_EXIT -eq 0 ]; then
         echo -e "\n${GREEN}🏆 ALL BACKENDS PASSED!${NC}"
         exit 0
