@@ -977,9 +977,34 @@ def create_app(args):
         if auth_handler.accounts.get(username) != form_data.password:
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
-        # Regular user login
+        # Determine role for this user. If the user is configured as a super-admin
+        # (via LIGHTRAG_SUPER_ADMIN_USERS or config.SUPER_ADMIN_USERS), grant the
+        # `admin` role; otherwise default to `user`.
+        role = "user"
+        try:
+            # Prefer config-level setting when available
+            from lightrag.api.config import SUPER_ADMIN_USERS
+            if SUPER_ADMIN_USERS:
+                super_admins = [u.strip().lower() for u in SUPER_ADMIN_USERS.split(",") if u.strip()]
+            else:
+                super_admins = []
+        except Exception:
+            # Fallback to env var (None = default 'admin', empty string = no super-admins)
+            import os
+            env_super_admins = os.environ.get("LIGHTRAG_SUPER_ADMIN_USERS")
+            if env_super_admins is None:
+                super_admins = ["admin"]
+            elif env_super_admins.strip():
+                super_admins = [u.strip().lower() for u in env_super_admins.split(",") if u.strip()]
+            else:
+                super_admins = []
+
+        if username and username.lower() in super_admins:
+            role = "admin"
+
+        # Regular user login (role may be 'admin' if configured)
         user_token = auth_handler.create_token(
-            username=username, role="user", metadata={"auth_mode": "enabled"}
+            username=username, role=role, metadata={"auth_mode": "enabled"}
         )
         return {
             "access_token": user_token,
