@@ -1,19 +1,20 @@
 import asyncio
 import base64
 import os
-import zlib
-from typing import Any, final
-from dataclasses import dataclass
-import numpy as np
 import time
+import zlib
+from dataclasses import dataclass
+from typing import Any, final
 
-from lightrag.utils import (
-    logger,
-    compute_mdhash_id,
-)
+import numpy as np
+from nano_vectordb import NanoVectorDB
 
 from lightrag.base import BaseVectorStorage
-from nano_vectordb import NanoVectorDB
+from lightrag.utils import (
+    compute_mdhash_id,
+    logger,
+)
+
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -31,31 +32,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self.storage_updated = None
 
         # Use global config value if specified, otherwise use default
-        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        cosine_threshold = kwargs.get("cosine_better_than_threshold")
+        kwargs = self.global_config.get('vector_db_storage_cls_kwargs', {})
+        cosine_threshold = kwargs.get('cosine_better_than_threshold')
         if cosine_threshold is None:
-            raise ValueError(
-                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
-            )
+            raise ValueError('cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs')
         self.cosine_better_than_threshold = cosine_threshold
 
-        working_dir = self.global_config["working_dir"]
+        working_dir = self.global_config['working_dir']
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
+            self.final_namespace = f'{self.workspace}_{self.namespace}'
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
-            self.workspace = ""
+            self.workspace = ''
             workspace_dir = working_dir
 
         os.makedirs(workspace_dir, exist_ok=True)
-        self._client_file_name = os.path.join(
-            workspace_dir, f"vdb_{self.namespace}.json"
-        )
+        self._client_file_name = os.path.join(workspace_dir, f'vdb_{self.namespace}.json')
 
-        self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._max_batch_size = self.global_config['embedding_batch_num']
 
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim,
@@ -65,13 +62,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(
-            self.namespace, workspace=self.workspace
-        )
+        self.storage_updated = await get_update_flag(self.namespace, workspace=self.workspace)
         # Get the storage lock for use in other methods
-        self._storage_lock = get_namespace_lock(
-            self.namespace, workspace=self.workspace
-        )
+        self._storage_lock = get_namespace_lock(self.namespace, workspace=self.workspace)
 
     async def _get_client(self):
         """Check if the storage should be reloaded"""
@@ -80,7 +73,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # Check if data needs to be reloaded
             if self.storage_updated.value:
                 logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} reloading {self.namespace} due to update by another process"
+                    f'[{self.workspace}] Process {os.getpid()} reloading {self.namespace} due to update by another process'
                 )
                 # Reload data
                 self._client = NanoVectorDB(
@@ -106,17 +99,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
         current_time = int(time.time())
         list_data = [
             {
-                "__id__": k,
-                "__created_at__": current_time,
+                '__id__': k,
+                '__created_at__': current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
         ]
-        contents = [v["content"] for v in data.values()]
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
+        contents = [v['content'] for v in data.values()]
+        batches = [contents[i : i + self._max_batch_size] for i in range(0, len(contents), self._max_batch_size)]
 
         # Execute embedding outside of lock to avoid long lock times
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
@@ -128,29 +118,23 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Compress vector using Float16 + zlib + Base64 for storage optimization
                 vector_f16 = embeddings[i].astype(np.float16)
                 compressed_vector = zlib.compress(vector_f16.tobytes())
-                encoded_vector = base64.b64encode(compressed_vector).decode("utf-8")
-                d["vector"] = encoded_vector
-                d["__vector__"] = embeddings[i]
+                encoded_vector = base64.b64encode(compressed_vector).decode('utf-8')
+                d['vector'] = encoded_vector
+                d['__vector__'] = embeddings[i]
             client = await self._get_client()
             results = client.upsert(datas=list_data)
             return results
         else:
             # sometimes the embedding is not returned correctly. just log it.
-            logger.error(
-                f"[{self.workspace}] embedding is not 1-1 with data, {len(embeddings)} != {len(list_data)}"
-            )
+            logger.error(f'[{self.workspace}] embedding is not 1-1 with data, {len(embeddings)} != {len(list_data)}')
 
-    async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
-    ) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int, query_embedding: list[float] | None = None) -> list[dict[str, Any]]:
         # Use provided embedding or compute it
         if query_embedding is not None:
             embedding = query_embedding
         else:
             # Execute embedding outside of lock to avoid improve cocurrent
-            embedding = await self.embedding_func(
-                [query], _priority=5
-            )  # higher priority for query
+            embedding = await self.embedding_func([query], _priority=5)  # higher priority for query
             embedding = embedding[0]
 
         client = await self._get_client()
@@ -161,10 +145,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         results = [
             {
-                **{k: v for k, v in dp.items() if k != "vector"},
-                "id": dp["__id__"],
-                "distance": dp["__metrics__"],
-                "created_at": dp.get("__created_at__"),
+                **{k: v for k, v in dp.items() if k != 'vector'},
+                'id': dp['__id__'],
+                'distance': dp['__metrics__'],
+                'created_at': dp.get('__created_at__'),
             }
             for dp in results
         ]
@@ -173,7 +157,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
     @property
     async def client_storage(self):
         client = await self._get_client()
-        return getattr(client, "_NanoVectorDB__storage")
+        return client._NanoVectorDB__storage
 
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs
@@ -197,13 +181,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
             after_count = len(client)
             deleted_count = before_count - after_count
 
-            logger.debug(
-                f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
-            )
+            logger.debug(f'[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}')
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
-            )
+            logger.error(f'[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}')
 
     async def delete_entity(self, entity_name: str) -> None:
         """
@@ -214,24 +194,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
 
         try:
-            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(
-                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
+            entity_id = compute_mdhash_id(entity_name, prefix='ent-')
+            logger.debug(f'[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}')
 
             # Check if the entity exists
             client = await self._get_client()
             if client.get([entity_id]):
                 client.delete([entity_id])
-                logger.debug(
-                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
-                )
+                logger.debug(f'[{self.workspace}] Successfully deleted entity {entity_name}')
             else:
-                logger.debug(
-                    f"[{self.workspace}] Entity {entity_name} not found in storage"
-                )
+                logger.debug(f'[{self.workspace}] Entity {entity_name} not found in storage')
         except Exception as e:
-            logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
+            logger.error(f'[{self.workspace}] Error deleting entity {entity_name}: {e}')
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """
@@ -243,31 +217,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         try:
             client = await self._get_client()
-            storage = getattr(client, "_NanoVectorDB__storage")
-            relations = [
-                dp
-                for dp in storage["data"]
-                if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
-            ]
-            logger.debug(
-                f"[{self.workspace}] Found {len(relations)} relations for entity {entity_name}"
-            )
-            ids_to_delete = [relation["__id__"] for relation in relations]
+            storage = client._NanoVectorDB__storage
+            relations = [dp for dp in storage['data'] if dp['src_id'] == entity_name or dp['tgt_id'] == entity_name]
+            logger.debug(f'[{self.workspace}] Found {len(relations)} relations for entity {entity_name}')
+            ids_to_delete = [relation['__id__'] for relation in relations]
 
             if ids_to_delete:
                 client = await self._get_client()
                 client.delete(ids_to_delete)
-                logger.debug(
-                    f"[{self.workspace}] Deleted {len(ids_to_delete)} relations for {entity_name}"
-                )
+                logger.debug(f'[{self.workspace}] Deleted {len(ids_to_delete)} relations for {entity_name}')
             else:
-                logger.debug(
-                    f"[{self.workspace}] No relations found for entity {entity_name}"
-                )
+                logger.debug(f'[{self.workspace}] No relations found for entity {entity_name}')
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
-            )
+            logger.error(f'[{self.workspace}] Error deleting relations for {entity_name}: {e}')
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""
@@ -276,7 +238,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.warning(
-                    f"[{self.workspace}] Storage for {self.namespace} was updated by another process, reloading..."
+                    f'[{self.workspace}] Storage for {self.namespace} was updated by another process, reloading...'
                 )
                 self._client = NanoVectorDB(
                     self.embedding_func.embedding_dim,
@@ -297,9 +259,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error saving data for {self.namespace}: {e}"
-                )
+                logger.error(f'[{self.workspace}] Error saving data for {self.namespace}: {e}')
                 return False  # Return error
 
         return True  # Return success
@@ -318,9 +278,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if result:
             dp = result[0]
             return {
-                **{k: v for k, v in dp.items() if k != "vector"},
-                "id": dp.get("__id__"),
-                "created_at": dp.get("__created_at__"),
+                **{k: v for k, v in dp.items() if k != 'vector'},
+                'id': dp.get('__id__'),
+                'created_at': dp.get('__created_at__'),
             }
         return None
 
@@ -344,11 +304,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
             if not dp:
                 continue
             record = {
-                **{k: v for k, v in dp.items() if k != "vector"},
-                "id": dp.get("__id__"),
-                "created_at": dp.get("__created_at__"),
+                **{k: v for k, v in dp.items() if k != 'vector'},
+                'id': dp.get('__id__'),
+                'created_at': dp.get('__created_at__'),
             }
-            key = record.get("id")
+            key = record.get('id')
             if key is not None:
                 result_map[str(key)] = record
 
@@ -376,13 +336,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         vectors_dict = {}
         for result in results:
-            if result and "vector" in result and "__id__" in result:
+            if result and 'vector' in result and '__id__' in result:
                 # Decompress vector data (Base64 + zlib + Float16 compressed)
-                decoded = base64.b64decode(result["vector"])
+                decoded = base64.b64decode(result['vector'])
                 decompressed = zlib.decompress(decoded)
                 vector_f16 = np.frombuffer(decompressed, dtype=np.float16)
                 vector_f32 = vector_f16.astype(np.float32).tolist()
-                vectors_dict[result["__id__"]] = vector_f32
+                vectors_dict[result['__id__']] = vector_f32
 
         return vectors_dict
 
@@ -419,9 +379,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 self.storage_updated.value = False
 
                 logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
+                    f'[{self.workspace}] Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})'
                 )
-            return {"status": "success", "message": "data dropped"}
+            return {'status': 'success', 'message': 'data dropped'}
         except Exception as e:
-            logger.error(f"[{self.workspace}] Error dropping {self.namespace}: {e}")
-            return {"status": "error", "message": str(e)}
+            logger.error(f'[{self.workspace}] Error dropping {self.namespace}: {e}')
+            return {'status': 'error', 'message': str(e)}

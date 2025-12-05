@@ -27,33 +27,33 @@ Note: Rerank is controlled per query via the 'enable_rerank' parameter (default:
 
 import asyncio
 import os
+from functools import partial
+
 import numpy as np
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.rerank import cohere_rerank
 from lightrag.utils import EmbeddingFunc, setup_logger
 
-from functools import partial
-from lightrag.rerank import cohere_rerank
-
 # Set up your working directory
-WORKING_DIR = "./test_rerank"
-setup_logger("test_rerank")
+WORKING_DIR = './test_rerank'
+setup_logger('test_rerank')
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 
-async def llm_model_func(
-    prompt, system_prompt=None, history_messages=[], **kwargs
-) -> str:
+async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs) -> str:
+    if history_messages is None:
+        history_messages = []
     return await openai_complete_if_cache(
-        os.getenv("LLM_MODEL"),
+        os.getenv('LLM_MODEL'),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key=os.getenv("LLM_BINDING_API_KEY"),
-        base_url=os.getenv("LLM_BINDING_HOST"),
+        api_key=os.getenv('LLM_BINDING_API_KEY'),
+        base_url=os.getenv('LLM_BINDING_HOST'),
         **kwargs,
     )
 
@@ -61,19 +61,19 @@ async def llm_model_func(
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embed(
         texts,
-        model=os.getenv("EMBEDDING_MODEL"),
-        api_key=os.getenv("EMBEDDING_BINDING_API_KEY"),
-        base_url=os.getenv("EMBEDDING_BINDING_HOST"),
+        model=os.getenv('EMBEDDING_MODEL'),
+        api_key=os.getenv('EMBEDDING_BINDING_API_KEY'),
+        base_url=os.getenv('EMBEDDING_BINDING_HOST'),
     )
 
 
 rerank_model_func = partial(
     cohere_rerank,
-    model=os.getenv("RERANK_MODEL", "rerank-v3.5"),
-    api_key=os.getenv("RERANK_BINDING_API_KEY"),
-    base_url=os.getenv("RERANK_BINDING_HOST", "https://api.cohere.com/v2/rerank"),
-    enable_chunking=os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true",
-    max_tokens_per_doc=int(os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")),
+    model=os.getenv('RERANK_MODEL', 'rerank-v3.5'),
+    api_key=os.getenv('RERANK_BINDING_API_KEY'),
+    base_url=os.getenv('RERANK_BINDING_HOST', 'https://api.cohere.com/v2/rerank'),
+    enable_chunking=os.getenv('RERANK_ENABLE_CHUNKING', 'false').lower() == 'true',
+    max_tokens_per_doc=int(os.getenv('RERANK_MAX_TOKENS_PER_DOC', '4096')),
 )
 
 
@@ -81,9 +81,9 @@ async def create_rag_with_rerank():
     """Create LightRAG instance with rerank configuration"""
 
     # Get embedding dimension
-    test_embedding = await embedding_func(["test"])
+    test_embedding = await embedding_func(['test'])
     embedding_dim = test_embedding.shape[1]
-    print(f"Detected embedding dimension: {embedding_dim}")
+    print(f'Detected embedding dimension: {embedding_dim}')
 
     # Method 1: Using custom rerank function
     rag = LightRAG(
@@ -106,79 +106,77 @@ async def test_rerank_with_different_settings():
     """
     Test rerank functionality with different enable_rerank settings
     """
-    print("\n\n🚀 Setting up LightRAG with Rerank functionality...")
+    print('\n\n🚀 Setting up LightRAG with Rerank functionality...')
 
     rag = await create_rag_with_rerank()
 
     # Insert sample documents
     sample_docs = [
-        "Reranking improves retrieval quality by re-ordering documents based on relevance.",
-        "LightRAG is a powerful retrieval-augmented generation system with multiple query modes.",
-        "Vector databases enable efficient similarity search in high-dimensional embedding spaces.",
-        "Natural language processing has evolved with large language models and transformers.",
-        "Machine learning algorithms can learn patterns from data without explicit programming.",
+        'Reranking improves retrieval quality by re-ordering documents based on relevance.',
+        'LightRAG is a powerful retrieval-augmented generation system with multiple query modes.',
+        'Vector databases enable efficient similarity search in high-dimensional embedding spaces.',
+        'Natural language processing has evolved with large language models and transformers.',
+        'Machine learning algorithms can learn patterns from data without explicit programming.',
     ]
 
-    print("📄 Inserting sample documents...")
+    print('📄 Inserting sample documents...')
     await rag.ainsert(sample_docs)
 
-    query = "How does reranking improve retrieval quality?"
+    query = 'How does reranking improve retrieval quality?'
     print(f"\n🔍 Testing query: '{query}'")
-    print("=" * 80)
+    print('=' * 80)
 
     # Test with rerank enabled (default)
-    print("\n📊 Testing with enable_rerank=True (default):")
+    print('\n📊 Testing with enable_rerank=True (default):')
     result_with_rerank = await rag.aquery(
         query,
         param=QueryParam(
-            mode="naive",
+            mode='naive',
             top_k=10,
             chunk_top_k=5,
             enable_rerank=True,  # Explicitly enable rerank
         ),
     )
-    print(f"   Result length: {len(result_with_rerank)} characters")
-    print(f"   Preview: {result_with_rerank[:100]}...")
+    print(f'   Result length: {len(result_with_rerank)} characters')
+    print(f'   Preview: {result_with_rerank[:100]}...')
 
     # Test with rerank disabled
-    print("\n📊 Testing with enable_rerank=False:")
+    print('\n📊 Testing with enable_rerank=False:')
     result_without_rerank = await rag.aquery(
         query,
         param=QueryParam(
-            mode="naive",
+            mode='naive',
             top_k=10,
             chunk_top_k=5,
             enable_rerank=False,  # Disable rerank
         ),
     )
-    print(f"   Result length: {len(result_without_rerank)} characters")
-    print(f"   Preview: {result_without_rerank[:100]}...")
+    print(f'   Result length: {len(result_without_rerank)} characters')
+    print(f'   Preview: {result_without_rerank[:100]}...')
 
     # Test with default settings (enable_rerank defaults to True)
-    print("\n📊 Testing with default settings (enable_rerank defaults to True):")
-    result_default = await rag.aquery(
-        query, param=QueryParam(mode="naive", top_k=10, chunk_top_k=5)
-    )
-    print(f"   Result length: {len(result_default)} characters")
-    print(f"   Preview: {result_default[:100]}...")
+    print('\n📊 Testing with default settings (enable_rerank defaults to True):')
+    result_default = await rag.aquery(query, param=QueryParam(mode='naive', top_k=10, chunk_top_k=5))
+    print(f'   Result length: {len(result_default)} characters')
+    print(f'   Preview: {result_default[:100]}...')
 
 
 async def test_direct_rerank():
     """Test rerank function directly"""
-    print("\n🔧 Direct Rerank API Test")
-    print("=" * 40)
+    print('\n🔧 Direct Rerank API Test')
+    print('=' * 40)
 
     documents = [
-        "Vector search finds semantically similar documents",
-        "LightRAG supports advanced reranking capabilities",
-        "Reranking significantly improves retrieval quality",
-        "Natural language processing with modern transformers",
-        "The quick brown fox jumps over the lazy dog",
+        'Vector search finds semantically similar documents',
+        'LightRAG supports advanced reranking capabilities',
+        'Reranking significantly improves retrieval quality',
+        'Natural language processing with modern transformers',
+        'The quick brown fox jumps over the lazy dog',
     ]
 
-    query = "rerank improve quality"
+    query = 'rerank improve quality'
     print(f"Query: '{query}'")
-    print(f"Documents: {len(documents)}")
+    print(f'Documents: {len(documents)}')
 
     try:
         reranked_results = await rerank_model_func(
@@ -187,23 +185,21 @@ async def test_direct_rerank():
             top_n=4,
         )
 
-        print("\n✅ Rerank Results:")
-        i = 0
-        for result in reranked_results:
-            index = result["index"]
-            score = result["relevance_score"]
+        print('\n✅ Rerank Results:')
+        for _i, result in enumerate(reranked_results):
+            index = result['index']
+            score = result['relevance_score']
             content = documents[index]
-            print(f"  {index}. Score: {score:.4f} | {content}...")
-            i += 1
+            print(f'  {index}. Score: {score:.4f} | {content}...')
 
     except Exception as e:
-        print(f"❌ Rerank failed: {e}")
+        print(f'❌ Rerank failed: {e}')
 
 
 async def main():
     """Main example function"""
-    print("🎯 LightRAG Rerank Integration Example")
-    print("=" * 60)
+    print('🎯 LightRAG Rerank Integration Example')
+    print('=' * 60)
 
     try:
         # Test direct rerank
@@ -212,23 +208,21 @@ async def main():
         # Test rerank with different enable_rerank settings
         await test_rerank_with_different_settings()
 
-        print("\n✅ Example completed successfully!")
-        print("\n💡 Key Points:")
+        print('\n✅ Example completed successfully!')
+        print('\n💡 Key Points:')
         print("   ✓ Rerank is now controlled per query via 'enable_rerank' parameter")
-        print("   ✓ Default value for enable_rerank is True")
-        print("   ✓ Rerank function is configured at LightRAG initialization")
-        print("   ✓ Per-query enable_rerank setting overrides default behavior")
-        print(
-            "   ✓ If enable_rerank=True but no rerank model is configured, a warning is issued"
-        )
-        print("   ✓ Monitor API usage and costs when using rerank services")
+        print('   ✓ Default value for enable_rerank is True')
+        print('   ✓ Rerank function is configured at LightRAG initialization')
+        print('   ✓ Per-query enable_rerank setting overrides default behavior')
+        print('   ✓ If enable_rerank=True but no rerank model is configured, a warning is issued')
+        print('   ✓ Monitor API usage and costs when using rerank services')
 
     except Exception as e:
-        print(f"\n❌ Example failed: {e}")
+        print(f'\n❌ Example failed: {e}')
         import traceback
 
         traceback.print_exc()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

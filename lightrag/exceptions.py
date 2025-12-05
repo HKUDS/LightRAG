@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import httpx
 from typing import Literal
+
+import httpx
 
 
 class APIStatusError(Exception):
@@ -11,20 +12,16 @@ class APIStatusError(Exception):
     status_code: int
     request_id: str | None
 
-    def __init__(
-        self, message: str, *, response: httpx.Response, body: object | None
-    ) -> None:
-        super().__init__(message, response.request, body=body)
+    def __init__(self, message: str, *, response: httpx.Response, body: object | None = None) -> None:
+        super().__init__(message)
         self.response = response
         self.status_code = response.status_code
-        self.request_id = response.headers.get("x-request-id")
+        self.request_id = response.headers.get('x-request-id')
 
 
 class APIConnectionError(Exception):
-    def __init__(
-        self, *, message: str = "Connection error.", request: httpx.Request
-    ) -> None:
-        super().__init__(message, request, body=None)
+    def __init__(self, *, message: str = 'Connection error.', request: httpx.Request) -> None:
+        super().__init__(message)
 
 
 class BadRequestError(APIStatusError):
@@ -57,42 +54,42 @@ class RateLimitError(APIStatusError):
 
 class APITimeoutError(APIConnectionError):
     def __init__(self, request: httpx.Request) -> None:
-        super().__init__(message="Request timed out.", request=request)
+        super().__init__(message='Request timed out.', request=request)
 
 
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
 
-    def __init__(self, storage_type: str = "Storage"):
+    def __init__(self, storage_type: str = 'Storage'):
         super().__init__(
-            f"{storage_type} not initialized. Please ensure proper initialization:\n"
-            f"\n"
-            f"  rag = LightRAG(...)\n"
-            f"  await rag.initialize_storages()  # Required - auto-initializes pipeline_status\n"
-            f"\n"
-            f"See: https://github.com/HKUDS/LightRAG#important-initialization-requirements"
+            f'{storage_type} not initialized. Please ensure proper initialization:\n'
+            f'\n'
+            f'  rag = LightRAG(...)\n'
+            f'  await rag.initialize_storages()  # Required - auto-initializes pipeline_status\n'
+            f'\n'
+            f'See: https://github.com/HKUDS/LightRAG#important-initialization-requirements'
         )
 
 
 class PipelineNotInitializedError(KeyError):
     """Raised when pipeline status is accessed before initialization."""
 
-    def __init__(self, namespace: str = ""):
+    def __init__(self, namespace: str = ''):
         msg = (
             f"Pipeline namespace '{namespace}' not found.\n"
-            f"\n"
-            f"Pipeline status should be auto-initialized by initialize_storages().\n"
-            f"If you see this error, please ensure:\n"
-            f"\n"
-            f"  1. You called await rag.initialize_storages()\n"
-            f"  2. For multi-workspace setups, each LightRAG instance was properly initialized\n"
-            f"\n"
-            f"Standard initialization:\n"
+            f'\n'
+            f'Pipeline status should be auto-initialized by initialize_storages().\n'
+            f'If you see this error, please ensure:\n'
+            f'\n'
+            f'  1. You called await rag.initialize_storages()\n'
+            f'  2. For multi-workspace setups, each LightRAG instance was properly initialized\n'
+            f'\n'
+            f'Standard initialization:\n'
             f"  rag = LightRAG(workspace='your_workspace')\n"
-            f"  await rag.initialize_storages()  # Auto-initializes pipeline_status\n"
-            f"\n"
-            f"If you need manual control (advanced):\n"
-            f"  from lightrag.kg.shared_storage import initialize_pipeline_status\n"
+            f'  await rag.initialize_storages()  # Auto-initializes pipeline_status\n'
+            f'\n'
+            f'If you need manual control (advanced):\n'
+            f'  from lightrag.kg.shared_storage import initialize_pipeline_status\n'
             f"  await initialize_pipeline_status(workspace='your_workspace')"
         )
         super().__init__(msg)
@@ -101,7 +98,7 @@ class PipelineNotInitializedError(KeyError):
 class PipelineCancelledException(Exception):
     """Raised when pipeline processing is cancelled by user request."""
 
-    def __init__(self, message: str = "User cancelled"):
+    def __init__(self, message: str = 'User cancelled'):
         super().__init__(message)
         self.message = message
 
@@ -117,11 +114,8 @@ class ChunkTokenLimitExceededError(ValueError):
     ) -> None:
         preview = chunk_preview.strip() if chunk_preview else None
         truncated_preview = preview[:80] if preview else None
-        preview_note = f" Preview: '{truncated_preview}'" if truncated_preview else ""
-        message = (
-            f"Chunk token length {chunk_tokens} exceeds chunk_token_size {chunk_token_limit}."
-            f"{preview_note}"
-        )
+        preview_note = f" Preview: '{truncated_preview}'" if truncated_preview else ''
+        message = f'Chunk token length {chunk_tokens} exceeds chunk_token_size {chunk_token_limit}.{preview_note}'
         super().__init__(message)
         self.chunk_tokens = chunk_tokens
         self.chunk_token_limit = chunk_token_limit

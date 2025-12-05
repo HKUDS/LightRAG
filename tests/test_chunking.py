@@ -12,7 +12,7 @@ class DummyTokenizer(TokenizerInterface):
         return [ord(ch) for ch in content]
 
     def decode(self, tokens):
-        return "".join(chr(token) for token in tokens)
+        return ''.join(chr(token) for token in tokens)
 
 
 class MultiTokenCharacterTokenizer(TokenizerInterface):
@@ -31,7 +31,7 @@ class MultiTokenCharacterTokenizer(TokenizerInterface):
         for ch in content:
             if ch.isupper():  # Uppercase = 2 tokens
                 tokens.extend([ord(ch), ord(ch) + 1000])
-            elif ch in ["!", "?", "."]:  # Punctuation = 3 tokens
+            elif ch in ['!', '?', '.']:  # Punctuation = 3 tokens
                 tokens.extend([ord(ch), ord(ch) + 2000, ord(ch) + 3000])
             else:  # Regular chars = 1 token
                 tokens.append(ord(ch))
@@ -44,11 +44,7 @@ class MultiTokenCharacterTokenizer(TokenizerInterface):
         while i < len(tokens):
             base_token = tokens[i]
             # Check if this is part of a multi-token sequence
-            if (
-                i + 2 < len(tokens)
-                and tokens[i + 1] == base_token + 2000
-                and tokens[i + 2] == base_token + 3000
-            ):
+            if i + 2 < len(tokens) and tokens[i + 1] == base_token + 2000 and tokens[i + 2] == base_token + 3000:
                 # 3-token punctuation
                 result.append(chr(base_token))
                 i += 3
@@ -60,15 +56,15 @@ class MultiTokenCharacterTokenizer(TokenizerInterface):
                 # Single token
                 result.append(chr(base_token))
                 i += 1
-        return "".join(result)
+        return ''.join(result)
 
 
 def make_tokenizer() -> Tokenizer:
-    return Tokenizer(model_name="dummy", tokenizer=DummyTokenizer())
+    return Tokenizer(model_name='dummy', tokenizer=DummyTokenizer())
 
 
 def make_multi_token_tokenizer() -> Tokenizer:
-    return Tokenizer(model_name="multi", tokenizer=MultiTokenCharacterTokenizer())
+    return Tokenizer(model_name='multi', tokenizer=MultiTokenCharacterTokenizer())
 
 
 # ============================================================================
@@ -83,26 +79,26 @@ def test_split_by_character_only_within_limit():
 
     chunks = chunking_by_token_size(
         tokenizer,
-        "alpha\n\nbeta",
-        split_by_character="\n\n",
+        'alpha\n\nbeta',
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
-    assert [chunk["content"] for chunk in chunks] == ["alpha", "beta"]
+    assert [chunk['content'] for chunk in chunks] == ['alpha', 'beta']
 
 
 @pytest.mark.offline
 def test_split_by_character_only_exceeding_limit_raises():
     """Test that oversized chunks raise ChunkTokenLimitExceededError."""
     tokenizer = make_tokenizer()
-    oversized = "a" * 12
+    oversized = 'a' * 12
 
     with pytest.raises(ChunkTokenLimitExceededError) as excinfo:
         chunking_by_token_size(
             tokenizer,
             oversized,
-            split_by_character="\n\n",
+            split_by_character='\n\n',
             split_by_character_only=True,
             chunk_token_size=5,
         )
@@ -116,53 +112,53 @@ def test_split_by_character_only_exceeding_limit_raises():
 def test_chunk_error_includes_preview():
     """Test that error message includes chunk preview."""
     tokenizer = make_tokenizer()
-    oversized = "x" * 100
+    oversized = 'x' * 100
 
     with pytest.raises(ChunkTokenLimitExceededError) as excinfo:
         chunking_by_token_size(
             tokenizer,
             oversized,
-            split_by_character="\n\n",
+            split_by_character='\n\n',
             split_by_character_only=True,
             chunk_token_size=10,
         )
 
     err = excinfo.value
     # Preview should be first 80 chars of a 100-char string
-    assert err.chunk_preview == "x" * 80
-    assert "Preview:" in str(err)
+    assert err.chunk_preview == 'x' * 80
+    assert 'Preview:' in str(err)
 
 
 @pytest.mark.offline
 def test_split_by_character_only_at_exact_limit():
     """Test chunking when chunk is exactly at token limit."""
     tokenizer = make_tokenizer()
-    exact_size = "a" * 10
+    exact_size = 'a' * 10
 
     chunks = chunking_by_token_size(
         tokenizer,
         exact_size,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     assert len(chunks) == 1
-    assert chunks[0]["content"] == exact_size
-    assert chunks[0]["tokens"] == 10
+    assert chunks[0]['content'] == exact_size
+    assert chunks[0]['tokens'] == 10
 
 
 @pytest.mark.offline
 def test_split_by_character_only_one_over_limit():
     """Test that chunk with one token over limit raises error."""
     tokenizer = make_tokenizer()
-    one_over = "a" * 11
+    one_over = 'a' * 11
 
     with pytest.raises(ChunkTokenLimitExceededError) as excinfo:
         chunking_by_token_size(
             tokenizer,
             one_over,
-            split_by_character="\n\n",
+            split_by_character='\n\n',
             split_by_character_only=True,
             chunk_token_size=10,
         )
@@ -182,12 +178,12 @@ def test_split_recursive_oversized_chunk():
     """Test recursive splitting of oversized chunk with split_by_character_only=False."""
     tokenizer = make_tokenizer()
     # 30 chars - should split into chunks of size 10
-    oversized = "a" * 30
+    oversized = 'a' * 30
 
     chunks = chunking_by_token_size(
         tokenizer,
         oversized,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=0,
@@ -195,8 +191,8 @@ def test_split_recursive_oversized_chunk():
 
     # Should create 3 chunks of 10 tokens each
     assert len(chunks) == 3
-    assert all(chunk["tokens"] == 10 for chunk in chunks)
-    assert all(chunk["content"] == "a" * 10 for chunk in chunks)
+    assert all(chunk['tokens'] == 10 for chunk in chunks)
+    assert all(chunk['content'] == 'a' * 10 for chunk in chunks)
 
 
 @pytest.mark.offline
@@ -209,12 +205,12 @@ def test_split_with_chunk_overlap():
     """
     tokenizer = make_tokenizer()
     # Each character is unique - enables exact position verification
-    content = "0123456789abcdefghijklmno"  # 25 chars
+    content = '0123456789abcdefghijklmno'  # 25 chars
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=3,
@@ -225,17 +221,17 @@ def test_split_with_chunk_overlap():
     assert len(chunks) == 4
 
     # Verify exact content and token counts
-    assert chunks[0]["tokens"] == 10
-    assert chunks[0]["content"] == "0123456789"  # [0:10]
+    assert chunks[0]['tokens'] == 10
+    assert chunks[0]['content'] == '0123456789'  # [0:10]
 
-    assert chunks[1]["tokens"] == 10
-    assert chunks[1]["content"] == "789abcdefg"  # [7:17] - overlaps with "789"
+    assert chunks[1]['tokens'] == 10
+    assert chunks[1]['content'] == '789abcdefg'  # [7:17] - overlaps with "789"
 
-    assert chunks[2]["tokens"] == 10
-    assert chunks[2]["content"] == "efghijklmn"  # [14:24] - overlaps with "efg"
+    assert chunks[2]['tokens'] == 10
+    assert chunks[2]['content'] == 'efghijklmn'  # [14:24] - overlaps with "efg"
 
-    assert chunks[3]["tokens"] == 4
-    assert chunks[3]["content"] == "lmno"  # [21:25] - overlaps with "lmn"
+    assert chunks[3]['tokens'] == 4
+    assert chunks[3]['content'] == 'lmno'  # [21:25] - overlaps with "lmn"
 
 
 @pytest.mark.offline
@@ -244,12 +240,12 @@ def test_split_multiple_chunks_with_mixed_sizes():
     tokenizer = make_tokenizer()
     # "small\n\nlarge_chunk_here\n\nmedium"
     # small: 5 tokens, large_chunk_here: 16 tokens, medium: 6 tokens
-    content = "small\n\n" + "a" * 16 + "\n\nmedium"
+    content = 'small\n\n' + 'a' * 16 + '\n\nmedium'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=2,
@@ -259,8 +255,8 @@ def test_split_multiple_chunks_with_mixed_sizes():
     # Second chunk (16 tokens) should be split into 2 chunks
     # Third chunk "medium" should be kept as is (6 tokens)
     assert len(chunks) == 4
-    assert chunks[0]["content"] == "small"
-    assert chunks[0]["tokens"] == 5
+    assert chunks[0]['content'] == 'small'
+    assert chunks[0]['tokens'] == 5
 
 
 @pytest.mark.offline
@@ -268,20 +264,20 @@ def test_split_exact_boundary():
     """Test splitting at exact chunk boundaries."""
     tokenizer = make_tokenizer()
     # Exactly 20 chars, should split into 2 chunks of 10
-    content = "a" * 20
+    content = 'a' * 20
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=0,
     )
 
     assert len(chunks) == 2
-    assert chunks[0]["tokens"] == 10
-    assert chunks[1]["tokens"] == 10
+    assert chunks[0]['tokens'] == 10
+    assert chunks[1]['tokens'] == 10
 
 
 @pytest.mark.offline
@@ -289,19 +285,19 @@ def test_split_very_large_text():
     """Test splitting very large text into multiple chunks."""
     tokenizer = make_tokenizer()
     # 100 chars should create 10 chunks with chunk_size=10, overlap=0
-    content = "a" * 100
+    content = 'a' * 100
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=0,
     )
 
     assert len(chunks) == 10
-    assert all(chunk["tokens"] == 10 for chunk in chunks)
+    assert all(chunk['tokens'] == 10 for chunk in chunks)
 
 
 # ============================================================================
@@ -316,15 +312,15 @@ def test_empty_content():
 
     chunks = chunking_by_token_size(
         tokenizer,
-        "",
-        split_by_character="\n\n",
+        '',
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     assert len(chunks) == 1
-    assert chunks[0]["content"] == ""
-    assert chunks[0]["tokens"] == 0
+    assert chunks[0]['content'] == ''
+    assert chunks[0]['tokens'] == 0
 
 
 @pytest.mark.offline
@@ -334,27 +330,27 @@ def test_single_character():
 
     chunks = chunking_by_token_size(
         tokenizer,
-        "a",
-        split_by_character="\n\n",
+        'a',
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     assert len(chunks) == 1
-    assert chunks[0]["content"] == "a"
-    assert chunks[0]["tokens"] == 1
+    assert chunks[0]['content'] == 'a'
+    assert chunks[0]['tokens'] == 1
 
 
 @pytest.mark.offline
 def test_no_delimiter_in_content():
     """Test chunking when content has no delimiter."""
     tokenizer = make_tokenizer()
-    content = "a" * 30
+    content = 'a' * 30
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",  # Delimiter not in content
+        split_by_character='\n\n',  # Delimiter not in content
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=0,
@@ -362,14 +358,14 @@ def test_no_delimiter_in_content():
 
     # Should still split based on token size
     assert len(chunks) == 3
-    assert all(chunk["tokens"] == 10 for chunk in chunks)
+    assert all(chunk['tokens'] == 10 for chunk in chunks)
 
 
 @pytest.mark.offline
 def test_no_split_character():
     """Test chunking without split_by_character (None)."""
     tokenizer = make_tokenizer()
-    content = "a" * 30
+    content = 'a' * 30
 
     chunks = chunking_by_token_size(
         tokenizer,
@@ -382,7 +378,7 @@ def test_no_split_character():
 
     # Should split based purely on token size
     assert len(chunks) == 3
-    assert all(chunk["tokens"] == 10 for chunk in chunks)
+    assert all(chunk['tokens'] == 10 for chunk in chunks)
 
 
 # ============================================================================
@@ -394,18 +390,18 @@ def test_no_split_character():
 def test_different_delimiter_newline():
     """Test with single newline delimiter."""
     tokenizer = make_tokenizer()
-    content = "alpha\nbeta\ngamma"
+    content = 'alpha\nbeta\ngamma'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n",
+        split_by_character='\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     assert len(chunks) == 3
-    assert [c["content"] for c in chunks] == ["alpha", "beta", "gamma"]
+    assert [c['content'] for c in chunks] == ['alpha', 'beta', 'gamma']
 
 
 @pytest.mark.offline
@@ -419,26 +415,26 @@ def test_delimiter_based_splitting_verification():
     tokenizer = make_tokenizer()
 
     # Content with clear delimiter boundaries
-    content = "part1||part2||part3||part4"
+    content = 'part1||part2||part3||part4'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="||",
+        split_by_character='||',
         split_by_character_only=True,
         chunk_token_size=20,
     )
 
     # Should split exactly at || delimiters
     assert len(chunks) == 4
-    assert chunks[0]["content"] == "part1"
-    assert chunks[1]["content"] == "part2"
-    assert chunks[2]["content"] == "part3"
-    assert chunks[3]["content"] == "part4"
+    assert chunks[0]['content'] == 'part1'
+    assert chunks[1]['content'] == 'part2'
+    assert chunks[2]['content'] == 'part3'
+    assert chunks[3]['content'] == 'part4'
 
     # Verify delimiter is not included in chunks
     for chunk in chunks:
-        assert "||" not in chunk["content"]
+        assert '||' not in chunk['content']
 
 
 @pytest.mark.offline
@@ -452,68 +448,68 @@ def test_multi_character_delimiter_splitting():
     tokenizer = make_tokenizer()
 
     # Test 1: Multi-character delimiter that contains single chars also present elsewhere
-    content = "data<SEP>more<SEP>final"
+    content = 'data<SEP>more<SEP>final'
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="<SEP>",
+        split_by_character='<SEP>',
         split_by_character_only=True,
         chunk_token_size=50,
     )
 
     assert len(chunks) == 3
-    assert chunks[0]["content"] == "data"
-    assert chunks[1]["content"] == "more"
-    assert chunks[2]["content"] == "final"
+    assert chunks[0]['content'] == 'data'
+    assert chunks[1]['content'] == 'more'
+    assert chunks[2]['content'] == 'final'
     # Verify full delimiter is not in chunks, not just parts
     for chunk in chunks:
-        assert "<SEP>" not in chunk["content"]
+        assert '<SEP>' not in chunk['content']
 
     # Test 2: Delimiter appears in middle of content
-    content = "first><second><third"
+    content = 'first><second><third'
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="><",  # Multi-char delimiter
+        split_by_character='><',  # Multi-char delimiter
         split_by_character_only=True,
         chunk_token_size=50,
     )
 
     # Should split at "><" delimiter
     assert len(chunks) == 3
-    assert chunks[0]["content"] == "first"
-    assert chunks[1]["content"] == "second"
-    assert chunks[2]["content"] == "third"
+    assert chunks[0]['content'] == 'first'
+    assert chunks[1]['content'] == 'second'
+    assert chunks[2]['content'] == 'third'
 
     # Test 3: Three-character delimiter
-    content = "section1[***]section2[***]section3"
+    content = 'section1[***]section2[***]section3'
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="[***]",
+        split_by_character='[***]',
         split_by_character_only=True,
         chunk_token_size=50,
     )
 
     assert len(chunks) == 3
-    assert chunks[0]["content"] == "section1"
-    assert chunks[1]["content"] == "section2"
-    assert chunks[2]["content"] == "section3"
+    assert chunks[0]['content'] == 'section1'
+    assert chunks[1]['content'] == 'section2'
+    assert chunks[2]['content'] == 'section3'
 
     # Test 4: Delimiter with special regex characters (should be treated literally)
-    content = "partA...partB...partC"
+    content = 'partA...partB...partC'
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="...",
+        split_by_character='...',
         split_by_character_only=True,
         chunk_token_size=50,
     )
 
     assert len(chunks) == 3
-    assert chunks[0]["content"] == "partA"
-    assert chunks[1]["content"] == "partB"
-    assert chunks[2]["content"] == "partC"
+    assert chunks[0]['content'] == 'partA'
+    assert chunks[1]['content'] == 'partB'
+    assert chunks[2]['content'] == 'partC'
 
 
 @pytest.mark.offline
@@ -526,27 +522,27 @@ def test_delimiter_partial_match_not_split():
     tokenizer = make_tokenizer()
 
     # Content contains "||" delimiter but also contains single "|"
-    content = "data|single||data|with|pipes||final"
+    content = 'data|single||data|with|pipes||final'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="||",  # Only split on double pipe
+        split_by_character='||',  # Only split on double pipe
         split_by_character_only=True,
         chunk_token_size=50,
     )
 
     # Should split only at "||", not at single "|"
     assert len(chunks) == 3
-    assert chunks[0]["content"] == "data|single"
-    assert chunks[1]["content"] == "data|with|pipes"
-    assert chunks[2]["content"] == "final"
+    assert chunks[0]['content'] == 'data|single'
+    assert chunks[1]['content'] == 'data|with|pipes'
+    assert chunks[2]['content'] == 'final'
 
     # Single "|" should remain in content, but not double "||"
-    assert "|" in chunks[0]["content"]
-    assert "|" in chunks[1]["content"]
-    assert "||" not in chunks[0]["content"]
-    assert "||" not in chunks[1]["content"]
+    assert '|' in chunks[0]['content']
+    assert '|' in chunks[1]['content']
+    assert '||' not in chunks[0]['content']
+    assert '||' not in chunks[1]['content']
 
 
 @pytest.mark.offline
@@ -558,12 +554,12 @@ def test_no_delimiter_forces_token_based_split():
     tokenizer = make_tokenizer()
 
     # Content without the specified delimiter
-    content = "0123456789abcdefghijklmnop"  # 26 chars, no "\n\n"
+    content = '0123456789abcdefghijklmnop'  # 26 chars, no "\n\n"
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",  # Delimiter not in content
+        split_by_character='\n\n',  # Delimiter not in content
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=0,
@@ -571,13 +567,13 @@ def test_no_delimiter_forces_token_based_split():
 
     # Should fall back to token-based splitting
     assert len(chunks) == 3
-    assert chunks[0]["content"] == "0123456789"  # [0:10]
-    assert chunks[1]["content"] == "abcdefghij"  # [10:20]
-    assert chunks[2]["content"] == "klmnop"  # [20:26]
+    assert chunks[0]['content'] == '0123456789'  # [0:10]
+    assert chunks[1]['content'] == 'abcdefghij'  # [10:20]
+    assert chunks[2]['content'] == 'klmnop'  # [20:26]
 
     # Verify it didn't somehow split at the delimiter that doesn't exist
     for chunk in chunks:
-        assert "\n\n" not in chunk["content"]
+        assert '\n\n' not in chunk['content']
 
 
 @pytest.mark.offline
@@ -588,45 +584,45 @@ def test_delimiter_at_exact_chunk_boundary():
     tokenizer = make_tokenizer()
 
     # "segment1\n\nsegment2" where each segment is within limit
-    content = "12345\n\nabcde"
+    content = '12345\n\nabcde'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     # Should split at delimiter, not at token count
     assert len(chunks) == 2
-    assert chunks[0]["content"] == "12345"
-    assert chunks[1]["content"] == "abcde"
+    assert chunks[0]['content'] == '12345'
+    assert chunks[1]['content'] == 'abcde'
 
 
 @pytest.mark.offline
 def test_different_delimiter_comma():
     """Test with comma delimiter."""
     tokenizer = make_tokenizer()
-    content = "one,two,three"
+    content = 'one,two,three'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character=",",
+        split_by_character=',',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     assert len(chunks) == 3
-    assert [c["content"] for c in chunks] == ["one", "two", "three"]
+    assert [c['content'] for c in chunks] == ['one', 'two', 'three']
 
 
 @pytest.mark.offline
 def test_zero_overlap():
     """Test with zero overlap (no overlap)."""
     tokenizer = make_tokenizer()
-    content = "a" * 20
+    content = 'a' * 20
 
     chunks = chunking_by_token_size(
         tokenizer,
@@ -639,8 +635,8 @@ def test_zero_overlap():
 
     # Should create exactly 2 chunks with no overlap
     assert len(chunks) == 2
-    assert chunks[0]["tokens"] == 10
-    assert chunks[1]["tokens"] == 10
+    assert chunks[0]['tokens'] == 10
+    assert chunks[1]['tokens'] == 10
 
 
 @pytest.mark.offline
@@ -653,7 +649,7 @@ def test_large_overlap():
     """
     tokenizer = make_tokenizer()
     # Use distinctive characters to verify exact positions
-    content = "0123456789abcdefghijklmnopqrst"  # 30 chars
+    content = '0123456789abcdefghijklmnopqrst'  # 30 chars
 
     chunks = chunking_by_token_size(
         tokenizer,
@@ -677,17 +673,13 @@ def test_large_overlap():
     assert len(chunks) == 30
 
     # Verify first few chunks have correct content with proper overlap
-    assert chunks[0]["content"] == "0123456789"  # [0:10]
-    assert (
-        chunks[1]["content"] == "123456789a"
-    )  # [1:11] - overlaps 9 chars with previous
-    assert (
-        chunks[2]["content"] == "23456789ab"
-    )  # [2:12] - overlaps 9 chars with previous
-    assert chunks[3]["content"] == "3456789abc"  # [3:13]
+    assert chunks[0]['content'] == '0123456789'  # [0:10]
+    assert chunks[1]['content'] == '123456789a'  # [1:11] - overlaps 9 chars with previous
+    assert chunks[2]['content'] == '23456789ab'  # [2:12] - overlaps 9 chars with previous
+    assert chunks[3]['content'] == '3456789abc'  # [3:13]
 
     # Verify last chunk
-    assert chunks[-1]["content"] == "t"  # [29:30] - last char only
+    assert chunks[-1]['content'] == 't'  # [29:30] - last char only
 
 
 # ============================================================================
@@ -699,27 +691,27 @@ def test_large_overlap():
 def test_chunk_order_index_simple():
     """Test that chunk_order_index is correctly assigned."""
     tokenizer = make_tokenizer()
-    content = "a\n\nb\n\nc"
+    content = 'a\n\nb\n\nc'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=10,
     )
 
     assert len(chunks) == 3
-    assert chunks[0]["chunk_order_index"] == 0
-    assert chunks[1]["chunk_order_index"] == 1
-    assert chunks[2]["chunk_order_index"] == 2
+    assert chunks[0]['chunk_order_index'] == 0
+    assert chunks[1]['chunk_order_index'] == 1
+    assert chunks[2]['chunk_order_index'] == 2
 
 
 @pytest.mark.offline
 def test_chunk_order_index_with_splitting():
     """Test chunk_order_index with recursive splitting."""
     tokenizer = make_tokenizer()
-    content = "a" * 30
+    content = 'a' * 30
 
     chunks = chunking_by_token_size(
         tokenizer,
@@ -731,9 +723,9 @@ def test_chunk_order_index_with_splitting():
     )
 
     assert len(chunks) == 3
-    assert chunks[0]["chunk_order_index"] == 0
-    assert chunks[1]["chunk_order_index"] == 1
-    assert chunks[2]["chunk_order_index"] == 2
+    assert chunks[0]['chunk_order_index'] == 0
+    assert chunks[1]['chunk_order_index'] == 1
+    assert chunks[2]['chunk_order_index'] == 2
 
 
 # ============================================================================
@@ -746,12 +738,12 @@ def test_mixed_size_chunks_no_error():
     """Test that mixed size chunks work without error in recursive mode."""
     tokenizer = make_tokenizer()
     # Mix of small and large chunks
-    content = "small\n\n" + "a" * 50 + "\n\nmedium"
+    content = 'small\n\n' + 'a' * 50 + '\n\nmedium'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=10,
         chunk_overlap_token_size=2,
@@ -760,50 +752,50 @@ def test_mixed_size_chunks_no_error():
     # Should handle all chunks without error
     assert len(chunks) > 0
     # Small chunk should remain intact
-    assert chunks[0]["content"] == "small"
+    assert chunks[0]['content'] == 'small'
     # Large chunk should be split into multiple pieces
-    assert any(chunk["content"] == "a" * 10 for chunk in chunks)
+    assert any(chunk['content'] == 'a' * 10 for chunk in chunks)
     # Last chunk should contain "medium"
-    assert any("medium" in chunk["content"] for chunk in chunks)
+    assert any('medium' in chunk['content'] for chunk in chunks)
 
 
 @pytest.mark.offline
 def test_whitespace_handling():
     """Test that whitespace is properly handled in chunk content."""
     tokenizer = make_tokenizer()
-    content = "  alpha  \n\n  beta  "
+    content = '  alpha  \n\n  beta  '
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=20,
     )
 
     # Content should be stripped
-    assert chunks[0]["content"] == "alpha"
-    assert chunks[1]["content"] == "beta"
+    assert chunks[0]['content'] == 'alpha'
+    assert chunks[1]['content'] == 'beta'
 
 
 @pytest.mark.offline
 def test_consecutive_delimiters():
     """Test handling of consecutive delimiters."""
     tokenizer = make_tokenizer()
-    content = "alpha\n\n\n\nbeta"
+    content = 'alpha\n\n\n\nbeta'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=20,
     )
 
     # Should split on delimiter and include empty chunks
     assert len(chunks) >= 2
-    assert "alpha" in [c["content"] for c in chunks]
-    assert "beta" in [c["content"] for c in chunks]
+    assert 'alpha' in [c['content'] for c in chunks]
+    assert 'beta' in [c['content'] for c in chunks]
 
 
 # ============================================================================
@@ -825,13 +817,13 @@ def test_token_counting_not_character_counting():
     tokenizer = make_multi_token_tokenizer()
 
     # "aXa" = 3 characters, 4 tokens
-    content = "aXa"
+    content = 'aXa'
 
     with pytest.raises(ChunkTokenLimitExceededError) as excinfo:
         chunking_by_token_size(
             tokenizer,
             content,
-            split_by_character="\n\n",
+            split_by_character='\n\n',
             split_by_character_only=True,
             chunk_token_size=3,  # 3 token limit
         )
@@ -851,13 +843,13 @@ def test_token_limit_with_punctuation():
     tokenizer = make_multi_token_tokenizer()
 
     # "Hi!" = 3 characters, 6 tokens (H=2, i=1, !=3)
-    content = "Hi!"
+    content = 'Hi!'
 
     with pytest.raises(ChunkTokenLimitExceededError) as excinfo:
         chunking_by_token_size(
             tokenizer,
             content,
-            split_by_character="\n\n",
+            split_by_character='\n\n',
             split_by_character_only=True,
             chunk_token_size=4,
         )
@@ -873,19 +865,19 @@ def test_multi_token_within_limit():
     tokenizer = make_multi_token_tokenizer()
 
     # "Hi" = 2 chars, 3 tokens (H=2, i=1)
-    content = "Hi"
+    content = 'Hi'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=5,
     )
 
     assert len(chunks) == 1
-    assert chunks[0]["tokens"] == 3
-    assert chunks[0]["content"] == "Hi"
+    assert chunks[0]['tokens'] == 3
+    assert chunks[0]['content'] == 'Hi'
 
 
 @pytest.mark.offline
@@ -899,12 +891,12 @@ def test_recursive_split_with_multi_token_chars():
     tokenizer = make_multi_token_tokenizer()
 
     # "AAAAA" = 5 characters, 10 tokens
-    content = "AAAAA"
+    content = 'AAAAA'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=6,
         chunk_overlap_token_size=0,
@@ -913,8 +905,8 @@ def test_recursive_split_with_multi_token_chars():
     # Should split into: [0:6]=3 chars, [6:10]=2 chars
     # Not [0:3]=6 tokens, [3:5]=4 tokens (character-based would be wrong)
     assert len(chunks) == 2
-    assert chunks[0]["tokens"] == 6
-    assert chunks[1]["tokens"] == 4
+    assert chunks[0]['tokens'] == 6
+    assert chunks[1]['tokens'] == 4
 
 
 @pytest.mark.offline
@@ -927,12 +919,12 @@ def test_overlap_uses_token_count():
     tokenizer = make_multi_token_tokenizer()
 
     # "aAaAa" = 5 characters, 7 tokens
-    content = "aAaAa"
+    content = 'aAaAa'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=False,
         chunk_token_size=4,
         chunk_overlap_token_size=2,
@@ -941,10 +933,10 @@ def test_overlap_uses_token_count():
     # Chunks start at token positions: 0, 2, 4, 6
     # [0:4]=2 chars, [2:6]=2.5 chars, [4:7]=1.5 chars
     assert len(chunks) == 4
-    assert chunks[0]["tokens"] == 4
-    assert chunks[1]["tokens"] == 4
-    assert chunks[2]["tokens"] == 3
-    assert chunks[3]["tokens"] == 1
+    assert chunks[0]['tokens'] == 4
+    assert chunks[1]['tokens'] == 4
+    assert chunks[2]['tokens'] == 3
+    assert chunks[3]['tokens'] == 1
 
 
 @pytest.mark.offline
@@ -955,21 +947,21 @@ def test_mixed_multi_token_content():
     # "hello\n\nWORLD!" = 12 chars
     # hello = 5 tokens, WORLD = 10 tokens (5 chars × 2), ! = 3 tokens
     # Total = 18 tokens
-    content = "hello\n\nWORLD!"
+    content = 'hello\n\nWORLD!'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=20,
     )
 
     assert len(chunks) == 2
-    assert chunks[0]["content"] == "hello"
-    assert chunks[0]["tokens"] == 5
-    assert chunks[1]["content"] == "WORLD!"
-    assert chunks[1]["tokens"] == 13  # 10 + 3
+    assert chunks[0]['content'] == 'hello'
+    assert chunks[0]['tokens'] == 5
+    assert chunks[1]['content'] == 'WORLD!'
+    assert chunks[1]['tokens'] == 13  # 10 + 3
 
 
 @pytest.mark.offline
@@ -978,19 +970,19 @@ def test_exact_token_boundary_multi_token():
     tokenizer = make_multi_token_tokenizer()
 
     # "AAA" = 3 chars, 6 tokens (each A = 2 tokens)
-    content = "AAA"
+    content = 'AAA'
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
-        split_by_character="\n\n",
+        split_by_character='\n\n',
         split_by_character_only=True,
         chunk_token_size=6,
     )
 
     assert len(chunks) == 1
-    assert chunks[0]["tokens"] == 6
-    assert chunks[0]["content"] == "AAA"
+    assert chunks[0]['tokens'] == 6
+    assert chunks[0]['content'] == 'AAA'
 
 
 @pytest.mark.offline
@@ -1010,7 +1002,7 @@ def test_multi_token_overlap_with_distinctive_content():
     tokenizer = make_multi_token_tokenizer()
 
     # Distinctive content with mixed single and multi-token chars
-    content = "abcABCdef"  # 9 chars, 12 tokens
+    content = 'abcABCdef'  # 9 chars, 12 tokens
 
     chunks = chunking_by_token_size(
         tokenizer,
@@ -1042,9 +1034,9 @@ def test_multi_token_overlap_with_distinctive_content():
     assert len(chunks) == 3
 
     # Just verify token counts are correct - content may vary due to character splitting
-    assert chunks[0]["tokens"] == 6
-    assert chunks[1]["tokens"] == 6
-    assert chunks[2]["tokens"] == 4
+    assert chunks[0]['tokens'] == 6
+    assert chunks[1]['tokens'] == 6
+    assert chunks[2]['tokens'] == 4
 
 
 @pytest.mark.offline
@@ -1053,14 +1045,14 @@ def test_decode_preserves_content():
     tokenizer = make_multi_token_tokenizer()
 
     test_strings = [
-        "Hello",
-        "WORLD",
-        "Test!",
-        "Mixed?Case.",
-        "ABC123xyz",
+        'Hello',
+        'WORLD',
+        'Test!',
+        'Mixed?Case.',
+        'ABC123xyz',
     ]
 
     for original in test_strings:
         tokens = tokenizer.encode(original)
         decoded = tokenizer.decode(tokens)
-        assert decoded == original, f"Failed to decode: {original}"
+        assert decoded == original, f'Failed to decode: {original}'

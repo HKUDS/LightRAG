@@ -1,40 +1,39 @@
-from ..utils import verbose_debug, VERBOSE_DEBUG
-import os
 import logging
-
+import os
 from collections.abc import AsyncIterator
 
 import pipmaster as pm
 
-# install specific modules
-if not pm.is_installed("openai"):
-    pm.install("openai")
+from lightrag.utils import VERBOSE_DEBUG, verbose_debug
 
+# install specific modules
+if not pm.is_installed('openai'):
+    pm.install('openai')
+
+import base64
+from typing import Any, cast
+
+import numpy as np
+from dotenv import load_dotenv
 from openai import (
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    RateLimitError,
 )
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-)
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    safe_unicode_decode,
-    logger,
 )
 
-from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
-
-import numpy as np
-import base64
-from typing import Any, Union
-
-from dotenv import load_dotenv
+from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.utils import (
+    logger,
+    safe_unicode_decode,
+    wrap_embedding_func_with_attrs,
+)
 
 # Try to import Langfuse for LLM observability (optional)
 # Falls back to standard OpenAI client if not available
@@ -42,30 +41,28 @@ from dotenv import load_dotenv
 LANGFUSE_ENABLED = False
 try:
     # Check if required Langfuse environment variables are set
-    langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    langfuse_public_key = os.environ.get('LANGFUSE_PUBLIC_KEY')
+    langfuse_secret_key = os.environ.get('LANGFUSE_SECRET_KEY')
 
     # Only enable Langfuse if both keys are configured
     if langfuse_public_key and langfuse_secret_key:
         from langfuse.openai import AsyncOpenAI  # type: ignore[import-untyped]
 
         LANGFUSE_ENABLED = True
-        logger.info("Langfuse observability enabled for OpenAI client")
+        logger.info('Langfuse observability enabled for OpenAI client')
     else:
         from openai import AsyncOpenAI
 
-        logger.debug(
-            "Langfuse environment variables not configured, using standard OpenAI client"
-        )
+        logger.debug('Langfuse environment variables not configured, using standard OpenAI client')
 except ImportError:
     from openai import AsyncOpenAI
 
-    logger.debug("Langfuse not available, using standard OpenAI client")
+    logger.debug('Langfuse not available, using standard OpenAI client')
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path='.env', override=False)
 
 
 class InvalidResponseError(Exception):
@@ -103,9 +100,7 @@ def create_openai_async_client(
         from openai import AsyncAzureOpenAI
 
         if not api_key:
-            api_key = os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get(
-                "LLM_BINDING_API_KEY"
-            )
+            api_key = os.environ.get('AZURE_OPENAI_API_KEY') or os.environ.get('LLM_BINDING_API_KEY')
 
         if client_configs is None:
             client_configs = {}
@@ -113,27 +108,27 @@ def create_openai_async_client(
         # Create a merged config dict with precedence: explicit params > client_configs
         merged_configs = {
             **client_configs,
-            "api_key": api_key,
+            'api_key': api_key,
         }
 
         # Add explicit parameters (override client_configs)
         if base_url is not None:
-            merged_configs["azure_endpoint"] = base_url
+            merged_configs['azure_endpoint'] = base_url
         if azure_deployment is not None:
-            merged_configs["azure_deployment"] = azure_deployment
+            merged_configs['azure_deployment'] = azure_deployment
         if api_version is not None:
-            merged_configs["api_version"] = api_version
+            merged_configs['api_version'] = api_version
         if timeout is not None:
-            merged_configs["timeout"] = timeout
+            merged_configs['timeout'] = timeout
 
-        return AsyncAzureOpenAI(**merged_configs)
+        return AsyncAzureOpenAI(**cast(Any, merged_configs))
     else:
         if not api_key:
-            api_key = os.environ["OPENAI_API_KEY"]
+            api_key = os.environ['OPENAI_API_KEY']
 
         default_headers = {
-            "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
-            "Content-Type": "application/json",
+            'User-Agent': f'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}',
+            'Content-Type': 'application/json',
         }
 
         if client_configs is None:
@@ -142,19 +137,17 @@ def create_openai_async_client(
         # Create a merged config dict with precedence: explicit params > client_configs > defaults
         merged_configs = {
             **client_configs,
-            "default_headers": default_headers,
-            "api_key": api_key,
+            'default_headers': default_headers,
+            'api_key': api_key,
         }
 
         if base_url is not None:
-            merged_configs["base_url"] = base_url
+            merged_configs['base_url'] = base_url
         else:
-            merged_configs["base_url"] = os.environ.get(
-                "OPENAI_API_BASE", "https://api.openai.com/v1"
-            )
+            merged_configs['base_url'] = os.environ.get('OPENAI_API_BASE', 'https://api.openai.com/v1')
 
         if timeout is not None:
-            merged_configs["timeout"] = timeout
+            merged_configs['timeout'] = timeout
 
         return AsyncOpenAI(**merged_configs)
 
@@ -248,17 +241,17 @@ async def openai_complete_if_cache(
 
     # Set openai logger level to INFO when VERBOSE_DEBUG is off
     if not VERBOSE_DEBUG and logger.level == logging.DEBUG:
-        logging.getLogger("openai").setLevel(logging.INFO)
+        logging.getLogger('openai').setLevel(logging.INFO)
 
     # Remove special kwargs that shouldn't be passed to OpenAI
-    kwargs.pop("hashing_kv", None)
+    kwargs.pop('hashing_kv', None)
 
     # Extract client configuration options
-    client_configs = kwargs.pop("openai_client_configs", {})
+    client_configs = kwargs.pop('openai_client_configs', {})
 
     # Handle keyword extraction mode
     if keyword_extraction:
-        kwargs["response_format"] = GPTKeywordExtractionFormat
+        kwargs['response_format'] = GPTKeywordExtractionFormat
 
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
@@ -274,26 +267,26 @@ async def openai_complete_if_cache(
     # Prepare messages
     messages: list[dict[str, Any]] = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+        messages.append({'role': 'system', 'content': system_prompt})
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    messages.append({'role': 'user', 'content': prompt})
 
-    logger.debug("===== Entering func of LLM =====")
-    logger.debug(f"Model: {model}   Base URL: {base_url}")
-    logger.debug(f"Client Configs: {client_configs}")
-    logger.debug(f"Additional kwargs: {kwargs}")
-    logger.debug(f"Num of history messages: {len(history_messages)}")
-    verbose_debug(f"System prompt: {system_prompt}")
-    verbose_debug(f"Query: {prompt}")
-    logger.debug("===== Sending Query to LLM =====")
+    logger.debug('===== Entering func of LLM =====')
+    logger.debug(f'Model: {model}   Base URL: {base_url}')
+    logger.debug(f'Client Configs: {client_configs}')
+    logger.debug(f'Additional kwargs: {kwargs}')
+    logger.debug(f'Num of history messages: {len(history_messages)}')
+    verbose_debug(f'System prompt: {system_prompt}')
+    verbose_debug(f'Query: {prompt}')
+    logger.debug('===== Sending Query to LLM =====')
 
-    messages = kwargs.pop("messages", messages)
+    messages = kwargs.pop('messages', messages)
 
     # Add explicit parameters back to kwargs so they're passed to OpenAI API
     if stream is not None:
-        kwargs["stream"] = stream
+        kwargs['stream'] = stream
     if timeout is not None:
-        kwargs["timeout"] = timeout
+        kwargs['timeout'] = timeout
 
     # Determine the correct model identifier to use
     # For Azure OpenAI, we must use the deployment name instead of the model name
@@ -301,34 +294,29 @@ async def openai_complete_if_cache(
 
     try:
         # Don't use async with context manager, use client directly
-        if "response_format" in kwargs:
-            response = await openai_async_client.chat.completions.parse(
-                model=api_model, messages=messages, **kwargs
-            )
+        if 'response_format' in kwargs:
+            response = await openai_async_client.chat.completions.parse(model=api_model, messages=messages, **kwargs)
         else:
-            response = await openai_async_client.chat.completions.create(
-                model=api_model, messages=messages, **kwargs
-            )
+            response = await openai_async_client.chat.completions.create(model=api_model, messages=messages, **kwargs)
     except APITimeoutError as e:
-        logger.error(f"OpenAI API Timeout Error: {e}")
+        logger.error(f'OpenAI API Timeout Error: {e}')
         await openai_async_client.close()  # Ensure client is closed
         raise
     except APIConnectionError as e:
-        logger.error(f"OpenAI API Connection Error: {e}")
+        logger.error(f'OpenAI API Connection Error: {e}')
         await openai_async_client.close()  # Ensure client is closed
         raise
     except RateLimitError as e:
-        logger.error(f"OpenAI API Rate Limit Error: {e}")
+        logger.error(f'OpenAI API Rate Limit Error: {e}')
         await openai_async_client.close()  # Ensure client is closed
         raise
     except Exception as e:
-        logger.error(
-            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
-        )
+        logger.error(f'OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}')
         await openai_async_client.close()  # Ensure client is closed
         raise
 
-    if hasattr(response, "__aiter__"):
+    if hasattr(response, '__aiter__'):
+        response = cast(Any, response)
 
         async def inner():
             # Track if we've started iterating
@@ -344,36 +332,32 @@ async def openai_complete_if_cache(
                 iteration_started = True
                 async for chunk in response:
                     # Check if this chunk has usage information (final chunk)
-                    if hasattr(chunk, "usage") and chunk.usage:
+                    if hasattr(chunk, 'usage') and chunk.usage:
                         final_chunk_usage = chunk.usage
-                        logger.debug(
-                            f"Received usage info in streaming chunk: {chunk.usage}"
-                        )
+                        logger.debug(f'Received usage info in streaming chunk: {chunk.usage}')
 
                     # Check if choices exists and is not empty
-                    if not hasattr(chunk, "choices") or not chunk.choices:
+                    if not hasattr(chunk, 'choices') or not chunk.choices:
                         # Azure OpenAI sends content filter results in first chunk without choices
-                        logger.debug(
-                            f"Received chunk without choices (likely Azure content filter): {chunk}"
-                        )
+                        logger.debug(f'Received chunk without choices (likely Azure content filter): {chunk}')
                         continue
 
                     # Check if delta exists
-                    if not hasattr(chunk.choices[0], "delta"):
+                    if not hasattr(chunk.choices[0], 'delta'):
                         # This might be the final chunk, continue to check for usage
                         continue
 
                     delta = chunk.choices[0].delta
-                    content = getattr(delta, "content", None)
+                    content = getattr(delta, 'content', None)
                     # Support both OpenAI's reasoning_content and OpenRouter's reasoning field
-                    reasoning_content = getattr(delta, "reasoning_content", "") or getattr(delta, "reasoning", "")
+                    reasoning_content = getattr(delta, 'reasoning_content', '') or getattr(delta, 'reasoning', '')
                     # Also handle OpenRouter's reasoning_details array format
                     if not reasoning_content:
-                        reasoning_details = getattr(delta, "reasoning_details", None)
+                        reasoning_details = getattr(delta, 'reasoning_details', None)
                         if reasoning_details and isinstance(reasoning_details, list):
                             for detail in reasoning_details:
-                                if isinstance(detail, dict) and detail.get("text"):
-                                    reasoning_content = detail.get("text", "")
+                                if isinstance(detail, dict) and detail.get('text'):
+                                    reasoning_content = detail.get('text', '')
                                     break
 
                     # Handle COT logic for streaming (only if enabled)
@@ -389,35 +373,32 @@ async def openai_complete_if_cache(
 
                             # If COT was active, end it
                             if cot_active:
-                                yield "</think>"
+                                yield '</think>'
                                 cot_active = False
 
                             # Process regular content
-                            if r"\u" in content:
-                                content = safe_unicode_decode(content.encode("utf-8"))
+                            if r'\u' in content:
+                                content = safe_unicode_decode(content.encode('utf-8'))
                             yield content
 
                         elif reasoning_content:
                             # Only reasoning content is present
-                            if not initial_content_seen and not cot_started:
+                            if not initial_content_seen and not cot_started and not cot_active:
                                 # Start COT if we haven't seen initial content yet
-                                if not cot_active:
-                                    yield "<think>"
-                                    cot_active = True
-                                    cot_started = True
+                                yield '<think>'
+                                cot_active = True
+                                cot_started = True
 
                             # Process reasoning content if COT is active
                             if cot_active:
-                                if r"\u" in reasoning_content:
-                                    reasoning_content = safe_unicode_decode(
-                                        reasoning_content.encode("utf-8")
-                                    )
+                                if r'\u' in reasoning_content:
+                                    reasoning_content = safe_unicode_decode(reasoning_content.encode('utf-8'))
                                 yield reasoning_content
                     else:
                         # COT disabled, only process regular content
                         if content:
-                            if r"\u" in content:
-                                content = safe_unicode_decode(content.encode("utf-8"))
+                            if r'\u' in content:
+                                content = safe_unicode_decode(content.encode('utf-8'))
                             yield content
 
                     # If neither content nor reasoning_content, continue to next chunk
@@ -426,48 +407,38 @@ async def openai_complete_if_cache(
 
                 # Ensure COT is properly closed if still active after stream ends
                 if enable_cot and cot_active:
-                    yield "</think>"
+                    yield '</think>'
                     cot_active = False
 
                 # After streaming is complete, track token usage
                 if token_tracker and final_chunk_usage:
                     # Use actual usage from the API
                     token_counts = {
-                        "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
-                        "completion_tokens": getattr(
-                            final_chunk_usage, "completion_tokens", 0
-                        ),
-                        "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
+                        'prompt_tokens': getattr(final_chunk_usage, 'prompt_tokens', 0),
+                        'completion_tokens': getattr(final_chunk_usage, 'completion_tokens', 0),
+                        'total_tokens': getattr(final_chunk_usage, 'total_tokens', 0),
                     }
                     token_tracker.add_usage(token_counts)
-                    logger.debug(f"Streaming token usage (from API): {token_counts}")
+                    logger.debug(f'Streaming token usage (from API): {token_counts}')
                 elif token_tracker:
-                    logger.debug("No usage information available in streaming response")
+                    logger.debug('No usage information available in streaming response')
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
                 if enable_cot and cot_active:
                     try:
-                        yield "</think>"
+                        yield '</think>'
                         cot_active = False
                     except Exception as close_error:
-                        logger.warning(
-                            f"Failed to close COT tag during exception handling: {close_error}"
-                        )
+                        logger.warning(f'Failed to close COT tag during exception handling: {close_error}')
 
-                logger.error(f"Error in stream response: {str(e)}")
+                logger.error(f'Error in stream response: {e!s}')
                 # Try to clean up resources if possible
-                if (
-                    iteration_started
-                    and hasattr(response, "aclose")
-                    and callable(getattr(response, "aclose", None))
-                ):
+                if iteration_started and hasattr(response, 'aclose') and callable(getattr(response, 'aclose', None)):
                     try:
                         await response.aclose()
-                        logger.debug("Successfully closed stream response after error")
+                        logger.debug('Successfully closed stream response after error')
                     except Exception as close_error:
-                        logger.warning(
-                            f"Failed to close stream response: {close_error}"
-                        )
+                        logger.warning(f'Failed to close stream response: {close_error}')
                 # Ensure client is closed in case of exception
                 await openai_async_client.close()
                 raise
@@ -475,136 +446,114 @@ async def openai_complete_if_cache(
                 # Final safety check for unclosed COT tags
                 if enable_cot and cot_active:
                     try:
-                        yield "</think>"
+                        yield '</think>'
                         cot_active = False
                     except Exception as final_close_error:
-                        logger.warning(
-                            f"Failed to close COT tag in finally block: {final_close_error}"
-                        )
+                        logger.warning(f'Failed to close COT tag in finally block: {final_close_error}')
 
                 # Ensure resources are released even if no exception occurs
                 # Note: Some wrapped clients (e.g., Langfuse) may not implement aclose() properly
-                if iteration_started and hasattr(response, "aclose"):
-                    aclose_method = getattr(response, "aclose", None)
+                if iteration_started and hasattr(response, 'aclose'):
+                    aclose_method = getattr(response, 'aclose', None)
                     if callable(aclose_method):
                         try:
                             await response.aclose()
-                            logger.debug("Successfully closed stream response")
+                            logger.debug('Successfully closed stream response')
                         except (AttributeError, TypeError) as close_error:
                             # Some wrapper objects may report hasattr(aclose) but fail when called
                             # This is expected behavior for certain client wrappers
-                            logger.debug(
-                                f"Stream response cleanup not supported by client wrapper: {close_error}"
-                            )
+                            logger.debug(f'Stream response cleanup not supported by client wrapper: {close_error}')
                         except Exception as close_error:
-                            logger.warning(
-                                f"Unexpected error during stream response cleanup: {close_error}"
-                            )
+                            logger.warning(f'Unexpected error during stream response cleanup: {close_error}')
 
                 # This prevents resource leaks since the caller doesn't handle closing
                 try:
                     await openai_async_client.close()
-                    logger.debug(
-                        "Successfully closed OpenAI client for streaming response"
-                    )
+                    logger.debug('Successfully closed OpenAI client for streaming response')
                 except Exception as client_close_error:
-                    logger.warning(
-                        f"Failed to close OpenAI client in streaming finally block: {client_close_error}"
-                    )
+                    logger.warning(f'Failed to close OpenAI client in streaming finally block: {client_close_error}')
 
         return inner()
 
     else:
         try:
-            if (
-                not response
-                or not response.choices
-                or not hasattr(response.choices[0], "message")
-            ):
-                logger.error("Invalid response from OpenAI API")
+            if not response or not response.choices or not hasattr(response.choices[0], 'message'):
+                logger.error('Invalid response from OpenAI API')
                 await openai_async_client.close()  # Ensure client is closed
-                raise InvalidResponseError("Invalid response from OpenAI API")
+                raise InvalidResponseError('Invalid response from OpenAI API')
 
             message = response.choices[0].message
 
             # Handle parsed responses (structured output via response_format)
             # When using beta.chat.completions.parse(), the response is in message.parsed
-            if hasattr(message, "parsed") and message.parsed is not None:
+            if hasattr(message, 'parsed') and message.parsed is not None:
                 # Serialize the parsed structured response to JSON
                 final_content = message.parsed.model_dump_json()
-                logger.debug("Using parsed structured response from API")
+                logger.debug('Using parsed structured response from API')
             else:
                 # Handle regular content responses
-                content = getattr(message, "content", None)
+                content = getattr(message, 'content', None)
                 # Support both OpenAI's reasoning_content and OpenRouter's reasoning field
-                reasoning_content = getattr(message, "reasoning_content", "") or getattr(message, "reasoning", "")
+                reasoning_content = getattr(message, 'reasoning_content', '') or getattr(message, 'reasoning', '')
                 # Also handle OpenRouter's reasoning_details array format
                 if not reasoning_content:
-                    reasoning_details = getattr(message, "reasoning_details", None)
+                    reasoning_details = getattr(message, 'reasoning_details', None)
                     if reasoning_details and isinstance(reasoning_details, list):
                         # Concatenate all reasoning text for non-streaming
                         reasoning_parts = []
                         for detail in reasoning_details:
-                            if isinstance(detail, dict) and detail.get("text"):
-                                reasoning_parts.append(detail.get("text", ""))
-                        reasoning_content = "".join(reasoning_parts)
+                            if isinstance(detail, dict) and detail.get('text'):
+                                reasoning_parts.append(detail.get('text', ''))
+                        reasoning_content = ''.join(reasoning_parts)
 
                 # Handle COT logic for non-streaming responses (only if enabled)
-                final_content = ""
+                final_content = ''
 
                 if enable_cot:
                     # Check if we should include reasoning content
                     should_include_reasoning = False
                     if reasoning_content and reasoning_content.strip():
-                        if not content or content.strip() == "":
+                        if not content or content.strip() == '':
                             # Case 1: Only reasoning content, should include COT
                             should_include_reasoning = True
-                            final_content = (
-                                content or ""
-                            )  # Use empty string if content is None
+                            final_content = content or ''  # Use empty string if content is None
                         else:
                             # Case 3: Both content and reasoning_content present, ignore reasoning
                             should_include_reasoning = False
                             final_content = content
                     else:
                         # No reasoning content, use regular content
-                        final_content = content or ""
+                        final_content = content or ''
 
                     # Apply COT wrapping if needed
                     if should_include_reasoning:
-                        if r"\u" in reasoning_content:
-                            reasoning_content = safe_unicode_decode(
-                                reasoning_content.encode("utf-8")
-                            )
-                        final_content = (
-                            f"<think>{reasoning_content}</think>{final_content}"
-                        )
+                        if r'\u' in reasoning_content:
+                            reasoning_content = safe_unicode_decode(reasoning_content.encode('utf-8'))
+                        final_content = f'<think>{reasoning_content}</think>{final_content}'
                 else:
                     # COT disabled, only use regular content
-                    final_content = content or ""
+                    final_content = content or ''
 
                 # Validate final content
-                if not final_content or final_content.strip() == "":
-                    logger.error("Received empty content from OpenAI API")
+                if not final_content or final_content.strip() == '':
+                    logger.error('Received empty content from OpenAI API')
                     await openai_async_client.close()  # Ensure client is closed
-                    raise InvalidResponseError("Received empty content from OpenAI API")
+                    raise InvalidResponseError('Received empty content from OpenAI API')
 
             # Apply Unicode decoding to final content if needed
-            if r"\u" in final_content:
-                final_content = safe_unicode_decode(final_content.encode("utf-8"))
+            if r'\u' in final_content:
+                final_content = safe_unicode_decode(final_content.encode('utf-8'))
 
-            if token_tracker and hasattr(response, "usage"):
+            if token_tracker and hasattr(response, 'usage'):
                 token_counts = {
-                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(
-                        response.usage, "completion_tokens", 0
-                    ),
-                    "total_tokens": getattr(response.usage, "total_tokens", 0),
+                    'prompt_tokens': getattr(response.usage, 'prompt_tokens', 0),
+                    'completion_tokens': getattr(response.usage, 'completion_tokens', 0),
+                    'total_tokens': getattr(response.usage, 'total_tokens', 0),
                 }
                 token_tracker.add_usage(token_counts)
 
-            logger.debug(f"Response content len: {len(final_content)}")
-            verbose_debug(f"Response: {response}")
+            logger.debug(f'Response content len: {len(final_content)}')
+            verbose_debug(f'Response: {response}')
 
             return final_content
         finally:
@@ -618,10 +567,10 @@ async def openai_complete(
     history_messages=None,
     keyword_extraction=False,
     **kwargs,
-) -> Union[str, AsyncIterator[str]]:
+) -> str | AsyncIterator[str]:
     if history_messages is None:
         history_messages = []
-    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+    model_name = kwargs['hashing_kv'].global_config['llm_model_name']
     return await openai_complete_if_cache(
         model_name,
         prompt,
@@ -643,7 +592,7 @@ async def gpt_4o_complete(
     if history_messages is None:
         history_messages = []
     return await openai_complete_if_cache(
-        "gpt-4o",
+        'gpt-4o',
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -664,7 +613,7 @@ async def gpt_4o_mini_complete(
     if history_messages is None:
         history_messages = []
     return await openai_complete_if_cache(
-        "gpt-4o-mini",
+        'gpt-4o-mini',
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -685,13 +634,13 @@ async def nvidia_openai_complete(
     if history_messages is None:
         history_messages = []
     result = await openai_complete_if_cache(
-        "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k
+        'nvidia/llama-3.1-nemotron-70b-instruct',  # context length 128k
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         enable_cot=enable_cot,
         keyword_extraction=keyword_extraction,
-        base_url="https://integrate.api.nvidia.com/v1",
+        base_url='https://integrate.api.nvidia.com/v1',
         **kwargs,
     )
     return result
@@ -709,7 +658,7 @@ async def nvidia_openai_complete(
 )
 async def openai_embed(
     texts: list[str],
-    model: str = "text-embedding-3-small",
+    model: str = 'text-embedding-3-small',
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
@@ -773,24 +722,20 @@ async def openai_embed(
         # For Azure OpenAI, we must use the deployment name instead of the model name
         api_model = azure_deployment if use_azure and azure_deployment else model
 
-        # Prepare API call parameters
-        api_params = {
-            "model": api_model,
-            "input": texts,
-            "encoding_format": "base64",
-        }
-
-        # Add dimensions parameter only if embedding_dim is provided
-        if embedding_dim is not None:
-            api_params["dimensions"] = embedding_dim
-
         # Make API call
-        response = await openai_async_client.embeddings.create(**api_params)
+        if embedding_dim is not None:
+            response = await openai_async_client.embeddings.create(
+                model=api_model, input=texts, encoding_format='base64', dimensions=embedding_dim
+            )
+        else:
+            response = await openai_async_client.embeddings.create(
+                model=api_model, input=texts, encoding_format='base64'
+            )
 
-        if token_tracker and hasattr(response, "usage"):
+        if token_tracker and hasattr(response, 'usage'):
             token_counts = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                "total_tokens": getattr(response.usage, "total_tokens", 0),
+                'prompt_tokens': getattr(response.usage, 'prompt_tokens', 0),
+                'total_tokens': getattr(response.usage, 'total_tokens', 0),
             }
             token_tracker.add_usage(token_counts)
 
@@ -829,18 +774,11 @@ async def azure_openai_complete_if_cache(
     full feature parity and API consistency.
     """
     # Handle Azure-specific environment variables and parameters
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT") or model or os.getenv("LLM_MODEL")
-    base_url = (
-        base_url or os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("LLM_BINDING_HOST")
-    )
-    api_key = (
-        api_key or os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("LLM_BINDING_API_KEY")
-    )
+    deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT') or model or os.getenv('LLM_MODEL')
+    base_url = base_url or os.getenv('AZURE_OPENAI_ENDPOINT') or os.getenv('LLM_BINDING_HOST')
+    api_key = api_key or os.getenv('AZURE_OPENAI_API_KEY') or os.getenv('LLM_BINDING_API_KEY')
     api_version = (
-        api_version
-        or os.getenv("AZURE_OPENAI_API_VERSION")
-        or os.getenv("OPENAI_API_VERSION")
-        or "2024-08-01-preview"
+        api_version or os.getenv('AZURE_OPENAI_API_VERSION') or os.getenv('OPENAI_API_VERSION') or '2024-08-01-preview'
     )
 
     # Call the unified implementation with Azure-specific parameters
@@ -877,7 +815,7 @@ async def azure_openai_complete(
     if history_messages is None:
         history_messages = []
     result = await azure_openai_complete_if_cache(
-        os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        os.getenv('LLM_MODEL', 'gpt-4o-mini'),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -936,26 +874,16 @@ async def azure_openai_embed(
     """
     # Handle Azure-specific environment variables and parameters
     deployment = (
-        os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
-        or model
-        or os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+        os.getenv('AZURE_EMBEDDING_DEPLOYMENT') or model or os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
     )
-    base_url = (
-        base_url
-        or os.getenv("AZURE_EMBEDDING_ENDPOINT")
-        or os.getenv("EMBEDDING_BINDING_HOST")
-    )
-    api_key = (
-        api_key
-        or os.getenv("AZURE_EMBEDDING_API_KEY")
-        or os.getenv("EMBEDDING_BINDING_API_KEY")
-    )
+    base_url = base_url or os.getenv('AZURE_EMBEDDING_ENDPOINT') or os.getenv('EMBEDDING_BINDING_HOST')
+    api_key = api_key or os.getenv('AZURE_EMBEDDING_API_KEY') or os.getenv('EMBEDDING_BINDING_API_KEY')
     api_version = (
         api_version
-        or os.getenv("AZURE_EMBEDDING_API_VERSION")
-        or os.getenv("AZURE_OPENAI_API_VERSION")
-        or os.getenv("OPENAI_API_VERSION")
-        or "2024-08-01-preview"
+        or os.getenv('AZURE_EMBEDDING_API_VERSION')
+        or os.getenv('AZURE_OPENAI_API_VERSION')
+        or os.getenv('OPENAI_API_VERSION')
+        or '2024-08-01-preview'
     )
 
     # CRITICAL: Call openai_embed.func (unwrapped) to avoid double decoration

@@ -4,24 +4,24 @@ from openai import OpenAI
 
 
 def openai_complete_if_cache(
-    model="gpt-4o-mini", prompt=None, system_prompt=None, history_messages=[], **kwargs
+    model='gpt-4o-mini', prompt=None, system_prompt=None, history_messages=None, **kwargs
 ) -> str:
+    if history_messages is None:
+        history_messages = []
     openai_client = OpenAI()
 
     messages = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+        messages.append({'role': 'system', 'content': system_prompt})
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    messages.append({'role': 'user', 'content': prompt})
 
-    response = openai_client.chat.completions.create(
-        model=model, messages=messages, **kwargs
-    )
+    response = openai_client.chat.completions.create(model=model, messages=messages, **kwargs)
     return response.choices[0].message.content
 
 
-if __name__ == "__main__":
-    description = ""
+if __name__ == '__main__':
+    description = ''
     prompt = f"""
     Given the following description of a dataset:
 
@@ -46,10 +46,10 @@ if __name__ == "__main__":
         ...
     """
 
-    result = openai_complete_if_cache(model="gpt-4o-mini", prompt=prompt)
+    result = openai_complete_if_cache(model='gpt-4o-mini', prompt=prompt)
 
-    file_path = "./queries.txt"
-    with open(file_path, "w") as file:
+    file_path = './queries.txt'
+    with open(file_path, 'w') as file:
         file.write(result)
 
-    print(f"Queries written to {file_path}")
+    print(f'Queries written to {file_path}')

@@ -1,13 +1,13 @@
-import os
-import json
-import time
 import asyncio
+import json
+import os
+import time
 
 from lightrag import LightRAG
 
 
 def insert_text(rag, file_path):
-    with open(file_path, mode="r") as f:
+    with open(file_path) as f:
         unique_contexts = json.load(f)
 
     retries = 0
@@ -18,14 +18,14 @@ def insert_text(rag, file_path):
             break
         except Exception as e:
             retries += 1
-            print(f"Insertion failed, retrying ({retries}/{max_retries}), error: {e}")
+            print(f'Insertion failed, retrying ({retries}/{max_retries}), error: {e}')
             time.sleep(10)
     if retries == max_retries:
-        print("Insertion failed after exceeding the maximum number of retries")
+        print('Insertion failed after exceeding the maximum number of retries')
 
 
-cls = "agriculture"
-WORKING_DIR = f"../{cls}"
+cls = 'agriculture'
+WORKING_DIR = f'../{cls}'
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -41,8 +41,8 @@ async def initialize_rag():
 def main():
     # Initialize RAG instance
     rag = asyncio.run(initialize_rag())
-    insert_text(rag, f"../datasets/unique_contexts/{cls}_unique_contexts.json")
+    insert_text(rag, f'../datasets/unique_contexts/{cls}_unique_contexts.json')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -1,0 +1,20 @@
+{
+  // Expand scope to core package while keeping heavy optional providers excluded for now.
+  "include": ["lightrag"],
+  "exclude": [
+    "examples",
+    "tests",
+    "reproduce",
+    "rag_storage",
+    "documents",
+    "inputs",
+    "lightrag/tools/lightrag_visualizer",
+    "lightrag/tools/*",
+    "lightrag/kg",
+    "lightrag/llm",
+    "lightrag/evaluation"
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none"
+}

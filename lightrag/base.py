@@ -1,51 +1,45 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from enum import Enum
 import os
-from dotenv import load_dotenv
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import (
     Any,
     Literal,
     TypedDict,
     TypeVar,
-    Callable,
-    Optional,
-    Dict,
-    List,
-    AsyncIterator,
 )
-from .utils import EmbeddingFunc
-from .types import KnowledgeGraph
+
+from dotenv import load_dotenv
+
 from .constants import (
-    DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
+    DEFAULT_HISTORY_TURNS,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_HISTORY_TURNS,
-    DEFAULT_OLLAMA_MODEL_NAME,
-    DEFAULT_OLLAMA_MODEL_TAG,
-    DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_SIZE,
+    DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_TOP_K,
 )
+from .types import KnowledgeGraph
+from .utils import EmbeddingFunc
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path='.env', override=False)
 
 
 class OllamaServerInfos:
     def __init__(self, name=None, tag=None):
-        self._lightrag_name = name or os.getenv(
-            "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
-        )
-        self._lightrag_tag = tag or os.getenv(
-            "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
-        )
+        self._lightrag_name = name or os.getenv('OLLAMA_EMULATING_MODEL_NAME', DEFAULT_OLLAMA_MODEL_NAME)
+        self._lightrag_tag = tag or os.getenv('OLLAMA_EMULATING_MODEL_TAG', DEFAULT_OLLAMA_MODEL_TAG)
         self.LIGHTRAG_SIZE = DEFAULT_OLLAMA_MODEL_SIZE
         self.LIGHTRAG_CREATED_AT = DEFAULT_OLLAMA_CREATED_AT
         self.LIGHTRAG_DIGEST = DEFAULT_OLLAMA_DIGEST
@@ -68,7 +62,7 @@ class OllamaServerInfos:
 
     @property
     def LIGHTRAG_MODEL(self):
-        return f"{self._lightrag_name}:{self._lightrag_tag}"
+        return f'{self._lightrag_name}:{self._lightrag_tag}'
 
 
 class TextChunkSchema(TypedDict):
@@ -78,14 +72,14 @@ class TextChunkSchema(TypedDict):
     chunk_order_index: int
 
 
-T = TypeVar("T")
+T = TypeVar('T')
 
 
 @dataclass
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
+    mode: Literal['local', 'global', 'hybrid', 'naive', 'mix', 'bypass'] = 'mix'
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
@@ -100,33 +94,27 @@ class QueryParam:
     only_need_prompt: bool = False
     """If True, only returns the generated prompt without producing a response."""
 
-    response_type: str = "Multiple Paragraphs"
+    response_type: str = 'Multiple Paragraphs'
     """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
 
     stream: bool = False
     """If True, enables streaming output for real-time responses."""
 
-    top_k: int = int(os.getenv("TOP_K", str(DEFAULT_TOP_K)))
+    top_k: int = int(os.getenv('TOP_K', str(DEFAULT_TOP_K)))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", str(DEFAULT_CHUNK_TOP_K)))
+    chunk_top_k: int = int(os.getenv('CHUNK_TOP_K', str(DEFAULT_CHUNK_TOP_K)))
     """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    max_entity_tokens: int = int(
-        os.getenv("MAX_ENTITY_TOKENS", str(DEFAULT_MAX_ENTITY_TOKENS))
-    )
+    max_entity_tokens: int = int(os.getenv('MAX_ENTITY_TOKENS', str(DEFAULT_MAX_ENTITY_TOKENS)))
     """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_relation_tokens: int = int(
-        os.getenv("MAX_RELATION_TOKENS", str(DEFAULT_MAX_RELATION_TOKENS))
-    )
+    max_relation_tokens: int = int(os.getenv('MAX_RELATION_TOKENS', str(DEFAULT_MAX_RELATION_TOKENS)))
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
-    max_total_tokens: int = int(
-        os.getenv("MAX_TOTAL_TOKENS", str(DEFAULT_MAX_TOTAL_TOKENS))
-    )
+    max_total_tokens: int = int(os.getenv('MAX_TOTAL_TOKENS', str(DEFAULT_MAX_TOTAL_TOKENS)))
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
@@ -142,7 +130,7 @@ class QueryParam:
     """
 
     # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
-    history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
+    history_turns: int = int(os.getenv('HISTORY_TURNS', str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
     model_func: Callable[..., object] | None = None
@@ -157,7 +145,7 @@ class QueryParam:
     It's purpose is the let user customize the way LLM generate the response.
     """
 
-    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
+    enable_rerank: bool = os.getenv('RERANK_BY_DEFAULT', 'true').lower() == 'true'
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
@@ -177,11 +165,11 @@ class StorageNameSpace(ABC):
 
     async def initialize(self):
         """Initialize the storage"""
-        pass
+        return
 
     async def finalize(self):
         """Finalize the storage"""
-        pass
+        return
 
     @abstractmethod
     async def index_done_callback(self) -> None:
@@ -193,7 +181,7 @@ class StorageNameSpace(ABC):
         Returns:
             dict[str, Any]: Health status dictionary with at least 'status' field
         """
-        return {"status": "healthy"}
+        return {'status': 'healthy'}
 
     @abstractmethod
     async def drop(self) -> dict[str, str]:
@@ -229,9 +217,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     meta_fields: set[str] = field(default_factory=set)
 
     @abstractmethod
-    async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
-    ) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int, query_embedding: list[float] | None = None) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results.
 
         Args:
@@ -435,9 +421,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> dict[str, str] | None:
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, str] | None:
         """Get edge properties between two nodes.
 
         Args:
@@ -487,9 +471,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             result[node_id] = degree
         return result
 
-    async def edge_degrees_batch(
-        self, edge_pairs: list[tuple[str, str]]
-    ) -> dict[tuple[str, str], int]:
+    async def edge_degrees_batch(self, edge_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
 
         Default implementation calculates edge degrees one by one.
@@ -502,9 +484,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             result[(src_id, tgt_id)] = degree
         return result
 
-    async def get_edges_batch(
-        self, pairs: list[dict[str, str]]
-    ) -> dict[tuple[str, str], dict]:
+    async def get_edges_batch(self, pairs: list[dict[str, str]]) -> dict[tuple[str, str], dict]:
         """Get edges as a batch using UNWIND
 
         Default implementation fetches edges one by one.
@@ -513,16 +493,14 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
         result = {}
         for pair in pairs:
-            src_id = pair["src"]
-            tgt_id = pair["tgt"]
+            src_id = pair['src']
+            tgt_id = pair['tgt']
             edge = await self.get_edge(src_id, tgt_id)
             if edge is not None:
                 result[(src_id, tgt_id)] = edge
         return result
 
-    async def get_nodes_edges_batch(
-        self, node_ids: list[str]
-    ) -> dict[str, list[tuple[str, str]]]:
+    async def get_nodes_edges_batch(self, node_ids: list[str]) -> dict[str, list[tuple[str, str]]]:
         """Get nodes edges as a batch using UNWIND
 
         Default implementation fetches node edges one by one.
@@ -535,16 +513,14 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             result[node_id] = edges if edges is not None else []
         return result
 
-    async def upsert_nodes_bulk(
-        self, nodes: list[tuple[str, dict[str, str]]], batch_size: int = 500
-    ) -> None:
+    async def upsert_nodes_bulk(self, nodes: list[tuple[str, dict[str, Any]]], batch_size: int = 500) -> None:
         """Default bulk helper; storage backends can override for batching."""
         for node_id, node_data in nodes:
             await self.upsert_node(node_id, node_data)
 
     async def upsert_edges_bulk(
         self,
-        edges: list[tuple[str, str, dict[str, str]]],
+        edges: list[tuple[str, str, dict[str, Any]]],
         batch_size: int = 500,
     ) -> None:
         """Default bulk helper; storage backends can override for batching."""
@@ -552,7 +528,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             await self.upsert_edge(src, tgt, edge_data)
 
     @abstractmethod
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+    async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
         """Insert a new node or update an existing node in the graph.
 
         Importance notes for in-memory storage:
@@ -566,9 +542,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
-    ) -> None:
+    async def upsert_edge(self, source_node_id: str, target_node_id: str, edge_data: dict[str, Any]) -> None:
         """Insert a new edge or update an existing edge in the graph.
 
         Importance notes for in-memory storage:
@@ -698,11 +672,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 class DocStatus(str, Enum):
     """Document processing status"""
 
-    PENDING = "pending"
-    PROCESSING = "processing"
-    PREPROCESSED = "preprocessed"
-    PROCESSED = "processed"
-    FAILED = "failed"
+    PENDING = 'pending'
+    PROCESSING = 'processing'
+    PREPROCESSED = 'preprocessed'
+    PROCESSED = 'processed'
+    FAILED = 'failed'
 
 
 @dataclass
@@ -744,12 +718,10 @@ class DocProcessingStatus:
         - The multimodal_processed field is kept (with repr=False) for internal use and debugging
         """
         # Apply status conversion logic
-        if self.multimodal_processed is not None:
-            if (
-                self.multimodal_processed is False
-                and self.status == DocStatus.PROCESSED
-            ):
-                self.status = DocStatus.PREPROCESSED
+        if self.multimodal_processed is not None and (
+            self.multimodal_processed is False and self.status == DocStatus.PROCESSED
+        ):
+            self.status = DocStatus.PREPROCESSED
 
 
 @dataclass
@@ -761,15 +733,11 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get counts of documents in each status"""
 
     @abstractmethod
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
+    async def get_docs_by_status(self, status: DocStatus) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
 
     @abstractmethod
-    async def get_docs_by_track_id(
-        self, track_id: str
-    ) -> dict[str, DocProcessingStatus]:
+    async def get_docs_by_track_id(self, track_id: str) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific track_id"""
 
     @abstractmethod
@@ -778,8 +746,8 @@ class DocStatusStorage(BaseKVStorage, ABC):
         status_filter: DocStatus | None = None,
         page: int = 1,
         page_size: int = 50,
-        sort_field: str = "updated_at",
-        sort_direction: str = "desc",
+        sort_field: str = 'updated_at',
+        sort_direction: str = 'desc',
     ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
         """Get documents with pagination support
 
@@ -818,17 +786,17 @@ class DocStatusStorage(BaseKVStorage, ABC):
 class StoragesStatus(str, Enum):
     """Storages status"""
 
-    NOT_CREATED = "not_created"
-    CREATED = "created"
-    INITIALIZED = "initialized"
-    FINALIZED = "finalized"
+    NOT_CREATED = 'not_created'
+    CREATED = 'created'
+    INITIALIZED = 'initialized'
+    FINALIZED = 'finalized'
 
 
 @dataclass
 class DeletionResult:
     """Represents the result of a deletion operation."""
 
-    status: Literal["success", "not_found", "fail"]
+    status: Literal['success', 'not_found', 'fail']
     doc_id: str
     message: str
     status_code: int = 200
@@ -850,13 +818,13 @@ class QueryResult:
         is_streaming: Whether this is a streaming result
     """
 
-    content: Optional[str] = None
-    response_iterator: Optional[AsyncIterator[str]] = None
-    raw_data: Optional[Dict[str, Any]] = None
+    content: str | None = None
+    response_iterator: AsyncIterator[str] | None = None
+    raw_data: dict[str, Any] | None = None
     is_streaming: bool = False
 
     @property
-    def reference_list(self) -> List[Dict[str, str]]:
+    def reference_list(self) -> list[dict[str, str]]:
         """
         Convenient property to extract reference list from raw_data.
 
@@ -865,11 +833,11 @@ class QueryResult:
             [{"reference_id": "1", "file_path": "/path/to/file.pdf"}, ...]
         """
         if self.raw_data:
-            return self.raw_data.get("data", {}).get("references", [])
+            return self.raw_data.get('data', {}).get('references', [])
         return []
 
     @property
-    def metadata(self) -> Dict[str, Any]:
+    def metadata(self) -> dict[str, Any]:
         """
         Convenient property to extract metadata from raw_data.
 
@@ -877,7 +845,7 @@ class QueryResult:
             Dict[str, Any]: Query metadata including query_mode, keywords, etc.
         """
         if self.raw_data:
-            return self.raw_data.get("metadata", {})
+            return self.raw_data.get('metadata', {})
         return {}
 
 
@@ -892,9 +860,9 @@ class QueryContextResult:
     """
 
     context: str
-    raw_data: Dict[str, Any]
+    raw_data: dict[str, Any]
 
     @property
-    def reference_list(self) -> List[Dict[str, str]]:
+    def reference_list(self) -> list[dict[str, str]]:
         """Convenient property to extract reference list from raw_data."""
-        return self.raw_data.get("data", {}).get("references", [])
+        return self.raw_data.get('data', {}).get('references', [])

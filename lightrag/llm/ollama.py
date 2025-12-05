@@ -1,52 +1,48 @@
-from collections.abc import AsyncIterator
 import os
 import re
+from collections.abc import AsyncIterator
 
 import pipmaster as pm
 
 # install specific modules
-if not pm.is_installed("ollama"):
-    pm.install("ollama")
+if not pm.is_installed('ollama'):
+    pm.install('ollama')
 
-import ollama
-
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
-from lightrag.api import __api_version__
 
 import numpy as np
-from typing import Optional, Union
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    logger,
+import ollama
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
 )
 
+from lightrag.api import __api_version__
+from lightrag.exceptions import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+)
+from lightrag.utils import (
+    logger,
+    wrap_embedding_func_with_attrs,
+)
 
-_OLLAMA_CLOUD_HOST = "https://ollama.com"
-_CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
+_OLLAMA_CLOUD_HOST = 'https://ollama.com'
+_CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r'(?:-cloud|:cloud)$')
 
 
-def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional[str]:
+def _coerce_host_for_cloud_model(host: str | None, model: object) -> str | None:
     if host:
         return host
     try:
-        model_name_str = str(model) if model is not None else ""
+        model_name_str = str(model) if model is not None else ''
     except (TypeError, ValueError, AttributeError) as e:
-        logger.warning(f"Failed to convert model to string: {e}, using empty string")
-        model_name_str = ""
+        logger.warning(f'Failed to convert model to string: {e}, using empty string')
+        model_name_str = ''
     if _CLOUD_MODEL_SUFFIX_PATTERN.search(model_name_str):
-        logger.debug(
-            f"Detected cloud model '{model_name_str}', using Ollama Cloud host"
-        )
+        logger.debug(f"Detected cloud model '{model_name_str}', using Ollama Cloud host")
         return _OLLAMA_CLOUD_HOST
     return host
 
@@ -54,39 +50,39 @@ def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
 )
 async def _ollama_model_if_cache(
     model,
     prompt,
     system_prompt=None,
-    history_messages=[],
+    history_messages=None,
     enable_cot: bool = False,
     **kwargs,
-) -> Union[str, AsyncIterator[str]]:
+) -> str | AsyncIterator[str]:
+    if history_messages is None:
+        history_messages = []
     if enable_cot:
-        logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
-    stream = True if kwargs.get("stream") else False
+        logger.debug('enable_cot=True is not supported for ollama and will be ignored.')
+    stream = bool(kwargs.get('stream'))
 
-    kwargs.pop("max_tokens", None)
+    kwargs.pop('max_tokens', None)
     # kwargs.pop("response_format", None) # allow json
-    host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None)
+    host = kwargs.pop('host', None)
+    timeout = kwargs.pop('timeout', None)
     if timeout == 0:
         timeout = None
-    kwargs.pop("hashing_kv", None)
-    api_key = kwargs.pop("api_key", None)
+    kwargs.pop('hashing_kv', None)
+    api_key = kwargs.pop('api_key', None)
     # fallback to environment variable when not provided explicitly
     if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY")
+        api_key = os.getenv('OLLAMA_API_KEY')
     headers = {
-        "Content-Type": "application/json",
-        "User-Agent": f"LightRAG/{__api_version__}",
+        'Content-Type': 'application/json',
+        'User-Agent': f'LightRAG/{__api_version__}',
     }
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        headers['Authorization'] = f'Bearer {api_key}'
 
     host = _coerce_host_for_cloud_model(host, model)
 
@@ -95,9 +91,9 @@ async def _ollama_model_if_cache(
     try:
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+            messages.append({'role': 'system', 'content': system_prompt})
         messages.extend(history_messages)
-        messages.append({"role": "user", "content": prompt})
+        messages.append({'role': 'user', 'content': prompt})
 
         response = await ollama_client.chat(model=model, messages=messages, **kwargs)
         if stream:
@@ -106,20 +102,20 @@ async def _ollama_model_if_cache(
             async def inner():
                 try:
                     async for chunk in response:
-                        yield chunk["message"]["content"]
+                        yield chunk['message']['content']
                 except Exception as e:
-                    logger.error(f"Error in stream response: {str(e)}")
+                    logger.error(f'Error in stream response: {e!s}')
                     raise
                 finally:
                     try:
                         await ollama_client._client.aclose()
-                        logger.debug("Successfully closed Ollama client for streaming")
+                        logger.debug('Successfully closed Ollama client for streaming')
                     except Exception as close_error:
-                        logger.warning(f"Failed to close Ollama client: {close_error}")
+                        logger.warning(f'Failed to close Ollama client: {close_error}')
 
             return inner()
         else:
-            model_response = response["message"]["content"]
+            model_response = response['message']['content']
 
             """
             If the model also wraps its thoughts in a specific tag,
@@ -131,37 +127,33 @@ async def _ollama_model_if_cache(
     except Exception as e:
         try:
             await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after exception")
+            logger.debug('Successfully closed Ollama client after exception')
         except Exception as close_error:
-            logger.warning(
-                f"Failed to close Ollama client after exception: {close_error}"
-            )
+            logger.warning(f'Failed to close Ollama client after exception: {close_error}')
         raise e
     finally:
         if not stream:
             try:
                 await ollama_client._client.aclose()
-                logger.debug(
-                    "Successfully closed Ollama client for non-streaming response"
-                )
+                logger.debug('Successfully closed Ollama client for non-streaming response')
             except Exception as close_error:
-                logger.warning(
-                    f"Failed to close Ollama client in finally block: {close_error}"
-                )
+                logger.warning(f'Failed to close Ollama client in finally block: {close_error}')
 
 
 async def ollama_model_complete(
     prompt,
     system_prompt=None,
-    history_messages=[],
+    history_messages=None,
     enable_cot: bool = False,
     keyword_extraction=False,
     **kwargs,
-) -> Union[str, AsyncIterator[str]]:
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
+) -> str | AsyncIterator[str]:
+    if history_messages is None:
+        history_messages = []
+    keyword_extraction = kwargs.pop('keyword_extraction', None)
     if keyword_extraction:
-        kwargs["format"] = "json"
-    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+        kwargs['format'] = 'json'
+    model_name = kwargs['hashing_kv'].global_config['llm_model_name']
     return await _ollama_model_if_cache(
         model_name,
         prompt,
@@ -173,44 +165,38 @@ async def ollama_model_complete(
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
-async def ollama_embed(
-    texts: list[str], embed_model: str = "bge-m3:latest", **kwargs
-) -> np.ndarray:
-    api_key = kwargs.pop("api_key", None)
+async def ollama_embed(texts: list[str], embed_model: str = 'bge-m3:latest', **kwargs) -> np.ndarray:
+    api_key = kwargs.pop('api_key', None)
     if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY")
+        api_key = os.getenv('OLLAMA_API_KEY')
     headers = {
-        "Content-Type": "application/json",
-        "User-Agent": f"LightRAG/{__api_version__}",
+        'Content-Type': 'application/json',
+        'User-Agent': f'LightRAG/{__api_version__}',
     }
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        headers['Authorization'] = f'Bearer {api_key}'
 
-    host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None)
+    host = kwargs.pop('host', None)
+    timeout = kwargs.pop('timeout', None)
 
     host = _coerce_host_for_cloud_model(host, embed_model)
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     try:
-        options = kwargs.pop("options", {})
-        data = await ollama_client.embed(
-            model=embed_model, input=texts, options=options
-        )
-        return np.array(data["embeddings"])
+        options = kwargs.pop('options', {})
+        data = await ollama_client.embed(model=embed_model, input=texts, options=options)
+        return np.array(data['embeddings'])
     except Exception as e:
-        logger.error(f"Error in ollama_embed: {str(e)}")
+        logger.error(f'Error in ollama_embed: {e!s}')
         try:
             await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after exception in embed")
+            logger.debug('Successfully closed Ollama client after exception in embed')
         except Exception as close_error:
-            logger.warning(
-                f"Failed to close Ollama client after exception in embed: {close_error}"
-            )
+            logger.warning(f'Failed to close Ollama client after exception in embed: {close_error}')
         raise e
     finally:
         try:
             await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after embed")
+            logger.debug('Successfully closed Ollama client after embed')
         except Exception as close_error:
-            logger.warning(f"Failed to close Ollama client after embed: {close_error}")
+            logger.warning(f'Failed to close Ollama client after embed: {close_error}')

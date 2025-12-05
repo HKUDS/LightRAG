@@ -1,35 +1,36 @@
 import asyncio
-import os
 import inspect
 import logging
 import logging.config
+import os
+
+import numpy as np
+import requests
+from dotenv import load_dotenv
+
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
-
-import requests
-import numpy as np
-from dotenv import load_dotenv
 
 """This code is a modified version of lightrag_openai_demo.py"""
 
 # ideally, as always, env!
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path='.env', override=False)
 
 
 """    ----========= IMPORTANT CHANGE THIS! =========----    """
-cloudflare_api_key = "YOUR_API_KEY"
-account_id = "YOUR_ACCOUNT ID"  # This is unique to your Cloudflare account
+cloudflare_api_key = 'YOUR_API_KEY'
+account_id = 'YOUR_ACCOUNT ID'  # This is unique to your Cloudflare account
 
 # Authomatically changes
-api_base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/"
+api_base_url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/'
 
 
 # choose an embedding model
-EMBEDDING_MODEL = "@cf/baai/bge-m3"
+EMBEDDING_MODEL = '@cf/baai/bge-m3'
 # choose a generative model
-LLM_MODEL = "@cf/meta/llama-3.2-3b-instruct"
+LLM_MODEL = '@cf/meta/llama-3.2-3b-instruct'
 
-WORKING_DIR = "../dickens"  # you can change output as desired
+WORKING_DIR = '../dickens'  # you can change output as desired
 
 
 # Cloudflare init
@@ -51,7 +52,7 @@ class CloudflareWorker:
         self.max_response_tokens = max_response_tokens
 
     async def _send_request(self, model_name: str, input_: dict, debug_log: str):
-        headers = {"Authorization": f"Bearer {self.cloudflare_api_key}"}
+        headers = {'Authorization': f'Bearer {self.cloudflare_api_key}'}
 
         print(f"""
         data sent to Cloudflare
@@ -60,23 +61,21 @@ class CloudflareWorker:
         """)
 
         try:
-            response_raw = requests.post(
-                f"{self.api_base_url}{model_name}", headers=headers, json=input_
-            ).json()
+            response_raw = requests.post(f'{self.api_base_url}{model_name}', headers=headers, json=input_).json()
             print(f"""
         Cloudflare worker responded with:
         ~~~~~~~~~~~
-        {str(response_raw)}
+        {response_raw!s}
             """)
-            result = response_raw.get("result", {})
+            result = response_raw.get('result', {})
 
-            if "data" in result:  # Embedding case
-                return np.array(result["data"])
+            if 'data' in result:  # Embedding case
+                return np.array(result['data'])
 
-            if "response" in result:  # LLM response
-                return result["response"]
+            if 'response' in result:  # LLM response
+                return result['response']
 
-            raise ValueError("Unexpected Cloudflare response format")
+            raise ValueError('Unexpected Cloudflare response format')
 
         except Exception as e:
             print(f"""
@@ -84,28 +83,28 @@ class CloudflareWorker:
             ~~~~~~~~~
             Error: {e}
             """)
-            input("Press Enter to continue...")
+            input('Press Enter to continue...')
             return None
 
-    async def query(self, prompt, system_prompt: str = "", **kwargs) -> str:
+    async def query(self, prompt, system_prompt: str = '', **kwargs) -> str:
         # since no caching is used and we don't want to mess with everything lightrag, pop the kwarg it is
-        kwargs.pop("hashing_kv", None)
+        kwargs.pop('hashing_kv', None)
 
         message = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': prompt},
         ]
 
         input_ = {
-            "messages": message,
-            "max_tokens": self.max_tokens,
-            "response_token_limit": self.max_response_tokens,
+            'messages': message,
+            'max_tokens': self.max_tokens,
+            'response_token_limit': self.max_response_tokens,
         }
 
         return await self._send_request(
             self.llm_model_name,
             input_,
-            debug_log=f"\n- model used {self.llm_model_name}\n- system prompt: {system_prompt}\n- query: {prompt}",
+            debug_log=f'\n- model used {self.llm_model_name}\n- system prompt: {system_prompt}\n- query: {prompt}',
         )
 
     async def embedding_chunk(self, texts: list[str]) -> np.ndarray:
@@ -116,15 +115,15 @@ class CloudflareWorker:
         """)
 
         input_ = {
-            "text": texts,
-            "max_tokens": self.max_tokens,
-            "response_token_limit": self.max_response_tokens,
+            'text': texts,
+            'max_tokens': self.max_tokens,
+            'response_token_limit': self.max_response_tokens,
         }
 
         return await self._send_request(
             self.embedding_model_name,
             input_,
-            debug_log=f"\n-llm model name {self.embedding_model_name}\n- texts: {texts}",
+            debug_log=f'\n-llm model name {self.embedding_model_name}\n- texts: {texts}',
         )
 
 
@@ -132,56 +131,54 @@ def configure_logging():
     """Configure logging for the application"""
 
     # Reset any existing handlers to ensure clean configuration
-    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
+    for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error', 'lightrag']:
         logger_instance = logging.getLogger(logger_name)
         logger_instance.handlers = []
         logger_instance.filters = []
 
     # Get log directory path from environment variable or use current directory
-    log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(
-        os.path.join(log_dir, "lightrag_cloudflare_worker_demo.log")
-    )
+    log_dir = os.getenv('LOG_DIR', os.getcwd())
+    log_file_path = os.path.abspath(os.path.join(log_dir, 'lightrag_cloudflare_worker_demo.log'))
 
-    print(f"\nLightRAG compatible demo log file: {log_file_path}\n")
+    print(f'\nLightRAG compatible demo log file: {log_file_path}\n')
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
-    log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
-    log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+    log_max_bytes = int(os.getenv('LOG_MAX_BYTES', 10485760))  # Default 10MB
+    log_backup_count = int(os.getenv('LOG_BACKUP_COUNT', 5))  # Default 5 backups
 
     logging.config.dictConfig(
         {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "formatters": {
-                "default": {
-                    "format": "%(levelname)s: %(message)s",
+            'version': 1,
+            'disable_existing_loggers': False,
+            'formatters': {
+                'default': {
+                    'format': '%(levelname)s: %(message)s',
                 },
-                "detailed": {
-                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                },
-            },
-            "handlers": {
-                "console": {
-                    "formatter": "default",
-                    "class": "logging.StreamHandler",
-                    "stream": "ext://sys.stderr",
-                },
-                "file": {
-                    "formatter": "detailed",
-                    "class": "logging.handlers.RotatingFileHandler",
-                    "filename": log_file_path,
-                    "maxBytes": log_max_bytes,
-                    "backupCount": log_backup_count,
-                    "encoding": "utf-8",
+                'detailed': {
+                    'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 },
             },
-            "loggers": {
-                "lightrag": {
-                    "handlers": ["console", "file"],
-                    "level": "INFO",
-                    "propagate": False,
+            'handlers': {
+                'console': {
+                    'formatter': 'default',
+                    'class': 'logging.StreamHandler',
+                    'stream': 'ext://sys.stderr',
+                },
+                'file': {
+                    'formatter': 'detailed',
+                    'class': 'logging.handlers.RotatingFileHandler',
+                    'filename': log_file_path,
+                    'maxBytes': log_max_bytes,
+                    'backupCount': log_backup_count,
+                    'encoding': 'utf-8',
+                },
+            },
+            'loggers': {
+                'lightrag': {
+                    'handlers': ['console', 'file'],
+                    'level': 'INFO',
+                    'propagate': False,
                 },
             },
         }
@@ -190,7 +187,7 @@ def configure_logging():
     # Set the logger level to INFO
     logger.setLevel(logging.INFO)
     # Enable verbose debug if needed
-    set_verbose_debug(os.getenv("VERBOSE_DEBUG", "false").lower() == "true")
+    set_verbose_debug(os.getenv('VERBOSE_DEBUG', 'false').lower() == 'true')
 
 
 if not os.path.exists(WORKING_DIR):
@@ -209,11 +206,11 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         max_parallel_insert=2,
         llm_model_func=cloudflare_worker.query,
-        llm_model_name=os.getenv("LLM_MODEL", LLM_MODEL),
+        llm_model_name=os.getenv('LLM_MODEL', LLM_MODEL),
         summary_max_tokens=4080,
         embedding_func=EmbeddingFunc(
-            embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
-            max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "2048")),
+            embedding_dim=int(os.getenv('EMBEDDING_DIM', '1024')),
+            max_token_size=int(os.getenv('MAX_EMBED_TOKENS', '2048')),
             func=lambda texts: cloudflare_worker.embedding_chunk(
                 texts,
             ),
@@ -226,53 +223,53 @@ async def initialize_rag():
 
 async def print_stream(stream):
     async for chunk in stream:
-        print(chunk, end="", flush=True)
+        print(chunk, end='', flush=True)
 
 
 async def main():
     try:
         # Clear old data files
         files_to_delete = [
-            "graph_chunk_entity_relation.graphml",
-            "kv_store_doc_status.json",
-            "kv_store_full_docs.json",
-            "kv_store_text_chunks.json",
-            "vdb_chunks.json",
-            "vdb_entities.json",
-            "vdb_relationships.json",
+            'graph_chunk_entity_relation.graphml',
+            'kv_store_doc_status.json',
+            'kv_store_full_docs.json',
+            'kv_store_text_chunks.json',
+            'vdb_chunks.json',
+            'vdb_entities.json',
+            'vdb_relationships.json',
         ]
 
         for file in files_to_delete:
             file_path = os.path.join(WORKING_DIR, file)
             if os.path.exists(file_path):
                 os.remove(file_path)
-                print(f"Deleting old file:: {file_path}")
+                print(f'Deleting old file:: {file_path}')
 
         # Initialize RAG instance
         rag = await initialize_rag()
 
         # Test embedding function
-        test_text = ["This is a test string for embedding."]
+        test_text = ['This is a test string for embedding.']
         embedding = await rag.embedding_func(test_text)
         embedding_dim = embedding.shape[1]
-        print("\n=======================")
-        print("Test embedding function")
-        print("========================")
-        print(f"Test dict: {test_text}")
-        print(f"Detected embedding dimension: {embedding_dim}\n\n")
+        print('\n=======================')
+        print('Test embedding function')
+        print('========================')
+        print(f'Test dict: {test_text}')
+        print(f'Detected embedding dimension: {embedding_dim}\n\n')
 
         # Locate the location of what is needed to be added to the knowledge
         # Can add several simultaneously by modifying code
-        with open("./book.txt", "r", encoding="utf-8") as f:
+        with open('./book.txt', encoding='utf-8') as f:
             await rag.ainsert(f.read())
 
         # Perform naive search
-        print("\n=====================")
-        print("Query mode: naive")
-        print("=====================")
+        print('\n=====================')
+        print('Query mode: naive')
+        print('=====================')
         resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="naive", stream=True),
+            'What are the top themes in this story?',
+            param=QueryParam(mode='naive', stream=True),
         )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
@@ -280,12 +277,12 @@ async def main():
             print(resp)
 
         # Perform local search
-        print("\n=====================")
-        print("Query mode: local")
-        print("=====================")
+        print('\n=====================')
+        print('Query mode: local')
+        print('=====================')
         resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="local", stream=True),
+            'What are the top themes in this story?',
+            param=QueryParam(mode='local', stream=True),
         )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
@@ -293,12 +290,12 @@ async def main():
             print(resp)
 
         # Perform global search
-        print("\n=====================")
-        print("Query mode: global")
-        print("=====================")
+        print('\n=====================')
+        print('Query mode: global')
+        print('=====================')
         resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="global", stream=True),
+            'What are the top themes in this story?',
+            param=QueryParam(mode='global', stream=True),
         )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
@@ -306,12 +303,12 @@ async def main():
             print(resp)
 
         # Perform hybrid search
-        print("\n=====================")
-        print("Query mode: hybrid")
-        print("=====================")
+        print('\n=====================')
+        print('Query mode: hybrid')
+        print('=====================')
         resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="hybrid", stream=True),
+            'What are the top themes in this story?',
+            param=QueryParam(mode='hybrid', stream=True),
         )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
@@ -340,15 +337,15 @@ async def main():
         """
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f'An error occurred: {e}')
     finally:
         if rag:
             await rag.llm_response_cache.index_done_callback()
             await rag.finalize_storages()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     # Configure logging before running the main function
     configure_logging()
     asyncio.run(main())
-    print("\nDone!")
+    print('\nDone!')

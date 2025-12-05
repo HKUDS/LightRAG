@@ -2725,6 +2725,7 @@ pytest = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "ty" },
 ]
 test = [
     { name = "aiofiles" },
@@ -2769,6 +2770,7 @@ test = [
     { name = "setuptools" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "ty" },
     { name = "uvicorn" },
     { name = "xlsxwriter" },
 ]
@@ -2856,6 +2858,8 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'api'" },
     { name = "tiktoken" },
     { name = "tiktoken", marker = "extra == 'api'" },
+    { name = "ty", marker = "extra == 'pytest'" },
+    { name = "ty", marker = "extra == 'test'" },
     { name = "uvicorn", marker = "extra == 'api'" },
     { name = "voyageai", marker = "extra == 'offline-llm'", specifier = ">=0.2.0,<1.0.0" },
     { name = "xlsxwriter", specifier = ">=3.1.0" },

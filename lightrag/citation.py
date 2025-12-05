@@ -5,21 +5,21 @@ This module provides post-processing capabilities to extract citations from LLM 
 by matching response sentences to source chunks using embedding similarity.
 """
 
-import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 # Configuration
-CITATION_MIN_SIMILARITY = float(os.getenv("CITATION_MIN_SIMILARITY", "0.5"))
-CITATION_MAX_PER_SENTENCE = int(os.getenv("CITATION_MAX_PER_SENTENCE", "3"))
+CITATION_MIN_SIMILARITY = float(os.getenv('CITATION_MIN_SIMILARITY', '0.5'))
+CITATION_MAX_PER_SENTENCE = int(os.getenv('CITATION_MAX_PER_SENTENCE', '3'))
 
 
 @dataclass
@@ -39,10 +39,10 @@ class SourceReference:
 
     reference_id: str
     file_path: str
-    document_title: Optional[str] = None
-    section_title: Optional[str] = None
-    page_range: Optional[str] = None
-    excerpt: Optional[str] = None
+    document_title: str | None = None
+    section_title: str | None = None
+    page_range: str | None = None
+    excerpt: str | None = None
     chunk_ids: list[str] = field(default_factory=list)
 
 
@@ -61,14 +61,14 @@ class CitationResult:
 def extract_title_from_path(file_path: str) -> str:
     """Extract a human-readable title from a file path."""
     if not file_path:
-        return "Unknown Source"
+        return 'Unknown Source'
 
     path = Path(file_path)
     # Get filename without extension
     name = path.stem
 
     # Convert snake_case or kebab-case to Title Case
-    name = name.replace("_", " ").replace("-", " ")
+    name = name.replace('_', ' ').replace('-', ' ')
     return name.title()
 
 
@@ -82,7 +82,7 @@ def split_into_sentences(text: str) -> list[dict[str, Any]]:
     """
     # Improved sentence splitting that handles common edge cases
     # Matches: .!? followed by space and capital letter, or end of string
-    sentence_pattern = r"(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$"
+    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$'
 
     sentences = []
     current_pos = 0
@@ -102,7 +102,7 @@ def split_into_sentences(text: str) -> list[dict[str, Any]]:
 
         end = start + len(part)
 
-        sentences.append({"text": part, "start": start, "end": end})
+        sentences.append({'text': part, 'start': start, 'end': end})
 
         current_pos = end
 
@@ -157,23 +157,43 @@ class CitationExtractor:
         # Map file_path to reference_id
         path_to_ref: dict[str, str] = {}
         for ref in self.references:
-            path_to_ref[ref.get("file_path", "")] = ref.get("reference_id", "")
+            path_to_ref[ref.get('file_path', '')] = ref.get('reference_id', '')
 
         # Index chunks by reference
         for chunk in self.chunks:
-            file_path = chunk.get("file_path", "")
-            ref_id = path_to_ref.get(file_path, "")
+            file_path = chunk.get('file_path', '')
+            ref_id = path_to_ref.get(file_path, '')
 
             if ref_id:
-                self.chunk_to_ref[chunk.get("content", "")[:100]] = ref_id
+                self.chunk_to_ref[chunk.get('content', '')[:100]] = ref_id
 
                 if ref_id not in self.ref_to_chunks:
                     self.ref_to_chunks[ref_id] = []
                 self.ref_to_chunks[ref_id].append(chunk)
 
-    async def _find_supporting_chunks(
-        self, sentence: str, sentence_embedding: list[float]
-    ) -> list[dict[str, Any]]:
+    def _compute_content_overlap(self, sentence: str, chunk_content: str) -> float:
+        """Compute a lexical overlap score to verify vector matches.
+
+        Returns:
+            float: 0.0 to 1.0 representing how much of the sentence's key terms
+                   are present in the chunk.
+        """
+
+        # Simple tokenizer: lowercase and split by non-alphanumeric
+        def tokenize(text):
+            return set(re.findall(r'\b[a-z]{3,}\b', text.lower()))
+
+        sent_tokens = tokenize(sentence)
+        if not sent_tokens:
+            return 0.0
+
+        chunk_tokens = tokenize(chunk_content)
+
+        # Calculate overlap
+        common = sent_tokens.intersection(chunk_tokens)
+        return len(common) / len(sent_tokens)
+
+    async def _find_supporting_chunks(self, sentence: str, sentence_embedding: list[float]) -> list[dict[str, Any]]:
         """Find chunks that support a given sentence.
 
         Args:
@@ -186,41 +206,57 @@ class CitationExtractor:
         matches = []
 
         for chunk in self.chunks:
-            chunk_content = chunk.get("content", "")
-            chunk_embedding = chunk.get("embedding")
+            chunk_content = chunk.get('content', '')
+            chunk_embedding = chunk.get('embedding')
 
             # Skip chunks without embeddings (handle both None and empty arrays)
-            if chunk_embedding is None or (hasattr(chunk_embedding, "__len__") and len(chunk_embedding) == 0):
+            if chunk_embedding is None or (hasattr(chunk_embedding, '__len__') and len(chunk_embedding) == 0):
                 continue
 
-            similarity = compute_similarity(sentence_embedding, chunk_embedding)
+            # 1. Vector Similarity (The "Vibe" Check)
+            vector_score = compute_similarity(sentence_embedding, chunk_embedding)
 
-            if similarity >= self.min_similarity:
-                file_path = chunk.get("file_path", "")
+            # Quick filter
+            if vector_score < self.min_similarity:
+                continue
+
+            # 2. Content Verification (The "Fact" Check)
+            # We penalize the vector score if the actual words are missing.
+            # This reduces "hallucinated" citations where the topic is same but facts differ.
+            overlap_score = self._compute_content_overlap(sentence, chunk_content)
+
+            # Weighted Score:
+            # We trust the vector more (70%), but allow the overlap to boost/penalty (30%)
+            # If overlap is 0, max score is ~0.7 * vector_score
+            # If overlap is 1, score is full.
+            final_score = (vector_score * 0.7) + (overlap_score * 0.3)
+
+            if final_score >= self.min_similarity:
+                file_path = chunk.get('file_path', '')
                 # Find reference_id for this chunk
                 ref_id = None
                 for ref in self.references:
-                    if ref.get("file_path") == file_path:
-                        ref_id = ref.get("reference_id")
+                    if ref.get('file_path') == file_path:
+                        ref_id = ref.get('reference_id')
                         break
 
                 if ref_id:
                     matches.append(
                         {
-                            "reference_id": ref_id,
-                            "similarity": similarity,
-                            "chunk_excerpt": chunk_content[:100],
+                            'reference_id': ref_id,
+                            'similarity': final_score,
+                            'chunk_excerpt': chunk_content[:100],
                         }
                     )
 
         # Sort by similarity and deduplicate by reference_id
-        matches.sort(key=lambda x: x["similarity"], reverse=True)
+        matches.sort(key=lambda x: x['similarity'], reverse=True)
 
         seen_refs = set()
         unique_matches = []
         for match in matches:
-            if match["reference_id"] not in seen_refs:
-                seen_refs.add(match["reference_id"])
+            if match['reference_id'] not in seen_refs:
+                seen_refs.add(match['reference_id'])
                 unique_matches.append(match)
                 if len(unique_matches) >= CITATION_MAX_PER_SENTENCE:
                     break
@@ -228,7 +264,7 @@ class CitationExtractor:
         return unique_matches
 
     async def extract_citations(
-        self, response: str, chunk_embeddings: Optional[dict[str, list[float]]] = None
+        self, response: str, chunk_embeddings: dict[str, list[float]] | None = None
     ) -> CitationResult:
         """Extract citations by matching response sentences to source chunks.
 
@@ -251,12 +287,12 @@ class CitationExtractor:
         uncited_claims: list[str] = []
 
         # Compute embeddings for all sentences at once (batch)
-        sentence_texts = [s["text"] for s in sentences]
+        sentence_texts = [s['text'] for s in sentences]
         if sentence_texts:
             try:
                 sentence_embeddings = await self.embedding_func(sentence_texts)
             except Exception as e:
-                logger.warning(f"Failed to compute sentence embeddings: {e}")
+                logger.warning(f'Failed to compute sentence embeddings: {e}')
                 sentence_embeddings = [None] * len(sentence_texts)
         else:
             sentence_embeddings = []
@@ -264,39 +300,39 @@ class CitationExtractor:
         # Pre-compute or use provided chunk embeddings
         if chunk_embeddings is not None and len(chunk_embeddings) > 0:
             for chunk in self.chunks:
-                chunk_id = chunk.get("id", chunk.get("content", "")[:50])
+                chunk_id = chunk.get('id', chunk.get('content', '')[:50])
                 if chunk_id in chunk_embeddings:
-                    chunk["embedding"] = chunk_embeddings[chunk_id]
+                    chunk['embedding'] = chunk_embeddings[chunk_id]
         else:
             # Compute chunk embeddings if not provided
-            chunk_contents = [c.get("content", "") for c in self.chunks]
+            chunk_contents = [c.get('content', '') for c in self.chunks]
             if chunk_contents:
                 try:
                     computed_embeddings = await self.embedding_func(chunk_contents)
                     for i, chunk in enumerate(self.chunks):
-                        chunk["embedding"] = computed_embeddings[i]
+                        chunk['embedding'] = computed_embeddings[i]
                 except Exception as e:
-                    logger.warning(f"Failed to compute chunk embeddings: {e}")
+                    logger.warning(f'Failed to compute chunk embeddings: {e}')
 
         # Match sentences to chunks
         for i, sentence in enumerate(sentences):
             sentence_emb = sentence_embeddings[i] if i < len(sentence_embeddings) else None
 
             if sentence_emb is None:
-                uncited_claims.append(sentence["text"])
+                uncited_claims.append(sentence['text'])
                 continue
 
-            matches = await self._find_supporting_chunks(sentence["text"], sentence_emb)
+            matches = await self._find_supporting_chunks(sentence['text'], sentence_emb)
 
             if matches:
-                ref_ids = [m["reference_id"] for m in matches]
-                confidence = matches[0]["similarity"] if matches else 0.0
+                ref_ids = [m['reference_id'] for m in matches]
+                confidence = matches[0]['similarity'] if matches else 0.0
 
                 citations.append(
                     CitationSpan(
-                        start_char=sentence["start"],
-                        end_char=sentence["end"],
-                        text=sentence["text"],
+                        start_char=sentence['start'],
+                        end_char=sentence['end'],
+                        text=sentence['text'],
                         reference_ids=ref_ids,
                         confidence=confidence,
                     )
@@ -304,7 +340,7 @@ class CitationExtractor:
 
                 used_refs.update(ref_ids)
             else:
-                uncited_claims.append(sentence["text"])
+                uncited_claims.append(sentence['text'])
 
         # Generate annotated response with inline markers
         annotated = self._insert_citation_markers(response, citations)
@@ -324,9 +360,7 @@ class CitationExtractor:
             uncited_claims=uncited_claims,
         )
 
-    def _insert_citation_markers(
-        self, response: str, citations: list[CitationSpan]
-    ) -> str:
+    def _insert_citation_markers(self, response: str, citations: list[CitationSpan]) -> str:
         """Insert [n] citation markers into response text.
 
         Processes citations in reverse order to preserve character positions.
@@ -340,7 +374,7 @@ class CitationExtractor:
                 continue
 
             # Create marker like [1] or [1,2] for multiple refs
-            marker = "[" + ",".join(citation.reference_ids) + "]"
+            marker = '[' + ','.join(citation.reference_ids) + ']'
 
             # Insert marker after the sentence (at end_char position)
             result = result[: citation.end_char] + marker + result[citation.end_char :]
@@ -352,30 +386,29 @@ class CitationExtractor:
         enhanced = []
 
         for ref in self.references:
-            ref_id = ref.get("reference_id", "")
+            ref_id = ref.get('reference_id', '')
             if ref_id not in used_refs:
                 continue
 
-            file_path = ref.get("file_path", "")
+            file_path = ref.get('file_path', '')
             chunks = self.ref_to_chunks.get(ref_id, [])
 
             # Extract first chunk as excerpt
             excerpt = None
             if chunks:
                 first_chunk = chunks[0]
-                content = first_chunk.get("content", "")
-                excerpt = content[:150] + "..." if len(content) > 150 else content
+                content = first_chunk.get('content', '')
+                excerpt = content[:150] + '...' if len(content) > 150 else content
 
             enhanced.append(
                 SourceReference(
                     reference_id=ref_id,
                     file_path=file_path,
-                    document_title=ref.get("document_title")
-                    or extract_title_from_path(file_path),
-                    section_title=ref.get("section_title"),
-                    page_range=ref.get("page_range"),
+                    document_title=ref.get('document_title') or extract_title_from_path(file_path),
+                    section_title=ref.get('section_title'),
+                    page_range=ref.get('page_range'),
                     excerpt=excerpt,
-                    chunk_ids=[c.get("id", "") for c in chunks if c.get("id")],
+                    chunk_ids=[c.get('id', '') for c in chunks if c.get('id')],
                 )
             )
 
@@ -384,20 +417,25 @@ class CitationExtractor:
     def _format_footnotes(self, references: list[SourceReference]) -> list[str]:
         """Format references as footnote strings.
 
-        Format: [n] "Document Title", Section X, pp. Y-Z
+        Format: [n] "Document Title", Section X, pp. Y-Z. "Excerpt..."
         """
         footnotes = []
 
-        for ref in sorted(references, key=lambda r: int(r.reference_id or "0")):
+        for ref in sorted(references, key=lambda r: int(r.reference_id or '0')):
             parts = [f'[{ref.reference_id}] "{ref.document_title}"']
 
             if ref.section_title:
-                parts.append(f"Section: {ref.section_title}")
+                parts.append(f'Section: {ref.section_title}')
 
             if ref.page_range:
-                parts.append(f"pp. {ref.page_range}")
+                parts.append(f'pp. {ref.page_range}')
 
-            footnotes.append(", ".join(parts))
+            footnote = ', '.join(parts)
+
+            if ref.excerpt:
+                footnote += f'. "{ref.excerpt}"'
+
+            footnotes.append(footnote)
 
         return footnotes
 

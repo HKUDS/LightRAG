@@ -7,6 +7,7 @@ Tests that:
 """
 
 import asyncio
+import logging
 import os
 import shutil
 
@@ -14,9 +15,8 @@ from lightrag import LightRAG
 from lightrag.entity_resolution import EntityResolutionConfig
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.utils import logger
-import logging
 
-WORKING_DIR = "./test_entity_resolution"
+WORKING_DIR = './test_entity_resolution'
 
 # Test document with entities that should be deduplicated
 TEST_DOC = """
@@ -28,8 +28,8 @@ The FDA continues to monitor the safety of Dupixent.
 
 
 async def main():
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: Set OPENAI_API_KEY environment variable")
+    if not os.getenv('OPENAI_API_KEY'):
+        print('Error: Set OPENAI_API_KEY environment variable')
         return
 
     # Clean up previous test
@@ -41,9 +41,9 @@ async def main():
     logging.basicConfig(level=logging.DEBUG)
     logger.setLevel(logging.DEBUG)
 
-    print("\n" + "=" * 60)
-    print("Entity Resolution Test")
-    print("=" * 60)
+    print('\n' + '=' * 60)
+    print('Entity Resolution Test')
+    print('=' * 60)
 
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -59,35 +59,35 @@ async def main():
 
     await rag.initialize_storages()
 
-    print("\nInserting test document...")
-    print(f"Document: {TEST_DOC.strip()}")
-    print("\n" + "-" * 60)
+    print('\nInserting test document...')
+    print(f'Document: {TEST_DOC.strip()}')
+    print('\n' + '-' * 60)
 
     await rag.ainsert(TEST_DOC)
 
-    print("\n" + "-" * 60)
-    print("Checking extracted entities...")
+    print('\n' + '-' * 60)
+    print('Checking extracted entities...')
 
     # Read the graph to see what entities were created
-    graph_file = os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml")
+    graph_file = os.path.join(WORKING_DIR, 'graph_chunk_entity_relation.graphml')
     if os.path.exists(graph_file):
         import networkx as nx
 
         G = nx.read_graphml(graph_file)
-        print(f"\nEntities in graph ({len(G.nodes())} total):")
+        print(f'\nEntities in graph ({len(G.nodes())} total):')
         for node in sorted(G.nodes()):
-            print(f"  - {node}")
+            print(f'  - {node}')
 
-        print(f"\nRelationships: {len(G.edges())}")
+        print(f'\nRelationships: {len(G.edges())}')
     else:
-        print("Graph file not found")
+        print('Graph file not found')
 
     await rag.finalize_storages()
 
-    print("\n" + "=" * 60)
-    print("Test complete!")
-    print("=" * 60)
+    print('\n' + '=' * 60)
+    print('Test complete!')
+    print('=' * 60)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

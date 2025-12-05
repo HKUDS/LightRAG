@@ -7,23 +7,23 @@ Provides automatic entity deduplication using a 3-layer approach:
 3. Vector similarity + LLM verification (semantic matches)
 """
 
+from .config import DEFAULT_CONFIG, EntityResolutionConfig
 from .resolver import (
+    ResolutionResult,
+    fuzzy_similarity,
+    get_cached_alias,
     resolve_entity,
     resolve_entity_with_vdb,
-    ResolutionResult,
-    get_cached_alias,
     store_alias,
-    fuzzy_similarity,
 )
-from .config import EntityResolutionConfig, DEFAULT_CONFIG
 
 __all__ = [
-    "resolve_entity",
-    "resolve_entity_with_vdb",
-    "ResolutionResult",
-    "EntityResolutionConfig",
-    "DEFAULT_CONFIG",
-    "get_cached_alias",
-    "store_alias",
-    "fuzzy_similarity",
+    'DEFAULT_CONFIG',
+    'EntityResolutionConfig',
+    'ResolutionResult',
+    'fuzzy_similarity',
+    'get_cached_alias',
+    'resolve_entity',
+    'resolve_entity_with_vdb',
+    'store_alias',
 ]

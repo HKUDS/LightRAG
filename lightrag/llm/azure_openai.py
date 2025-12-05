@@ -10,13 +10,13 @@ imports from lightrag.llm.azure_openai.
 """
 
 from lightrag.llm.openai import (
-    azure_openai_complete_if_cache,
     azure_openai_complete,
+    azure_openai_complete_if_cache,
     azure_openai_embed,
 )
 
 __all__ = [
-    "azure_openai_complete_if_cache",
-    "azure_openai_complete",
-    "azure_openai_embed",
+    'azure_openai_complete',
+    'azure_openai_complete_if_cache',
+    'azure_openai_embed',
 ]

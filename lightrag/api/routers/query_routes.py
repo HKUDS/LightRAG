@@ -4,25 +4,27 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 import re
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
+
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
-from lightrag.constants import DEFAULT_TOP_K
-from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
-router = APIRouter(tags=["query"])
+from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import QueryParam
+from lightrag.constants import DEFAULT_TOP_K
+from lightrag.utils import logger
+
+router = APIRouter(tags=['query'])
 
 # Pattern to match reasoning tags like <think>...</think>
-REASONING_TAG_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
+REASONING_TAG_PATTERN = re.compile(r'<think>.*?</think>', re.DOTALL)
 
 
 def strip_reasoning_tags(text: str) -> str:
     """Strip LLM reasoning tags like <think>...</think> from response text."""
     if not text:
         return text
-    return REASONING_TAG_PATTERN.sub("", text).strip()
+    return REASONING_TAG_PATTERN.sub('', text).strip()
 
 
 async def filter_reasoning_stream(response_stream):
@@ -31,7 +33,7 @@ async def filter_reasoning_stream(response_stream):
     This is a state machine that buffers chunks and filters out reasoning blocks
     as they stream in, preventing <think> tags from appearing to the user.
     """
-    buffer = ""
+    buffer = ''
     in_think_block = False
 
     async for chunk in response_stream:
@@ -40,33 +42,33 @@ async def filter_reasoning_stream(response_stream):
         while buffer:
             if in_think_block:
                 # Look for </think> to exit reasoning block
-                end_idx = buffer.find("</think>")
+                end_idx = buffer.find('</think>')
                 if end_idx != -1:
-                    buffer = buffer[end_idx + 8:]  # Skip past </think>
+                    buffer = buffer[end_idx + 8 :]  # Skip past </think>
                     in_think_block = False
                 else:
                     break  # Need more data to find closing tag
             else:
                 # Look for <think> to enter reasoning block
-                start_idx = buffer.find("<think>")
+                start_idx = buffer.find('<think>')
                 if start_idx != -1:
                     # Emit everything before <think>
                     if start_idx > 0:
                         yield buffer[:start_idx]
-                    buffer = buffer[start_idx + 7:]  # Skip past <think>
+                    buffer = buffer[start_idx + 7 :]  # Skip past <think>
                     in_think_block = True
                 else:
                     # Check for partial "<think>" match at buffer end
                     # This prevents emitting incomplete tags
                     for i in range(min(7, len(buffer)), 0, -1):
-                        if "<think>"[:i] == buffer[-i:]:
+                        if '<think>'[:i] == buffer[-i:]:
                             if len(buffer) > i:
                                 yield buffer[:-i]
                             buffer = buffer[-i:]
                             break
                     else:
                         yield buffer
-                        buffer = ""
+                        buffer = ''
                     break
 
     # Emit any remaining buffer (only if not inside a think block)
@@ -77,143 +79,143 @@ async def filter_reasoning_stream(response_stream):
 class QueryRequest(BaseModel):
     query: str = Field(
         min_length=3,
-        description="The query text",
+        description='The query text',
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
-        default="mix",
-        description="Query mode",
+    mode: Literal['local', 'global', 'hybrid', 'naive', 'mix', 'bypass'] = Field(
+        default='mix',
+        description='Query mode',
     )
 
-    only_need_context: Optional[bool] = Field(
+    only_need_context: bool | None = Field(
         default=None,
-        description="If True, only returns the retrieved context without generating a response.",
+        description='If True, only returns the retrieved context without generating a response.',
     )
 
-    only_need_prompt: Optional[bool] = Field(
+    only_need_prompt: bool | None = Field(
         default=None,
-        description="If True, only returns the generated prompt without producing a response.",
+        description='If True, only returns the generated prompt without producing a response.',
     )
 
-    response_type: Optional[str] = Field(
+    response_type: str | None = Field(
         min_length=1,
         default=None,
         description="Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'.",
     )
 
-    top_k: Optional[int] = Field(
+    top_k: int | None = Field(
         ge=1,
         default=None,
         description="Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode.",
     )
 
-    chunk_top_k: Optional[int] = Field(
+    chunk_top_k: int | None = Field(
         ge=1,
         default=None,
-        description="Number of text chunks to retrieve initially from vector search and keep after reranking.",
+        description='Number of text chunks to retrieve initially from vector search and keep after reranking.',
     )
 
-    max_entity_tokens: Optional[int] = Field(
+    max_entity_tokens: int | None = Field(
         default=None,
-        description="Maximum number of tokens allocated for entity context in unified token control system.",
-        ge=1,
-    )
-
-    max_relation_tokens: Optional[int] = Field(
-        default=None,
-        description="Maximum number of tokens allocated for relationship context in unified token control system.",
+        description='Maximum number of tokens allocated for entity context in unified token control system.',
         ge=1,
     )
 
-    max_total_tokens: Optional[int] = Field(
+    max_relation_tokens: int | None = Field(
         default=None,
-        description="Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt).",
+        description='Maximum number of tokens allocated for relationship context in unified token control system.',
+        ge=1,
+    )
+
+    max_total_tokens: int | None = Field(
+        default=None,
+        description='Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt).',
         ge=1,
     )
 
     hl_keywords: list[str] = Field(
         default_factory=list,
-        description="List of high-level keywords to prioritize in retrieval. Leave empty to use the LLM to generate the keywords.",
+        description='List of high-level keywords to prioritize in retrieval. Leave empty to use the LLM to generate the keywords.',
     )
 
     ll_keywords: list[str] = Field(
         default_factory=list,
-        description="List of low-level keywords to refine retrieval focus. Leave empty to use the LLM to generate the keywords.",
+        description='List of low-level keywords to refine retrieval focus. Leave empty to use the LLM to generate the keywords.',
     )
 
-    conversation_history: Optional[List[Dict[str, Any]]] = Field(
+    conversation_history: list[dict[str, Any]] | None = Field(
         default=None,
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
-    user_prompt: Optional[str] = Field(
+    user_prompt: str | None = Field(
         default=None,
-        description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
+        description='User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.',
     )
 
-    enable_rerank: Optional[bool] = Field(
+    enable_rerank: bool | None = Field(
         default=None,
-        description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
+        description='Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.',
     )
 
-    include_references: Optional[bool] = Field(
+    include_references: bool | None = Field(
         default=True,
-        description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",
+        description='If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.',
     )
 
-    include_chunk_content: Optional[bool] = Field(
+    include_chunk_content: bool | None = Field(
         default=False,
-        description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
+        description='If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.',
     )
 
-    stream: Optional[bool] = Field(
+    stream: bool | None = Field(
         default=True,
-        description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
+        description='If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.',
     )
 
-    citation_mode: Optional[Literal["none", "inline", "footnotes"]] = Field(
-        default="none",
+    citation_mode: Literal['none', 'inline', 'footnotes'] | None = Field(
+        default='none',
         description="Citation extraction mode: 'none' (no post-processing), 'inline' (add [n] markers in text), 'footnotes' (add markers and formatted footnotes). When enabled, citations are computed asynchronously after response completes.",
     )
 
-    citation_threshold: Optional[float] = Field(
+    citation_threshold: float | None = Field(
         default=0.7,
         ge=0.0,
         le=1.0,
-        description="Minimum similarity threshold for citation matching (0.0-1.0). Higher values mean stricter matching.",
+        description='Minimum similarity threshold for citation matching (0.0-1.0). Higher values mean stricter matching.',
     )
 
-    @field_validator("query", mode="after")
+    @field_validator('query', mode='after')
     @classmethod
     def query_strip_after(cls, query: str) -> str:
         return query.strip()
 
-    @field_validator("conversation_history", mode="after")
+    @field_validator('conversation_history', mode='after')
     @classmethod
     def conversation_history_role_check(
-        cls, conversation_history: List[Dict[str, Any]] | None
-    ) -> List[Dict[str, Any]] | None:
+        cls, conversation_history: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
         if conversation_history is None:
             return None
         for msg in conversation_history:
-            if "role" not in msg:
+            if 'role' not in msg:
                 raise ValueError("Each message must have a 'role' key.")
-            if not isinstance(msg["role"], str) or not msg["role"].strip():
+            if not isinstance(msg['role'], str) or not msg['role'].strip():
                 raise ValueError("Each message 'role' must be a non-empty string.")
         return conversation_history
 
-    def to_query_params(self, is_stream: bool) -> "QueryParam":
+    def to_query_params(self, is_stream: bool) -> 'QueryParam':
         """Converts a QueryRequest instance into a QueryParam instance."""
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
             exclude_none=True,
             exclude={
-                "query",
-                "include_chunk_content",
-                "include_references",
-                "citation_mode",
-                "citation_threshold",
+                'query',
+                'include_chunk_content',
+                'include_references',
+                'citation_mode',
+                'citation_threshold',
             },
         )
 
@@ -226,81 +228,69 @@ class QueryRequest(BaseModel):
 class ReferenceItem(BaseModel):
     """A single reference item in query responses."""
 
-    reference_id: str = Field(description="Unique reference identifier")
-    file_path: str = Field(description="Path to the source file")
-    content: Optional[List[str]] = Field(
+    reference_id: str = Field(description='Unique reference identifier')
+    file_path: str = Field(description='Path to the source file')
+    content: list[str] | None = Field(
         default=None,
-        description="List of chunk contents from this file (only present when include_chunk_content=True)",
+        description='List of chunk contents from this file (only present when include_chunk_content=True)',
     )
 
 
 class QueryResponse(BaseModel):
     response: str = Field(
-        description="The generated response",
+        description='The generated response',
     )
-    references: Optional[List[ReferenceItem]] = Field(
+    references: list[ReferenceItem] | None = Field(
         default=None,
-        description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
+        description='Reference list (Disabled when include_references=False, /query/data always includes references.)',
     )
 
 
 class QueryDataResponse(BaseModel):
-    status: str = Field(description="Query execution status")
-    message: str = Field(description="Status message")
-    data: Dict[str, Any] = Field(
-        description="Query result data containing entities, relationships, chunks, and references"
+    status: str = Field(description='Query execution status')
+    message: str = Field(description='Status message')
+    data: dict[str, Any] = Field(
+        description='Query result data containing entities, relationships, chunks, and references'
     )
-    metadata: Dict[str, Any] = Field(
-        description="Query metadata including mode, keywords, and processing information"
-    )
+    metadata: dict[str, Any] = Field(description='Query metadata including mode, keywords, and processing information')
 
 
 class StreamChunkResponse(BaseModel):
     """Response model for streaming chunks in NDJSON format"""
 
-    references: Optional[List[Dict[str, str]]] = Field(
+    references: list[dict[str, str]] | None = Field(
         default=None,
-        description="Reference list (only in first chunk when include_references=True)",
+        description='Reference list (only in first chunk when include_references=True)',
     )
-    response: Optional[str] = Field(
-        default=None, description="Response content chunk or complete response"
-    )
-    error: Optional[str] = Field(
-        default=None, description="Error message if processing fails"
-    )
+    response: str | None = Field(default=None, description='Response content chunk or complete response')
+    error: str | None = Field(default=None, description='Error message if processing fails')
 
 
 class CitationSpanModel(BaseModel):
     """A span in the response with citation attribution."""
 
-    start_char: int = Field(description="Start character position in response")
-    end_char: int = Field(description="End character position in response")
-    text: str = Field(description="The text span being cited")
-    reference_ids: List[str] = Field(description="Reference IDs supporting this span")
-    confidence: float = Field(description="Citation confidence score (0.0-1.0)")
+    start_char: int = Field(description='Start character position in response')
+    end_char: int = Field(description='End character position in response')
+    text: str = Field(description='The text span being cited')
+    reference_ids: list[str] = Field(description='Reference IDs supporting this span')
+    confidence: float = Field(description='Citation confidence score (0.0-1.0)')
 
 
 class EnhancedReferenceItem(BaseModel):
     """Enhanced reference with full metadata for footnotes."""
 
-    reference_id: str = Field(description="Unique reference identifier")
-    file_path: str = Field(description="Path to the source file")
-    document_title: Optional[str] = Field(
-        default=None, description="Human-readable document title"
-    )
-    section_title: Optional[str] = Field(
-        default=None, description="Section or chapter title"
-    )
-    page_range: Optional[str] = Field(default=None, description="Page range (e.g., pp. 45-67)")
-    excerpt: Optional[str] = Field(
-        default=None, description="Brief excerpt from the source"
-    )
+    reference_id: str = Field(description='Unique reference identifier')
+    file_path: str = Field(description='Path to the source file')
+    document_title: str | None = Field(default=None, description='Human-readable document title')
+    section_title: str | None = Field(default=None, description='Section or chapter title')
+    page_range: str | None = Field(default=None, description='Page range (e.g., pp. 45-67)')
+    excerpt: str | None = Field(default=None, description='Brief excerpt from the source')
 
 
 async def _extract_and_stream_citations(
     response: str,
-    chunks: List[Dict[str, Any]],
-    references: List[Dict[str, str]],
+    chunks: list[dict[str, Any]],
+    references: list[dict[str, str]],
     rag,
     min_similarity: float,
     citation_mode: str,
@@ -339,144 +329,153 @@ async def _extract_and_stream_citations(
         # Each marker tells frontend where to insert [n] without sending full text
         citation_markers = []
         for citation in citation_result.citations:
-            citation_markers.append({
-                "marker": "[" + ",".join(citation.reference_ids) + "]",
-                "insert_position": citation.end_char,  # Insert after sentence
-                "reference_ids": citation.reference_ids,
-                "confidence": citation.confidence,
-                "text_preview": citation.text[:50] + "..." if len(citation.text) > 50 else citation.text,
-            })
+            citation_markers.append(
+                {
+                    'marker': '[' + ','.join(citation.reference_ids) + ']',
+                    'insert_position': citation.end_char,  # Insert after sentence
+                    'reference_ids': citation.reference_ids,
+                    'confidence': citation.confidence,
+                    'text_preview': citation.text[:50] + '...' if len(citation.text) > 50 else citation.text,
+                }
+            )
 
         # Build enhanced sources with metadata
         sources = []
         for ref in citation_result.references:
-            sources.append({
-                "reference_id": ref.reference_id,
-                "file_path": ref.file_path,
-                "document_title": ref.document_title,
-                "section_title": ref.section_title,
-                "page_range": ref.page_range,
-                "excerpt": ref.excerpt,
-            })
+            sources.append(
+                {
+                    'reference_id': ref.reference_id,
+                    'file_path': ref.file_path,
+                    'document_title': ref.document_title,
+                    'section_title': ref.section_title,
+                    'page_range': ref.page_range,
+                    'excerpt': ref.excerpt,
+                }
+            )
 
         # Format footnotes if requested
-        footnotes = citation_result.footnotes if citation_mode == "footnotes" else []
+        footnotes = citation_result.footnotes if citation_mode == 'footnotes' else []
 
         # Send single consolidated citations_metadata object
         # Frontend uses this to insert markers without needing the full text again
-        yield json.dumps({
-            "citations_metadata": {
-                "markers": citation_markers,  # Position-based markers for insertion
-                "sources": sources,           # Enhanced reference metadata
-                "footnotes": footnotes,       # Pre-formatted footnote strings
-                "uncited_count": len(citation_result.uncited_claims),
-            }
-        }) + "\n"
+        yield (
+            json.dumps(
+                {
+                    'citations_metadata': {
+                        'markers': citation_markers,  # Position-based markers for insertion
+                        'sources': sources,  # Enhanced reference metadata
+                        'footnotes': footnotes,  # Pre-formatted footnote strings
+                        'uncited_count': len(citation_result.uncited_claims),
+                    }
+                }
+            )
+            + '\n'
+        )
 
     except ImportError:
-        logger.warning("Citation module not available. Skipping citation extraction.")
-        yield json.dumps({"citation_error": "Citation module not available"}) + "\n"
+        logger.warning('Citation module not available. Skipping citation extraction.')
+        yield json.dumps({'citation_error': 'Citation module not available'}) + '\n'
     except Exception as e:
-        logger.error(f"Citation extraction error: {str(e)}")
-        yield json.dumps({"citation_error": str(e)}) + "\n"
+        logger.error(f'Citation extraction error: {e!s}')
+        yield json.dumps({'citation_error': str(e)}) + '\n'
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT_TOP_K):
+def create_query_routes(rag, api_key: str | None = None, top_k: int = DEFAULT_TOP_K):
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
-        "/query",
+        '/query',
         response_model=QueryResponse,
         dependencies=[Depends(combined_auth)],
         responses={
             200: {
-                "description": "Successful RAG query response",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "response": {
-                                    "type": "string",
-                                    "description": "The generated response from the RAG system",
+                'description': 'Successful RAG query response',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'response': {
+                                    'type': 'string',
+                                    'description': 'The generated response from the RAG system',
                                 },
-                                "references": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "reference_id": {"type": "string"},
-                                            "file_path": {"type": "string"},
-                                            "content": {
-                                                "type": "array",
-                                                "items": {"type": "string"},
-                                                "description": "List of chunk contents from this file (only included when include_chunk_content=True)",
+                                'references': {
+                                    'type': 'array',
+                                    'items': {
+                                        'type': 'object',
+                                        'properties': {
+                                            'reference_id': {'type': 'string'},
+                                            'file_path': {'type': 'string'},
+                                            'content': {
+                                                'type': 'array',
+                                                'items': {'type': 'string'},
+                                                'description': 'List of chunk contents from this file (only included when include_chunk_content=True)',
                                             },
                                         },
                                     },
-                                    "description": "Reference list (only included when include_references=True)",
+                                    'description': 'Reference list (only included when include_references=True)',
                                 },
                             },
-                            "required": ["response"],
+                            'required': ['response'],
                         },
-                        "examples": {
-                            "with_references": {
-                                "summary": "Response with references",
-                                "description": "Example response when include_references=True",
-                                "value": {
-                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
-                                    "references": [
+                        'examples': {
+                            'with_references': {
+                                'summary': 'Response with references',
+                                'description': 'Example response when include_references=True',
+                                'value': {
+                                    'response': 'Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.',
+                                    'references': [
                                         {
-                                            "reference_id": "1",
-                                            "file_path": "/documents/ai_overview.pdf",
+                                            'reference_id': '1',
+                                            'file_path': '/documents/ai_overview.pdf',
                                         },
                                         {
-                                            "reference_id": "2",
-                                            "file_path": "/documents/machine_learning.txt",
-                                        },
-                                    ],
-                                },
-                            },
-                            "with_chunk_content": {
-                                "summary": "Response with chunk content",
-                                "description": "Example response when include_references=True and include_chunk_content=True. Note: content is an array of chunks from the same file.",
-                                "value": {
-                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
-                                    "references": [
-                                        {
-                                            "reference_id": "1",
-                                            "file_path": "/documents/ai_overview.pdf",
-                                            "content": [
-                                                "Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.",
-                                                "AI systems can be categorized into narrow AI, which is designed for specific tasks, and general AI, which aims to match human cognitive abilities across a wide range of domains.",
-                                            ],
-                                        },
-                                        {
-                                            "reference_id": "2",
-                                            "file_path": "/documents/machine_learning.txt",
-                                            "content": [
-                                                "Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves."
-                                            ],
+                                            'reference_id': '2',
+                                            'file_path': '/documents/machine_learning.txt',
                                         },
                                     ],
                                 },
                             },
-                            "without_references": {
-                                "summary": "Response without references",
-                                "description": "Example response when include_references=False",
-                                "value": {
-                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving."
+                            'with_chunk_content': {
+                                'summary': 'Response with chunk content',
+                                'description': 'Example response when include_references=True and include_chunk_content=True. Note: content is an array of chunks from the same file.',
+                                'value': {
+                                    'response': 'Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.',
+                                    'references': [
+                                        {
+                                            'reference_id': '1',
+                                            'file_path': '/documents/ai_overview.pdf',
+                                            'content': [
+                                                'Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.',
+                                                'AI systems can be categorized into narrow AI, which is designed for specific tasks, and general AI, which aims to match human cognitive abilities across a wide range of domains.',
+                                            ],
+                                        },
+                                        {
+                                            'reference_id': '2',
+                                            'file_path': '/documents/machine_learning.txt',
+                                            'content': [
+                                                'Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves.'
+                                            ],
+                                        },
+                                    ],
                                 },
                             },
-                            "different_modes": {
-                                "summary": "Different query modes",
-                                "description": "Examples of responses from different query modes",
-                                "value": {
-                                    "local_mode": "Focuses on specific entities and their relationships",
-                                    "global_mode": "Provides broader context from relationship patterns",
-                                    "hybrid_mode": "Combines local and global approaches",
-                                    "naive_mode": "Simple vector similarity search",
-                                    "mix_mode": "Integrates knowledge graph and vector retrieval",
+                            'without_references': {
+                                'summary': 'Response without references',
+                                'description': 'Example response when include_references=False',
+                                'value': {
+                                    'response': 'Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.'
+                                },
+                            },
+                            'different_modes': {
+                                'summary': 'Different query modes',
+                                'description': 'Examples of responses from different query modes',
+                                'value': {
+                                    'local_mode': 'Focuses on specific entities and their relationships',
+                                    'global_mode': 'Provides broader context from relationship patterns',
+                                    'hybrid_mode': 'Combines local and global approaches',
+                                    'naive_mode': 'Simple vector similarity search',
+                                    'mix_mode': 'Integrates knowledge graph and vector retrieval',
                                 },
                             },
                         },
@@ -484,30 +483,26 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
                 },
             },
             400: {
-                "description": "Bad Request - Invalid input parameters",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                'description': 'Bad Request - Invalid input parameters',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {'detail': {'type': 'string'}},
                         },
-                        "example": {
-                            "detail": "Query text must be at least 3 characters long"
-                        },
+                        'example': {'detail': 'Query text must be at least 3 characters long'},
                     }
                 },
             },
             500: {
-                "description": "Internal Server Error - Query processing failed",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                'description': 'Internal Server Error - Query processing failed',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {'detail': {'type': 'string'}},
                         },
-                        "example": {
-                            "detail": "Failed to process query: LLM service unavailable"
-                        },
+                        'example': {'detail': 'Failed to process query: LLM service unavailable'},
                     }
                 },
             },
@@ -593,9 +588,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
-            param = request.to_query_params(
-                False
-            )  # Ensure stream=False for non-streaming endpoint
+            param = request.to_query_params(False)  # Ensure stream=False for non-streaming endpoint
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
 
@@ -603,26 +596,26 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
             result = await rag.aquery_llm(request.query, param=param)
 
             # Extract LLM response and references from unified result
-            llm_response = result.get("llm_response", {})
-            data = result.get("data", {})
-            references = data.get("references", [])
+            llm_response = result.get('llm_response', {})
+            data = result.get('data', {})
+            references = data.get('references', [])
 
             # Get the non-streaming response content
-            response_content = llm_response.get("content", "")
+            response_content = llm_response.get('content', '')
             if not response_content:
-                response_content = "No relevant context found for the query."
+                response_content = 'No relevant context found for the query.'
 
             # Strip reasoning tags like <think>...</think>
             response_content = strip_reasoning_tags(response_content)
 
             # Enrich references with chunk content if requested
             if request.include_references and request.include_chunk_content:
-                chunks = data.get("chunks", [])
+                chunks = data.get('chunks', [])
                 # Create a mapping from reference_id to chunk content
                 ref_id_to_content = {}
                 for chunk in chunks:
-                    ref_id = chunk.get("reference_id", "")
-                    content = chunk.get("content", "")
+                    ref_id = chunk.get('reference_id', '')
+                    content = chunk.get('content', '')
                     if ref_id and content:
                         # Collect chunk content; join later to avoid quadratic string concatenation
                         ref_id_to_content.setdefault(ref_id, []).append(content)
@@ -631,10 +624,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
                 enriched_references = []
                 for ref in references:
                     ref_copy = ref.copy()
-                    ref_id = ref.get("reference_id", "")
+                    ref_id = ref.get('reference_id', '')
                     if ref_id in ref_id_to_content:
                         # Keep content as a list of chunks (one file may have multiple chunks)
-                        ref_copy["content"] = ref_id_to_content[ref_id]
+                        ref_copy['content'] = ref_id_to_content[ref_id]
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
@@ -644,83 +637,79 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
             else:
                 return QueryResponse(response=response_content, references=None)
         except Exception as e:
-            logger.error(f"Error processing query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f'Error processing query: {e!s}', exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @router.post(
-        "/query/stream",
+        '/query/stream',
         dependencies=[Depends(combined_auth)],
         responses={
             200: {
-                "description": "Flexible RAG query response - format depends on stream parameter",
-                "content": {
-                    "application/x-ndjson": {
-                        "schema": {
-                            "type": "string",
-                            "format": "ndjson",
-                            "description": "Newline-delimited JSON (NDJSON) format used for both streaming and non-streaming responses. For streaming: multiple lines with separate JSON objects. For non-streaming: single line with complete JSON object.",
-                            "example": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"response": " a field of computer science"}\n{"response": " that focuses on creating intelligent machines."}',
+                'description': 'Flexible RAG query response - format depends on stream parameter',
+                'content': {
+                    'application/x-ndjson': {
+                        'schema': {
+                            'type': 'string',
+                            'format': 'ndjson',
+                            'description': 'Newline-delimited JSON (NDJSON) format used for both streaming and non-streaming responses. For streaming: multiple lines with separate JSON objects. For non-streaming: single line with complete JSON object.',
+                            'example': '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"response": " a field of computer science"}\n{"response": " that focuses on creating intelligent machines."}',
                         },
-                        "examples": {
-                            "streaming_with_references": {
-                                "summary": "Streaming mode with references (stream=true)",
-                                "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
+                        'examples': {
+                            'streaming_with_references': {
+                                'summary': 'Streaming mode with references (stream=true)',
+                                'description': 'Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.',
+                                'value': '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
                             },
-                            "streaming_with_chunk_content": {
-                                "summary": "Streaming mode with chunk content (stream=true, include_chunk_content=true)",
-                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
+                            'streaming_with_chunk_content': {
+                                'summary': 'Streaming mode with chunk content (stream=true, include_chunk_content=true)',
+                                'description': 'Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.',
+                                'value': '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
                             },
-                            "streaming_without_references": {
-                                "summary": "Streaming mode without references (stream=true)",
-                                "description": "Multiple NDJSON lines when stream=True and include_references=False. Only response chunks are sent.",
-                                "value": '{"response": "Machine learning is a subset of artificial intelligence"}\n{"response": " that enables computers to learn and improve from experience"}\n{"response": " without being explicitly programmed for every task."}',
+                            'streaming_without_references': {
+                                'summary': 'Streaming mode without references (stream=true)',
+                                'description': 'Multiple NDJSON lines when stream=True and include_references=False. Only response chunks are sent.',
+                                'value': '{"response": "Machine learning is a subset of artificial intelligence"}\n{"response": " that enables computers to learn and improve from experience"}\n{"response": " without being explicitly programmed for every task."}',
                             },
-                            "non_streaming_with_references": {
-                                "summary": "Non-streaming mode with references (stream=false)",
-                                "description": "Single NDJSON line when stream=False and include_references=True. Complete response with references in one message.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/neural_networks.pdf"}], "response": "Neural networks are computational models inspired by biological neural networks that consist of interconnected nodes (neurons) organized in layers. They are fundamental to deep learning and can learn complex patterns from data through training processes."}',
+                            'non_streaming_with_references': {
+                                'summary': 'Non-streaming mode with references (stream=false)',
+                                'description': 'Single NDJSON line when stream=False and include_references=True. Complete response with references in one message.',
+                                'value': '{"references": [{"reference_id": "1", "file_path": "/documents/neural_networks.pdf"}], "response": "Neural networks are computational models inspired by biological neural networks that consist of interconnected nodes (neurons) organized in layers. They are fundamental to deep learning and can learn complex patterns from data through training processes."}',
                             },
-                            "non_streaming_without_references": {
-                                "summary": "Non-streaming mode without references (stream=false)",
-                                "description": "Single NDJSON line when stream=False and include_references=False. Complete response only.",
-                                "value": '{"response": "Deep learning is a subset of machine learning that uses neural networks with multiple layers (hence deep) to model and understand complex patterns in data. It has revolutionized fields like computer vision, natural language processing, and speech recognition."}',
+                            'non_streaming_without_references': {
+                                'summary': 'Non-streaming mode without references (stream=false)',
+                                'description': 'Single NDJSON line when stream=False and include_references=False. Complete response only.',
+                                'value': '{"response": "Deep learning is a subset of machine learning that uses neural networks with multiple layers (hence deep) to model and understand complex patterns in data. It has revolutionized fields like computer vision, natural language processing, and speech recognition."}',
                             },
-                            "error_response": {
-                                "summary": "Error during streaming",
-                                "description": "Error handling in NDJSON format when an error occurs during processing.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"error": "LLM service temporarily unavailable"}',
+                            'error_response': {
+                                'summary': 'Error during streaming',
+                                'description': 'Error handling in NDJSON format when an error occurs during processing.',
+                                'value': '{"references": [{"reference_id": "1", "file_path": "/documents/ai.pdf"}]}\n{"response": "Artificial Intelligence is"}\n{"error": "LLM service temporarily unavailable"}',
                             },
                         },
                     }
                 },
             },
             400: {
-                "description": "Bad Request - Invalid input parameters",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                'description': 'Bad Request - Invalid input parameters',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {'detail': {'type': 'string'}},
                         },
-                        "example": {
-                            "detail": "Query text must be at least 3 characters long"
-                        },
+                        'example': {'detail': 'Query text must be at least 3 characters long'},
                     }
                 },
             },
             500: {
-                "description": "Internal Server Error - Query processing failed",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                'description': 'Internal Server Error - Query processing failed',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {'detail': {'type': 'string'}},
                         },
-                        "example": {
-                            "detail": "Failed to process streaming query: Knowledge graph unavailable"
-                        },
+                        'example': {'detail': 'Failed to process streaming query: Knowledge graph unavailable'},
                     }
                 },
             },
@@ -865,17 +854,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
 
             async def stream_generator():
                 # Extract references and LLM response from unified result
-                references = result.get("data", {}).get("references", [])
-                chunks = result.get("data", {}).get("chunks", [])
-                llm_response = result.get("llm_response", {})
+                references: list[dict[str, Any]] = list(result.get('data', {}).get('references', []))
+                chunks: list[dict[str, Any]] = list(result.get('data', {}).get('chunks', []))
+                llm_response: dict[str, Any] = result.get('llm_response', {}) or {}
 
                 # Enrich references with chunk content if requested
                 if request.include_references and request.include_chunk_content:
                     # Create a mapping from reference_id to chunk content
                     ref_id_to_content = {}
                     for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
+                        ref_id = chunk.get('reference_id', '')
+                        content = chunk.get('content', '')
                         if ref_id and content:
                             # Collect chunk content
                             ref_id_to_content.setdefault(ref_id, []).append(content)
@@ -884,37 +873,37 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
+                        ref_id = ref.get('reference_id', '')
                         if ref_id in ref_id_to_content:
                             # Keep content as a list of chunks (one file may have multiple chunks)
-                            ref_copy["content"] = ref_id_to_content[ref_id]
+                            ref_copy['content'] = ref_id_to_content[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
 
                 # Track collected response for citation extraction
                 collected_response = []
-                citation_mode = request.citation_mode or "none"
+                citation_mode = request.citation_mode or 'none'
 
-                if llm_response.get("is_streaming"):
+                if llm_response.get('is_streaming'):
                     # Streaming mode: send references first, then stream response chunks
                     if request.include_references:
-                        yield f"{json.dumps({'references': references})}\n"
+                        yield f'{json.dumps({"references": references})}\n'
 
-                    response_stream = llm_response.get("response_iterator")
+                    response_stream = llm_response.get('response_iterator')
                     if response_stream:
                         try:
                             # Filter <think>...</think> blocks in real-time
                             async for chunk in filter_reasoning_stream(response_stream):
                                 if chunk:  # Only send non-empty content
-                                    yield f"{json.dumps({'response': chunk})}\n"
+                                    yield f'{json.dumps({"response": chunk})}\n'
                                     collected_response.append(chunk)
                         except Exception as e:
-                            logger.error(f"Streaming error: {str(e)}")
-                            yield f"{json.dumps({'error': str(e)})}\n"
+                            logger.error(f'Streaming error: {e!s}')
+                            yield f'{json.dumps({"error": str(e)})}\n'
 
                     # After streaming completes, extract citations if enabled
-                    if citation_mode in ["inline", "footnotes"] and collected_response:
-                        full_response = strip_reasoning_tags("".join(collected_response))
+                    if citation_mode in ['inline', 'footnotes'] and collected_response:
+                        full_response = strip_reasoning_tags(''.join(collected_response))
                         async for line in _extract_and_stream_citations(
                             full_response,
                             chunks,
@@ -926,22 +915,22 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
                             yield line
                 else:
                     # Non-streaming mode: send complete response in one message
-                    response_content = llm_response.get("content", "")
+                    response_content = llm_response.get('content', '')
                     if not response_content:
-                        response_content = "No relevant context found for the query."
+                        response_content = 'No relevant context found for the query.'
 
                     # Strip reasoning tags like <think>...</think>
                     response_content = strip_reasoning_tags(response_content)
 
                     # Create complete response object
-                    complete_response = {"response": response_content}
+                    complete_response: dict[str, Any] = {'response': response_content}
                     if request.include_references:
-                        complete_response["references"] = references
+                        complete_response['references'] = references
 
-                    yield f"{json.dumps(complete_response)}\n"
+                    yield f'{json.dumps(complete_response)}\n'
 
                     # Extract citations for non-streaming mode too
-                    if citation_mode in ["inline", "footnotes"] and response_content:
+                    if citation_mode in ['inline', 'footnotes'] and response_content:
                         async for line in _extract_and_stream_citations(
                             response_content,
                             chunks,
@@ -954,277 +943,267 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
 
             return StreamingResponse(
                 stream_generator(),
-                media_type="application/x-ndjson",
+                media_type='application/x-ndjson',
                 headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Content-Type": "application/x-ndjson",
-                    "X-Accel-Buffering": "no",  # Ensure proper handling of streaming response when proxied by Nginx
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Content-Type': 'application/x-ndjson',
+                    'X-Accel-Buffering': 'no',  # Ensure proper handling of streaming response when proxied by Nginx
                 },
             )
         except Exception as e:
-            logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f'Error processing streaming query: {e!s}', exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @router.post(
-        "/query/data",
+        '/query/data',
         response_model=QueryDataResponse,
         dependencies=[Depends(combined_auth)],
         responses={
             200: {
-                "description": "Successful data retrieval response with structured RAG data",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["success", "failure"],
-                                    "description": "Query execution status",
+                'description': 'Successful data retrieval response with structured RAG data',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'status': {
+                                    'type': 'string',
+                                    'enum': ['success', 'failure'],
+                                    'description': 'Query execution status',
                                 },
-                                "message": {
-                                    "type": "string",
-                                    "description": "Status message describing the result",
+                                'message': {
+                                    'type': 'string',
+                                    'description': 'Status message describing the result',
                                 },
-                                "data": {
-                                    "type": "object",
-                                    "properties": {
-                                        "entities": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "entity_name": {"type": "string"},
-                                                    "entity_type": {"type": "string"},
-                                                    "description": {"type": "string"},
-                                                    "source_id": {"type": "string"},
-                                                    "file_path": {"type": "string"},
-                                                    "reference_id": {"type": "string"},
+                                'data': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'entities': {
+                                            'type': 'array',
+                                            'items': {
+                                                'type': 'object',
+                                                'properties': {
+                                                    'entity_name': {'type': 'string'},
+                                                    'entity_type': {'type': 'string'},
+                                                    'description': {'type': 'string'},
+                                                    'source_id': {'type': 'string'},
+                                                    'file_path': {'type': 'string'},
+                                                    'reference_id': {'type': 'string'},
                                                 },
                                             },
-                                            "description": "Retrieved entities from knowledge graph",
+                                            'description': 'Retrieved entities from knowledge graph',
                                         },
-                                        "relationships": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "src_id": {"type": "string"},
-                                                    "tgt_id": {"type": "string"},
-                                                    "description": {"type": "string"},
-                                                    "keywords": {"type": "string"},
-                                                    "weight": {"type": "number"},
-                                                    "source_id": {"type": "string"},
-                                                    "file_path": {"type": "string"},
-                                                    "reference_id": {"type": "string"},
+                                        'relationships': {
+                                            'type': 'array',
+                                            'items': {
+                                                'type': 'object',
+                                                'properties': {
+                                                    'src_id': {'type': 'string'},
+                                                    'tgt_id': {'type': 'string'},
+                                                    'description': {'type': 'string'},
+                                                    'keywords': {'type': 'string'},
+                                                    'weight': {'type': 'number'},
+                                                    'source_id': {'type': 'string'},
+                                                    'file_path': {'type': 'string'},
+                                                    'reference_id': {'type': 'string'},
                                                 },
                                             },
-                                            "description": "Retrieved relationships from knowledge graph",
+                                            'description': 'Retrieved relationships from knowledge graph',
                                         },
-                                        "chunks": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "content": {"type": "string"},
-                                                    "file_path": {"type": "string"},
-                                                    "chunk_id": {"type": "string"},
-                                                    "reference_id": {"type": "string"},
+                                        'chunks': {
+                                            'type': 'array',
+                                            'items': {
+                                                'type': 'object',
+                                                'properties': {
+                                                    'content': {'type': 'string'},
+                                                    'file_path': {'type': 'string'},
+                                                    'chunk_id': {'type': 'string'},
+                                                    'reference_id': {'type': 'string'},
                                                 },
                                             },
-                                            "description": "Retrieved text chunks from vector database",
+                                            'description': 'Retrieved text chunks from vector database',
                                         },
-                                        "references": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "reference_id": {"type": "string"},
-                                                    "file_path": {"type": "string"},
+                                        'references': {
+                                            'type': 'array',
+                                            'items': {
+                                                'type': 'object',
+                                                'properties': {
+                                                    'reference_id': {'type': 'string'},
+                                                    'file_path': {'type': 'string'},
                                                 },
                                             },
-                                            "description": "Reference list for citation purposes",
+                                            'description': 'Reference list for citation purposes',
                                         },
                                     },
-                                    "description": "Structured retrieval data containing entities, relationships, chunks, and references",
+                                    'description': 'Structured retrieval data containing entities, relationships, chunks, and references',
                                 },
-                                "metadata": {
-                                    "type": "object",
-                                    "properties": {
-                                        "query_mode": {"type": "string"},
-                                        "keywords": {
-                                            "type": "object",
-                                            "properties": {
-                                                "high_level": {
-                                                    "type": "array",
-                                                    "items": {"type": "string"},
+                                'metadata': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'query_mode': {'type': 'string'},
+                                        'keywords': {
+                                            'type': 'object',
+                                            'properties': {
+                                                'high_level': {
+                                                    'type': 'array',
+                                                    'items': {'type': 'string'},
                                                 },
-                                                "low_level": {
-                                                    "type": "array",
-                                                    "items": {"type": "string"},
+                                                'low_level': {
+                                                    'type': 'array',
+                                                    'items': {'type': 'string'},
                                                 },
                                             },
                                         },
-                                        "processing_info": {
-                                            "type": "object",
-                                            "properties": {
-                                                "total_entities_found": {
-                                                    "type": "integer"
-                                                },
-                                                "total_relations_found": {
-                                                    "type": "integer"
-                                                },
-                                                "entities_after_truncation": {
-                                                    "type": "integer"
-                                                },
-                                                "relations_after_truncation": {
-                                                    "type": "integer"
-                                                },
-                                                "final_chunks_count": {
-                                                    "type": "integer"
-                                                },
+                                        'processing_info': {
+                                            'type': 'object',
+                                            'properties': {
+                                                'total_entities_found': {'type': 'integer'},
+                                                'total_relations_found': {'type': 'integer'},
+                                                'entities_after_truncation': {'type': 'integer'},
+                                                'relations_after_truncation': {'type': 'integer'},
+                                                'final_chunks_count': {'type': 'integer'},
                                             },
                                         },
                                     },
-                                    "description": "Query metadata including mode, keywords, and processing information",
+                                    'description': 'Query metadata including mode, keywords, and processing information',
                                 },
                             },
-                            "required": ["status", "message", "data", "metadata"],
+                            'required': ['status', 'message', 'data', 'metadata'],
                         },
-                        "examples": {
-                            "successful_local_mode": {
-                                "summary": "Local mode data retrieval",
-                                "description": "Example of structured data from local mode query focusing on specific entities",
-                                "value": {
-                                    "status": "success",
-                                    "message": "Query executed successfully",
-                                    "data": {
-                                        "entities": [
+                        'examples': {
+                            'successful_local_mode': {
+                                'summary': 'Local mode data retrieval',
+                                'description': 'Example of structured data from local mode query focusing on specific entities',
+                                'value': {
+                                    'status': 'success',
+                                    'message': 'Query executed successfully',
+                                    'data': {
+                                        'entities': [
                                             {
-                                                "entity_name": "Neural Networks",
-                                                "entity_type": "CONCEPT",
-                                                "description": "Computational models inspired by biological neural networks",
-                                                "source_id": "chunk-123",
-                                                "file_path": "/documents/ai_basics.pdf",
-                                                "reference_id": "1",
+                                                'entity_name': 'Neural Networks',
+                                                'entity_type': 'CONCEPT',
+                                                'description': 'Computational models inspired by biological neural networks',
+                                                'source_id': 'chunk-123',
+                                                'file_path': '/documents/ai_basics.pdf',
+                                                'reference_id': '1',
                                             }
                                         ],
-                                        "relationships": [
+                                        'relationships': [
                                             {
-                                                "src_id": "Neural Networks",
-                                                "tgt_id": "Machine Learning",
-                                                "description": "Neural networks are a subset of machine learning algorithms",
-                                                "keywords": "subset, algorithm, learning",
-                                                "weight": 0.85,
-                                                "source_id": "chunk-123",
-                                                "file_path": "/documents/ai_basics.pdf",
-                                                "reference_id": "1",
+                                                'src_id': 'Neural Networks',
+                                                'tgt_id': 'Machine Learning',
+                                                'description': 'Neural networks are a subset of machine learning algorithms',
+                                                'keywords': 'subset, algorithm, learning',
+                                                'weight': 0.85,
+                                                'source_id': 'chunk-123',
+                                                'file_path': '/documents/ai_basics.pdf',
+                                                'reference_id': '1',
                                             }
                                         ],
-                                        "chunks": [
+                                        'chunks': [
                                             {
-                                                "content": "Neural networks are computational models that mimic the way biological neural networks work...",
-                                                "file_path": "/documents/ai_basics.pdf",
-                                                "chunk_id": "chunk-123",
-                                                "reference_id": "1",
+                                                'content': 'Neural networks are computational models that mimic the way biological neural networks work...',
+                                                'file_path': '/documents/ai_basics.pdf',
+                                                'chunk_id': 'chunk-123',
+                                                'reference_id': '1',
                                             }
                                         ],
-                                        "references": [
+                                        'references': [
                                             {
-                                                "reference_id": "1",
-                                                "file_path": "/documents/ai_basics.pdf",
+                                                'reference_id': '1',
+                                                'file_path': '/documents/ai_basics.pdf',
                                             }
                                         ],
                                     },
-                                    "metadata": {
-                                        "query_mode": "local",
-                                        "keywords": {
-                                            "high_level": ["neural", "networks"],
-                                            "low_level": [
-                                                "computation",
-                                                "model",
-                                                "algorithm",
+                                    'metadata': {
+                                        'query_mode': 'local',
+                                        'keywords': {
+                                            'high_level': ['neural', 'networks'],
+                                            'low_level': [
+                                                'computation',
+                                                'model',
+                                                'algorithm',
                                             ],
                                         },
-                                        "processing_info": {
-                                            "total_entities_found": 5,
-                                            "total_relations_found": 3,
-                                            "entities_after_truncation": 1,
-                                            "relations_after_truncation": 1,
-                                            "final_chunks_count": 1,
+                                        'processing_info': {
+                                            'total_entities_found': 5,
+                                            'total_relations_found': 3,
+                                            'entities_after_truncation': 1,
+                                            'relations_after_truncation': 1,
+                                            'final_chunks_count': 1,
                                         },
                                     },
                                 },
                             },
-                            "global_mode": {
-                                "summary": "Global mode data retrieval",
-                                "description": "Example of structured data from global mode query analyzing broader patterns",
-                                "value": {
-                                    "status": "success",
-                                    "message": "Query executed successfully",
-                                    "data": {
-                                        "entities": [],
-                                        "relationships": [
+                            'global_mode': {
+                                'summary': 'Global mode data retrieval',
+                                'description': 'Example of structured data from global mode query analyzing broader patterns',
+                                'value': {
+                                    'status': 'success',
+                                    'message': 'Query executed successfully',
+                                    'data': {
+                                        'entities': [],
+                                        'relationships': [
                                             {
-                                                "src_id": "Artificial Intelligence",
-                                                "tgt_id": "Machine Learning",
-                                                "description": "AI encompasses machine learning as a core component",
-                                                "keywords": "encompasses, component, field",
-                                                "weight": 0.92,
-                                                "source_id": "chunk-456",
-                                                "file_path": "/documents/ai_overview.pdf",
-                                                "reference_id": "2",
+                                                'src_id': 'Artificial Intelligence',
+                                                'tgt_id': 'Machine Learning',
+                                                'description': 'AI encompasses machine learning as a core component',
+                                                'keywords': 'encompasses, component, field',
+                                                'weight': 0.92,
+                                                'source_id': 'chunk-456',
+                                                'file_path': '/documents/ai_overview.pdf',
+                                                'reference_id': '2',
                                             }
                                         ],
-                                        "chunks": [],
-                                        "references": [
+                                        'chunks': [],
+                                        'references': [
                                             {
-                                                "reference_id": "2",
-                                                "file_path": "/documents/ai_overview.pdf",
+                                                'reference_id': '2',
+                                                'file_path': '/documents/ai_overview.pdf',
                                             }
                                         ],
                                     },
-                                    "metadata": {
-                                        "query_mode": "global",
-                                        "keywords": {
-                                            "high_level": [
-                                                "artificial",
-                                                "intelligence",
-                                                "overview",
+                                    'metadata': {
+                                        'query_mode': 'global',
+                                        'keywords': {
+                                            'high_level': [
+                                                'artificial',
+                                                'intelligence',
+                                                'overview',
                                             ],
-                                            "low_level": [],
+                                            'low_level': [],
                                         },
                                     },
                                 },
                             },
-                            "naive_mode": {
-                                "summary": "Naive mode data retrieval",
-                                "description": "Example of structured data from naive mode using only vector search",
-                                "value": {
-                                    "status": "success",
-                                    "message": "Query executed successfully",
-                                    "data": {
-                                        "entities": [],
-                                        "relationships": [],
-                                        "chunks": [
+                            'naive_mode': {
+                                'summary': 'Naive mode data retrieval',
+                                'description': 'Example of structured data from naive mode using only vector search',
+                                'value': {
+                                    'status': 'success',
+                                    'message': 'Query executed successfully',
+                                    'data': {
+                                        'entities': [],
+                                        'relationships': [],
+                                        'chunks': [
                                             {
-                                                "content": "Deep learning is a subset of machine learning that uses neural networks with multiple layers...",
-                                                "file_path": "/documents/deep_learning.pdf",
-                                                "chunk_id": "chunk-789",
-                                                "reference_id": "3",
+                                                'content': 'Deep learning is a subset of machine learning that uses neural networks with multiple layers...',
+                                                'file_path': '/documents/deep_learning.pdf',
+                                                'chunk_id': 'chunk-789',
+                                                'reference_id': '3',
                                             }
                                         ],
-                                        "references": [
+                                        'references': [
                                             {
-                                                "reference_id": "3",
-                                                "file_path": "/documents/deep_learning.pdf",
+                                                'reference_id': '3',
+                                                'file_path': '/documents/deep_learning.pdf',
                                             }
                                         ],
                                     },
-                                    "metadata": {
-                                        "query_mode": "naive",
-                                        "keywords": {"high_level": [], "low_level": []},
+                                    'metadata': {
+                                        'query_mode': 'naive',
+                                        'keywords': {'high_level': [], 'low_level': []},
                                     },
                                 },
                             },
@@ -1233,30 +1212,26 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
                 },
             },
             400: {
-                "description": "Bad Request - Invalid input parameters",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                'description': 'Bad Request - Invalid input parameters',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {'detail': {'type': 'string'}},
                         },
-                        "example": {
-                            "detail": "Query text must be at least 3 characters long"
-                        },
+                        'example': {'detail': 'Query text must be at least 3 characters long'},
                     }
                 },
             },
             500: {
-                "description": "Internal Server Error - Data retrieval failed",
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                'description': 'Internal Server Error - Data retrieval failed',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {'detail': {'type': 'string'}},
                         },
-                        "example": {
-                            "detail": "Failed to retrieve data: Knowledge graph unavailable"
-                        },
+                        'example': {'detail': 'Failed to retrieve data: Knowledge graph unavailable'},
                     }
                 },
             },
@@ -1375,12 +1350,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = DEFAULT
             else:
                 # Handle unexpected response format
                 return QueryDataResponse(
-                    status="failure",
-                    message="Invalid response type",
+                    status='failure',
+                    message='Invalid response type',
                     data={},
+                    metadata={},
                 )
         except Exception as e:
-            logger.error(f"Error processing data query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f'Error processing data query: {e!s}', exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     return router

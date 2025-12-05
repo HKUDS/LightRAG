@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-def download_tiktoken_cache(cache_dir: str = None, models: list = None):
+def download_tiktoken_cache(cache_dir: str | None = None, models: list | None = None):
     """Download tiktoken models to local cache
 
     Args:
@@ -23,76 +23,74 @@ def download_tiktoken_cache(cache_dir: str = None, models: list = None):
     try:
         import tiktoken
     except ImportError:
-        print("Error: tiktoken is not installed.")
-        print("Install with: pip install tiktoken")
+        print('Error: tiktoken is not installed.')
+        print('Install with: pip install tiktoken')
         sys.exit(1)
 
     # Set cache directory if provided
     if cache_dir:
         cache_dir = os.path.abspath(cache_dir)
-        os.environ["TIKTOKEN_CACHE_DIR"] = cache_dir
+        os.environ['TIKTOKEN_CACHE_DIR'] = cache_dir
         cache_path = Path(cache_dir)
         cache_path.mkdir(parents=True, exist_ok=True)
-        print(f"Using cache directory: {cache_dir}")
+        print(f'Using cache directory: {cache_dir}')
     else:
-        cache_dir = os.environ.get(
-            "TIKTOKEN_CACHE_DIR", str(Path.home() / ".tiktoken_cache")
-        )
-        print(f"Using default cache directory: {cache_dir}")
+        cache_dir = os.environ.get('TIKTOKEN_CACHE_DIR', str(Path.home() / '.tiktoken_cache'))
+        print(f'Using default cache directory: {cache_dir}')
 
     # Common models used by LightRAG and OpenAI
     if models is None:
         models = [
-            "gpt-4o-mini",  # Default model for LightRAG
-            "gpt-4o",  # GPT-4 Omni
-            "gpt-4",  # GPT-4
-            "gpt-3.5-turbo",  # GPT-3.5 Turbo
-            "text-embedding-ada-002",  # Legacy embedding model
-            "text-embedding-3-small",  # Small embedding model
-            "text-embedding-3-large",  # Large embedding model
+            'gpt-4o-mini',  # Default model for LightRAG
+            'gpt-4o',  # GPT-4 Omni
+            'gpt-4',  # GPT-4
+            'gpt-3.5-turbo',  # GPT-3.5 Turbo
+            'text-embedding-ada-002',  # Legacy embedding model
+            'text-embedding-3-small',  # Small embedding model
+            'text-embedding-3-large',  # Large embedding model
         ]
 
-    print(f"\nDownloading {len(models)} tiktoken models...")
-    print("=" * 70)
+    print(f'\nDownloading {len(models)} tiktoken models...')
+    print('=' * 70)
 
     success_count = 0
     failed_models = []
 
     for i, model in enumerate(models, 1):
         try:
-            print(f"[{i}/{len(models)}] Downloading {model}...", end=" ", flush=True)
+            print(f'[{i}/{len(models)}] Downloading {model}...', end=' ', flush=True)
             encoding = tiktoken.encoding_for_model(model)
             # Trigger download by encoding a test string
-            encoding.encode("test")
-            print("✓ Done")
+            encoding.encode('test')
+            print('✓ Done')
             success_count += 1
         except KeyError as e:
             print(f"✗ Failed: Unknown model '{model}'")
             failed_models.append((model, str(e)))
         except Exception as e:
-            print(f"✗ Failed: {e}")
+            print(f'✗ Failed: {e}')
             failed_models.append((model, str(e)))
 
-    print("=" * 70)
-    print(f"\n✓ Successfully cached {success_count}/{len(models)} models")
+    print('=' * 70)
+    print(f'\n✓ Successfully cached {success_count}/{len(models)} models')
 
     if failed_models:
-        print(f"\n✗ Failed to download {len(failed_models)} models:")
+        print(f'\n✗ Failed to download {len(failed_models)} models:')
         for model, error in failed_models:
-            print(f"  - {model}: {error}")
+            print(f'  - {model}: {error}')
 
-    print(f"\nCache location: {cache_dir}")
-    print("\nFor offline deployment:")
-    print("  1. Copy directory to offline server:")
-    print(f"     tar -czf tiktoken_cache.tar.gz {cache_dir}")
-    print("     scp tiktoken_cache.tar.gz user@offline-server:/path/to/")
-    print("")
-    print("  2. On offline server, extract and set environment variable:")
-    print("     tar -xzf tiktoken_cache.tar.gz")
-    print("     export TIKTOKEN_CACHE_DIR=/path/to/tiktoken_cache")
-    print("")
-    print("  3. Or copy to default location:")
-    print(f"     cp -r {cache_dir} ~/.tiktoken_cache/")
+    print(f'\nCache location: {cache_dir}')
+    print('\nFor offline deployment:')
+    print('  1. Copy directory to offline server:')
+    print(f'     tar -czf tiktoken_cache.tar.gz {cache_dir}')
+    print('     scp tiktoken_cache.tar.gz user@offline-server:/path/to/')
+    print('')
+    print('  2. On offline server, extract and set environment variable:')
+    print('     tar -xzf tiktoken_cache.tar.gz')
+    print('     export TIKTOKEN_CACHE_DIR=/path/to/tiktoken_cache')
+    print('')
+    print('  3. Or copy to default location:')
+    print(f'     cp -r {cache_dir} ~/.tiktoken_cache/')
 
     return success_count, failed_models
 
@@ -102,8 +100,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="lightrag-download-cache",
-        description="Download cache files for LightRAG offline deployment",
+        prog='lightrag-download-cache',
+        description='Download cache files for LightRAG offline deployment',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -121,59 +119,53 @@ For more information, visit: https://github.com/HKUDS/LightRAG
     )
 
     parser.add_argument(
-        "--cache-dir",
-        help="Cache directory path (default: ~/.tiktoken_cache)",
+        '--cache-dir',
+        help='Cache directory path (default: ~/.tiktoken_cache)',
         default=None,
     )
     parser.add_argument(
-        "--models",
-        nargs="+",
-        help="Specific models to download (default: common models)",
+        '--models',
+        nargs='+',
+        help='Specific models to download (default: common models)',
         default=None,
     )
-    parser.add_argument(
-        "--version", action="version", version="%(prog)s (LightRAG cache downloader)"
-    )
+    parser.add_argument('--version', action='version', version='%(prog)s (LightRAG cache downloader)')
 
     args = parser.parse_args()
 
-    print("=" * 70)
-    print("LightRAG Offline Cache Downloader")
-    print("=" * 70)
+    print('=' * 70)
+    print('LightRAG Offline Cache Downloader')
+    print('=' * 70)
 
     try:
-        success_count, failed_models = download_tiktoken_cache(
-            args.cache_dir, args.models
-        )
+        success_count, failed_models = download_tiktoken_cache(args.cache_dir, args.models)
 
-        print("\n" + "=" * 70)
-        print("Download Complete")
-        print("=" * 70)
+        print('\n' + '=' * 70)
+        print('Download Complete')
+        print('=' * 70)
 
         # Exit with error code if all downloads failed
         if success_count == 0:
-            print("\n✗ All downloads failed. Please check your internet connection.")
+            print('\n✗ All downloads failed. Please check your internet connection.')
             sys.exit(1)
         # Exit with warning code if some downloads failed
         elif failed_models:
-            print(
-                f"\n⚠ Some downloads failed ({len(failed_models)}/{success_count + len(failed_models)})"
-            )
+            print(f'\n⚠ Some downloads failed ({len(failed_models)}/{success_count + len(failed_models)})')
             sys.exit(2)
         else:
-            print("\n✓ All cache files downloaded successfully!")
+            print('\n✓ All cache files downloaded successfully!')
             sys.exit(0)
 
     except KeyboardInterrupt:
-        print("\n\n✗ Download interrupted by user")
+        print('\n\n✗ Download interrupted by user')
         sys.exit(130)
     except Exception as e:
-        print(f"\n\n✗ Error: {e}")
+        print(f'\n\n✗ Error: {e}')
         import traceback
 
         traceback.print_exc()
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -1,14 +1,14 @@
 from __future__ import annotations
-from typing import Any
 
+from typing import Any
 
 PROMPTS: dict[str, Any] = {}
 
 # All delimiters must be formatted as "<|TOKEN|>" style markers (e.g., "<|#|>" or "<|COMPLETE|>")
-PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
-PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
+PROMPTS['DEFAULT_TUPLE_DELIMITER'] = '<|#|>'
+PROMPTS['DEFAULT_COMPLETION_DELIMITER'] = '<|COMPLETE|>'
 
-PROMPTS["entity_extraction_system_prompt"] = """---Role---
+PROMPTS['entity_extraction_system_prompt'] = """---Role---
 You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
 
 ---Instructions---
@@ -23,11 +23,12 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 2.  **Relationship Extraction & Output:**
     *   **Identification:** Identify meaningful relationships between previously extracted entities. Include:
-        *   **Direct relationships:** Explicitly stated interactions or connections.
-        *   **Categorical relationships:** Entities belonging to the same category, domain, or class.
-        *   **Thematic relationships:** Entities that share a common theme, context, or subject matter.
-        *   **Implicit relationships:** Connections inferable from context (e.g., co-occurrence, causation, comparison).
-        *   **Hierarchical relationships:** Part-of, member-of, or type-of connections.
+        *   **Direct relationships:** Explicitly stated interactions, actions, or connections.
+        *   **Comparative relationships:** When entities are explicitly grouped, ranked, or compared (e.g., 'Brazil has 5 wins, Germany has 4' establishes a comparison).
+        *   **Hierarchical relationships:** Clear part-of, member-of, or type-of connections.
+        *   **Causal relationships:** Explicit cause-effect connections.
+        *   **Categorical relationships:** When entities share explicit group membership (e.g., 'World Cup winners include Brazil, Germany, and Italy').
+        *   **AVOID** purely speculative or inferred connections not supported by text structure.
     *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
         *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
     *   **Relationship Details:** For each binary relationship, extract the following fields:
@@ -37,10 +38,11 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
     *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
-    *   **Relationship Density Requirement:** Strive to extract at least one relationship for EVERY entity. Entities without relationships (orphan nodes) significantly reduce knowledge graph utility. If an entity appears isolated:
-        *   Look for implicit categorical or thematic connections to other entities.
-        *   Consider whether the entity belongs to a broader group or domain represented by other entities.
-        *   Extract comparative relationships if the entity is mentioned alongside others.
+    *   **Relationship Quality Requirement:** Extract relationships that are supported by text structure. Balance precision with graph connectivity:
+        *   Primary: Direct, causal, and hierarchical relationships with explicit textual support.
+        *   Secondary: Comparative and categorical relationships when entities are grouped or ranked together.
+        *   An orphan entity is acceptable only if the text truly provides no structural grouping.
+        *   Do NOT invent speculative connections, but DO capture explicit groupings and comparisons.
     *   **Attribution Verification:** When extracting relationships, ensure the source and target entities are correctly identified from the text. Do not conflate similar entities or transfer attributes from one entity to another.
 
 3.  **Delimiter Usage Protocol:**
@@ -78,7 +80,7 @@ Text:
 ```
 """
 
-PROMPTS["entity_extraction_user_prompt"] = """---Task---
+PROMPTS['entity_extraction_user_prompt'] = """---Task---
 Extract entities and relationships from the input text to be processed.
 
 ---Instructions---
@@ -90,15 +92,18 @@ Extract entities and relationships from the input text to be processed.
 <Output>
 """
 
-PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
+PROMPTS['entity_continue_extraction_user_prompt'] = """---Task---
 Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text. Pay special attention to **orphan entities** (entities with no relationships).
 
 ---Instructions---
 1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
-2.  **Orphan Entity Resolution (CRITICAL):**
-    *   Review the entities from the last extraction. For any entity that has NO relationships, you MUST attempt to find connections.
-    *   Look for implicit, categorical, or thematic relationships that connect isolated entities to others.
-    *   If an entity is truly unconnected to anything in the text, consider whether it should have been extracted at all.
+2.  **Graph Connectivity Check:**
+    *   Review extracted entities. For any without relationships, check if they appear in:
+        - Groupings or lists (categorical relationship candidates)
+        - Comparisons or rankings (comparative relationship candidates)
+        - Shared contexts with other entities (domain relationship candidates)
+    *   Add these relationships if supported by text structure.
+    *   An isolated entity is acceptable only if truly unconnected in the text.
 3.  **Focus on Corrections/Additions:**
     *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
     *   If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
@@ -112,7 +117,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 <Output>
 """
 
-PROMPTS["entity_extraction_examples"] = [
+PROMPTS['entity_extraction_examples'] = [
     """<Input Text>
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
@@ -170,26 +175,40 @@ relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Mar
 """,
     """<Input Text>
 ```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
+The patient presented with symptoms consistent with Type 2 diabetes, including elevated blood glucose levels and increased thirst. Dr. Martinez recommended starting metformin therapy alongside dietary modifications.
 ```
 
 <Output>
-entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
-entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
-entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
-entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
-entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
-entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
-relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
+entity{tuple_delimiter}Patient{tuple_delimiter}person{tuple_delimiter}The patient presented with symptoms of Type 2 diabetes including elevated blood glucose and increased thirst.
+entity{tuple_delimiter}Type 2 Diabetes{tuple_delimiter}concept{tuple_delimiter}Type 2 diabetes is a metabolic condition characterized by elevated blood glucose levels.
+entity{tuple_delimiter}Dr. Martinez{tuple_delimiter}person{tuple_delimiter}Dr. Martinez is the physician who recommended treatment for the patient.
+entity{tuple_delimiter}Metformin{tuple_delimiter}product{tuple_delimiter}Metformin is a medication prescribed for managing Type 2 diabetes.
+entity{tuple_delimiter}Dietary Modifications{tuple_delimiter}method{tuple_delimiter}Dietary modifications are lifestyle changes recommended alongside medication.
+relation{tuple_delimiter}Patient{tuple_delimiter}Type 2 Diabetes{tuple_delimiter}diagnosis, medical condition{tuple_delimiter}The patient was diagnosed with symptoms consistent with Type 2 diabetes.
+relation{tuple_delimiter}Dr. Martinez{tuple_delimiter}Patient{tuple_delimiter}treatment, medical care{tuple_delimiter}Dr. Martinez provided medical recommendations to the patient.
+relation{tuple_delimiter}Metformin{tuple_delimiter}Type 2 Diabetes{tuple_delimiter}treatment, medication{tuple_delimiter}Metformin is prescribed as a treatment for Type 2 diabetes.
+{completion_delimiter}
+
+""",
+    """<Input Text>
+```
+The merger between Acme Corp and Beta Industries requires approval from the Federal Trade Commission. Legal counsel advised that the deal may face antitrust scrutiny due to market concentration concerns.
+```
+
+<Output>
+entity{tuple_delimiter}Acme Corp{tuple_delimiter}organization{tuple_delimiter}Acme Corp is a company involved in a proposed merger with Beta Industries.
+entity{tuple_delimiter}Beta Industries{tuple_delimiter}organization{tuple_delimiter}Beta Industries is a company involved in a proposed merger with Acme Corp.
+entity{tuple_delimiter}Federal Trade Commission{tuple_delimiter}organization{tuple_delimiter}The Federal Trade Commission is the regulatory body that must approve the merger.
+entity{tuple_delimiter}Antitrust Scrutiny{tuple_delimiter}concept{tuple_delimiter}Antitrust scrutiny refers to regulatory review for market concentration concerns.
+relation{tuple_delimiter}Acme Corp{tuple_delimiter}Beta Industries{tuple_delimiter}merger, business deal{tuple_delimiter}Acme Corp and Beta Industries are parties to a proposed merger.
+relation{tuple_delimiter}Federal Trade Commission{tuple_delimiter}Acme Corp{tuple_delimiter}regulatory approval, oversight{tuple_delimiter}The FTC must approve the merger involving Acme Corp.
+relation{tuple_delimiter}Antitrust Scrutiny{tuple_delimiter}Federal Trade Commission{tuple_delimiter}regulatory process, legal review{tuple_delimiter}Antitrust scrutiny is conducted by the FTC to assess market impact.
 {completion_delimiter}
 
 """,
 ]
 
-PROMPTS["summarize_entity_descriptions"] = """---Role---
+PROMPTS['summarize_entity_descriptions'] = """---Role---
 You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
 
 ---Task---
@@ -219,13 +238,15 @@ Description List:
 ---Output---
 """
 
-PROMPTS["fail_response"] = (
-    "Sorry, I'm not able to provide an answer to that question.[no-context]"
-)
+PROMPTS['fail_response'] = "Sorry, I'm not able to provide an answer to that question.[no-context]"
 
 # Default RAG response prompt - cite-ready (no LLM-generated citations)
 # Citations are added by post-processing. This gives cleaner, more accurate results.
-PROMPTS["rag_response"] = """You're helping someone understand a topic. Write naturally, like explaining to a curious friend.
+PROMPTS[
+    'rag_response'
+] = """You're helping someone understand a topic. Write naturally, like explaining to a curious friend.
+
+Focus on directly answering the question asked. Include only information relevant to the query.
 
 STYLE RULES:
 - Flowing paragraphs, NOT bullets or numbered lists
@@ -242,7 +263,8 @@ BAD EXAMPLE:
 - Types: supervised, unsupervised
 - Deep learning uses neural networks"
 
-Answer using ONLY the context below. Do NOT include [1], [2] citations - they're added automatically.
+Answer using ONLY the context below. Prefer information from the context over general knowledge.
+Do NOT include [1], [2] citations - they're added automatically.
 
 {user_prompt}
 
@@ -251,7 +273,7 @@ Context:
 """
 
 # Strict mode suffix - append when response_type="strict"
-PROMPTS["rag_response_strict_suffix"] = """
+PROMPTS['rag_response_strict_suffix'] = """
 STRICT GROUNDING:
 - NEVER state specific numbers/dates unless they appear EXACTLY in context
 - If information isn't in context, say "not specified in available information"
@@ -259,7 +281,7 @@ STRICT GROUNDING:
 """
 
 # Default naive RAG response prompt - cite-ready (no LLM-generated citations)
-PROMPTS["naive_rag_response"] = """---Role---
+PROMPTS['naive_rag_response'] = """---Role---
 
 You are an expert AI assistant synthesizing information from a knowledge base.
 
@@ -294,7 +316,7 @@ Generate a comprehensive, well-structured answer to the user query using ONLY in
 {content_data}
 """
 
-PROMPTS["kg_query_context"] = """
+PROMPTS['kg_query_context'] = """
 ## Entity Summaries (use for definitions and general facts)
 
 ```json
@@ -318,7 +340,7 @@ PROMPTS["kg_query_context"] = """
 
 """
 
-PROMPTS["naive_query_context"] = """
+PROMPTS['naive_query_context'] = """
 Document Chunks (Each entry includes a reference_id that refers to the `Reference Document List`):
 
 ```json
@@ -333,7 +355,7 @@ Reference Document List (Each entry starts with a [reference_id] that correspond
 
 """
 
-PROMPTS["keywords_extraction"] = """---Role---
+PROMPTS['keywords_extraction'] = """---Role---
 You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
 
 ---Goal---
@@ -356,7 +378,7 @@ User Query: {query}
 ---Output---
 Output:"""
 
-PROMPTS["keywords_extraction_examples"] = [
+PROMPTS['keywords_extraction_examples'] = [
     """Example 1:
 
 Query: "How does international trade influence global economic stability?"
@@ -392,7 +414,7 @@ Output:
 """,
 ]
 
-PROMPTS["orphan_connection_validation"] = """---Role---
+PROMPTS['orphan_connection_validation'] = """---Role---
 You are a Knowledge Graph Quality Specialist. Your task is to evaluate whether a proposed relationship between two entities is meaningful and should be added to a knowledge graph.
 
 ---Context---

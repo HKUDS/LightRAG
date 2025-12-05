@@ -23,6 +23,7 @@ from typing import Any
 @dataclass
 class MetricComparison:
     """Comparison of a single metric between two runs."""
+
     metric_name: str
     baseline_value: float
     experiment_value: float
@@ -58,15 +59,15 @@ def compare_metrics(baseline: dict, experiment: dict) -> list[MetricComparison]:
     """
     comparisons = []
 
-    baseline_avg = baseline.get("average_metrics", {})
-    experiment_avg = experiment.get("average_metrics", {})
+    baseline_avg = baseline.get('average_metrics', {})
+    experiment_avg = experiment.get('average_metrics', {})
 
     metrics_to_compare = [
-        ("faithfulness", "Faithfulness"),
-        ("answer_relevance", "Answer Relevance"),
-        ("context_recall", "Context Recall"),
-        ("context_precision", "Context Precision"),
-        ("ragas_score", "RAGAS Score"),
+        ('faithfulness', 'Faithfulness'),
+        ('answer_relevance', 'Answer Relevance'),
+        ('context_recall', 'Context Recall'),
+        ('context_precision', 'Context Precision'),
+        ('ragas_score', 'RAGAS Score'),
     ]
 
     for metric_key, metric_name in metrics_to_compare:
@@ -76,15 +77,17 @@ def compare_metrics(baseline: dict, experiment: dict) -> list[MetricComparison]:
         abs_change = e_val - b_val
         rel_change = (abs_change / b_val * 100) if b_val > 0 else 0
 
-        comparisons.append(MetricComparison(
-            metric_name=metric_name,
-            baseline_value=b_val,
-            experiment_value=e_val,
-            absolute_change=abs_change,
-            relative_change_percent=rel_change,
-            improved=abs_change > 0,
-            significant=abs(rel_change) > 5,  # > 5% is significant
-        ))
+        comparisons.append(
+            MetricComparison(
+                metric_name=metric_name,
+                baseline_value=b_val,
+                experiment_value=e_val,
+                absolute_change=abs_change,
+                relative_change_percent=rel_change,
+                improved=abs_change > 0,
+                significant=abs(rel_change) > 5,  # > 5% is significant
+            )
+        )
 
     return comparisons
 
@@ -106,8 +109,8 @@ def analyze_results(baseline_path: Path, experiment_path: Path) -> dict:
     with open(experiment_path) as f:
         experiment = json.load(f)
 
-    baseline_stats = baseline.get("benchmark_stats", {})
-    experiment_stats = experiment.get("benchmark_stats", {})
+    baseline_stats = baseline.get('benchmark_stats', {})
+    experiment_stats = experiment.get('benchmark_stats', {})
 
     # Compare metrics
     comparisons = compare_metrics(baseline_stats, experiment_stats)
@@ -119,139 +122,144 @@ def analyze_results(baseline_path: Path, experiment_path: Path) -> dict:
     significant_regressions = sum(1 for c in comparisons if not c.improved and c.significant)
 
     # Determine verdict
-    ragas_comparison = next((c for c in comparisons if c.metric_name == "RAGAS Score"), None)
+    ragas_comparison = next((c for c in comparisons if c.metric_name == 'RAGAS Score'), None)
 
     if ragas_comparison:
         if ragas_comparison.improved and ragas_comparison.significant:
-            verdict = "SIGNIFICANT_IMPROVEMENT"
-            verdict_description = f"RAGAS Score improved by {ragas_comparison.relative_change_percent:.1f}%"
+            verdict = 'SIGNIFICANT_IMPROVEMENT'
+            verdict_description = f'RAGAS Score improved by {ragas_comparison.relative_change_percent:.1f}%'
         elif ragas_comparison.improved:
-            verdict = "MINOR_IMPROVEMENT"
-            verdict_description = f"RAGAS Score slightly improved by {ragas_comparison.relative_change_percent:.1f}%"
+            verdict = 'MINOR_IMPROVEMENT'
+            verdict_description = f'RAGAS Score slightly improved by {ragas_comparison.relative_change_percent:.1f}%'
         elif ragas_comparison.significant:
-            verdict = "SIGNIFICANT_REGRESSION"
-            verdict_description = f"RAGAS Score regressed by {abs(ragas_comparison.relative_change_percent):.1f}%"
+            verdict = 'SIGNIFICANT_REGRESSION'
+            verdict_description = f'RAGAS Score regressed by {abs(ragas_comparison.relative_change_percent):.1f}%'
         elif ragas_comparison.absolute_change == 0:
-            verdict = "NO_CHANGE"
-            verdict_description = "No measurable difference between runs"
+            verdict = 'NO_CHANGE'
+            verdict_description = 'No measurable difference between runs'
         else:
-            verdict = "MINOR_REGRESSION"
-            verdict_description = f"RAGAS Score slightly regressed by {abs(ragas_comparison.relative_change_percent):.1f}%"
+            verdict = 'MINOR_REGRESSION'
+            verdict_description = (
+                f'RAGAS Score slightly regressed by {abs(ragas_comparison.relative_change_percent):.1f}%'
+            )
     else:
-        verdict = "UNKNOWN"
-        verdict_description = "Could not determine RAGAS score comparison"
+        verdict = 'UNKNOWN'
+        verdict_description = 'Could not determine RAGAS score comparison'
 
     return {
-        "analysis_timestamp": datetime.now().isoformat(),
-        "baseline_file": str(baseline_path),
-        "experiment_file": str(experiment_path),
-        "verdict": verdict,
-        "verdict_description": verdict_description,
-        "summary": {
-            "metrics_improved": improvements,
-            "metrics_regressed": regressions,
-            "significant_improvements": significant_improvements,
-            "significant_regressions": significant_regressions,
+        'analysis_timestamp': datetime.now().isoformat(),
+        'baseline_file': str(baseline_path),
+        'experiment_file': str(experiment_path),
+        'verdict': verdict,
+        'verdict_description': verdict_description,
+        'summary': {
+            'metrics_improved': improvements,
+            'metrics_regressed': regressions,
+            'significant_improvements': significant_improvements,
+            'significant_regressions': significant_regressions,
         },
-        "metrics": [
+        'metrics': [
             {
-                "name": c.metric_name,
-                "baseline": round(c.baseline_value, 4),
-                "experiment": round(c.experiment_value, 4),
-                "change": round(c.absolute_change, 4),
-                "change_percent": round(c.relative_change_percent, 2),
-                "improved": c.improved,
-                "significant": c.significant,
+                'name': c.metric_name,
+                'baseline': round(c.baseline_value, 4),
+                'experiment': round(c.experiment_value, 4),
+                'change': round(c.absolute_change, 4),
+                'change_percent': round(c.relative_change_percent, 2),
+                'improved': c.improved,
+                'significant': c.significant,
             }
             for c in comparisons
         ],
-        "baseline_summary": {
-            "total_tests": baseline_stats.get("total_tests", 0),
-            "successful_tests": baseline_stats.get("successful_tests", 0),
-            "success_rate": baseline_stats.get("success_rate", 0),
+        'baseline_summary': {
+            'total_tests': baseline_stats.get('total_tests', 0),
+            'successful_tests': baseline_stats.get('successful_tests', 0),
+            'success_rate': baseline_stats.get('success_rate', 0),
         },
-        "experiment_summary": {
-            "total_tests": experiment_stats.get("total_tests", 0),
-            "successful_tests": experiment_stats.get("successful_tests", 0),
-            "success_rate": experiment_stats.get("success_rate", 0),
+        'experiment_summary': {
+            'total_tests': experiment_stats.get('total_tests', 0),
+            'successful_tests': experiment_stats.get('successful_tests', 0),
+            'success_rate': experiment_stats.get('success_rate', 0),
         },
     }
 
 
 def print_comparison_report(analysis: dict):
     """Print a formatted comparison report to stdout."""
-    print("=" * 70)
-    print("A/B TEST COMPARISON REPORT")
-    print("=" * 70)
-    print(f"Baseline:    {analysis['baseline_file']}")
-    print(f"Experiment:  {analysis['experiment_file']}")
-    print("-" * 70)
+    print('=' * 70)
+    print('A/B TEST COMPARISON REPORT')
+    print('=' * 70)
+    print(f'Baseline:    {analysis["baseline_file"]}')
+    print(f'Experiment:  {analysis["experiment_file"]}')
+    print('-' * 70)
 
     # Verdict
-    verdict = analysis["verdict"]
+    verdict = analysis['verdict']
     verdict_icon = {
-        "SIGNIFICANT_IMPROVEMENT": "PASS",
-        "MINOR_IMPROVEMENT": "PASS",
-        "NO_CHANGE": "~",
-        "MINOR_REGRESSION": "WARN",
-        "SIGNIFICANT_REGRESSION": "FAIL",
-        "UNKNOWN": "?",
-    }.get(verdict, "?")
+        'SIGNIFICANT_IMPROVEMENT': 'PASS',
+        'MINOR_IMPROVEMENT': 'PASS',
+        'NO_CHANGE': '~',
+        'MINOR_REGRESSION': 'WARN',
+        'SIGNIFICANT_REGRESSION': 'FAIL',
+        'UNKNOWN': '?',
+    }.get(verdict, '?')
 
-    print(f"\n[{verdict_icon}] VERDICT: {verdict}")
-    print(f"    {analysis['verdict_description']}")
+    print(f'\n[{verdict_icon}] VERDICT: {verdict}')
+    print(f'    {analysis["verdict_description"]}')
 
     # Metrics table
-    print("\n" + "-" * 70)
-    print(f"{'Metric':<20} {'Baseline':>10} {'Experiment':>10} {'Change':>10} {'Status':>10}")
-    print("-" * 70)
+    print('\n' + '-' * 70)
+    print(f'{"Metric":<20} {"Baseline":>10} {"Experiment":>10} {"Change":>10} {"Status":>10}')
+    print('-' * 70)
 
-    for metric in analysis["metrics"]:
-        name = metric["name"]
-        baseline = f"{metric['baseline']:.4f}"
-        experiment = f"{metric['experiment']:.4f}"
+    for metric in analysis['metrics']:
+        name = metric['name']
+        baseline = f'{metric["baseline"]:.4f}'
+        experiment = f'{metric["experiment"]:.4f}'
 
-        change = metric["change"]
-        change_pct = metric["change_percent"]
+        change = metric['change']
+        change_pct = metric['change_percent']
         if change > 0:
-            change_str = f"+{change:.4f}"
-            status = f"+{change_pct:.1f}%"
+            change_str = f'+{change:.4f}'
+            status = f'+{change_pct:.1f}%'
         elif change < 0:
-            change_str = f"{change:.4f}"
-            status = f"{change_pct:.1f}%"
+            change_str = f'{change:.4f}'
+            status = f'{change_pct:.1f}%'
         else:
-            change_str = "0.0000"
-            status = "0.0%"
+            change_str = '0.0000'
+            status = '0.0%'
 
-        if metric["significant"]:
-            if metric["improved"]:
-                status = f"[UP] {status}"
-            else:
-                status = f"[DOWN] {status}"
+        if metric['significant']:
+            status = f'[UP] {status}' if metric['improved'] else f'[DOWN] {status}'
         else:
-            status = f"      {status}"
+            status = f'      {status}'
 
-        print(f"{name:<20} {baseline:>10} {experiment:>10} {change_str:>10} {status:>10}")
+        print(f'{name:<20} {baseline:>10} {experiment:>10} {change_str:>10} {status:>10}')
 
-    print("-" * 70)
+    print('-' * 70)
 
     # Summary
-    summary = analysis["summary"]
-    print(f"\nSummary: {summary['metrics_improved']} improved, {summary['metrics_regressed']} regressed")
-    print(f"         {summary['significant_improvements']} significant improvements, {summary['significant_regressions']} significant regressions")
+    summary = analysis['summary']
+    print(f'\nSummary: {summary["metrics_improved"]} improved, {summary["metrics_regressed"]} regressed')
+    print(
+        f'         {summary["significant_improvements"]} significant improvements, {summary["significant_regressions"]} significant regressions'
+    )
 
     # Test counts
-    b_summary = analysis["baseline_summary"]
-    e_summary = analysis["experiment_summary"]
-    print(f"\nBaseline:    {b_summary['successful_tests']}/{b_summary['total_tests']} tests ({b_summary['success_rate']:.1f}% success)")
-    print(f"Experiment:  {e_summary['successful_tests']}/{e_summary['total_tests']} tests ({e_summary['success_rate']:.1f}% success)")
+    b_summary = analysis['baseline_summary']
+    e_summary = analysis['experiment_summary']
+    print(
+        f'\nBaseline:    {b_summary["successful_tests"]}/{b_summary["total_tests"]} tests ({b_summary["success_rate"]:.1f}% success)'
+    )
+    print(
+        f'Experiment:  {e_summary["successful_tests"]}/{e_summary["total_tests"]} tests ({e_summary["success_rate"]:.1f}% success)'
+    )
 
-    print("=" * 70)
+    print('=' * 70)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare RAGAS evaluation results from two runs",
+        description='Compare RAGAS evaluation results from two runs',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -267,23 +275,23 @@ Examples:
     )
 
     parser.add_argument(
-        "baseline",
+        'baseline',
         type=str,
-        help="Path to baseline results JSON file",
+        help='Path to baseline results JSON file',
     )
 
     parser.add_argument(
-        "experiment",
+        'experiment',
         type=str,
-        help="Path to experiment results JSON file",
+        help='Path to experiment results JSON file',
     )
 
     parser.add_argument(
-        "--output",
-        "-o",
+        '--output',
+        '-o',
         type=str,
         default=None,
-        help="Output path for comparison JSON (optional)",
+        help='Output path for comparison JSON (optional)',
     )
 
     args = parser.parse_args()
@@ -293,10 +301,10 @@ Examples:
 
     # Validate files exist
     if not baseline_path.exists():
-        print(f"Error: Baseline file not found: {baseline_path}")
+        print(f'Error: Baseline file not found: {baseline_path}')
         sys.exit(1)
     if not experiment_path.exists():
-        print(f"Error: Experiment file not found: {experiment_path}")
+        print(f'Error: Experiment file not found: {experiment_path}')
         sys.exit(1)
 
     # Run analysis
@@ -308,15 +316,15 @@ Examples:
     # Save to file if requested
     if args.output:
         output_path = Path(args.output)
-        with open(output_path, "w") as f:
+        with open(output_path, 'w') as f:
             json.dump(analysis, f, indent=2)
-        print(f"\nComparison saved to: {output_path}")
+        print(f'\nComparison saved to: {output_path}')
 
     # Exit with status based on verdict
-    if analysis["verdict"] in ("SIGNIFICANT_REGRESSION",):
+    if analysis['verdict'] in ('SIGNIFICANT_REGRESSION',):
         sys.exit(1)
     sys.exit(0)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

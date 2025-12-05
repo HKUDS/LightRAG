@@ -3,35 +3,38 @@
 Start LightRAG server with Gunicorn
 """
 
+import argparse
 import os
-import sys
 import platform
-import pipmaster as pm
-from lightrag.api.utils_api import display_splash_screen, check_env_file
-from lightrag.api.config import global_args
-from lightrag.utils import get_env_value
-from lightrag.kg.shared_storage import initialize_share_data
+import sys
+from typing import cast
 
+import pipmaster as pm
+
+from lightrag.api.config import global_args
+from lightrag.api.utils_api import check_env_file, display_splash_screen
 from lightrag.constants import (
-    DEFAULT_WOKERS,
     DEFAULT_TIMEOUT,
+    DEFAULT_WOKERS,
 )
+from lightrag.kg.shared_storage import initialize_share_data
+from lightrag.utils import get_env_value
 
 
 def check_and_install_dependencies():
     """Check and install required dependencies"""
     required_packages = [
-        "gunicorn",
-        "tiktoken",
-        "psutil",
+        'gunicorn',
+        'tiktoken',
+        'psutil',
         # Add other required packages here
     ]
 
     for package in required_packages:
         if not pm.is_installed(package):
-            print(f"Installing {package}...")
+            print(f'Installing {package}...')
             pm.install(package)
-            print(f"{package} installed successfully")
+            print(f'{package} installed successfully')
 
 
 def main():
@@ -41,72 +44,64 @@ def main():
     initialize_config()
 
     # Set Gunicorn mode flag for lifespan cleanup detection
-    os.environ["LIGHTRAG_GUNICORN_MODE"] = "1"
+    os.environ['LIGHTRAG_GUNICORN_MODE'] = '1'
 
     # Check .env file
     if not check_env_file():
         sys.exit(1)
 
     # Check DOCLING compatibility with Gunicorn multi-worker mode on macOS
-    if (
-        platform.system() == "Darwin"
-        and global_args.document_loading_engine == "DOCLING"
-        and global_args.workers > 1
-    ):
-        print("\n" + "=" * 80)
-        print("❌ ERROR: Incompatible configuration detected!")
-        print("=" * 80)
-        print(
-            "\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS"
-        )
-        print("\nReason:")
-        print("  PyTorch (required by DOCLING) has known compatibility issues with")
-        print("  fork-based multiprocessing on macOS, which can cause crashes or")
-        print("  unexpected behavior when using Gunicorn with multiple workers.")
-        print("\nCurrent configuration:")
-        print("  - Operating System: macOS (Darwin)")
-        print(f"  - Document Engine: {global_args.document_loading_engine}")
-        print(f"  - Workers: {global_args.workers}")
-        print("\nPossible solutions:")
-        print("  1. Use single worker mode:")
-        print("     --workers 1")
-        print("\n  2. Change document loading engine in .env:")
-        print("     DOCUMENT_LOADING_ENGINE=DEFAULT")
-        print("\n  3. Deploy on Linux where multi-worker mode is fully supported")
-        print("=" * 80 + "\n")
+    if platform.system() == 'Darwin' and global_args.document_loading_engine == 'DOCLING' and global_args.workers > 1:
+        print('\n' + '=' * 80)
+        print('❌ ERROR: Incompatible configuration detected!')
+        print('=' * 80)
+        print('\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS')
+        print('\nReason:')
+        print('  PyTorch (required by DOCLING) has known compatibility issues with')
+        print('  fork-based multiprocessing on macOS, which can cause crashes or')
+        print('  unexpected behavior when using Gunicorn with multiple workers.')
+        print('\nCurrent configuration:')
+        print('  - Operating System: macOS (Darwin)')
+        print(f'  - Document Engine: {global_args.document_loading_engine}')
+        print(f'  - Workers: {global_args.workers}')
+        print('\nPossible solutions:')
+        print('  1. Use single worker mode:')
+        print('     --workers 1')
+        print('\n  2. Change document loading engine in .env:')
+        print('     DOCUMENT_LOADING_ENGINE=DEFAULT')
+        print('\n  3. Deploy on Linux where multi-worker mode is fully supported')
+        print('=' * 80 + '\n')
         sys.exit(1)
 
     # Check macOS fork safety environment variable for multi-worker mode
     if (
-        platform.system() == "Darwin"
+        platform.system() == 'Darwin'
         and global_args.workers > 1
-        and os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY") != "YES"
+        and os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY') != 'YES'
     ):
-        print("\n" + "=" * 80)
-        print("❌ ERROR: Missing required environment variable on macOS!")
-        print("=" * 80)
-        print("\nmacOS with Gunicorn multi-worker mode requires:")
-        print("  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
-        print("\nReason:")
+        print('\n' + '=' * 80)
+        print('❌ ERROR: Missing required environment variable on macOS!')
+        print('=' * 80)
+        print('\nmacOS with Gunicorn multi-worker mode requires:')
+        print('  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES')
+        print('\nReason:')
         print("  NumPy uses macOS's Accelerate framework (Objective-C based) for")
-        print("  vector computations. The Objective-C runtime has fork safety checks")
-        print("  that will crash worker processes when embedding functions are called.")
-        print("\nCurrent configuration:")
-        print("  - Operating System: macOS (Darwin)")
-        print(f"  - Workers: {global_args.workers}")
-        print(
-            f"  - Environment Variable: {os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'NOT SET')}"
-        )
-        print("\nHow to fix:")
-        print("  Option 1 - Set environment variable before starting (recommended):")
-        print("     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
-        print("     lightrag-gunicorn --workers 2")
-        print("\n  Option 2 - Add to your shell profile (~/.zshrc or ~/.bash_profile):")
+        print('  vector computations. The Objective-C runtime has fork safety checks')
+        print('  that will crash worker processes when embedding functions are called.')
+        print('\nCurrent configuration:')
+        print('  - Operating System: macOS (Darwin)')
+        print(f'  - Workers: {global_args.workers}')
+        print(f'  - Environment Variable: {os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "NOT SET")}')
+        print('\nHow to fix:')
+        print('  Option 1 - Set environment variable before starting (recommended):')
+        print('     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES')
+        print('     lightrag-gunicorn --workers 2')
+        print('\n  Option 2 - Add to your shell profile (~/.zshrc or ~/.bash_profile):')
         print("     echo 'export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES' >> ~/.zshrc")
-        print("     source ~/.zshrc")
-        print("\n  Option 3 - Use single worker mode (no multiprocessing):")
-        print("     lightrag-server --workers 1")
-        print("=" * 80 + "\n")
+        print('     source ~/.zshrc')
+        print('\n  Option 3 - Use single worker mode (no multiprocessing):')
+        print('     lightrag-server --workers 1')
+        print('=' * 80 + '\n')
         sys.exit(1)
 
     # Check and install dependencies
@@ -116,17 +111,17 @@ def main():
     # - Master cleanup already handled by gunicorn_config.on_exit()
 
     # Display startup information
-    display_splash_screen(global_args)
+    display_splash_screen(cast(argparse.Namespace, global_args))
 
-    print("🚀 Starting LightRAG with Gunicorn")
-    print(f"🔄 Worker management: Gunicorn (workers={global_args.workers})")
-    print("🔍 Preloading app: Enabled")
+    print('🚀 Starting LightRAG with Gunicorn')
+    print(f'🔄 Worker management: Gunicorn (workers={global_args.workers})')
+    print('🔍 Preloading app: Enabled')
     print("📝 Note: Using Gunicorn's preload feature for shared data initialization")
-    print("\n\n" + "=" * 80)
-    print("MAIN PROCESS INITIALIZATION")
-    print(f"Process ID: {os.getpid()}")
-    print(f"Workers setting: {global_args.workers}")
-    print("=" * 80 + "\n")
+    print('\n\n' + '=' * 80)
+    print('MAIN PROCESS INITIALIZATION')
+    print(f'Process ID: {os.getpid()}')
+    print(f'Workers setting: {global_args.workers}')
+    print('=' * 80 + '\n')
 
     # Import Gunicorn's StandaloneApplication
     from gunicorn.app.base import BaseApplication
@@ -141,39 +136,39 @@ def main():
         def load_config(self):
             # Define valid Gunicorn configuration options
             valid_options = {
-                "bind",
-                "workers",
-                "worker_class",
-                "timeout",
-                "keepalive",
-                "preload_app",
-                "errorlog",
-                "accesslog",
-                "loglevel",
-                "certfile",
-                "keyfile",
-                "limit_request_line",
-                "limit_request_fields",
-                "limit_request_field_size",
-                "graceful_timeout",
-                "max_requests",
-                "max_requests_jitter",
+                'bind',
+                'workers',
+                'worker_class',
+                'timeout',
+                'keepalive',
+                'preload_app',
+                'errorlog',
+                'accesslog',
+                'loglevel',
+                'certfile',
+                'keyfile',
+                'limit_request_line',
+                'limit_request_fields',
+                'limit_request_field_size',
+                'graceful_timeout',
+                'max_requests',
+                'max_requests_jitter',
             }
 
             # Special hooks that need to be set separately
             special_hooks = {
-                "on_starting",
-                "on_reload",
-                "on_exit",
-                "pre_fork",
-                "post_fork",
-                "pre_exec",
-                "pre_request",
-                "post_request",
-                "worker_init",
-                "worker_exit",
-                "nworkers_changed",
-                "child_exit",
+                'on_starting',
+                'on_reload',
+                'on_exit',
+                'pre_fork',
+                'post_fork',
+                'pre_exec',
+                'pre_request',
+                'post_request',
+                'worker_init',
+                'worker_exit',
+                'nworkers_changed',
+                'child_exit',
             }
 
             # Import and configure the gunicorn_config module
@@ -181,60 +176,42 @@ def main():
 
             # Set configuration variables in gunicorn_config, prioritizing command line arguments
             gunicorn_config.workers = (
-                global_args.workers
-                if global_args.workers
-                else get_env_value("WORKERS", DEFAULT_WOKERS, int)
+                global_args.workers if global_args.workers else get_env_value('WORKERS', DEFAULT_WOKERS, int)
             )
 
             # Bind configuration prioritizes command line arguments
-            host = (
-                global_args.host
-                if global_args.host != "0.0.0.0"
-                else os.getenv("HOST", "0.0.0.0")
-            )
-            port = (
-                global_args.port
-                if global_args.port != 9621
-                else get_env_value("PORT", 9621, int)
-            )
-            gunicorn_config.bind = f"{host}:{port}"
+            host = global_args.host if global_args.host != '0.0.0.0' else os.getenv('HOST', '0.0.0.0')
+            port = global_args.port if global_args.port != 9621 else get_env_value('PORT', 9621, int)
+            gunicorn_config.bind = f'{host}:{port}'
 
             # Log level configuration prioritizes command line arguments
             gunicorn_config.loglevel = (
-                global_args.log_level.lower()
-                if global_args.log_level
-                else os.getenv("LOG_LEVEL", "info")
+                global_args.log_level.lower() if global_args.log_level else os.getenv('LOG_LEVEL', 'info')
             )
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
                 global_args.timeout + 30
                 if global_args.timeout is not None
-                else get_env_value(
-                    "TIMEOUT", DEFAULT_TIMEOUT + 30, int, special_none=True
-                )
+                else get_env_value('TIMEOUT', DEFAULT_TIMEOUT + 30, int, special_none=True)
             )
 
             # Keepalive configuration
-            gunicorn_config.keepalive = get_env_value("KEEPALIVE", 5, int)
+            gunicorn_config.keepalive = get_env_value('KEEPALIVE', 5, int)
 
             # SSL configuration prioritizes command line arguments
-            if global_args.ssl or os.getenv("SSL", "").lower() in (
-                "true",
-                "1",
-                "yes",
-                "t",
-                "on",
+            if global_args.ssl or os.getenv('SSL', '').lower() in (
+                'true',
+                '1',
+                'yes',
+                't',
+                'on',
             ):
                 gunicorn_config.certfile = (
-                    global_args.ssl_certfile
-                    if global_args.ssl_certfile
-                    else os.getenv("SSL_CERTFILE")
+                    global_args.ssl_certfile if global_args.ssl_certfile else os.getenv('SSL_CERTFILE')
                 )
                 gunicorn_config.keyfile = (
-                    global_args.ssl_keyfile
-                    if global_args.ssl_keyfile
-                    else os.getenv("SSL_KEYFILE")
+                    global_args.ssl_keyfile if global_args.ssl_keyfile else os.getenv('SSL_KEYFILE')
                 )
 
             # Set configuration options from the module
@@ -250,10 +227,8 @@ def main():
                     if callable(value):
                         self.cfg.set(key, value)
 
-            if hasattr(gunicorn_config, "logconfig_dict"):
-                self.cfg.set(
-                    "logconfig_dict", getattr(gunicorn_config, "logconfig_dict")
-                )
+            if hasattr(gunicorn_config, 'logconfig_dict'):
+                self.cfg.set('logconfig_dict', gunicorn_config.logconfig_dict)
 
         def load(self):
             # Import the application
@@ -262,21 +237,21 @@ def main():
             return get_application(global_args)
 
     # Create the application
-    app = GunicornApp("")
+    app = GunicornApp('')
 
     # Force workers to be an integer and greater than 1 for multi-process mode
     workers_count = global_args.workers
     if workers_count > 1:
         # Set a flag to indicate we're in the main process
-        os.environ["LIGHTRAG_MAIN_PROCESS"] = "1"
+        os.environ['LIGHTRAG_MAIN_PROCESS'] = '1'
         initialize_share_data(workers_count)
     else:
         initialize_share_data(1)
 
     # Run the application
-    print("\nStarting Gunicorn with direct Python API...")
+    print('\nStarting Gunicorn with direct Python API...')
     app.run()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

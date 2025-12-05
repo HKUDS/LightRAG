@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
-from typing import Any, Optional
 
 
 class GPTKeywordExtractionFormat(BaseModel):
@@ -17,7 +18,7 @@ class KnowledgeGraphNode(BaseModel):
 
 class KnowledgeGraphEdge(BaseModel):
     id: str
-    type: Optional[str]
+    type: str | None
     source: str  # id of source node
     target: str  # id of target node
     properties: dict[str, Any]  # anything else goes here

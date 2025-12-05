@@ -2,20 +2,21 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any, List
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
-from ..utils_api import get_combined_auth_dependency
 
-router = APIRouter(tags=["graph"])
+router = APIRouter(tags=['graph'])
 
 
 class EntityUpdateRequest(BaseModel):
     entity_name: str
-    updated_data: Dict[str, Any]
+    updated_data: dict[str, Any]
     allow_rename: bool = False
     allow_merge: bool = False
 
@@ -23,78 +24,78 @@ class EntityUpdateRequest(BaseModel):
 class RelationUpdateRequest(BaseModel):
     source_id: str
     target_id: str
-    updated_data: Dict[str, Any]
+    updated_data: dict[str, Any]
 
 
 class EntityMergeRequest(BaseModel):
     entities_to_change: list[str] = Field(
         ...,
-        description="List of entity names to be merged and deleted. These are typically duplicate or misspelled entities.",
+        description='List of entity names to be merged and deleted. These are typically duplicate or misspelled entities.',
         min_length=1,
-        examples=[["Elon Msk", "Ellon Musk"]],
+        examples=[['Elon Msk', 'Ellon Musk']],
     )
     entity_to_change_into: str = Field(
         ...,
-        description="Target entity name that will receive all relationships from the source entities. This entity will be preserved.",
+        description='Target entity name that will receive all relationships from the source entities. This entity will be preserved.',
         min_length=1,
-        examples=["Elon Musk"],
+        examples=['Elon Musk'],
     )
 
 
 class OrphanConnectionRequest(BaseModel):
     max_candidates: int = Field(
         default=3,
-        description="Maximum number of candidate connections to evaluate per orphan",
+        description='Maximum number of candidate connections to evaluate per orphan',
         ge=1,
         le=10,
     )
-    similarity_threshold: Optional[float] = Field(
+    similarity_threshold: float | None = Field(
         default=None,
-        description="Vector similarity threshold for candidates (0.0-1.0). Uses server config if not provided.",
+        description='Vector similarity threshold for candidates (0.0-1.0). Uses server config if not provided.',
         ge=0.0,
         le=1.0,
     )
-    confidence_threshold: Optional[float] = Field(
+    confidence_threshold: float | None = Field(
         default=None,
-        description="LLM confidence threshold for creating connections (0.0-1.0). Uses server config if not provided.",
+        description='LLM confidence threshold for creating connections (0.0-1.0). Uses server config if not provided.',
         ge=0.0,
         le=1.0,
     )
-    cross_connect: Optional[bool] = Field(
+    cross_connect: bool | None = Field(
         default=None,
-        description="Allow orphans to connect to other orphans. Uses server config if not provided.",
+        description='Allow orphans to connect to other orphans. Uses server config if not provided.',
     )
 
 
 class OrphanConnectionStatusResponse(BaseModel):
     """Response model for orphan connection pipeline status."""
 
-    busy: bool = Field(description="Whether the orphan connection pipeline is currently running")
-    job_name: str = Field(description="Name of the current or last job")
-    job_start: Optional[str] = Field(description="ISO timestamp when the job started")
-    total_orphans: int = Field(description="Total number of orphan entities found")
-    processed_orphans: int = Field(description="Number of orphans processed so far")
-    connections_made: int = Field(description="Number of connections created so far")
-    request_pending: bool = Field(description="Whether another request is pending")
-    cancellation_requested: bool = Field(description="Whether cancellation has been requested")
-    latest_message: str = Field(description="Most recent status message")
-    history_messages: List[str] = Field(description="History of status messages")
+    busy: bool = Field(description='Whether the orphan connection pipeline is currently running')
+    job_name: str = Field(description='Name of the current or last job')
+    job_start: str | None = Field(description='ISO timestamp when the job started')
+    total_orphans: int = Field(description='Total number of orphan entities found')
+    processed_orphans: int = Field(description='Number of orphans processed so far')
+    connections_made: int = Field(description='Number of connections created so far')
+    request_pending: bool = Field(description='Whether another request is pending')
+    cancellation_requested: bool = Field(description='Whether cancellation has been requested')
+    latest_message: str = Field(description='Most recent status message')
+    history_messages: list[str] = Field(description='History of status messages')
 
 
 class EntityCreateRequest(BaseModel):
     entity_name: str = Field(
         ...,
-        description="Unique name for the new entity",
+        description='Unique name for the new entity',
         min_length=1,
-        examples=["Tesla"],
+        examples=['Tesla'],
     )
-    entity_data: Dict[str, Any] = Field(
+    entity_data: dict[str, Any] = Field(
         ...,
         description="Dictionary containing entity properties. Common fields include 'description' and 'entity_type'.",
         examples=[
             {
-                "description": "Electric vehicle manufacturer",
-                "entity_type": "ORGANIZATION",
+                'description': 'Electric vehicle manufacturer',
+                'entity_type': 'ORGANIZATION',
             }
         ],
     )
@@ -103,33 +104,33 @@ class EntityCreateRequest(BaseModel):
 class RelationCreateRequest(BaseModel):
     source_entity: str = Field(
         ...,
-        description="Name of the source entity. This entity must already exist in the knowledge graph.",
+        description='Name of the source entity. This entity must already exist in the knowledge graph.',
         min_length=1,
-        examples=["Elon Musk"],
+        examples=['Elon Musk'],
     )
     target_entity: str = Field(
         ...,
-        description="Name of the target entity. This entity must already exist in the knowledge graph.",
+        description='Name of the target entity. This entity must already exist in the knowledge graph.',
         min_length=1,
-        examples=["Tesla"],
+        examples=['Tesla'],
     )
-    relation_data: Dict[str, Any] = Field(
+    relation_data: dict[str, Any] = Field(
         ...,
         description="Dictionary containing relationship properties. Common fields include 'description', 'keywords', and 'weight'.",
         examples=[
             {
-                "description": "Elon Musk is the CEO of Tesla",
-                "keywords": "CEO, founder",
-                "weight": 1.0,
+                'description': 'Elon Musk is the CEO of Tesla',
+                'keywords': 'CEO, founder',
+                'weight': 1.0,
             }
         ],
     )
 
 
-def create_graph_routes(rag, api_key: Optional[str] = None):
+def create_graph_routes(rag, api_key: str | None = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
+    @router.get('/graph/label/list', dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
         """
         Get all graph labels
@@ -140,17 +141,13 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             return await rag.get_graph_labels()
         except Exception as e:
-            logger.error(f"Error getting graph labels: {str(e)}")
+            logger.error(f'Error getting graph labels: {e!s}')
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error getting graph labels: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error getting graph labels: {e!s}') from e
 
-    @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
+    @router.get('/graph/label/popular', dependencies=[Depends(combined_auth)])
     async def get_popular_labels(
-        limit: int = Query(
-            300, description="Maximum number of popular labels to return", ge=1, le=1000
-        ),
+        limit: int = Query(300, description='Maximum number of popular labels to return', ge=1, le=1000),
     ):
         """
         Get popular labels by node degree (most connected entities)
@@ -164,18 +161,14 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
         except Exception as e:
-            logger.error(f"Error getting popular labels: {str(e)}")
+            logger.error(f'Error getting popular labels: {e!s}')
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error getting popular labels: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error getting popular labels: {e!s}') from e
 
-    @router.get("/graph/label/search", dependencies=[Depends(combined_auth)])
+    @router.get('/graph/label/search', dependencies=[Depends(combined_auth)])
     async def search_labels(
-        q: str = Query(..., description="Search query string"),
-        limit: int = Query(
-            50, description="Maximum number of search results to return", ge=1, le=100
-        ),
+        q: str = Query(..., description='Search query string'),
+        limit: int = Query(50, description='Maximum number of search results to return', ge=1, le=100),
     ):
         """
         Search labels with fuzzy matching
@@ -190,26 +183,24 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             return await rag.chunk_entity_relation_graph.search_labels(q, limit)
         except Exception as e:
-            logger.error(f"Error searching labels with query '{q}': {str(e)}")
+            logger.error(f"Error searching labels with query '{q}': {e!s}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error searching labels: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error searching labels: {e!s}') from e
 
-    @router.get("/graphs", dependencies=[Depends(combined_auth)])
+    @router.get('/graphs', dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
-        label: str = Query(..., description="Label to get knowledge graph for"),
-        max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
-        max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
+        label: str = Query(..., description='Label to get knowledge graph for'),
+        max_depth: int = Query(3, description='Maximum depth of graph', ge=1),
+        max_nodes: int = Query(1000, description='Maximum nodes to return', ge=1),
         min_degree: int = Query(
             0,
-            description="Minimum degree (connections) required for nodes to be included. 0=all nodes, 1=exclude orphans, 2+=only well-connected nodes",
+            description='Minimum degree (connections) required for nodes to be included. 0=all nodes, 1=exclude orphans, 2+=only well-connected nodes',
             ge=0,
             le=10,
         ),
         include_orphans: bool = Query(
             False,
-            description="Include orphan nodes (degree=0) even when min_degree > 0. Useful for reviewing disconnected entities.",
+            description='Include orphan nodes (degree=0) even when min_degree > 0. Useful for reviewing disconnected entities.',
         ),
     ):
         """
@@ -230,9 +221,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         try:
             # Log the label parameter to check for leading spaces
-            logger.debug(
-                f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {repr(label)})"
-            )
+            logger.debug(f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {label!r})")
 
             return await rag.get_knowledge_graph(
                 node_label=label,
@@ -242,15 +231,13 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 include_orphans=include_orphans,
             )
         except Exception as e:
-            logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")
+            logger.error(f"Error getting knowledge graph for label '{label}': {e!s}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error getting knowledge graph: {e!s}') from e
 
-    @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
+    @router.get('/graph/entity/exists', dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
-        name: str = Query(..., description="Entity name to check"),
+        name: str = Query(..., description='Entity name to check'),
     ):
         """
         Check if an entity with the given name exists in the knowledge graph
@@ -263,15 +250,13 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         try:
             exists = await rag.chunk_entity_relation_graph.has_node(name)
-            return {"exists": exists}
+            return {'exists': exists}
         except Exception as e:
-            logger.error(f"Error checking entity existence for '{name}': {str(e)}")
+            logger.error(f"Error checking entity existence for '{name}': {e!s}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error checking entity existence: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error checking entity existence: {e!s}') from e
 
-    @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/entity/edit', dependencies=[Depends(combined_auth)])
     async def update_entity(request: EntityUpdateRequest):
         """
         Update an entity's properties in the knowledge graph
@@ -416,52 +401,43 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
 
             # Extract operation_summary from result, with fallback for backward compatibility
             operation_summary = result.get(
-                "operation_summary",
+                'operation_summary',
                 {
-                    "merged": False,
-                    "merge_status": "not_attempted",
-                    "merge_error": None,
-                    "operation_status": "success",
-                    "target_entity": None,
-                    "final_entity": request.updated_data.get(
-                        "entity_name", request.entity_name
-                    ),
-                    "renamed": request.updated_data.get(
-                        "entity_name", request.entity_name
-                    )
-                    != request.entity_name,
+                    'merged': False,
+                    'merge_status': 'not_attempted',
+                    'merge_error': None,
+                    'operation_status': 'success',
+                    'target_entity': None,
+                    'final_entity': request.updated_data.get('entity_name', request.entity_name),
+                    'renamed': request.updated_data.get('entity_name', request.entity_name) != request.entity_name,
                 },
             )
 
             # Separate entity data from operation_summary for clean response
             entity_data = dict(result)
-            entity_data.pop("operation_summary", None)
+            entity_data.pop('operation_summary', None)
 
             # Generate appropriate response message based on merge status
             response_message = (
                 f"Entity merged successfully into '{operation_summary['final_entity']}'"
-                if operation_summary.get("merged")
-                else "Entity updated successfully"
+                if operation_summary.get('merged')
+                else 'Entity updated successfully'
             )
             return {
-                "status": "success",
-                "message": response_message,
-                "data": entity_data,
-                "operation_summary": operation_summary,
+                'status': 'success',
+                'message': response_message,
+                'data': entity_data,
+                'operation_summary': operation_summary,
             }
         except ValueError as ve:
-            logger.error(
-                f"Validation error updating entity '{request.entity_name}': {str(ve)}"
-            )
-            raise HTTPException(status_code=400, detail=str(ve))
+            logger.error(f"Validation error updating entity '{request.entity_name}': {ve!s}")
+            raise HTTPException(status_code=400, detail=str(ve)) from ve
         except Exception as e:
-            logger.error(f"Error updating entity '{request.entity_name}': {str(e)}")
+            logger.error(f"Error updating entity '{request.entity_name}': {e!s}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error updating entity: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error updating entity: {e!s}') from e
 
-    @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/relation/edit', dependencies=[Depends(combined_auth)])
     async def update_relation(request: RelationUpdateRequest):
         """Update a relation's properties in the knowledge graph
 
@@ -478,25 +454,21 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 updated_data=request.updated_data,
             )
             return {
-                "status": "success",
-                "message": "Relation updated successfully",
-                "data": result,
+                'status': 'success',
+                'message': 'Relation updated successfully',
+                'data': result,
             }
         except ValueError as ve:
             logger.error(
-                f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}"
+                f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {ve!s}"
             )
-            raise HTTPException(status_code=400, detail=str(ve))
+            raise HTTPException(status_code=400, detail=str(ve)) from ve
         except Exception as e:
-            logger.error(
-                f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}"
-            )
+            logger.error(f"Error updating relation between '{request.source_id}' and '{request.target_id}': {e!s}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error updating relation: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error updating relation: {e!s}') from e
 
-    @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/entity/create', dependencies=[Depends(combined_auth)])
     async def create_entity(request: EntityCreateRequest):
         """
         Create a new entity in the knowledge graph
@@ -553,23 +525,19 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
             return {
-                "status": "success",
-                "message": f"Entity '{request.entity_name}' created successfully",
-                "data": result,
+                'status': 'success',
+                'message': f"Entity '{request.entity_name}' created successfully",
+                'data': result,
             }
         except ValueError as ve:
-            logger.error(
-                f"Validation error creating entity '{request.entity_name}': {str(ve)}"
-            )
-            raise HTTPException(status_code=400, detail=str(ve))
+            logger.error(f"Validation error creating entity '{request.entity_name}': {ve!s}")
+            raise HTTPException(status_code=400, detail=str(ve)) from ve
         except Exception as e:
-            logger.error(f"Error creating entity '{request.entity_name}': {str(e)}")
+            logger.error(f"Error creating entity '{request.entity_name}': {e!s}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error creating entity: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error creating entity: {e!s}') from e
 
-    @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/relation/create', dependencies=[Depends(combined_auth)])
     async def create_relation(request: RelationCreateRequest):
         """
         Create a new relationship between two entities in the knowledge graph
@@ -640,25 +608,23 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
             return {
-                "status": "success",
-                "message": f"Relation created successfully between '{request.source_entity}' and '{request.target_entity}'",
-                "data": result,
+                'status': 'success',
+                'message': f"Relation created successfully between '{request.source_entity}' and '{request.target_entity}'",
+                'data': result,
             }
         except ValueError as ve:
             logger.error(
-                f"Validation error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(ve)}"
+                f"Validation error creating relation between '{request.source_entity}' and '{request.target_entity}': {ve!s}"
             )
-            raise HTTPException(status_code=400, detail=str(ve))
+            raise HTTPException(status_code=400, detail=str(ve)) from ve
         except Exception as e:
             logger.error(
-                f"Error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(e)}"
+                f"Error creating relation between '{request.source_entity}' and '{request.target_entity}': {e!s}"
             )
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error creating relation: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error creating relation: {e!s}') from e
 
-    @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/entities/merge', dependencies=[Depends(combined_auth)])
     async def merge_entities(request: EntityMergeRequest):
         """
         Merge multiple entities into a single entity, preserving all relationships
@@ -721,25 +687,23 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 target_entity=request.entity_to_change_into,
             )
             return {
-                "status": "success",
-                "message": f"Successfully merged {len(request.entities_to_change)} entities into '{request.entity_to_change_into}'",
-                "data": result,
+                'status': 'success',
+                'message': f"Successfully merged {len(request.entities_to_change)} entities into '{request.entity_to_change_into}'",
+                'data': result,
             }
         except ValueError as ve:
             logger.error(
-                f"Validation error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(ve)}"
+                f"Validation error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {ve!s}"
             )
-            raise HTTPException(status_code=400, detail=str(ve))
+            raise HTTPException(status_code=400, detail=str(ve)) from ve
         except Exception as e:
             logger.error(
-                f"Error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(e)}"
+                f"Error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {e!s}"
             )
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error merging entities: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error merging entities: {e!s}') from e
 
-    @router.post("/graph/orphans/connect", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/orphans/connect', dependencies=[Depends(combined_auth)])
     async def connect_orphan_entities(request: OrphanConnectionRequest):
         """
         Connect orphan entities (entities with no relationships) to the knowledge graph
@@ -800,19 +764,17 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
             return {
-                "status": "success",
-                "message": f"Connected {result['connections_made']} out of {result['orphans_found']} orphan entities",
-                "data": result,
+                'status': 'success',
+                'message': f'Connected {result["connections_made"]} out of {result["orphans_found"]} orphan entities',
+                'data': result,
             }
         except Exception as e:
-            logger.error(f"Error connecting orphan entities: {str(e)}")
+            logger.error(f'Error connecting orphan entities: {e!s}')
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error connecting orphan entities: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f'Error connecting orphan entities: {e!s}') from e
 
     @router.get(
-        "/graph/orphans/status",
+        '/graph/orphans/status',
         response_model=OrphanConnectionStatusResponse,
         dependencies=[Depends(combined_auth)],
     )
@@ -843,42 +805,40 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             from lightrag.kg.shared_storage import get_namespace_data
 
-            status = await get_namespace_data(
-                "orphan_connection_status", workspace=rag.workspace
-            )
+            status = await get_namespace_data('orphan_connection_status', workspace=rag.workspace)
 
             return OrphanConnectionStatusResponse(
-                busy=status.get("busy", False),
-                job_name=status.get("job_name", ""),
-                job_start=status.get("job_start"),
-                total_orphans=status.get("total_orphans", 0),
-                processed_orphans=status.get("processed_orphans", 0),
-                connections_made=status.get("connections_made", 0),
-                request_pending=status.get("request_pending", False),
-                cancellation_requested=status.get("cancellation_requested", False),
-                latest_message=status.get("latest_message", ""),
-                history_messages=list(status.get("history_messages", []))[-1000:],
+                busy=status.get('busy', False),
+                job_name=status.get('job_name', ''),
+                job_start=status.get('job_start'),
+                total_orphans=status.get('total_orphans', 0),
+                processed_orphans=status.get('processed_orphans', 0),
+                connections_made=status.get('connections_made', 0),
+                request_pending=status.get('request_pending', False),
+                cancellation_requested=status.get('cancellation_requested', False),
+                latest_message=status.get('latest_message', ''),
+                history_messages=list(status.get('history_messages', []))[-1000:],
             )
         except Exception as e:
-            logger.error(f"Error getting orphan connection status: {str(e)}")
+            logger.error(f'Error getting orphan connection status: {e!s}')
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500,
-                detail=f"Error getting orphan connection status: {str(e)}",
-            )
+                detail=f'Error getting orphan connection status: {e!s}',
+            ) from e
 
-    @router.post("/graph/orphans/start", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/orphans/start', dependencies=[Depends(combined_auth)])
     async def start_orphan_connection_background(
         background_tasks: BackgroundTasks,
         max_candidates: int = Query(
             default=3,
-            description="Maximum candidates to evaluate per entity",
+            description='Maximum candidates to evaluate per entity',
             ge=1,
             le=10,
         ),
         max_degree: int = Query(
             default=0,
-            description="Maximum connection degree to target. 0=orphans only, 1=include leaf nodes, 2+=include sparse nodes",
+            description='Maximum connection degree to target. 0=orphans only, 1=include leaf nodes, 2+=include sparse nodes',
             ge=0,
             le=5,
         ),
@@ -916,11 +876,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             from lightrag.kg.shared_storage import get_namespace_data
 
             # Check if already running
-            status = await get_namespace_data(
-                "orphan_connection_status", workspace=rag.workspace
-            )
-            if status.get("busy"):
-                return {"status": "already_running"}
+            status = await get_namespace_data('orphan_connection_status', workspace=rag.workspace)
+            if status.get('busy'):
+                return {'status': 'already_running'}
 
             # Start background task
             background_tasks.add_task(
@@ -929,16 +887,16 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 max_degree=max_degree,
             )
 
-            return {"status": "started"}
+            return {'status': 'started'}
         except Exception as e:
-            logger.error(f"Error starting orphan connection: {str(e)}")
+            logger.error(f'Error starting orphan connection: {e!s}')
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500,
-                detail=f"Error starting orphan connection: {str(e)}",
-            )
+                detail=f'Error starting orphan connection: {e!s}',
+            ) from e
 
-    @router.post("/graph/orphans/cancel", dependencies=[Depends(combined_auth)])
+    @router.post('/graph/orphans/cancel', dependencies=[Depends(combined_auth)])
     async def cancel_orphan_connection():
         """
         Request cancellation of a running orphan connection job.
@@ -954,25 +912,21 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 
-            status = await get_namespace_data(
-                "orphan_connection_status", workspace=rag.workspace
-            )
-            lock = get_namespace_lock(
-                "orphan_connection_status", workspace=rag.workspace
-            )
+            status = await get_namespace_data('orphan_connection_status', workspace=rag.workspace)
+            lock = get_namespace_lock('orphan_connection_status', workspace=rag.workspace)
 
             async with lock:
-                if not status.get("busy"):
-                    return {"status": "not_running"}
-                status["cancellation_requested"] = True
+                if not status.get('busy'):
+                    return {'status': 'not_running'}
+                status['cancellation_requested'] = True
 
-            return {"status": "cancellation_requested"}
+            return {'status': 'cancellation_requested'}
         except Exception as e:
-            logger.error(f"Error cancelling orphan connection: {str(e)}")
+            logger.error(f'Error cancelling orphan connection: {e!s}')
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500,
-                detail=f"Error cancelling orphan connection: {str(e)}",
-            )
+                detail=f'Error cancelling orphan connection: {e!s}',
+            ) from e
 
     return router

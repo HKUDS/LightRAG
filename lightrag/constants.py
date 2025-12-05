@@ -11,7 +11,7 @@ DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
-DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
+DEFAULT_SUMMARY_LANGUAGE = 'English'  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
 
@@ -25,21 +25,21 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
-    "Person",
-    "Creature",
-    "Organization",
-    "Location",
-    "Event",
-    "Concept",
-    "Method",
-    "Content",
-    "Data",
-    "Artifact",
-    "NaturalObject",
+    'Person',
+    'Creature',
+    'Organization',
+    'Location',
+    'Event',
+    'Concept',
+    'Method',
+    'Content',
+    'Data',
+    'Artifact',
+    'NaturalObject',
 ]
 
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
-GRAPH_FIELD_SEP = "<SEP>"
+GRAPH_FIELD_SEP = '<SEP>'
 
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
@@ -49,14 +49,14 @@ DEFAULT_MAX_RELATION_TOKENS = 8000
 DEFAULT_MAX_TOTAL_TOKENS = 30000
 DEFAULT_COSINE_THRESHOLD = 0.40  # Balanced: 0.35 too permissive, 0.45 breaks local mode
 DEFAULT_RELATED_CHUNK_NUMBER = 8  # Increased from 5 for better context coverage
-DEFAULT_KG_CHUNK_PICK_METHOD = "VECTOR"
+DEFAULT_KG_CHUNK_PICK_METHOD = 'VECTOR'
 
 # TODO: Deprated. All conversation_history messages is send to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults
 DEFAULT_MIN_RERANK_SCORE = 0.0
-DEFAULT_RERANK_BINDING = "null"
+DEFAULT_RERANK_BINDING = 'null'
 
 # Default source ids limit in meta data for entity and relation
 DEFAULT_MAX_SOURCE_IDS_PER_ENTITY = 300
@@ -64,8 +64,8 @@ DEFAULT_MAX_SOURCE_IDS_PER_RELATION = 300
 ### control chunk_ids limitation method: FIFO, FIFO
 ###    FIFO: First in first out
 ###    KEEP: Keep oldest (less merge action and faster)
-SOURCE_IDS_LIMIT_METHOD_KEEP = "KEEP"
-SOURCE_IDS_LIMIT_METHOD_FIFO = "FIFO"
+SOURCE_IDS_LIMIT_METHOD_KEEP = 'KEEP'
+SOURCE_IDS_LIMIT_METHOD_FIFO = 'FIFO'
 DEFAULT_SOURCE_IDS_LIMIT_METHOD = SOURCE_IDS_LIMIT_METHOD_FIFO
 VALID_SOURCE_IDS_LIMIT_METHODS = {
     SOURCE_IDS_LIMIT_METHOD_KEEP,
@@ -78,7 +78,7 @@ DEFAULT_MAX_FILE_PATHS = 100
 # file_path must store all file paths up to the DEFAULT_MAX_FILE_PATHS limit within the metadata.
 DEFAULT_MAX_FILE_PATH_LENGTH = 32768
 # Placeholder for more file paths in meta data for entity and relation (Should not be changed)
-DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
+DEFAULT_FILE_PATH_MORE_PLACEHOLDER = 'truncated'
 
 # Default temperature for LLM
 DEFAULT_TEMPERATURE = 1.0
@@ -101,11 +101,11 @@ DEFAULT_EMBEDDING_TIMEOUT = 30
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB
 DEFAULT_LOG_BACKUP_COUNT = 5  # Default 5 backups
-DEFAULT_LOG_FILENAME = "lightrag.log"  # Default log filename
+DEFAULT_LOG_FILENAME = 'lightrag.log'  # Default log filename
 
 # Ollama server configuration defaults
-DEFAULT_OLLAMA_MODEL_NAME = "lightrag"
-DEFAULT_OLLAMA_MODEL_TAG = "latest"
+DEFAULT_OLLAMA_MODEL_NAME = 'lightrag'
+DEFAULT_OLLAMA_MODEL_TAG = 'latest'
 DEFAULT_OLLAMA_MODEL_SIZE = 7365960935
-DEFAULT_OLLAMA_CREATED_AT = "2024-01-15T00:00:00Z"
-DEFAULT_OLLAMA_DIGEST = "sha256:lightrag"
+DEFAULT_OLLAMA_CREATED_AT = '2024-01-15T00:00:00Z'
+DEFAULT_OLLAMA_DIGEST = 'sha256:lightrag'

@@ -5,14 +5,14 @@ This module provides container implementations for various Large Language Model
 bindings and integrations.
 """
 
-from argparse import ArgumentParser, Namespace
 import argparse
 import json
+from argparse import ArgumentParser, Namespace
 from dataclasses import asdict, dataclass, field
-from typing import Any, ClassVar, List, get_args, get_origin
+from typing import Any, ClassVar, get_args, get_origin
 
-from lightrag.utils import get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
+from lightrag.utils import get_env_value
 
 
 def _resolve_optional_type(field_type: Any) -> Any:
@@ -87,11 +87,7 @@ class BindingOptions:
                     {
                         k: v
                         for k, v in base.__dict__.items()
-                        if (
-                            not k.startswith("_")
-                            and not callable(v)
-                            and not isinstance(v, classmethod)
-                        )
+                        if (not k.startswith('_') and not callable(v) and not isinstance(v, classmethod))
                     }
                 )
         else:
@@ -99,35 +95,29 @@ class BindingOptions:
             vars_dict = {
                 k: v
                 for k, v in klass.__dict__.items()
-                if (
-                    not k.startswith("_")
-                    and not callable(v)
-                    and not isinstance(v, classmethod)
-                )
+                if (not k.startswith('_') and not callable(v) and not isinstance(v, classmethod))
             }
 
         return vars_dict
 
     @classmethod
     def add_args(cls, parser: ArgumentParser):
-        group = parser.add_argument_group(f"{cls._binding_name} binding options")
+        group = parser.add_argument_group(f'{cls._binding_name} binding options')
         for arg_item in cls.args_env_name_type_value():
             # Handle JSON parsing for list types
-            if arg_item["type"] is List[str]:
+            if arg_item['type'] is list[str]:
 
                 def json_list_parser(value):
                     try:
                         parsed = json.loads(value)
                         if not isinstance(parsed, list):
-                            raise argparse.ArgumentTypeError(
-                                f"Expected JSON array, got {type(parsed).__name__}"
-                            )
+                            raise argparse.ArgumentTypeError(f'Expected JSON array, got {type(parsed).__name__}')
                         return parsed
                     except json.JSONDecodeError as e:
-                        raise argparse.ArgumentTypeError(f"Invalid JSON: {e}")
+                        raise argparse.ArgumentTypeError(f'Invalid JSON: {e}') from e
 
                 # Get environment variable with JSON parsing
-                env_value = get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS)
+                env_value = get_env_value(f'{arg_item["env_name"]}', argparse.SUPPRESS)
                 if env_value is not argparse.SUPPRESS:
                     try:
                         env_value = json_list_parser(env_value)
@@ -135,27 +125,25 @@ class BindingOptions:
                         env_value = argparse.SUPPRESS
 
                 group.add_argument(
-                    f"--{arg_item['argname']}",
+                    f'--{arg_item["argname"]}',
                     type=json_list_parser,
                     default=env_value,
-                    help=arg_item["help"],
+                    help=arg_item['help'],
                 )
             # Handle JSON parsing for dict types
-            elif arg_item["type"] is dict:
+            elif arg_item['type'] is dict:
 
                 def json_dict_parser(value):
                     try:
                         parsed = json.loads(value)
                         if not isinstance(parsed, dict):
-                            raise argparse.ArgumentTypeError(
-                                f"Expected JSON object, got {type(parsed).__name__}"
-                            )
+                            raise argparse.ArgumentTypeError(f'Expected JSON object, got {type(parsed).__name__}')
                         return parsed
                     except json.JSONDecodeError as e:
-                        raise argparse.ArgumentTypeError(f"Invalid JSON: {e}")
+                        raise argparse.ArgumentTypeError(f'Invalid JSON: {e}') from e
 
                 # Get environment variable with JSON parsing
-                env_value = get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS)
+                env_value = get_env_value(f'{arg_item["env_name"]}', argparse.SUPPRESS)
                 if env_value is not argparse.SUPPRESS:
                     try:
                         env_value = json_dict_parser(env_value)
@@ -163,58 +151,56 @@ class BindingOptions:
                         env_value = argparse.SUPPRESS
 
                 group.add_argument(
-                    f"--{arg_item['argname']}",
+                    f'--{arg_item["argname"]}',
                     type=json_dict_parser,
                     default=env_value,
-                    help=arg_item["help"],
+                    help=arg_item['help'],
                 )
             # Handle boolean types specially to avoid argparse bool() constructor issues
-            elif arg_item["type"] is bool:
+            elif arg_item['type'] is bool:
 
                 def bool_parser(value):
                     """Custom boolean parser that handles string representations correctly"""
                     if isinstance(value, bool):
                         return value
                     if isinstance(value, str):
-                        return value.lower() in ("true", "1", "yes", "t", "on")
+                        return value.lower() in ('true', '1', 'yes', 't', 'on')
                     return bool(value)
 
                 # Get environment variable with proper type conversion
-                env_value = get_env_value(
-                    f"{arg_item['env_name']}", argparse.SUPPRESS, bool
-                )
+                env_value = get_env_value(f'{arg_item["env_name"]}', argparse.SUPPRESS, bool)
 
                 group.add_argument(
-                    f"--{arg_item['argname']}",
+                    f'--{arg_item["argname"]}',
                     type=bool_parser,
                     default=env_value,
-                    help=arg_item["help"],
+                    help=arg_item['help'],
                 )
             else:
-                resolved_type = arg_item["type"]
+                resolved_type = arg_item['type']
                 if resolved_type is not None:
                     resolved_type = _resolve_optional_type(resolved_type)
 
                 group.add_argument(
-                    f"--{arg_item['argname']}",
+                    f'--{arg_item["argname"]}',
                     type=resolved_type,
-                    default=get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS),
-                    help=arg_item["help"],
+                    default=get_env_value(f'{arg_item["env_name"]}', argparse.SUPPRESS),
+                    help=arg_item['help'],
                 )
 
     @classmethod
     def args_env_name_type_value(cls):
         import dataclasses
 
-        args_prefix = f"{cls._binding_name}".replace("_", "-")
-        env_var_prefix = f"{cls._binding_name}_".upper()
+        args_prefix = f'{cls._binding_name}'.replace('_', '-')
+        env_var_prefix = f'{cls._binding_name}_'.upper()
         help = cls._help
 
         # Check if this is a dataclass and use dataclass fields
         if dataclasses.is_dataclass(cls):
             for field in dataclasses.fields(cls):
                 # Skip private fields
-                if field.name.startswith("_"):
+                if field.name.startswith('_'):
                     continue
 
                 # Get default value
@@ -226,11 +212,11 @@ class BindingOptions:
                     default_value = None
 
                 argdef = {
-                    "argname": f"{args_prefix}-{field.name}",
-                    "env_name": f"{env_var_prefix}{field.name.upper()}",
-                    "type": _resolve_optional_type(field.type),
-                    "default": default_value,
-                    "help": f"{cls._binding_name} -- " + help.get(field.name, ""),
+                    'argname': f'{args_prefix}-{field.name}',
+                    'env_name': f'{env_var_prefix}{field.name.upper()}',
+                    'type': _resolve_optional_type(field.type),
+                    'default': default_value,
+                    'help': f'{cls._binding_name} -- ' + help.get(field.name, ''),
                 }
 
                 yield argdef
@@ -239,13 +225,13 @@ class BindingOptions:
             class_vars = {
                 key: value
                 for key, value in cls._all_class_vars(cls).items()
-                if not callable(value) and not key.startswith("_")
+                if not callable(value) and not key.startswith('_')
             }
 
             # Get type hints to properly detect List[str] types
             type_hints = {}
             for base in cls.__mro__:
-                if hasattr(base, "__annotations__"):
+                if hasattr(base, '__annotations__'):
                     type_hints.update(base.__annotations__)
 
             for class_var in class_vars:
@@ -253,11 +239,11 @@ class BindingOptions:
                 var_type = type_hints.get(class_var, type(class_vars[class_var]))
 
                 argdef = {
-                    "argname": f"{args_prefix}-{class_var}",
-                    "env_name": f"{env_var_prefix}{class_var.upper()}",
-                    "type": var_type,
-                    "default": class_vars[class_var],
-                    "help": f"{cls._binding_name} -- " + help.get(class_var, ""),
+                    'argname': f'{args_prefix}-{class_var}',
+                    'env_name': f'{env_var_prefix}{class_var.upper()}',
+                    'type': var_type,
+                    'default': class_vars[class_var],
+                    'help': f'{cls._binding_name} -- ' + help.get(class_var, ''),
                 }
 
                 yield argdef
@@ -277,38 +263,34 @@ class BindingOptions:
         from io import StringIO
 
         sample_top = (
-            "#" * 80
-            + "\n"
+            '#' * 80
+            + '\n'
             + (
-                "# Autogenerated .env entries list for LightRAG binding options\n"
-                "#\n"
-                "# To generate run:\n"
-                "# $ python -m lightrag.llm.binding_options\n"
+                '# Autogenerated .env entries list for LightRAG binding options\n'
+                '#\n'
+                '# To generate run:\n'
+                '# $ python -m lightrag.llm.binding_options\n'
             )
-            + "#" * 80
-            + "\n"
+            + '#' * 80
+            + '\n'
         )
 
-        sample_bottom = (
-            ("#\n# End of .env entries for LightRAG binding options\n")
-            + "#" * 80
-            + "\n"
-        )
+        sample_bottom = ('#\n# End of .env entries for LightRAG binding options\n') + '#' * 80 + '\n'
 
         sample_stream = StringIO()
         sample_stream.write(sample_top)
         for klass in cls.__subclasses__():
             for arg_item in klass.args_env_name_type_value():
-                if arg_item["help"]:
-                    sample_stream.write(f"# {arg_item['help']}\n")
+                if arg_item['help']:
+                    sample_stream.write(f'# {arg_item["help"]}\n')
 
                 # Handle JSON formatting for list and dict types
-                if arg_item["type"] is List[str] or arg_item["type"] is dict:
-                    default_value = json.dumps(arg_item["default"])
+                if arg_item['type'] is list[str] or arg_item['type'] is dict:
+                    default_value = json.dumps(arg_item['default'])
                 else:
-                    default_value = arg_item["default"]
+                    default_value = arg_item['default']
 
-                sample_stream.write(f"# {arg_item['env_name']}={default_value}\n\n")
+                sample_stream.write(f'# {arg_item["env_name"]}={default_value}\n\n')
 
         sample_stream.write(sample_bottom)
         return sample_stream.getvalue()
@@ -332,13 +314,9 @@ class BindingOptions:
             If args contains {'ollama_num_ctx': 512, 'other_option': 'value'}
             and this is called on OllamaOptions, it returns {'num_ctx': 512}
         """
-        prefix = cls._binding_name + "_"
+        prefix = cls._binding_name + '_'
         skipchars = len(prefix)
-        options = {
-            key[skipchars:]: value
-            for key, value in vars(args).items()
-            if key.startswith(prefix)
-        }
+        options = {key[skipchars:]: value for key, value in vars(args).items() if key.startswith(prefix)}
 
         return options
 
@@ -418,41 +396,41 @@ class _OllamaOptionsMixin:
 
     # Output control
     penalize_newline: bool = True  # Penalize newline tokens
-    stop: List[str] = field(default_factory=list)  # Stop sequences
+    stop: list[str] = field(default_factory=list)  # Stop sequences
 
     # optional help strings
     _help: ClassVar[dict[str, str]] = {
-        "num_ctx": "Context window size (number of tokens)",
-        "num_predict": "Maximum number of tokens to predict",
-        "num_keep": "Number of tokens to keep from the initial prompt",
-        "seed": "Random seed for generation (-1 for random)",
-        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
-        "top_k": "Top-k sampling parameter (0 = disabled)",
-        "top_p": "Top-p (nucleus) sampling parameter (0.0-1.0)",
-        "tfs_z": "Tail free sampling parameter (1.0 = disabled)",
-        "typical_p": "Typical probability mass (1.0 = disabled)",
-        "min_p": "Minimum probability threshold (0.0 = disabled)",
-        "repeat_last_n": "Number of tokens to consider for repetition penalty",
-        "repeat_penalty": "Penalty for repetition (1.0 = no penalty)",
-        "presence_penalty": "Penalty for token presence (-2.0 to 2.0)",
-        "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0)",
-        "mirostat": "Mirostat sampling algorithm (0=disabled, 1=Mirostat 1.0, 2=Mirostat 2.0)",
-        "mirostat_tau": "Mirostat target entropy",
-        "mirostat_eta": "Mirostat learning rate",
-        "numa": "Enable NUMA optimization",
-        "num_batch": "Batch size for processing",
-        "num_gpu": "Number of GPUs to use (-1 for auto)",
-        "main_gpu": "Main GPU index",
-        "low_vram": "Optimize for low VRAM",
-        "num_thread": "Number of CPU threads (0 for auto)",
-        "f16_kv": "Use half-precision for key/value cache",
-        "logits_all": "Return logits for all tokens",
-        "vocab_only": "Only load vocabulary",
-        "use_mmap": "Use memory mapping for model files",
-        "use_mlock": "Lock model in memory",
-        "embedding_only": "Only use for embeddings",
-        "penalize_newline": "Penalize newline tokens",
-        "stop": 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
+        'num_ctx': 'Context window size (number of tokens)',
+        'num_predict': 'Maximum number of tokens to predict',
+        'num_keep': 'Number of tokens to keep from the initial prompt',
+        'seed': 'Random seed for generation (-1 for random)',
+        'temperature': 'Controls randomness (0.0-2.0, higher = more creative)',
+        'top_k': 'Top-k sampling parameter (0 = disabled)',
+        'top_p': 'Top-p (nucleus) sampling parameter (0.0-1.0)',
+        'tfs_z': 'Tail free sampling parameter (1.0 = disabled)',
+        'typical_p': 'Typical probability mass (1.0 = disabled)',
+        'min_p': 'Minimum probability threshold (0.0 = disabled)',
+        'repeat_last_n': 'Number of tokens to consider for repetition penalty',
+        'repeat_penalty': 'Penalty for repetition (1.0 = no penalty)',
+        'presence_penalty': 'Penalty for token presence (-2.0 to 2.0)',
+        'frequency_penalty': 'Penalty for token frequency (-2.0 to 2.0)',
+        'mirostat': 'Mirostat sampling algorithm (0=disabled, 1=Mirostat 1.0, 2=Mirostat 2.0)',
+        'mirostat_tau': 'Mirostat target entropy',
+        'mirostat_eta': 'Mirostat learning rate',
+        'numa': 'Enable NUMA optimization',
+        'num_batch': 'Batch size for processing',
+        'num_gpu': 'Number of GPUs to use (-1 for auto)',
+        'main_gpu': 'Main GPU index',
+        'low_vram': 'Optimize for low VRAM',
+        'num_thread': 'Number of CPU threads (0 for auto)',
+        'f16_kv': 'Use half-precision for key/value cache',
+        'logits_all': 'Return logits for all tokens',
+        'vocab_only': 'Only load vocabulary',
+        'use_mmap': 'Use memory mapping for model files',
+        'use_mlock': 'Lock model in memory',
+        'embedding_only': 'Only use for embeddings',
+        'penalize_newline': 'Penalize newline tokens',
+        'stop': 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
     }
 
 
@@ -461,7 +439,7 @@ class OllamaEmbeddingOptions(_OllamaOptionsMixin, BindingOptions):
     """Options for Ollama embeddings with specialized configuration for embedding tasks."""
 
     # mandatory name of binding
-    _binding_name: ClassVar[str] = "ollama_embedding"
+    _binding_name: ClassVar[str] = 'ollama_embedding'
 
 
 @dataclass
@@ -469,7 +447,7 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     """Options for Ollama LLM with specialized configuration for LLM tasks."""
 
     # mandatory name of binding
-    _binding_name: ClassVar[str] = "ollama_llm"
+    _binding_name: ClassVar[str] = 'ollama_llm'
 
 
 # =============================================================================
@@ -479,7 +457,7 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
 class GeminiLLMOptions(BindingOptions):
     """Options for Google Gemini models."""
 
-    _binding_name: ClassVar[str] = "gemini_llm"
+    _binding_name: ClassVar[str] = 'gemini_llm'
 
     temperature: float = DEFAULT_TEMPERATURE
     top_p: float = 0.95
@@ -488,23 +466,23 @@ class GeminiLLMOptions(BindingOptions):
     candidate_count: int = 1
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
-    stop_sequences: List[str] = field(default_factory=list)
+    stop_sequences: list[str] = field(default_factory=list)
     seed: int | None = None
     thinking_config: dict | None = None
     safety_settings: dict | None = None
 
     _help: ClassVar[dict[str, str]] = {
-        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
-        "top_p": "Nucleus sampling parameter (0.0-1.0)",
-        "top_k": "Limits sampling to the top K tokens (1 disables the limit)",
-        "max_output_tokens": "Maximum tokens generated in the response",
-        "candidate_count": "Number of candidates returned per request",
-        "presence_penalty": "Penalty for token presence (-2.0 to 2.0)",
-        "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0)",
-        "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"END\"]')",
-        "seed": "Random seed for reproducible generation (leave empty for random)",
-        "thinking_config": "Thinking configuration (JSON dict, e.g., '{\"thinking_budget\": 1024}' or '{\"include_thoughts\": true}')",
-        "safety_settings": "JSON object with Gemini safety settings overrides",
+        'temperature': 'Controls randomness (0.0-2.0, higher = more creative)',
+        'top_p': 'Nucleus sampling parameter (0.0-1.0)',
+        'top_k': 'Limits sampling to the top K tokens (1 disables the limit)',
+        'max_output_tokens': 'Maximum tokens generated in the response',
+        'candidate_count': 'Number of candidates returned per request',
+        'presence_penalty': 'Penalty for token presence (-2.0 to 2.0)',
+        'frequency_penalty': 'Penalty for token frequency (-2.0 to 2.0)',
+        'stop_sequences': 'Stop sequences (JSON array of strings, e.g., \'["END"]\')',
+        'seed': 'Random seed for reproducible generation (leave empty for random)',
+        'thinking_config': 'Thinking configuration (JSON dict, e.g., \'{"thinking_budget": 1024}\' or \'{"include_thoughts": true}\')',
+        'safety_settings': 'JSON object with Gemini safety settings overrides',
     }
 
 
@@ -512,12 +490,12 @@ class GeminiLLMOptions(BindingOptions):
 class GeminiEmbeddingOptions(BindingOptions):
     """Options for Google Gemini embedding models."""
 
-    _binding_name: ClassVar[str] = "gemini_embedding"
+    _binding_name: ClassVar[str] = 'gemini_embedding'
 
-    task_type: str = "RETRIEVAL_DOCUMENT"
+    task_type: str = 'RETRIEVAL_DOCUMENT'
 
     _help: ClassVar[dict[str, str]] = {
-        "task_type": "Task type for embedding optimization (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION)",
+        'task_type': 'Task type for embedding optimization (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION)',
     }
 
 
@@ -536,34 +514,34 @@ class OpenAILLMOptions(BindingOptions):
     """Options for OpenAI LLM with configuration for OpenAI and Azure OpenAI API calls."""
 
     # mandatory name of binding
-    _binding_name: ClassVar[str] = "openai_llm"
+    _binding_name: ClassVar[str] = 'openai_llm'
 
     # Sampling and generation parameters
     frequency_penalty: float = 0.0  # Penalty for token frequency (-2.0 to 2.0)
-    max_completion_tokens: int = None  # Maximum number of tokens to generate
+    max_completion_tokens: int | None = None  # Maximum number of tokens to generate
     presence_penalty: float = 0.0  # Penalty for token presence (-2.0 to 2.0)
-    reasoning_effort: str = "medium"  # Reasoning effort level (low, medium, high)
-    safety_identifier: str = ""  # Safety identifier for content filtering
-    service_tier: str = ""  # Service tier for API usage
-    stop: List[str] = field(default_factory=list)  # Stop sequences
+    reasoning_effort: str = 'medium'  # Reasoning effort level (low, medium, high)
+    safety_identifier: str = ''  # Safety identifier for content filtering
+    service_tier: str = ''  # Service tier for API usage
+    stop: list[str] = field(default_factory=list)  # Stop sequences
     temperature: float = DEFAULT_TEMPERATURE  # Controls randomness (0.0 to 2.0)
     top_p: float = 1.0  # Nucleus sampling parameter (0.0 to 1.0)
-    max_tokens: int = None  # Maximum number of tokens to generate(deprecated, use max_completion_tokens instead)
-    extra_body: dict = None  # Extra body parameters for OpenRouter of vLLM
+    max_tokens: int | None = None  # Maximum number of tokens to generate(deprecated, use max_completion_tokens instead)
+    extra_body: dict | None = None  # Extra body parameters for OpenRouter of vLLM
 
     # Help descriptions
     _help: ClassVar[dict[str, str]] = {
-        "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0, positive values discourage repetition)",
-        "max_completion_tokens": "Maximum number of tokens to generate (optional, leave empty for model default)",
-        "presence_penalty": "Penalty for token presence (-2.0 to 2.0, positive values encourage new topics)",
-        "reasoning_effort": "Reasoning effort level for o1 models (low, medium, high)",
-        "safety_identifier": "Safety identifier for content filtering (optional)",
-        "service_tier": "Service tier for API usage (optional)",
-        "stop": 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
-        "temperature": "Controls randomness (0.0-2.0, higher = more creative)",
-        "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
-        "max_tokens": "Maximum number of tokens to generate (deprecated, use max_completion_tokens instead)",
-        "extra_body": 'Extra body parameters for OpenRouter of vLLM (JSON dict, e.g., \'"reasoning": {"reasoning": {"enabled": false}}\')',
+        'frequency_penalty': 'Penalty for token frequency (-2.0 to 2.0, positive values discourage repetition)',
+        'max_completion_tokens': 'Maximum number of tokens to generate (optional, leave empty for model default)',
+        'presence_penalty': 'Penalty for token presence (-2.0 to 2.0, positive values encourage new topics)',
+        'reasoning_effort': 'Reasoning effort level for o1 models (low, medium, high)',
+        'safety_identifier': 'Safety identifier for content filtering (optional)',
+        'service_tier': 'Service tier for API usage (optional)',
+        'stop': 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
+        'temperature': 'Controls randomness (0.0-2.0, higher = more creative)',
+        'top_p': 'Nucleus sampling parameter (0.0-1.0, lower = more focused)',
+        'max_tokens': 'Maximum number of tokens to generate (deprecated, use max_completion_tokens instead)',
+        'extra_body': 'Extra body parameters for OpenRouter of vLLM (JSON dict, e.g., \'"reasoning": {"reasoning": {"enabled": false}}\')',
     }
 
 
@@ -581,12 +559,13 @@ class OpenAILLMOptions(BindingOptions):
 #
 # =============================================================================
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     import sys
+
     import dotenv
     # from io import StringIO
 
-    dotenv.load_dotenv(dotenv_path=".env", override=False)
+    dotenv.load_dotenv(dotenv_path='.env', override=False)
 
     # env_strstream = StringIO(
     #     ("OLLAMA_LLM_TEMPERATURE=0.1\nOLLAMA_EMBEDDING_TEMPERATURE=0.2\n")
@@ -594,9 +573,9 @@ if __name__ == "__main__":
     # # Load environment variables from .env file
     # dotenv.load_dotenv(stream=env_strstream)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
+    if len(sys.argv) > 1 and sys.argv[1] == 'test':
         # Add arguments for OllamaEmbeddingOptions, OllamaLLMOptions, and OpenAILLMOptions
-        parser = ArgumentParser(description="Test binding options")
+        parser = ArgumentParser(description='Test binding options')
         OllamaEmbeddingOptions.add_args(parser)
         OllamaLLMOptions.add_args(parser)
         OpenAILLMOptions.add_args(parser)
@@ -604,30 +583,30 @@ if __name__ == "__main__":
         # Parse arguments test
         args = parser.parse_args(
             [
-                "--ollama-embedding-num_ctx",
-                "1024",
-                "--ollama-llm-num_ctx",
-                "2048",
-                "--openai-llm-temperature",
-                "0.7",
-                "--openai-llm-max_completion_tokens",
-                "1000",
-                "--openai-llm-stop",
+                '--ollama-embedding-num_ctx',
+                '1024',
+                '--ollama-llm-num_ctx',
+                '2048',
+                '--openai-llm-temperature',
+                '0.7',
+                '--openai-llm-max_completion_tokens',
+                '1000',
+                '--openai-llm-stop',
                 '["</s>", "\\n\\n"]',
-                "--openai-llm-reasoning",
+                '--openai-llm-extra_body',
                 '{"effort": "high", "max_tokens": 2000, "exclude": false, "enabled": true}',
             ]
         )
-        print("Final args for LLM and Embedding:")
-        print(f"{args}\n")
+        print('Final args for LLM and Embedding:')
+        print(f'{args}\n')
 
-        print("Ollama LLM options:")
+        print('Ollama LLM options:')
         print(OllamaLLMOptions.options_dict(args))
 
-        print("\nOllama Embedding options:")
+        print('\nOllama Embedding options:')
         print(OllamaEmbeddingOptions.options_dict(args))
 
-        print("\nOpenAI LLM options:")
+        print('\nOpenAI LLM options:')
         print(OpenAILLMOptions.options_dict(args))
 
         # Test creating OpenAI options instance
@@ -636,105 +615,95 @@ if __name__ == "__main__":
             max_completion_tokens=1500,
             frequency_penalty=0.1,
             presence_penalty=0.2,
-            stop=["<|end|>", "\n\n"],
+            stop=['<|end|>', '\n\n'],
         )
-        print("\nOpenAI LLM options instance:")
+        print('\nOpenAI LLM options instance:')
         print(openai_options.asdict())
 
-        # Test creating OpenAI options instance with reasoning parameter
-        openai_options_with_reasoning = OpenAILLMOptions(
+        # Test creating OpenAI options instance with extra_body parameter
+        openai_options_with_extra_body = OpenAILLMOptions(
             temperature=0.9,
             max_completion_tokens=2000,
-            reasoning={
-                "effort": "medium",
-                "max_tokens": 1500,
-                "exclude": True,
-                "enabled": True,
+            extra_body={
+                'effort': 'medium',
+                'max_tokens': 1500,
+                'exclude': True,
+                'enabled': True,
             },
         )
-        print("\nOpenAI LLM options instance with reasoning:")
-        print(openai_options_with_reasoning.asdict())
+        print('\nOpenAI LLM options instance with extra_body:')
+        print(openai_options_with_extra_body.asdict())
 
         # Test dict parsing functionality
-        print("\n" + "=" * 50)
-        print("TESTING DICT PARSING FUNCTIONALITY")
-        print("=" * 50)
+        print('\n' + '=' * 50)
+        print('TESTING DICT PARSING FUNCTIONALITY')
+        print('=' * 50)
 
         # Test valid JSON dict parsing
-        test_parser = ArgumentParser(description="Test dict parsing")
+        test_parser = ArgumentParser(description='Test dict parsing')
         OpenAILLMOptions.add_args(test_parser)
 
         try:
-            test_args = test_parser.parse_args(
-                ["--openai-llm-reasoning", '{"effort": "low", "max_tokens": 1000}']
-            )
-            print("✓ Valid JSON dict parsing successful:")
-            print(
-                f"  Parsed reasoning: {OpenAILLMOptions.options_dict(test_args)['reasoning']}"
-            )
+            test_args = test_parser.parse_args(['--openai-llm-extra_body', '{"effort": "low", "max_tokens": 1000}'])
+            print('✓ Valid JSON dict parsing successful:')
+            print(f'  Parsed extra_body: {OpenAILLMOptions.options_dict(test_args)["extra_body"]}')
         except Exception as e:
-            print(f"✗ Valid JSON dict parsing failed: {e}")
+            print(f'✗ Valid JSON dict parsing failed: {e}')
 
         # Test invalid JSON dict parsing
         try:
             test_args = test_parser.parse_args(
                 [
-                    "--openai-llm-reasoning",
+                    '--openai-llm-extra_body',
                     '{"effort": "low", "max_tokens": 1000',  # Missing closing brace
                 ]
             )
             print("✗ Invalid JSON should have failed but didn't")
         except SystemExit:
-            print("✓ Invalid JSON dict parsing correctly rejected")
+            print('✓ Invalid JSON dict parsing correctly rejected')
         except Exception as e:
-            print(f"✓ Invalid JSON dict parsing correctly rejected: {e}")
+            print(f'✓ Invalid JSON dict parsing correctly rejected: {e}')
 
         # Test non-dict JSON parsing
         try:
             test_args = test_parser.parse_args(
                 [
-                    "--openai-llm-reasoning",
+                    '--openai-llm-extra_body',
                     '["not", "a", "dict"]',  # Array instead of dict
                 ]
             )
             print("✗ Non-dict JSON should have failed but didn't")
         except SystemExit:
-            print("✓ Non-dict JSON parsing correctly rejected")
+            print('✓ Non-dict JSON parsing correctly rejected')
         except Exception as e:
-            print(f"✓ Non-dict JSON parsing correctly rejected: {e}")
+            print(f'✓ Non-dict JSON parsing correctly rejected: {e}')
 
-        print("\n" + "=" * 50)
-        print("TESTING ENVIRONMENT VARIABLE SUPPORT")
-        print("=" * 50)
+        print('\n' + '=' * 50)
+        print('TESTING ENVIRONMENT VARIABLE SUPPORT')
+        print('=' * 50)
 
         # Test environment variable support for dict
         import os
 
-        os.environ["OPENAI_LLM_REASONING"] = (
-            '{"effort": "high", "max_tokens": 3000, "exclude": false}'
-        )
+        os.environ['OPENAI_LLM_EXTRA_BODY'] = '{"effort": "high", "max_tokens": 3000, "exclude": false}'
 
-        env_parser = ArgumentParser(description="Test env var dict parsing")
+        env_parser = ArgumentParser(description='Test env var dict parsing')
         OpenAILLMOptions.add_args(env_parser)
 
         try:
-            env_args = env_parser.parse_args(
-                []
-            )  # No command line args, should use env var
-            reasoning_from_env = OpenAILLMOptions.options_dict(env_args).get(
-                "reasoning"
-            )
-            if reasoning_from_env:
-                print("✓ Environment variable dict parsing successful:")
-                print(f"  Parsed reasoning from env: {reasoning_from_env}")
+            env_args = env_parser.parse_args([])  # No command line args, should use env var
+            extra_body_from_env = OpenAILLMOptions.options_dict(env_args).get('extra_body')
+            if extra_body_from_env:
+                print('✓ Environment variable dict parsing successful:')
+                print(f'  Parsed extra_body from env: {extra_body_from_env}')
             else:
-                print("✗ Environment variable dict parsing failed: No reasoning found")
+                print('✗ Environment variable dict parsing failed: No extra_body found')
         except Exception as e:
-            print(f"✗ Environment variable dict parsing failed: {e}")
+            print(f'✗ Environment variable dict parsing failed: {e}')
         finally:
             # Clean up environment variable
-            if "OPENAI_LLM_REASONING" in os.environ:
-                del os.environ["OPENAI_LLM_REASONING"]
+            if 'OPENAI_LLM_REASONING' in os.environ:
+                del os.environ['OPENAI_LLM_REASONING']
 
     else:
         print(BindingOptions.generate_dot_env_sample())

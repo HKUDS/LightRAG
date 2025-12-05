@@ -1,33 +1,35 @@
+from typing import Any
 import pipmaster as pm
 from llama_index.core.llms import (
     ChatMessage,
-    MessageRole,
     ChatResponse,
+    MessageRole,
 )
-from typing import List, Optional
+
 from lightrag.utils import logger
 
 # Install required dependencies
-if not pm.is_installed("llama-index"):
-    pm.install("llama-index")
+if not pm.is_installed('llama-index'):
+    pm.install('llama-index')
 
+import numpy as np
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.settings import Settings as LlamaIndexSettings
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+)
+
+from lightrag.exceptions import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
 )
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
 )
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
-import numpy as np
 
 
 def configure_llama_index(settings: LlamaIndexSettings = None, **kwargs):
@@ -46,7 +48,7 @@ def configure_llama_index(settings: LlamaIndexSettings = None, **kwargs):
         if hasattr(settings, key):
             setattr(settings, key, value)
         else:
-            logger.warning(f"Unknown LlamaIndex setting: {key}")
+            logger.warning(f'Unknown LlamaIndex setting: {key}')
 
     # Set as global settings
     LlamaIndexSettings.set_global(settings)
@@ -58,26 +60,18 @@ def format_chat_messages(messages):
     formatted_messages = []
 
     for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
+        role = msg.get('role', 'user')
+        content = msg.get('content', '')
 
-        if role == "system":
-            formatted_messages.append(
-                ChatMessage(role=MessageRole.SYSTEM, content=content)
-            )
-        elif role == "assistant":
-            formatted_messages.append(
-                ChatMessage(role=MessageRole.ASSISTANT, content=content)
-            )
-        elif role == "user":
-            formatted_messages.append(
-                ChatMessage(role=MessageRole.USER, content=content)
-            )
+        if role == 'system':
+            formatted_messages.append(ChatMessage(role=MessageRole.SYSTEM, content=content))
+        elif role == 'assistant':
+            formatted_messages.append(ChatMessage(role=MessageRole.ASSISTANT, content=content))
+        elif role == 'user':
+            formatted_messages.append(ChatMessage(role=MessageRole.USER, content=content))
         else:
-            logger.warning(f"Unknown role {role}, treating as user message")
-            formatted_messages.append(
-                ChatMessage(role=MessageRole.USER, content=content)
-            )
+            logger.warning(f'Unknown role {role}, treating as user message')
+            formatted_messages.append(ChatMessage(role=MessageRole.USER, content=content))
 
     return formatted_messages
 
@@ -85,57 +79,51 @@ def format_chat_messages(messages):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
 )
 async def llama_index_complete_if_cache(
-    model: str,
+    model: Any,
     prompt: str,
-    system_prompt: Optional[str] = None,
-    history_messages: List[dict] = [],
+    system_prompt: str | None = None,
+    history_messages: list[dict] | None = None,
     enable_cot: bool = False,
-    chat_kwargs={},
+    chat_kwargs=None,
 ) -> str:
     """Complete the prompt using LlamaIndex."""
+    if chat_kwargs is None:
+        chat_kwargs = {}
+    if history_messages is None:
+        history_messages = []
     if enable_cot:
-        logger.debug(
-            "enable_cot=True is not supported for LlamaIndex implementation and will be ignored."
-        )
+        logger.debug('enable_cot=True is not supported for LlamaIndex implementation and will be ignored.')
     try:
         # Format messages for chat
         formatted_messages = []
 
         # Add system message if provided
         if system_prompt:
-            formatted_messages.append(
-                ChatMessage(role=MessageRole.SYSTEM, content=system_prompt)
-            )
+            formatted_messages.append(ChatMessage(role=MessageRole.SYSTEM, content=system_prompt))
 
         # Add history messages
         for msg in history_messages:
             formatted_messages.append(
                 ChatMessage(
-                    role=MessageRole.USER
-                    if msg["role"] == "user"
-                    else MessageRole.ASSISTANT,
-                    content=msg["content"],
+                    role=MessageRole.USER if msg['role'] == 'user' else MessageRole.ASSISTANT,
+                    content=msg['content'],
                 )
             )
 
         # Add current prompt
         formatted_messages.append(ChatMessage(role=MessageRole.USER, content=prompt))
 
-        response: ChatResponse = await model.achat(
-            messages=formatted_messages, **chat_kwargs
-        )
+        response: ChatResponse = await model.achat(messages=formatted_messages, **chat_kwargs)
 
         # In newer versions, the response is in message.content
         content = response.message.content
         return content
 
     except Exception as e:
-        logger.error(f"Error in llama_index_complete_if_cache: {str(e)}")
+        logger.error(f'Error in llama_index_complete_if_cache: {e!s}')
         raise
 
 
@@ -162,9 +150,9 @@ async def llama_index_complete(
     if history_messages is None:
         history_messages = []
 
-    kwargs.pop("keyword_extraction", None)
+    kwargs.pop('keyword_extraction', None)
     result = await llama_index_complete_if_cache(
-        kwargs.get("llm_instance"),
+        kwargs.get('llm_instance'),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -178,9 +166,7 @@ async def llama_index_complete(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
 )
 async def llama_index_embed(
     texts: list[str],
@@ -201,7 +187,7 @@ async def llama_index_embed(
         configure_llama_index(settings)
 
     if embed_model is None:
-        raise ValueError("embed_model must be provided")
+        raise ValueError('embed_model must be provided')
 
     # Use _get_text_embeddings for batch processing
     embeddings = embed_model._get_text_embeddings(texts)

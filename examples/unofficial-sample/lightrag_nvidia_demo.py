@@ -1,44 +1,44 @@
-import os
 import asyncio
+import os
+
 import nest_asyncio
+import numpy as np
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import (
-    openai_complete_if_cache,
     nvidia_openai_embed,
+    openai_complete_if_cache,
 )
-from lightrag.utils import EmbeddingFunc
-import numpy as np
 
 # for custom llm_model_func
-from lightrag.utils import locate_json_string_body_from_string
+from lightrag.utils import EmbeddingFunc, locate_json_string_body_from_string
 
 nest_asyncio.apply()
 
-WORKING_DIR = "./dickens"
+WORKING_DIR = './dickens'
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 # some method to use your API key (choose one)
 # NVIDIA_OPENAI_API_KEY = os.getenv("NVIDIA_OPENAI_API_KEY")
-NVIDIA_OPENAI_API_KEY = "nvapi-xxxx"  # your api key
+NVIDIA_OPENAI_API_KEY = 'nvapi-xxxx'  # your api key
 
 # using pre-defined function for nvidia LLM API. OpenAI compatible
 # llm_model_func = nvidia_openai_complete
 
 
 # If you trying to make custom llm_model_func to use llm model on NVIDIA API like other example:
-async def llm_model_func(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
-) -> str:
+async def llm_model_func(prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs) -> str:
+    if history_messages is None:
+        history_messages = []
     result = await openai_complete_if_cache(
-        "nvidia/llama-3.1-nemotron-70b-instruct",
+        'nvidia/llama-3.1-nemotron-70b-instruct',
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=NVIDIA_OPENAI_API_KEY,
-        base_url="https://integrate.api.nvidia.com/v1",
+        base_url='https://integrate.api.nvidia.com/v1',
         **kwargs,
     )
     if keyword_extraction:
@@ -47,7 +47,7 @@ async def llm_model_func(
 
 
 # custom embedding
-nvidia_embed_model = "nvidia/nv-embedqa-e5-v5"
+nvidia_embed_model = 'nvidia/nv-embedqa-e5-v5'
 
 
 async def indexing_embedding_func(texts: list[str]) -> np.ndarray:
@@ -56,10 +56,10 @@ async def indexing_embedding_func(texts: list[str]) -> np.ndarray:
         model=nvidia_embed_model,  # maximum 512 token
         # model="nvidia/llama-3.2-nv-embedqa-1b-v1",
         api_key=NVIDIA_OPENAI_API_KEY,
-        base_url="https://integrate.api.nvidia.com/v1",
-        input_type="passage",
-        trunc="END",  # handling on server side if input token is longer than maximum token
-        encode="float",
+        base_url='https://integrate.api.nvidia.com/v1',
+        input_type='passage',
+        trunc='END',  # handling on server side if input token is longer than maximum token
+        encode='float',
     )
 
 
@@ -69,16 +69,16 @@ async def query_embedding_func(texts: list[str]) -> np.ndarray:
         model=nvidia_embed_model,  # maximum 512 token
         # model="nvidia/llama-3.2-nv-embedqa-1b-v1",
         api_key=NVIDIA_OPENAI_API_KEY,
-        base_url="https://integrate.api.nvidia.com/v1",
-        input_type="query",
-        trunc="END",  # handling on server side if input token is longer than maximum token
-        encode="float",
+        base_url='https://integrate.api.nvidia.com/v1',
+        input_type='query',
+        trunc='END',  # handling on server side if input token is longer than maximum token
+        encode='float',
     )
 
 
 # dimension are same
 async def get_embedding_dim():
-    test_text = ["This is a test sentence."]
+    test_text = ['This is a test sentence.']
     embedding = await indexing_embedding_func(test_text)
     embedding_dim = embedding.shape[1]
     return embedding_dim
@@ -86,11 +86,11 @@ async def get_embedding_dim():
 
 # function test
 async def test_funcs():
-    result = await llm_model_func("How are you?")
-    print("llm_model_func: ", result)
+    result = await llm_model_func('How are you?')
+    print('llm_model_func: ', result)
 
-    result = await indexing_embedding_func(["How are you?"])
-    print("embedding_func: ", result)
+    result = await indexing_embedding_func(['How are you?'])
+    print('embedding_func: ', result)
 
 
 # asyncio.run(test_funcs())
@@ -98,7 +98,7 @@ async def test_funcs():
 
 async def initialize_rag():
     embedding_dimension = await get_embedding_dim()
-    print(f"Detected embedding dimension: {embedding_dimension}")
+    print(f'Detected embedding dimension: {embedding_dimension}')
 
     # lightRAG class during indexing
     rag = LightRAG(
@@ -124,45 +124,37 @@ async def main():
         rag = await initialize_rag()
 
         # reading file
-        with open("./book.txt", "r", encoding="utf-8") as f:
+        with open('./book.txt', encoding='utf-8') as f:
             await rag.ainsert(f.read())
 
         # Perform naive search
-        print("==============Naive===============")
-        print(
-            await rag.aquery(
-                "What are the top themes in this story?", param=QueryParam(mode="naive")
-            )
-        )
+        print('==============Naive===============')
+        print(await rag.aquery('What are the top themes in this story?', param=QueryParam(mode='naive')))
 
         # Perform local search
-        print("==============local===============")
-        print(
-            await rag.aquery(
-                "What are the top themes in this story?", param=QueryParam(mode="local")
-            )
-        )
+        print('==============local===============')
+        print(await rag.aquery('What are the top themes in this story?', param=QueryParam(mode='local')))
 
         # Perform global search
-        print("==============global===============")
+        print('==============global===============')
         print(
             await rag.aquery(
-                "What are the top themes in this story?",
-                param=QueryParam(mode="global"),
+                'What are the top themes in this story?',
+                param=QueryParam(mode='global'),
             )
         )
 
         # Perform hybrid search
-        print("==============hybrid===============")
+        print('==============hybrid===============')
         print(
             await rag.aquery(
-                "What are the top themes in this story?",
-                param=QueryParam(mode="hybrid"),
+                'What are the top themes in this story?',
+                param=QueryParam(mode='hybrid'),
             )
         )
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f'An error occurred: {e}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

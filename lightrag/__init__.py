@@ -1,5 +1,6 @@
-from .lightrag import LightRAG as LightRAG, QueryParam as QueryParam
+from .lightrag import LightRAG as LightRAG
+from .lightrag import QueryParam as QueryParam
 
-__version__ = "1.4.9.9"
-__author__ = "Zirui Guo"
-__url__ = "https://github.com/HKUDS/LightRAG"
+__version__ = '1.4.9.9'
+__author__ = 'Zirui Guo'
+__url__ = 'https://github.com/HKUDS/LightRAG'

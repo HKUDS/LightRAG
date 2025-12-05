@@ -13,13 +13,13 @@ Note: RAGEvaluator is imported lazily to avoid import errors
 when ragas/datasets are not installed.
 """
 
-__all__ = ["RAGEvaluator"]
+__all__ = ['RAGEvaluator']
 
 
 def __getattr__(name):
     """Lazy import to avoid dependency errors when ragas is not installed."""
-    if name == "RAGEvaluator":
+    if name == 'RAGEvaluator':
         from .eval_rag_quality import RAGEvaluator
 
         return RAGEvaluator
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

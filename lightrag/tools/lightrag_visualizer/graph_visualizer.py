@@ -1,40 +1,38 @@
-from typing import Optional, Tuple, Dict, List
-import numpy as np
 import networkx as nx
+import numpy as np
 import pipmaster as pm
 
 # Added automatic libraries install using pipmaster
-if not pm.is_installed("moderngl"):
-    pm.install("moderngl")
-if not pm.is_installed("imgui_bundle"):
-    pm.install("imgui_bundle")
-if not pm.is_installed("pyglm"):
-    pm.install("pyglm")
-if not pm.is_installed("python-louvain"):
-    pm.install("python-louvain")
+if not pm.is_installed('moderngl'):
+    pm.install('moderngl')
+if not pm.is_installed('imgui_bundle'):
+    pm.install('imgui_bundle')
+if not pm.is_installed('pyglm'):
+    pm.install('pyglm')
+if not pm.is_installed('python-louvain'):
+    pm.install('python-louvain')
 
-import moderngl
-from imgui_bundle import imgui, immapp, hello_imgui
-import community
-import glm
-import tkinter as tk
-from tkinter import filedialog
-import traceback
 import colorsys
 import os
+import tkinter as tk
+import traceback
+from tkinter import filedialog
 
-CUSTOM_FONT = "font.ttf"
+import community
+import glm
+import moderngl
+from imgui_bundle import hello_imgui, imgui, immapp
 
-DEFAULT_FONT_ENG = "Geist-Regular.ttf"
-DEFAULT_FONT_CHI = "SmileySans-Oblique.ttf"
+CUSTOM_FONT = 'font.ttf'
+
+DEFAULT_FONT_ENG = 'Geist-Regular.ttf'
+DEFAULT_FONT_CHI = 'SmileySans-Oblique.ttf'
 
 
 class Node3D:
     """Class representing a 3D node in the graph"""
 
-    def __init__(
-        self, position: glm.vec3, color: glm.vec3, label: str, size: float, idx: int
-    ):
+    def __init__(self, position: glm.vec3, color: glm.vec3, label: str, size: float, idx: int):
         self.position = position
         self.color = color
         self.label = label
@@ -47,9 +45,9 @@ class GraphViewer:
 
     def __init__(self):
         self.glctx = None  # ModernGL context
-        self.graph: Optional[nx.Graph] = None
-        self.nodes: List[Node3D] = []
-        self.id_node_map: Dict[str, Node3D] = {}
+        self.graph: nx.Graph | None = None
+        self.nodes: list[Node3D] = []
+        self.id_node_map: dict[str, Node3D] = {}
         self.communities = None
         self.community_colors = None
 
@@ -67,14 +65,14 @@ class GraphViewer:
         self.mouse_sensitivity = 0.15
 
         # Graph visualization settings
-        self.layout_type = "Spring"
+        self.layout_type = 'Spring'
         self.node_scale = 0.2
         self.edge_width = 0.5
         self.show_labels = True
         self.label_size = 2
         self.label_color = (1.0, 1.0, 1.0, 1.0)
         self.label_culling_distance = 10.0
-        self.available_layouts = ("Spring", "Circular", "Shell", "Random")
+        self.available_layouts = ('Spring', 'Circular', 'Shell', 'Random')
         self.background_color = (0.05, 0.05, 0.05, 1.0)
 
         # Mouse interaction
@@ -85,11 +83,11 @@ class GraphViewer:
 
         # File dialog state
         self.show_load_error = False
-        self.error_message = ""
+        self.error_message = ''
 
         # Selection state
-        self.selected_node: Optional[Node3D] = None
-        self.highlighted_node: Optional[Node3D] = None
+        self.selected_node: Node3D | None = None
+        self.highlighted_node: Node3D | None = None
 
         # Node id map
         self.node_id_fbo = None
@@ -135,11 +133,7 @@ class GraphViewer:
 
     def handle_mouse_interaction(self):
         """Handle mouse interaction for camera control and node selection"""
-        if (
-            imgui.is_any_item_active()
-            or imgui.is_any_item_hovered()
-            or imgui.is_any_item_focused()
-        ):
+        if imgui.is_any_item_active() or imgui.is_any_item_hovered() or imgui.is_any_item_focused():
             return
 
         io = imgui.get_io()
@@ -213,10 +207,7 @@ class GraphViewer:
         pos = nx.spring_layout(
             self.graph,
             dim=3,
-            pos={
-                node_id: list(node.position)
-                for node_id, node in self.id_node_map.items()
-            },
+            pos={node_id: list(node.position) for node_id, node in self.id_node_map.items()},
             k=2.0,
             iterations=100,
             weight=None,
@@ -229,19 +220,19 @@ class GraphViewer:
 
     def render_node_details(self):
         """Render node details window"""
-        if self.selected_node and imgui.begin("Node Details"):
-            imgui.text(f"ID: {self.selected_node.label}")
+        if self.selected_node and imgui.begin('Node Details'):
+            imgui.text(f'ID: {self.selected_node.label}')
 
             if self.graph:
                 node_data = self.graph.nodes[self.selected_node.label]
-                imgui.text(f"Type: {node_data.get('type', 'default')}")
+                imgui.text(f'Type: {node_data.get("type", "default")}')
 
                 degree = self.graph.degree[self.selected_node.label]
-                imgui.text(f"Degree: {degree}")
+                imgui.text(f'Degree: {degree}')
 
                 for key, value in node_data.items():
-                    if key != "type":
-                        imgui.text(f"{key}: {value}")
+                    if key != 'type':
+                        imgui.text(f'{key}: {value}')
                         if value and imgui.is_item_hovered():
                             imgui.set_tooltip(str(value))
 
@@ -249,17 +240,17 @@ class GraphViewer:
 
                 connections = self.graph[self.selected_node.label]
                 if connections:
-                    imgui.text("Connections:")
+                    imgui.text('Connections:')
                     keys = next(iter(connections.values())).keys()
                     if imgui.begin_table(
-                        "Connections",
+                        'Connections',
                         len(keys) + 1,
                         imgui.TableFlags_.borders
                         | imgui.TableFlags_.row_bg
                         | imgui.TableFlags_.resizable
                         | imgui.TableFlags_.hideable,
                     ):
-                        imgui.table_setup_column("Node")
+                        imgui.table_setup_column('Node')
                         for key in keys:
                             imgui.table_setup_column(key)
                         imgui.table_headers_row()
@@ -273,7 +264,7 @@ class GraphViewer:
                                 self.position = self.selected_node.position - self.front
                             for idx, key in enumerate(keys):
                                 imgui.table_set_column_index(idx + 1)
-                                value = str(edge_data.get(key, ""))
+                                value = str(edge_data.get(key, ''))
                                 imgui.text(value)
                                 if value and imgui.is_item_hovered():
                                     imgui.set_tooltip(value)
@@ -526,7 +517,7 @@ class GraphViewer:
             self.calculate_layout()
             self.update_buffers()
             self.show_load_error = False
-            self.error_message = ""
+            self.error_message = ''
         except Exception as _:
             self.show_load_error = True
             self.error_message = traceback.format_exc()
@@ -543,14 +534,12 @@ class GraphViewer:
         self.community_colors = generate_colors(num_communities)
 
         # Calculate layout based on selected type
-        if self.layout_type == "Spring":
-            pos = nx.spring_layout(
-                self.graph, dim=3, k=2.0, iterations=100, weight=None
-            )
-        elif self.layout_type == "Circular":
+        if self.layout_type == 'Spring':
+            pos = nx.spring_layout(self.graph, dim=3, k=2.0, iterations=100, weight=None)
+        elif self.layout_type == 'Circular':
             pos_2d = nx.circular_layout(self.graph)
             pos = {node: np.array((x, 0.0, y)) for node, (x, y) in pos_2d.items()}
-        elif self.layout_type == "Shell":
+        elif self.layout_type == 'Shell':
             # Group nodes by community for shell layout
             comm_lists = [[] for _ in range(num_communities)]
             for node, comm in self.communities.items():
@@ -635,10 +624,10 @@ class GraphViewer:
             self.node_vao = self.glctx.vertex_array(
                 self.node_prog,
                 [
-                    (self.sphere_pos_vbo, "3f", "in_position"),
-                    (self.node_vbo, "3f /i", "in_instance_position"),
-                    (self.node_color_vbo, "3f /i", "in_instance_color"),
-                    (self.node_size_vbo, "f /i", "in_instance_size"),
+                    (self.sphere_pos_vbo, '3f', 'in_position'),
+                    (self.node_vbo, '3f /i', 'in_instance_position'),
+                    (self.node_color_vbo, '3f /i', 'in_instance_color'),
+                    (self.node_size_vbo, 'f /i', 'in_instance_size'),
                 ],
                 index_buffer=self.sphere_index_buffer,
                 index_element_size=4,
@@ -648,9 +637,9 @@ class GraphViewer:
             self.node_id_vao = self.glctx.vertex_array(
                 self.node_id_prog,
                 [
-                    (self.sphere_pos_vbo, "3f", "in_position"),
-                    (self.node_vbo, "3f /i", "in_instance_position"),
-                    (self.node_size_vbo, "f /i", "in_instance_size"),
+                    (self.sphere_pos_vbo, '3f', 'in_position'),
+                    (self.node_vbo, '3f /i', 'in_instance_position'),
+                    (self.node_size_vbo, 'f /i', 'in_instance_size'),
                 ],
                 index_buffer=self.sphere_index_buffer,
                 index_element_size=4,
@@ -681,16 +670,14 @@ class GraphViewer:
             self.edge_vao = self.glctx.vertex_array(
                 self.edge_prog,
                 [
-                    (self.edge_vbo, "3f", "in_position"),
-                    (self.edge_color_vbo, "3f", "in_color"),
+                    (self.edge_vbo, '3f', 'in_position'),
+                    (self.edge_color_vbo, '3f', 'in_color'),
                 ],
             )
 
     def update_view_proj_matrix(self):
         """Update view matrix based on camera parameters"""
-        self.view_matrix = glm.lookAt(
-            self.position, self.position + self.front, self.up
-        )
+        self.view_matrix = glm.lookAt(self.position, self.position + self.front, self.up)
 
         aspect_ratio = self.window_width / self.window_height
         self.proj_matrix = glm.perspective(
@@ -700,7 +687,7 @@ class GraphViewer:
             1000.0,  # Far plane
         )
 
-    def find_node_at(self, screen_pos: Tuple[int, int]) -> Optional[Node3D]:
+    def find_node_at(self, screen_pos: tuple[int, int]) -> Node3D | None:
         """Find the node at a specific screen position"""
         if (
             self.node_id_texture_np is None
@@ -720,26 +707,26 @@ class GraphViewer:
         if pixel[3] == 0:
             return None
 
-        R = int(round(pixel[0] * 255))
-        G = int(round(pixel[1] * 255))
-        B = int(round(pixel[2] * 255))
+        R = round(pixel[0] * 255)
+        G = round(pixel[1] * 255)
+        B = round(pixel[2] * 255)
         index = (R << 16) | (G << 8) | B
 
         if index > len(self.nodes):
             return None
         return self.nodes[index]
 
-    def is_node_visible_at(self, screen_pos: Tuple[int, int], node_idx: int) -> bool:
+    def is_node_visible_at(self, screen_pos: tuple[int, int], node_idx: int) -> bool:
         """Check if a node exists at a specific screen position"""
         node = self.find_node_at(screen_pos)
         return node is not None and node.idx == node_idx
 
     def render_settings(self):
         """Render settings window"""
-        if imgui.begin("Graph Settings"):
+        if imgui.begin('Graph Settings'):
             # Layout type combo
             changed, value = imgui.combo(
-                "Layout",
+                'Layout',
                 self.available_layouts.index(self.layout_type),
                 self.available_layouts,
             )
@@ -748,32 +735,30 @@ class GraphViewer:
                 self.calculate_layout()  # Recalculate layout when changed
 
             # Node size slider
-            changed, value = imgui.slider_float("Node Scale", self.node_scale, 0.01, 10)
+            changed, value = imgui.slider_float('Node Scale', self.node_scale, 0.01, 10)
             if changed:
                 self.node_scale = value
 
             # Edge width slider
-            changed, value = imgui.slider_float("Edge Width", self.edge_width, 0, 20)
+            changed, value = imgui.slider_float('Edge Width', self.edge_width, 0, 20)
             if changed:
                 self.edge_width = value
 
             # Show labels checkbox
-            changed, value = imgui.checkbox("Show Labels", self.show_labels)
+            changed, value = imgui.checkbox('Show Labels', self.show_labels)
 
             if changed:
                 self.show_labels = value
 
             if self.show_labels:
                 # Label size slider
-                changed, value = imgui.slider_float(
-                    "Label Size", self.label_size, 0.5, 10.0
-                )
+                changed, value = imgui.slider_float('Label Size', self.label_size, 0.5, 10.0)
                 if changed:
                     self.label_size = value
 
                 # Label color picker
                 changed, value = imgui.color_edit4(
-                    "Label Color",
+                    'Label Color',
                     self.label_color,
                     imgui.ColorEditFlags_.picker_hue_wheel,
                 )
@@ -781,15 +766,13 @@ class GraphViewer:
                     self.label_color = (value[0], value[1], value[2], value[3])
 
                 # Label culling distance slider
-                changed, value = imgui.slider_float(
-                    "Label Culling Distance", self.label_culling_distance, 0.1, 100.0
-                )
+                changed, value = imgui.slider_float('Label Culling Distance', self.label_culling_distance, 0.1, 100.0)
                 if changed:
                     self.label_culling_distance = value
 
             # Background color picker
             changed, value = imgui.color_edit4(
-                "Background Color",
+                'Background Color',
                 self.background_color,
                 imgui.ColorEditFlags_.picker_hue_wheel,
             )
@@ -805,7 +788,7 @@ class GraphViewer:
         scaled_array = self.node_id_texture_np * 255
         img = Image.fromarray(
             scaled_array.astype(np.uint8),
-            "RGBA",
+            'RGBA',
         )
         img = img.transpose(method=Image.FLIP_TOP_BOTTOM)
         img.save(filename)
@@ -813,30 +796,22 @@ class GraphViewer:
     def render_id_map(self, mvp: glm.mat4):
         """Render an offscreen id map where each node is drawn with a unique id color."""
         # Lazy initialization of id framebuffer
-        if self.node_id_texture is not None:
-            if (
-                self.node_id_texture.width != self.window_width
-                or self.node_id_texture.height != self.window_height
-            ):
-                self.node_id_fbo = None
-                self.node_id_texture = None
-                self.node_id_texture_np = None
-                self.node_id_depth = None
+        if self.node_id_texture is not None and (
+            self.node_id_texture.width != self.window_width or self.node_id_texture.height != self.window_height
+        ):
+            self.node_id_fbo = None
+            self.node_id_texture = None
+            self.node_id_texture_np = None
+            self.node_id_depth = None
 
         if self.node_id_texture is None:
-            self.node_id_texture = self.glctx.texture(
-                (self.window_width, self.window_height), components=4, dtype="f4"
-            )
-            self.node_id_depth = self.glctx.depth_renderbuffer(
-                size=(self.window_width, self.window_height)
-            )
+            self.node_id_texture = self.glctx.texture((self.window_width, self.window_height), components=4, dtype='f4')
+            self.node_id_depth = self.glctx.depth_renderbuffer(size=(self.window_width, self.window_height))
             self.node_id_fbo = self.glctx.framebuffer(
                 color_attachments=[self.node_id_texture],
                 depth_attachment=self.node_id_depth,
             )
-            self.node_id_texture_np = np.zeros(
-                (self.window_height, self.window_width, 4), dtype=np.float32
-            )
+            self.node_id_texture_np = np.zeros((self.window_height, self.window_width, 4), dtype=np.float32)
 
         # Bind the offscreen framebuffer
         self.node_id_fbo.use()
@@ -844,8 +819,8 @@ class GraphViewer:
 
         # Render nodes
         if self.node_id_vao:
-            self.node_id_prog["mvp"].write(mvp.to_bytes())
-            self.node_id_prog["scale"].write(np.float32(self.node_scale).tobytes())
+            self.node_id_prog['mvp'].write(mvp.to_bytes())
+            self.node_id_prog['scale'].write(np.float32(self.node_scale).tobytes())
             self.node_id_vao.render(moderngl.TRIANGLES)
 
         # Revert to default framebuffer
@@ -870,11 +845,9 @@ class GraphViewer:
 
         # Render edges first (under nodes)
         if self.edge_vao:
-            self.edge_prog["mvp"].write(mvp.to_bytes())
-            self.edge_prog["edge_width"].value = (
-                float(self.edge_width) * 2.0
-            )  # Double the width for better visibility
-            self.edge_prog["viewport_size"].value = (
+            self.edge_prog['mvp'].write(mvp.to_bytes())
+            self.edge_prog['edge_width'].value = float(self.edge_width) * 2.0  # Double the width for better visibility
+            self.edge_prog['viewport_size'].value = (
                 float(self.window_width),
                 float(self.window_height),
             )
@@ -882,19 +855,15 @@ class GraphViewer:
 
         # Render nodes
         if self.node_vao:
-            self.node_prog["mvp"].write(mvp.to_bytes())
-            self.node_prog["camera"].write(self.position.to_bytes())
-            self.node_prog["selected_node"].write(
-                np.int32(self.selected_node.idx).tobytes()
-                if self.selected_node
-                else np.int32(-1).tobytes()
+            self.node_prog['mvp'].write(mvp.to_bytes())
+            self.node_prog['camera'].write(self.position.to_bytes())
+            self.node_prog['selected_node'].write(
+                np.int32(self.selected_node.idx).tobytes() if self.selected_node else np.int32(-1).tobytes()
             )
-            self.node_prog["highlighted_node"].write(
-                np.int32(self.highlighted_node.idx).tobytes()
-                if self.highlighted_node
-                else np.int32(-1).tobytes()
+            self.node_prog['highlighted_node'].write(
+                np.int32(self.highlighted_node.idx).tobytes() if self.highlighted_node else np.int32(-1).tobytes()
             )
-            self.node_prog["scale"].write(np.float32(self.node_scale).tobytes())
+            self.node_prog['scale'].write(np.float32(self.node_scale).tobytes())
             self.node_vao.render(moderngl.TRIANGLES)
 
         self.glctx.disable(moderngl.BLEND)
@@ -913,18 +882,14 @@ class GraphViewer:
 
             for node in self.nodes:
                 # Project node position to screen space
-                pos = mvp * glm.vec4(
-                    node.position[0], node.position[1], node.position[2], 1.0
-                )
+                pos = mvp * glm.vec4(node.position[0], node.position[1], node.position[2], 1.0)
 
                 # Check if node is behind camera
                 if pos.w > 0 and pos.w < self.label_culling_distance:
                     screen_x = (pos.x / pos.w + 1) * self.window_width / 2
                     screen_y = (-pos.y / pos.w + 1) * self.window_height / 2
 
-                    if self.is_node_visible_at(
-                        (int(screen_x), int(screen_y)), node.idx
-                    ):
+                    if self.is_node_visible_at((int(screen_x), int(screen_y)), node.idx):
                         # Set font scale
                         imgui.set_window_font_scale(float(self.label_size) * node.size)
 
@@ -956,7 +921,7 @@ class GraphViewer:
         self.pitch = 0.0
 
 
-def generate_colors(n: int) -> List[glm.vec3]:
+def generate_colors(n: int) -> list[glm.vec3]:
     """Generate n distinct colors using HSV color space"""
     colors = []
     for i in range(n):
@@ -972,16 +937,16 @@ def generate_colors(n: int) -> List[glm.vec3]:
     return colors
 
 
-def show_file_dialog() -> Optional[str]:
+def show_file_dialog() -> str | None:
     """Show a file dialog for selecting GraphML files"""
     file_path = filedialog.askopenfilename(
-        title="Select GraphML File",
-        filetypes=[("GraphML files", "*.graphml"), ("All files", "*.*")],
+        title='Select GraphML File',
+        filetypes=[('GraphML files', '*.graphml'), ('All files', '*.*')],
     )
     return file_path if file_path else None
 
 
-def create_sphere(sectors: int = 32, rings: int = 16) -> Tuple:
+def create_sphere(sectors: int = 32, rings: int = 16) -> tuple:
     """
     Creates a sphere.
     """
@@ -1075,9 +1040,9 @@ def main():
         style.set_color_(imgui.Col_.window_bg.value, window_bg_color)
 
         # Main control window
-        imgui.begin("Graph Controls")
+        imgui.begin('Graph Controls')
 
-        if imgui.button("Load GraphML"):
+        if imgui.button('Load GraphML'):
             filepath = show_file_dialog()
             if filepath:
                 viewer.load_file(filepath)
@@ -1085,38 +1050,34 @@ def main():
         # Show error message if loading failed
         if viewer.show_load_error:
             imgui.push_style_color(imgui.Col_.text, (1.0, 0.0, 0.0, 1.0))
-            imgui.text(f"Error loading file: {viewer.error_message}")
+            imgui.text(f'Error loading file: {viewer.error_message}')
             imgui.pop_style_color()
 
         imgui.separator()
 
         # Camera controls help
-        imgui.text("Camera Controls:")
-        imgui.bullet_text("Hold Right Mouse - Look around")
-        imgui.bullet_text("W/S - Move forward/backward")
-        imgui.bullet_text("A/D - Move left/right")
-        imgui.bullet_text("Q/E - Move up/down")
-        imgui.bullet_text("Left Mouse - Select node")
-        imgui.bullet_text("Wheel - Change the movement speed")
+        imgui.text('Camera Controls:')
+        imgui.bullet_text('Hold Right Mouse - Look around')
+        imgui.bullet_text('W/S - Move forward/backward')
+        imgui.bullet_text('A/D - Move left/right')
+        imgui.bullet_text('Q/E - Move up/down')
+        imgui.bullet_text('Left Mouse - Select node')
+        imgui.bullet_text('Wheel - Change the movement speed')
 
         imgui.separator()
 
         # Camera settings
-        _, viewer.move_speed = imgui.slider_float(
-            "Movement Speed", viewer.move_speed, 0.01, 2.0
-        )
-        _, viewer.mouse_sensitivity = imgui.slider_float(
-            "Mouse Sensitivity", viewer.mouse_sensitivity, 0.01, 0.5
-        )
+        _, viewer.move_speed = imgui.slider_float('Movement Speed', viewer.move_speed, 0.01, 2.0)
+        _, viewer.mouse_sensitivity = imgui.slider_float('Mouse Sensitivity', viewer.mouse_sensitivity, 0.01, 0.5)
 
         imgui.separator()
 
-        imgui.begin_horizontal("buttons")
+        imgui.begin_horizontal('buttons')
 
-        if imgui.button("Reset Camera"):
+        if imgui.button('Reset Camera'):
             viewer.reset_view()
 
-        if imgui.button("Update Layout") and viewer.graph:
+        if imgui.button('Update Layout') and viewer.graph:
             viewer.update_layout()
 
         # if imgui.button("Save Node ID Texture"):
@@ -1135,7 +1096,7 @@ def main():
         # Render FPS
         if show_fps:
             imgui.set_window_font_scale(1)
-            fps_text = f"FPS: {hello_imgui.frame_rate():.1f}"
+            fps_text = f'FPS: {hello_imgui.frame_rate():.1f}'
             text_size = imgui.calc_text_size(fps_text)
             cursor_pos = (10, viewer.window_height - text_size.y - 10)
             draw_text_with_bg(fps_text, cursor_pos, text_size, text_bg_color)
@@ -1143,7 +1104,7 @@ def main():
         # Render highlighted node ID
         if viewer.highlighted_node:
             imgui.set_window_font_scale(1)
-            node_text = f"Node ID: {viewer.highlighted_node.label}"
+            node_text = f'Node ID: {viewer.highlighted_node.label}'
             text_size = imgui.calc_text_size(node_text)
             cursor_pos = (
                 viewer.window_width - text_size.x - 10,
@@ -1166,7 +1127,7 @@ def main():
         viewer.window_width,
         viewer.window_height,
     )
-    runner_params.app_window_params.window_title = "3D GraphML Viewer"
+    runner_params.app_window_params.window_title = '3D GraphML Viewer'
     runner_params.callbacks.show_gui = gui
     runner_params.callbacks.custom_background = custom_background
 
@@ -1177,7 +1138,7 @@ def main():
         io = imgui.get_io()
         io.fonts.tex_desired_width = 4096  # Larger texture for better CJK font quality
         font_size_pixels = 14
-        asset_dir = os.path.join(os.path.dirname(__file__), "assets")
+        asset_dir = os.path.join(os.path.dirname(__file__), 'assets')
 
         # Try to load custom font
         if not os.path.isfile(font_filename):
@@ -1217,5 +1178,5 @@ def main():
     tk_root.destroy()  # Destroy the main window
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

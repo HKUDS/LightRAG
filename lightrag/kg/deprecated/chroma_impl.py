@@ -2,14 +2,15 @@ import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any, final
+
 import numpy as np
+import pipmaster as pm
 
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
-import pipmaster as pm
 
-if not pm.is_installed("chromadb"):
-    pm.install("chromadb")
+if not pm.is_installed('chromadb'):
+    pm.install('chromadb')
 
 from chromadb import HttpClient, PersistentClient  # type: ignore
 from chromadb.config import Settings  # type: ignore
@@ -22,40 +23,38 @@ class ChromaVectorDBStorage(BaseVectorStorage):
 
     def __post_init__(self):
         try:
-            config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-            cosine_threshold = config.get("cosine_better_than_threshold")
+            config = self.global_config.get('vector_db_storage_cls_kwargs', {})
+            cosine_threshold = config.get('cosine_better_than_threshold')
             if cosine_threshold is None:
-                raise ValueError(
-                    "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
-                )
+                raise ValueError('cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs')
             self.cosine_better_than_threshold = cosine_threshold
 
-            user_collection_settings = config.get("collection_settings", {})
+            user_collection_settings = config.get('collection_settings', {})
             # Default HNSW index settings for ChromaDB
             default_collection_settings = {
                 # Distance metric used for similarity search (cosine similarity)
-                "hnsw:space": "cosine",
+                'hnsw:space': 'cosine',
                 # Number of nearest neighbors to explore during index construction
                 # Higher values = better recall but slower indexing
-                "hnsw:construction_ef": 128,
+                'hnsw:construction_ef': 128,
                 # Number of nearest neighbors to explore during search
                 # Higher values = better recall but slower search
-                "hnsw:search_ef": 128,
+                'hnsw:search_ef': 128,
                 # Number of connections per node in the HNSW graph
                 # Higher values = better recall but more memory usage
-                "hnsw:M": 16,
+                'hnsw:M': 16,
                 # Number of vectors to process in one batch during indexing
-                "hnsw:batch_size": 100,
+                'hnsw:batch_size': 100,
                 # Number of updates before forcing index synchronization
                 # Lower values = more frequent syncs but slower indexing
-                "hnsw:sync_threshold": 1000,
+                'hnsw:sync_threshold': 1000,
             }
             collection_settings = {
                 **default_collection_settings,
                 **user_collection_settings,
             }
 
-            local_path = config.get("local_path", None)
+            local_path = config.get('local_path', None)
             if local_path:
                 self._client = PersistentClient(
                     path=local_path,
@@ -65,27 +64,21 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                     ),
                 )
             else:
-                auth_provider = config.get(
-                    "auth_provider", "chromadb.auth.token_authn.TokenAuthClientProvider"
-                )
-                auth_credentials = config.get("auth_token", "secret-token")
+                auth_provider = config.get('auth_provider', 'chromadb.auth.token_authn.TokenAuthClientProvider')
+                auth_credentials = config.get('auth_token', 'secret-token')
                 headers = {}
 
-                if "token_authn" in auth_provider:
-                    headers = {
-                        config.get(
-                            "auth_header_name", "X-Chroma-Token"
-                        ): auth_credentials
-                    }
-                elif "basic_authn" in auth_provider:
-                    auth_credentials = config.get("auth_credentials", "admin:admin")
+                if 'token_authn' in auth_provider:
+                    headers = {config.get('auth_header_name', 'X-Chroma-Token'): auth_credentials}
+                elif 'basic_authn' in auth_provider:
+                    auth_credentials = config.get('auth_credentials', 'admin:admin')
 
                 self._client = HttpClient(
-                    host=config.get("host", "localhost"),
-                    port=config.get("port", 8000),
+                    host=config.get('host', 'localhost'),
+                    port=config.get('port', 8000),
                     headers=headers,
                     settings=Settings(
-                        chroma_api_impl="rest",
+                        chroma_api_impl='rest',
                         chroma_client_auth_provider=auth_provider,
                         chroma_client_auth_credentials=auth_credentials,
                         allow_reset=True,
@@ -97,19 +90,19 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                 name=self.namespace,
                 metadata={
                     **collection_settings,
-                    "dimension": self.embedding_func.embedding_dim,
+                    'dimension': self.embedding_func.embedding_dim,
                 },
             )
             # Use batch size from collection settings if specified
             self._max_batch_size = self.global_config.get(
-                "embedding_batch_num", collection_settings.get("hnsw:batch_size", 32)
+                'embedding_batch_num', collection_settings.get('hnsw:batch_size', 32)
             )
         except Exception as e:
-            logger.error(f"ChromaDB initialization failed: {str(e)}")
+            logger.error(f'ChromaDB initialization failed: {e!s}')
             raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f'Inserting {len(data)} to {self.namespace}')
         if not data:
             return
 
@@ -119,21 +112,14 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             current_time = int(time.time())
 
             ids = list(data.keys())
-            documents = [v["content"] for v in data.values()]
+            documents = [v['content'] for v in data.values()]
             metadatas = [
-                {
-                    **{k: v for k, v in item.items() if k in self.meta_fields},
-                    "created_at": current_time,
-                }
-                or {"_default": "true", "created_at": current_time}
+                {**{k: v for k, v in item.items() if k in self.meta_fields}, 'created_at': current_time}
                 for item in data.values()
             ]
 
             # Process in batches
-            batches = [
-                documents[i : i + self._max_batch_size]
-                for i in range(0, len(documents), self._max_batch_size)
-            ]
+            batches = [documents[i : i + self._max_batch_size] for i in range(0, len(documents), self._max_batch_size)]
 
             embedding_tasks = [self.embedding_func(batch) for batch in batches]
             embeddings_list = []
@@ -161,21 +147,17 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             return ids
 
         except Exception as e:
-            logger.error(f"Error during ChromaDB upsert: {str(e)}")
+            logger.error(f'Error during ChromaDB upsert: {e!s}')
             raise
 
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         try:
-            embedding = await self.embedding_func(
-                [query], _priority=5
-            )  # higher priority for query
+            embedding = await self.embedding_func([query], _priority=5)  # higher priority for query
 
             results = self._collection.query(
-                query_embeddings=embedding.tolist()
-                if not isinstance(embedding, list)
-                else embedding,
+                query_embeddings=embedding.tolist() if not isinstance(embedding, list) else embedding,
                 n_results=top_k * 2,  # Request more results to allow for filtering
-                include=["metadatas", "distances", "documents"],
+                include=['metadatas', 'distances', 'documents'],
             )
 
             # Filter results by cosine similarity threshold and take top k
@@ -185,18 +167,18 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             # Only keep results with distance below threshold, then take top k
             return [
                 {
-                    "id": results["ids"][0][i],
-                    "distance": 1 - results["distances"][0][i],
-                    "content": results["documents"][0][i],
-                    "created_at": results["metadatas"][0][i].get("created_at"),
-                    **results["metadatas"][0][i],
+                    'id': results['ids'][0][i],
+                    'distance': 1 - results['distances'][0][i],
+                    'content': results['documents'][0][i],
+                    'created_at': results['metadatas'][0][i].get('created_at'),
+                    **results['metadatas'][0][i],
                 }
-                for i in range(len(results["ids"][0]))
-                if (1 - results["distances"][0][i]) >= self.cosine_better_than_threshold
+                for i in range(len(results['ids'][0]))
+                if (1 - results['distances'][0][i]) >= self.cosine_better_than_threshold
             ][:top_k]
 
         except Exception as e:
-            logger.error(f"Error during ChromaDB query: {str(e)}")
+            logger.error(f'Error during ChromaDB query: {e!s}')
             raise
 
     async def index_done_callback(self) -> None:
@@ -210,10 +192,10 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             entity_name: The ID of the entity to delete
         """
         try:
-            logger.info(f"Deleting entity with ID {entity_name} from {self.namespace}")
+            logger.info(f'Deleting entity with ID {entity_name} from {self.namespace}')
             self._collection.delete(ids=[entity_name])
         except Exception as e:
-            logger.error(f"Error during entity deletion: {str(e)}")
+            logger.error(f'Error during entity deletion: {e!s}')
             raise
 
     async def delete_entity_relation(self, entity_name: str) -> None:
@@ -233,15 +215,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         """
         try:
             self._collection.delete(ids=ids)
-            logger.debug(
-                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
-            )
+            logger.debug(f'Successfully deleted {len(ids)} vectors from {self.namespace}')
         except Exception as e:
-            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
-            raise
-
-        except Exception as e:
-            logger.error(f"Error during prefix search in ChromaDB: {str(e)}")
+            logger.error(f'Error while deleting vectors from {self.namespace}: {e}')
             raise
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -255,23 +231,21 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         """
         try:
             # Query the collection for a single vector by ID
-            result = self._collection.get(
-                ids=[id], include=["metadatas", "embeddings", "documents"]
-            )
+            result = self._collection.get(ids=[id], include=['metadatas', 'embeddings', 'documents'])
 
-            if not result or not result["ids"] or len(result["ids"]) == 0:
+            if not result or not result['ids'] or len(result['ids']) == 0:
                 return None
 
             # Format the result to match the expected structure
             return {
-                "id": result["ids"][0],
-                "vector": result["embeddings"][0],
-                "content": result["documents"][0],
-                "created_at": result["metadatas"][0].get("created_at"),
-                **result["metadatas"][0],
+                'id': result['ids'][0],
+                'vector': result['embeddings'][0],
+                'content': result['documents'][0],
+                'created_at': result['metadatas'][0].get('created_at'),
+                **result['metadatas'][0],
             }
         except Exception as e:
-            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            logger.error(f'Error retrieving vector data for ID {id}: {e}')
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -288,22 +262,20 @@ class ChromaVectorDBStorage(BaseVectorStorage):
 
         try:
             # Query the collection for multiple vectors by IDs
-            result = self._collection.get(
-                ids=ids, include=["metadatas", "embeddings", "documents"]
-            )
+            result = self._collection.get(ids=ids, include=['metadatas', 'embeddings', 'documents'])
 
-            if not result or not result["ids"] or len(result["ids"]) == 0:
+            if not result or not result['ids'] or len(result['ids']) == 0:
                 return []
 
             # Format the results to match the expected structure and preserve ordering
             formatted_map: dict[str, dict[str, Any]] = {}
-            for i, result_id in enumerate(result["ids"]):
+            for i, result_id in enumerate(result['ids']):
                 record = {
-                    "id": result_id,
-                    "vector": result["embeddings"][i],
-                    "content": result["documents"][i],
-                    "created_at": result["metadatas"][i].get("created_at"),
-                    **result["metadatas"][i],
+                    'id': result_id,
+                    'vector': result['embeddings'][i],
+                    'content': result['documents'][i],
+                    'created_at': result['metadatas'][i].get('created_at'),
+                    **result['metadatas'][i],
                 }
                 formatted_map[str(result_id)] = record
 
@@ -313,7 +285,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
 
             return ordered_results
         except Exception as e:
-            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            logger.error(f'Error retrieving vector data for IDs {ids}: {e}')
             return []
 
     async def drop(self) -> dict[str, str]:
@@ -329,14 +301,12 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         try:
             # Get all IDs in the collection
             result = self._collection.get(include=[])
-            if result and result["ids"] and len(result["ids"]) > 0:
+            if result and result['ids'] and len(result['ids']) > 0:
                 # Delete all documents
-                self._collection.delete(ids=result["ids"])
+                self._collection.delete(ids=result['ids'])
 
-            logger.info(
-                f"Process {os.getpid()} drop ChromaDB collection {self.namespace}"
-            )
-            return {"status": "success", "message": "data dropped"}
+            logger.info(f'Process {os.getpid()} drop ChromaDB collection {self.namespace}')
+            return {'status': 'success', 'message': 'data dropped'}
         except Exception as e:
-            logger.error(f"Error dropping ChromaDB collection {self.namespace}: {e}")
-            return {"status": "error", "message": str(e)}
+            logger.error(f'Error dropping ChromaDB collection {self.namespace}: {e}')
+            return {'status': 'error', 'message': str(e)}

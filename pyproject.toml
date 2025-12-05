@@ -47,6 +47,7 @@ pytest = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
+    "ty",
 ]
 
 api = [
@@ -136,6 +137,7 @@ test = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
+    "ty",
 ]
 
 evaluation = [

@@ -1,22 +1,22 @@
+import asyncio
+import json
 import os
 import time
-import asyncio
-from typing import Any, final
-import json
-import numpy as np
 from dataclasses import dataclass
+from typing import Any, final
 
-from lightrag.utils import logger, compute_mdhash_id
+# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
+import faiss  # type: ignore
+import numpy as np
+
 from lightrag.base import BaseVectorStorage
+from lightrag.utils import compute_mdhash_id, logger
 
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
-
-# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
-import faiss  # type: ignore
 
 
 @final
@@ -29,16 +29,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
     def __post_init__(self):
         # Grab config values if available
-        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        cosine_threshold = kwargs.get("cosine_better_than_threshold")
+        kwargs = self.global_config.get('vector_db_storage_cls_kwargs', {})
+        cosine_threshold = kwargs.get('cosine_better_than_threshold')
         if cosine_threshold is None:
-            raise ValueError(
-                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
-            )
+            raise ValueError('cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs')
         self.cosine_better_than_threshold = cosine_threshold
 
         # Where to save index file if you want persistent storage
-        working_dir = self.global_config["working_dir"]
+        working_dir = self.global_config['working_dir']
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
@@ -46,15 +44,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
         else:
             # Default behavior when workspace is empty
             workspace_dir = working_dir
-            self.workspace = ""
+            self.workspace = ''
 
         os.makedirs(workspace_dir, exist_ok=True)
-        self._faiss_index_file = os.path.join(
-            workspace_dir, f"faiss_index_{self.namespace}.index"
-        )
-        self._meta_file = self._faiss_index_file + ".meta.json"
+        self._faiss_index_file = os.path.join(workspace_dir, f'faiss_index_{self.namespace}.index')
+        self._meta_file = self._faiss_index_file + '.meta.json'
 
-        self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._max_batch_size = self.global_config['embedding_batch_num']
         # Embedding dimension (e.g. 768) must match your embedding function
         self._dim = self.embedding_func.embedding_dim
 
@@ -71,13 +67,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(
-            self.namespace, workspace=self.workspace
-        )
+        self.storage_updated = await get_update_flag(self.namespace, workspace=self.workspace)
         # Get the storage lock for use in other methods
-        self._storage_lock = get_namespace_lock(
-            self.namespace, workspace=self.workspace
-        )
+        self._storage_lock = get_namespace_lock(self.namespace, workspace=self.workspace)
 
     async def _get_index(self):
         """Check if the shtorage should be reloaded"""
@@ -86,7 +78,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # Check if storage was updated by another process
             if self.storage_updated.value:
                 logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process"
+                    f'[{self.workspace}] Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process'
                 )
                 # Reload data
                 self._index = faiss.IndexFlatIP(self._dim)
@@ -111,9 +103,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
            ...
         }
         """
-        logger.debug(
-            f"[{self.workspace}] FAISS: Inserting {len(data)} to {self.namespace}"
-        )
+        logger.debug(f'[{self.workspace}] FAISS: Inserting {len(data)} to {self.namespace}')
         if not data:
             return
 
@@ -125,16 +115,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
         for k, v in data.items():
             # Store only known meta fields if needed
             meta = {mf: v[mf] for mf in self.meta_fields if mf in v}
-            meta["__id__"] = k
-            meta["__created_at__"] = current_time
+            meta['__id__'] = k
+            meta['__created_at__'] = current_time
             list_data.append(meta)
-            contents.append(v["content"])
+            contents.append(v['content'])
 
         # Split into batches for embedding if needed
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
+        batches = [contents[i : i + self._max_batch_size] for i in range(0, len(contents), self._max_batch_size)]
 
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
@@ -143,7 +130,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list, axis=0)
         if len(embeddings) != len(list_data):
             logger.error(
-                f"[{self.workspace}] Embedding size mismatch. Embeddings: {len(embeddings)}, Data: {len(list_data)}"
+                f'[{self.workspace}] Embedding size mismatch. Embeddings: {len(embeddings)}, Data: {len(list_data)}'
             )
             return []
 
@@ -156,8 +143,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # 2. Remove them
         # 3. Add the new vectors
         existing_ids_to_remove = []
-        for meta, emb in zip(list_data, embeddings):
-            faiss_internal_id = self._find_faiss_id_by_custom_id(meta["__id__"])
+        for meta, _emb in zip(list_data, embeddings, strict=False):
+            faiss_internal_id = self._find_faiss_id_by_custom_id(meta['__id__'])
             if faiss_internal_id is not None:
                 existing_ids_to_remove.append(faiss_internal_id)
 
@@ -173,26 +160,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
         for i, meta in enumerate(list_data):
             fid = start_idx + i
             # Store the raw vector so we can rebuild if something is removed
-            meta["__vector__"] = embeddings[i].tolist()
+            meta['__vector__'] = embeddings[i].tolist()
             self._id_to_meta.update({fid: meta})
 
-        logger.debug(
-            f"[{self.workspace}] Upserted {len(list_data)} vectors into Faiss index."
-        )
-        return [m["__id__"] for m in list_data]
+        logger.debug(f'[{self.workspace}] Upserted {len(list_data)} vectors into Faiss index.')
+        return [m['__id__'] for m in list_data]
 
-    async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
-    ) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int, query_embedding: list[float] | None = None) -> list[dict[str, Any]]:
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
         if query_embedding is not None:
             embedding = np.array([query_embedding], dtype=np.float32)
         else:
-            embedding = await self.embedding_func(
-                [query], _priority=5
-            )  # higher priority for query
+            embedding = await self.embedding_func([query], _priority=5)  # higher priority for query
             # embedding is shape (1, dim)
             embedding = np.array(embedding, dtype=np.float32)
 
@@ -206,7 +187,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         indices = indices[0]
 
         results = []
-        for dist, idx in zip(distances, indices):
+        for dist, idx in zip(distances, indices, strict=False):
             if idx == -1:
                 # Faiss returns -1 if no neighbor
                 continue
@@ -217,13 +198,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
             meta = self._id_to_meta.get(idx, {})
             # Filter out __vector__ from query results to avoid returning large vector data
-            filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
+            filtered_meta = {k: v for k, v in meta.items() if k != '__vector__'}
             results.append(
                 {
                     **filtered_meta,
-                    "id": meta.get("__id__"),
-                    "distance": float(dist),
-                    "created_at": meta.get("__created_at__"),
+                    'id': meta.get('__id__'),
+                    'distance': float(dist),
+                    'created_at': meta.get('__created_at__'),
                 }
             )
 
@@ -232,7 +213,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     @property
     def client_storage(self):
         # Return whatever structure LightRAG might need for debugging
-        return {"data": list(self._id_to_meta.values())}
+        return {'data': list(self._id_to_meta.values())}
 
     async def delete(self, ids: list[str]):
         """
@@ -243,9 +224,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.debug(
-            f"[{self.workspace}] Deleting {len(ids)} vectors from {self.namespace}"
-        )
+        logger.debug(f'[{self.workspace}] Deleting {len(ids)} vectors from {self.namespace}')
         to_remove = []
         for cid in ids:
             fid = self._find_faiss_id_by_custom_id(cid)
@@ -254,9 +233,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         if to_remove:
             await self._remove_faiss_ids(to_remove)
-        logger.debug(
-            f"[{self.workspace}] Successfully deleted {len(to_remove)} vectors from {self.namespace}"
-        )
+        logger.debug(f'[{self.workspace}] Successfully deleted {len(to_remove)} vectors from {self.namespace}')
 
     async def delete_entity(self, entity_name: str) -> None:
         """
@@ -265,10 +242,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-        logger.debug(
-            f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
-        )
+        entity_id = compute_mdhash_id(entity_name, prefix='ent-')
+        logger.debug(f'[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}')
         await self.delete([entity_id])
 
     async def delete_entity_relation(self, entity_name: str) -> None:
@@ -278,20 +253,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.debug(f"[{self.workspace}] Searching relations for entity {entity_name}")
+        logger.debug(f'[{self.workspace}] Searching relations for entity {entity_name}')
         relations = []
         for fid, meta in self._id_to_meta.items():
-            if meta.get("src_id") == entity_name or meta.get("tgt_id") == entity_name:
+            if meta.get('src_id') == entity_name or meta.get('tgt_id') == entity_name:
                 relations.append(fid)
 
-        logger.debug(
-            f"[{self.workspace}] Found {len(relations)} relations for {entity_name}"
-        )
+        logger.debug(f'[{self.workspace}] Found {len(relations)} relations for {entity_name}')
         if relations:
             await self._remove_faiss_ids(relations)
-            logger.debug(
-                f"[{self.workspace}] Deleted {len(relations)} relations for {entity_name}"
-            )
+            logger.debug(f'[{self.workspace}] Deleted {len(relations)} relations for {entity_name}')
 
     # --------------------------------------------------------------------------------
     # Internal helper methods
@@ -302,7 +273,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         Return the Faiss internal ID for a given custom ID, or None if not found.
         """
         for fid, meta in self._id_to_meta.items():
-            if meta.get("__id__") == custom_id:
+            if meta.get('__id__') == custom_id:
                 return fid
         return None
 
@@ -319,7 +290,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         new_id_to_meta = {}
         for new_fid, old_fid in enumerate(keep_fids):
             vec_meta = self._id_to_meta[old_fid]
-            vectors_to_keep.append(vec_meta["__vector__"])  # stored as list
+            vectors_to_keep.append(vec_meta['__vector__'])  # stored as list
             new_id_to_meta[new_fid] = vec_meta
 
         async with self._storage_lock:
@@ -344,7 +315,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         for fid, meta in self._id_to_meta.items():
             serializable_dict[str(fid)] = meta
 
-        with open(self._meta_file, "w", encoding="utf-8") as f:
+        with open(self._meta_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_dict, f)
 
     def _load_faiss_index(self):
@@ -353,16 +324,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
         and rebuild in-memory structures so we can query.
         """
         if not os.path.exists(self._faiss_index_file):
-            logger.warning(
-                f"[{self.workspace}] No existing Faiss index file found for {self.namespace}"
-            )
+            logger.warning(f'[{self.workspace}] No existing Faiss index file found for {self.namespace}')
             return
 
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
             # Load metadata
-            with open(self._meta_file, "r", encoding="utf-8") as f:
+            with open(self._meta_file, encoding='utf-8') as f:
                 stored_dict = json.load(f)
 
             # Convert string keys back to int
@@ -372,13 +341,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._id_to_meta[fid] = meta
 
             logger.info(
-                f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
+                f'[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}'
             )
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
-            )
-            logger.warning(f"[{self.workspace}] Starting with an empty Faiss index.")
+            logger.error(f'[{self.workspace}] Failed to load Faiss index or metadata: {e}')
+            logger.warning(f'[{self.workspace}] Starting with an empty Faiss index.')
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
 
@@ -388,7 +355,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.warning(
-                    f"[{self.workspace}] Storage for FAISS {self.namespace} was updated by another process, reloading..."
+                    f'[{self.workspace}] Storage for FAISS {self.namespace} was updated by another process, reloading...'
                 )
                 self._index = faiss.IndexFlatIP(self._dim)
                 self._id_to_meta = {}
@@ -406,9 +373,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
             except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error saving FAISS index for {self.namespace}: {e}"
-                )
+                logger.error(f'[{self.workspace}] Error saving FAISS index for {self.namespace}: {e}')
                 return False  # Return error
 
         return True  # Return success
@@ -433,11 +398,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return None
 
         # Filter out __vector__ from metadata to avoid returning large vector data
-        filtered_metadata = {k: v for k, v in metadata.items() if k != "__vector__"}
+        filtered_metadata = {k: v for k, v in metadata.items() if k != '__vector__'}
         return {
             **filtered_metadata,
-            "id": metadata.get("__id__"),
-            "created_at": metadata.get("__created_at__"),
+            'id': metadata.get('__id__'),
+            'created_at': metadata.get('__created_at__'),
         }
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -460,13 +425,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 metadata = self._id_to_meta.get(fid)
                 if metadata:
                     # Filter out __vector__ from metadata to avoid returning large vector data
-                    filtered_metadata = {
-                        k: v for k, v in metadata.items() if k != "__vector__"
-                    }
+                    filtered_metadata = {k: v for k, v in metadata.items() if k != '__vector__'}
                     record = {
                         **filtered_metadata,
-                        "id": metadata.get("__id__"),
-                        "created_at": metadata.get("__created_at__"),
+                        'id': metadata.get('__id__'),
+                        'created_at': metadata.get('__created_at__'),
                     }
             results.append(record)
 
@@ -492,8 +455,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if fid is not None and fid in self._id_to_meta:
                 metadata = self._id_to_meta[fid]
                 # Get the stored vector from metadata
-                if "__vector__" in metadata:
-                    vectors_dict[id] = metadata["__vector__"]
+                if '__vector__' in metadata:
+                    vectors_dict[id] = metadata['__vector__']
 
         return vectors_dict
 
@@ -532,12 +495,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
 
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
-                )
-            return {"status": "success", "message": "data dropped"}
+                logger.info(f'[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}')
+            return {'status': 'success', 'message': 'data dropped'}
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}"
-            )
-            return {"status": "error", "message": str(e)}
+            logger.error(f'[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}')
+            return {'status': 'error', 'message': str(e)}

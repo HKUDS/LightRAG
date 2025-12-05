@@ -17,11 +17,12 @@ from functools import lru_cache
 from typing import Any
 
 import numpy as np
+import pipmaster as pm
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from lightrag.utils import (
@@ -31,19 +32,19 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
 )
 
-import pipmaster as pm
-
 # Install the Google Gemini client and its dependencies on demand
-if not pm.is_installed("google-genai"):
-    pm.install("google-genai")
-if not pm.is_installed("google-api-core"):
-    pm.install("google-api-core")
+if not pm.is_installed('google-genai'):
+    pm.install('google-genai')
+if not pm.is_installed('google-api-core'):
+    pm.install('google-api-core')
+
+import contextlib
 
 from google import genai  # type: ignore
-from google.genai import types  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
+from google.genai import types  # type: ignore
 
-DEFAULT_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com"
+DEFAULT_GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com'
 
 LOG = logging.getLogger(__name__)
 
@@ -55,9 +56,7 @@ class InvalidResponseError(Exception):
 
 
 @lru_cache(maxsize=8)
-def _get_gemini_client(
-    api_key: str, base_url: str | None, timeout: int | None = None
-) -> genai.Client:
+def _get_gemini_client(api_key: str, base_url: str | None, timeout: int | None = None) -> genai.Client:
     """
     Create (or fetch cached) Gemini client.
 
@@ -69,35 +68,32 @@ def _get_gemini_client(
     Returns:
         genai.Client: Configured Gemini client instance.
     """
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    client_kwargs: dict[str, Any] = {'api_key': api_key}
 
-    if base_url and base_url != DEFAULT_GEMINI_ENDPOINT or timeout is not None:
+    if (base_url and base_url != DEFAULT_GEMINI_ENDPOINT) or timeout is not None:
         try:
             http_options_kwargs = {}
             if base_url and base_url != DEFAULT_GEMINI_ENDPOINT:
-                http_options_kwargs["api_endpoint"] = base_url
+                http_options_kwargs['api_endpoint'] = base_url
             if timeout is not None:
-                http_options_kwargs["timeout"] = timeout
+                http_options_kwargs['timeout'] = timeout
 
-            client_kwargs["http_options"] = types.HttpOptions(**http_options_kwargs)
+            client_kwargs['http_options'] = types.HttpOptions(**http_options_kwargs)
         except Exception as exc:  # pragma: no cover - defensive
-            LOG.warning("Failed to apply custom Gemini http_options: %s", exc)
+            LOG.warning('Failed to apply custom Gemini http_options: %s', exc)
 
     try:
         return genai.Client(**client_kwargs)
     except TypeError:
         # Older google-genai releases don't accept http_options; retry without it.
-        client_kwargs.pop("http_options", None)
+        client_kwargs.pop('http_options', None)
         return genai.Client(**client_kwargs)
 
 
 def _ensure_api_key(api_key: str | None) -> str:
-    key = api_key or os.getenv("LLM_BINDING_API_KEY") or os.getenv("GEMINI_API_KEY")
+    key = api_key or os.getenv('LLM_BINDING_API_KEY') or os.getenv('GEMINI_API_KEY')
     if not key:
-        raise ValueError(
-            "Gemini API key not provided. "
-            "Set LLM_BINDING_API_KEY or GEMINI_API_KEY in the environment."
-        )
+        raise ValueError('Gemini API key not provided. Set LLM_BINDING_API_KEY or GEMINI_API_KEY in the environment.')
     return key
 
 
@@ -109,22 +105,16 @@ def _build_generation_config(
     config_data = dict(base_config or {})
 
     if system_prompt:
-        if config_data.get("system_instruction"):
-            config_data["system_instruction"] = (
-                f"{config_data['system_instruction']}\n{system_prompt}"
-            )
+        if config_data.get('system_instruction'):
+            config_data['system_instruction'] = f'{config_data["system_instruction"]}\n{system_prompt}'
         else:
-            config_data["system_instruction"] = system_prompt
+            config_data['system_instruction'] = system_prompt
 
-    if keyword_extraction and not config_data.get("response_mime_type"):
-        config_data["response_mime_type"] = "application/json"
+    if keyword_extraction and not config_data.get('response_mime_type'):
+        config_data['response_mime_type'] = 'application/json'
 
     # Remove entries that are explicitly set to None to avoid type errors
-    sanitized = {
-        key: value
-        for key, value in config_data.items()
-        if value is not None and value != ""
-    }
+    sanitized = {key: value for key, value in config_data.items() if value is not None and value != ''}
 
     if not sanitized:
         return None
@@ -134,20 +124,18 @@ def _build_generation_config(
 
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:
     if not history_messages:
-        return ""
+        return ''
 
     history_lines: list[str] = []
     for message in history_messages:
-        role = message.get("role", "user")
-        content = message.get("content", "")
-        history_lines.append(f"[{role}] {content}")
+        role = message.get('role', 'user')
+        content = message.get('content', '')
+        history_lines.append(f'[{role}] {content}')
 
-    return "\n".join(history_lines)
+    return '\n'.join(history_lines)
 
 
-def _extract_response_text(
-    response: Any, extract_thoughts: bool = False
-) -> tuple[str, str]:
+def _extract_response_text(response: Any, extract_thoughts: bool = False) -> tuple[str, str]:
     """
     Extract text content from Gemini response, separating regular content from thoughts.
 
@@ -158,31 +146,31 @@ def _extract_response_text(
     Returns:
         Tuple of (regular_text, thought_text)
     """
-    candidates = getattr(response, "candidates", None)
+    candidates = getattr(response, 'candidates', None)
     if not candidates:
-        return ("", "")
+        return ('', '')
 
     regular_parts: list[str] = []
     thought_parts: list[str] = []
 
     for candidate in candidates:
-        if not getattr(candidate, "content", None):
+        if not getattr(candidate, 'content', None):
             continue
         # Use 'or []' to handle None values from parts attribute
-        for part in getattr(candidate.content, "parts", None) or []:
-            text = getattr(part, "text", None)
+        for part in getattr(candidate.content, 'parts', None) or []:
+            text = getattr(part, 'text', None)
             if not text:
                 continue
 
             # Check if this part is thought content using the 'thought' attribute
-            is_thought = getattr(part, "thought", False)
+            is_thought = getattr(part, 'thought', False)
 
             if is_thought and extract_thoughts:
                 thought_parts.append(text)
             elif not is_thought:
                 regular_parts.append(text)
 
-    return ("\n".join(regular_parts), "\n".join(thought_parts))
+    return ('\n'.join(regular_parts), '\n'.join(thought_parts))
 
 
 @retry(
@@ -262,8 +250,8 @@ async def gemini_complete_if_cache(
     prompt_sections = []
     if history_block:
         prompt_sections.append(history_block)
-    prompt_sections.append(f"[user] {prompt}")
-    combined_prompt = "\n".join(prompt_sections)
+    prompt_sections.append(f'[user] {prompt}')
+    combined_prompt = '\n'.join(prompt_sections)
 
     config_obj = _build_generation_config(
         generation_config,
@@ -272,11 +260,11 @@ async def gemini_complete_if_cache(
     )
 
     request_kwargs: dict[str, Any] = {
-        "model": model,
-        "contents": [combined_prompt],
+        'model': model,
+        'contents': [combined_prompt],
     }
     if config_obj is not None:
-        request_kwargs["config"] = config_obj
+        request_kwargs['config'] = config_obj
 
     def _call_model():
         return client.models.generate_content(**request_kwargs)
@@ -295,14 +283,12 @@ async def gemini_complete_if_cache(
                 stream_kwargs = dict(request_kwargs)
                 stream_iterator = client.models.generate_content_stream(**stream_kwargs)
                 for chunk in stream_iterator:
-                    usage = getattr(chunk, "usage_metadata", None)
+                    usage = getattr(chunk, 'usage_metadata', None)
                     if usage is not None:
-                        usage_container["usage"] = usage
+                        usage_container['usage'] = usage
 
                     # Extract both regular and thought content
-                    regular_text, thought_text = _extract_response_text(
-                        chunk, extract_thoughts=True
-                    )
+                    regular_text, thought_text = _extract_response_text(chunk, extract_thoughts=True)
 
                     if enable_cot:
                         # Process regular content
@@ -312,7 +298,7 @@ async def gemini_complete_if_cache(
 
                             # Close COT section if it was active
                             if cot_active:
-                                loop.call_soon_threadsafe(queue.put_nowait, "</think>")
+                                loop.call_soon_threadsafe(queue.put_nowait, '</think>')
                                 cot_active = False
 
                             # Send regular content
@@ -322,15 +308,13 @@ async def gemini_complete_if_cache(
                         if thought_text:
                             if not initial_content_seen and not cot_started:
                                 # Start COT section
-                                loop.call_soon_threadsafe(queue.put_nowait, "<think>")
+                                loop.call_soon_threadsafe(queue.put_nowait, '<think>')
                                 cot_active = True
                                 cot_started = True
 
                             # Send thought content if COT is active
                             if cot_active:
-                                loop.call_soon_threadsafe(
-                                    queue.put_nowait, thought_text
-                                )
+                                loop.call_soon_threadsafe(queue.put_nowait, thought_text)
                     else:
                         # COT disabled - only send regular content
                         if regular_text:
@@ -338,16 +322,14 @@ async def gemini_complete_if_cache(
 
                 # Ensure COT is properly closed if still active
                 if cot_active:
-                    loop.call_soon_threadsafe(queue.put_nowait, "</think>")
+                    loop.call_soon_threadsafe(queue.put_nowait, '</think>')
 
                 loop.call_soon_threadsafe(queue.put_nowait, None)
             except Exception as exc:  # pragma: no cover - surface runtime issues
                 # Try to close COT tag before reporting error
                 if cot_active:
-                    try:
-                        loop.call_soon_threadsafe(queue.put_nowait, "</think>")
-                    except Exception:
-                        pass
+                    with contextlib.suppress(Exception):
+                        loop.call_soon_threadsafe(queue.put_nowait, '</think>')
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
 
         loop.run_in_executor(None, _stream_model)
@@ -362,22 +344,20 @@ async def gemini_complete_if_cache(
                         raise item
 
                     chunk_text = str(item)
-                    if "\\u" in chunk_text:
-                        chunk_text = safe_unicode_decode(chunk_text.encode("utf-8"))
+                    if '\\u' in chunk_text:
+                        chunk_text = safe_unicode_decode(chunk_text.encode('utf-8'))
 
                     # Yield the chunk directly without filtering
                     # COT filtering is already handled in _stream_model()
                     yield chunk_text
             finally:
-                usage = usage_container.get("usage")
+                usage = usage_container.get('usage')
                 if token_tracker and usage:
                     token_tracker.add_usage(
                         {
-                            "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-                            "completion_tokens": getattr(
-                                usage, "candidates_token_count", 0
-                            ),
-                            "total_tokens": getattr(usage, "total_token_count", 0),
+                            'prompt_tokens': getattr(usage, 'prompt_token_count', 0),
+                            'completion_tokens': getattr(usage, 'candidates_token_count', 0),
+                            'total_tokens': getattr(usage, 'total_token_count', 0),
                         }
                     )
 
@@ -392,38 +372,38 @@ async def gemini_complete_if_cache(
     if enable_cot:
         # Include thought content wrapped in <think> tags
         if thought_text and thought_text.strip():
-            if not regular_text or regular_text.strip() == "":
+            if not regular_text or regular_text.strip() == '':
                 # Only thought content available
-                final_text = f"<think>{thought_text}</think>"
+                final_text = f'<think>{thought_text}</think>'
             else:
                 # Both content types present: prepend thought to regular content
-                final_text = f"<think>{thought_text}</think>{regular_text}"
+                final_text = f'<think>{thought_text}</think>{regular_text}'
         else:
             # No thought content, use regular content only
-            final_text = regular_text or ""
+            final_text = regular_text or ''
     else:
         # Filter out thought content, return only regular content
-        final_text = regular_text or ""
+        final_text = regular_text or ''
 
     if not final_text:
-        raise InvalidResponseError("Gemini response did not contain any text content.")
+        raise InvalidResponseError('Gemini response did not contain any text content.')
 
-    if "\\u" in final_text:
-        final_text = safe_unicode_decode(final_text.encode("utf-8"))
+    if '\\u' in final_text:
+        final_text = safe_unicode_decode(final_text.encode('utf-8'))
 
     final_text = remove_think_tags(final_text)
 
-    usage = getattr(response, "usage_metadata", None)
+    usage = getattr(response, 'usage_metadata', None)
     if token_tracker and usage:
         token_tracker.add_usage(
             {
-                "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-                "completion_tokens": getattr(usage, "candidates_token_count", 0),
-                "total_tokens": getattr(usage, "total_token_count", 0),
+                'prompt_tokens': getattr(usage, 'prompt_token_count', 0),
+                'completion_tokens': getattr(usage, 'candidates_token_count', 0),
+                'total_tokens': getattr(usage, 'total_token_count', 0),
             }
         )
 
-    logger.debug("Gemini response length: %s", len(final_text))
+    logger.debug('Gemini response length: %s', len(final_text))
     return final_text
 
 
@@ -434,14 +414,14 @@ async def gemini_model_complete(
     keyword_extraction: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
-    hashing_kv = kwargs.get("hashing_kv")
+    hashing_kv = kwargs.get('hashing_kv')
     model_name = None
     if hashing_kv is not None:
-        model_name = hashing_kv.global_config.get("llm_model_name")
+        model_name = hashing_kv.global_config.get('llm_model_name')
     if model_name is None:
-        model_name = kwargs.pop("model_name", None)
+        model_name = kwargs.pop('model_name', None)
     if model_name is None:
-        raise ValueError("Gemini model name not provided in configuration.")
+        raise ValueError('Gemini model name not provided in configuration.')
 
     return await gemini_complete_if_cache(
         model_name,
@@ -470,11 +450,11 @@ async def gemini_model_complete(
 )
 async def gemini_embed(
     texts: list[str],
-    model: str = "gemini-embedding-001",
+    model: str = 'gemini-embedding-001',
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
-    task_type: str = "RETRIEVAL_DOCUMENT",
+    task_type: str = 'RETRIEVAL_DOCUMENT',
     timeout: int | None = None,
     token_tracker: Any | None = None,
 ) -> np.ndarray:
@@ -527,11 +507,11 @@ async def gemini_embed(
 
     # Add task_type to config
     if task_type:
-        config_kwargs["task_type"] = task_type
+        config_kwargs['task_type'] = task_type
 
     # Add output_dimensionality if embedding_dim is provided
     if embedding_dim is not None:
-        config_kwargs["output_dimensionality"] = embedding_dim
+        config_kwargs['output_dimensionality'] = embedding_dim
 
     # Create config object if we have parameters
     config_obj = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
@@ -539,11 +519,11 @@ async def gemini_embed(
     def _call_embed() -> Any:
         """Call Gemini embedding API in executor thread."""
         request_kwargs: dict[str, Any] = {
-            "model": model,
-            "contents": texts,
+            'model': model,
+            'contents': texts,
         }
         if config_obj is not None:
-            request_kwargs["config"] = config_obj
+            request_kwargs['config'] = config_obj
 
         return client.models.embed_content(**request_kwargs)
 
@@ -551,13 +531,11 @@ async def gemini_embed(
     response = await loop.run_in_executor(None, _call_embed)
 
     # Extract embeddings from response
-    if not hasattr(response, "embeddings") or not response.embeddings:
-        raise RuntimeError("Gemini response did not contain embeddings.")
+    if not hasattr(response, 'embeddings') or not response.embeddings:
+        raise RuntimeError('Gemini response did not contain embeddings.')
 
     # Convert embeddings to numpy array
-    embeddings = np.array(
-        [np.array(e.values, dtype=np.float32) for e in response.embeddings]
-    )
+    embeddings = np.array([np.array(e.values, dtype=np.float32) for e in response.embeddings])
 
     # Apply L2 normalization for dimensions < 3072
     # The 3072 dimension embedding is already normalized by Gemini API
@@ -567,29 +545,25 @@ async def gemini_embed(
         # Avoid division by zero
         norms = np.where(norms == 0, 1, norms)
         embeddings = embeddings / norms
-        logger.debug(
-            f"Applied L2 normalization to {len(embeddings)} embeddings of dimension {embedding_dim}"
-        )
+        logger.debug(f'Applied L2 normalization to {len(embeddings)} embeddings of dimension {embedding_dim}')
 
     # Track token usage if tracker is provided
     # Note: Gemini embedding API may not provide usage metadata
-    if token_tracker and hasattr(response, "usage_metadata"):
+    if token_tracker and hasattr(response, 'usage_metadata'):
         usage = response.usage_metadata
         token_counts = {
-            "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-            "total_tokens": getattr(usage, "total_token_count", 0),
+            'prompt_tokens': getattr(usage, 'prompt_token_count', 0),
+            'total_tokens': getattr(usage, 'total_token_count', 0),
         }
         token_tracker.add_usage(token_counts)
 
-    logger.debug(
-        f"Generated {len(embeddings)} Gemini embeddings with dimension {embeddings.shape[1]}"
-    )
+    logger.debug(f'Generated {len(embeddings)} Gemini embeddings with dimension {embeddings.shape[1]}')
 
     return embeddings
 
 
 __all__ = [
-    "gemini_complete_if_cache",
-    "gemini_model_complete",
-    "gemini_embed",
+    'gemini_complete_if_cache',
+    'gemini_embed',
+    'gemini_model_complete',
 ]

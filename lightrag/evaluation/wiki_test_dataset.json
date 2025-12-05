@@ -39,11 +39,6 @@
       "question": "What is the history and significance of the Olympic Games?",
       "ground_truth": "The Olympic Games originated in ancient Greece around 776 BC at Olympia and were held every four years as athletic competitions honoring Zeus. The modern Olympics were revived in 1896 by Pierre de Coubertin in Athens. Today, the Olympics include Summer and Winter Games alternating every two years, featuring thousands of athletes from over 200 nations competing in hundreds of events. The Games promote international cooperation, athletic excellence, and peaceful competition among nations.",
       "project": "wiki_evaluation"
-    },
-    {
-      "question": "What are the main applications and concerns about artificial intelligence?",
-      "ground_truth": "Artificial intelligence applications include machine learning for data analysis and predictions, natural language processing for chatbots and translation, computer vision for image recognition, autonomous vehicles, healthcare diagnostics, recommendation systems, and robotics. Key concerns include job displacement through automation, algorithmic bias and fairness, privacy and surveillance, AI safety and control, potential misuse in autonomous weapons, and ensuring AI systems align with human values.",
-      "project": "wiki_evaluation"
     }
   ]
 }

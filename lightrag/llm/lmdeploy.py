@@ -1,23 +1,23 @@
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
-if not pm.is_installed("lmdeploy"):
-    pm.install("lmdeploy[all]")
+if not pm.is_installed('lmdeploy'):
+    pm.install('lmdeploy[all]')
+
+from functools import lru_cache
+
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from lightrag.exceptions import (
     APIConnectionError,
-    RateLimitError,
     APITimeoutError,
+    RateLimitError,
 )
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-
-
-from functools import lru_cache
 
 
 @lru_cache(maxsize=1)
@@ -25,21 +25,17 @@ def initialize_lmdeploy_pipeline(
     model,
     tp=1,
     chat_template=None,
-    log_level="WARNING",
-    model_format="hf",
+    log_level='WARNING',
+    model_format='hf',
     quant_policy=0,
 ):
-    from lmdeploy import pipeline, ChatTemplateConfig, TurbomindEngineConfig
+    from lmdeploy import ChatTemplateConfig, TurbomindEngineConfig, pipeline
 
     lmdeploy_pipe = pipeline(
         model_path=model,
-        backend_config=TurbomindEngineConfig(
-            tp=tp, model_format=model_format, quant_policy=quant_policy
-        ),
-        chat_template_config=(
-            ChatTemplateConfig(model_name=chat_template) if chat_template else None
-        ),
-        log_level="WARNING",
+        backend_config=TurbomindEngineConfig(tp=tp, model_format=model_format, quant_policy=quant_policy),
+        chat_template_config=(ChatTemplateConfig(model_name=chat_template) if chat_template else None),
+        log_level='WARNING',
     )
     return lmdeploy_pipe
 
@@ -47,18 +43,16 @@ def initialize_lmdeploy_pipeline(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
 )
 async def lmdeploy_model_if_cache(
     model,
     prompt,
     system_prompt=None,
-    history_messages=[],
+    history_messages=None,
     enable_cot: bool = False,
     chat_template=None,
-    model_format="hf",
+    model_format='hf',
     quant_policy=0,
     **kwargs,
 ) -> str:
@@ -90,31 +84,31 @@ async def lmdeploy_model_if_cache(
         do_sample (bool): Whether or not to use sampling, use greedy decoding otherwise.
             Default to be False, which means greedy decoding will be applied.
     """
+    if history_messages is None:
+        history_messages = []
     if enable_cot:
         from lightrag.utils import logger
 
-        logger.debug(
-            "enable_cot=True is not supported for lmdeploy and will be ignored."
-        )
+        logger.debug('enable_cot=True is not supported for lmdeploy and will be ignored.')
     try:
         import lmdeploy
-        from lmdeploy import version_info, GenerationConfig
-    except Exception:
-        raise ImportError("Please install lmdeploy before initialize lmdeploy backend.")
-    kwargs.pop("hashing_kv", None)
-    kwargs.pop("response_format", None)
-    max_new_tokens = kwargs.pop("max_tokens", 512)
-    tp = kwargs.pop("tp", 1)
-    skip_special_tokens = kwargs.pop("skip_special_tokens", True)
-    do_preprocess = kwargs.pop("do_preprocess", True)
-    do_sample = kwargs.pop("do_sample", False)
+        from lmdeploy import GenerationConfig, version_info
+    except Exception as e:
+        raise ImportError('Please install lmdeploy before initialize lmdeploy backend.') from e
+    kwargs.pop('hashing_kv', None)
+    kwargs.pop('response_format', None)
+    max_new_tokens = kwargs.pop('max_tokens', 512)
+    tp = kwargs.pop('tp', 1)
+    skip_special_tokens = kwargs.pop('skip_special_tokens', True)
+    do_preprocess = kwargs.pop('do_preprocess', True)
+    do_sample = kwargs.pop('do_sample', False)
     gen_params = kwargs
 
     version = version_info
     if do_sample is not None and version < (0, 6, 0):
         raise RuntimeError(
-            "`do_sample` parameter is not supported by lmdeploy until "
-            f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
+            '`do_sample` parameter is not supported by lmdeploy until '
+            f'v0.6.0, but currently using lmdeloy {lmdeploy.__version__}'
         )
     else:
         do_sample = True
@@ -126,15 +120,15 @@ async def lmdeploy_model_if_cache(
         chat_template=chat_template,
         model_format=model_format,
         quant_policy=quant_policy,
-        log_level="WARNING",
+        log_level='WARNING',
     )
 
     messages = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+        messages.append({'role': 'system', 'content': system_prompt})
 
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    messages.append({'role': 'user', 'content': prompt})
 
     gen_config = GenerationConfig(
         skip_special_tokens=skip_special_tokens,
@@ -142,7 +136,7 @@ async def lmdeploy_model_if_cache(
         **gen_params,
     )
 
-    response = ""
+    response = ''
     async for res in lmdeploy_pipe.generate(
         messages,
         gen_config=gen_config,

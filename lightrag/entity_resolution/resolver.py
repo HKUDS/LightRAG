@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 import numpy as np
 
 from lightrag.utils import logger
+
 from .config import DEFAULT_CONFIG, EntityResolutionConfig
 
 
@@ -74,15 +75,15 @@ async def llm_verify(
     response = await llm_fn(prompt)
 
     # Normalize response: strip whitespace, take first line only
-    normalized = response.strip().split("\n")[0].strip().upper()
+    normalized = response.strip().split('\n')[0].strip().upper()
 
     # Remove common trailing punctuation
-    normalized = normalized.rstrip(".!,")
+    normalized = normalized.rstrip('.!,')
 
     # Only accept exact tokens (no prefix/substring matching)
-    if normalized in ("YES", "TRUE", "SAME", "MATCH"):
+    if normalized in ('YES', 'TRUE', 'SAME', 'MATCH'):
         return True
-    if normalized in ("NO", "FALSE", "DIFFERENT", "NOT SAME"):
+    if normalized in ('NO', 'FALSE', 'DIFFERENT', 'NOT SAME'):
         return False
 
     # Default to False for ambiguous responses (safer than false positive)
@@ -110,17 +111,17 @@ async def resolve_entity(
         confidence, and method used.
     """
     if not config.enabled:
-        return ResolutionResult("new", None, 0.0, "disabled")
+        return ResolutionResult('new', None, 0.0, 'disabled')
 
     if not existing_entities:
-        return ResolutionResult("new", None, 0.0, "none")
+        return ResolutionResult('new', None, 0.0, 'none')
 
     normalized = entity_name.lower().strip()
 
     # Layer 1: Case-insensitive exact match
     for name, _ in existing_entities:
         if name.lower().strip() == normalized:
-            return ResolutionResult("match", name, 1.0, "exact")
+            return ResolutionResult('match', name, 1.0, 'exact')
 
     # Layer 2: Fuzzy string matching (catches typos)
     best_fuzzy_match = None
@@ -133,7 +134,7 @@ async def resolve_entity(
             best_fuzzy_match = name
 
     if best_fuzzy_score >= config.fuzzy_threshold:
-        return ResolutionResult("match", best_fuzzy_match, best_fuzzy_score, "fuzzy")
+        return ResolutionResult('match', best_fuzzy_match, best_fuzzy_score, 'fuzzy')
 
     # Layer 3: Vector similarity + LLM verification
     embedding = await embed_fn(entity_name)
@@ -152,10 +153,10 @@ async def resolve_entity(
             config.llm_prompt_template,
         )
         if is_same:
-            return ResolutionResult("match", candidate_name, similarity, "llm")
+            return ResolutionResult('match', candidate_name, similarity, 'llm')
 
     # No match found - this is a new entity
-    return ResolutionResult("new", None, 0.0, "none")
+    return ResolutionResult('new', None, 0.0, 'none')
 
 
 async def resolve_entity_with_vdb(
@@ -180,39 +181,37 @@ async def resolve_entity_with_vdb(
         confidence, and method used.
     """
     if not config.enabled:
-        return ResolutionResult("new", None, 0.0, "disabled")
+        return ResolutionResult('new', None, 0.0, 'disabled')
 
     if entity_vdb is None:
-        return ResolutionResult("new", None, 0.0, "none")
+        return ResolutionResult('new', None, 0.0, 'none')
 
     normalized = entity_name.lower().strip()
 
     # Query VDB for similar entities - cast wide net, LLM will verify
     # top_k is doubled to have enough candidates after filtering
     try:
-        candidates = await entity_vdb.query(
-            entity_name, top_k=config.max_candidates * 3
-        )
+        candidates = await entity_vdb.query(entity_name, top_k=config.max_candidates * 3)
     except Exception as e:
         # Log and skip resolution if VDB query fails
         logger.debug(f"VDB query failed for '{entity_name}': {e}")
-        return ResolutionResult("new", None, 0.0, "none")
+        return ResolutionResult('new', None, 0.0, 'none')
 
     if not candidates:
-        return ResolutionResult("new", None, 0.0, "none")
+        return ResolutionResult('new', None, 0.0, 'none')
 
     # Layer 1: Case-insensitive exact match among candidates
     for candidate in candidates:
-        candidate_name = candidate.get("entity_name")
+        candidate_name = candidate.get('entity_name')
         if candidate_name and candidate_name.lower().strip() == normalized:
-            return ResolutionResult("match", candidate_name, 1.0, "exact")
+            return ResolutionResult('match', candidate_name, 1.0, 'exact')
 
     # Layer 2: Fuzzy string matching (catches typos)
     best_fuzzy_match = None
     best_fuzzy_score = 0.0
 
     for candidate in candidates:
-        candidate_name = candidate.get("entity_name")
+        candidate_name = candidate.get('entity_name')
         if not candidate_name:
             continue
         similarity = fuzzy_similarity(entity_name, candidate_name)
@@ -221,14 +220,14 @@ async def resolve_entity_with_vdb(
             best_fuzzy_match = candidate_name
 
     if best_fuzzy_score >= config.fuzzy_threshold:
-        return ResolutionResult("match", best_fuzzy_match, best_fuzzy_score, "fuzzy")
+        return ResolutionResult('match', best_fuzzy_match, best_fuzzy_score, 'fuzzy')
 
     # Layer 3: LLM verification on top candidates
     verified_count = 0
     for candidate in candidates:
         if verified_count >= config.max_candidates:
             break
-        candidate_name = candidate.get("entity_name")
+        candidate_name = candidate.get('entity_name')
         if not candidate_name:
             continue
 
@@ -243,10 +242,10 @@ async def resolve_entity_with_vdb(
         if is_same:
             # Use distance from VDB if available (converted to similarity)
             similarity = 0.7  # Default confidence for LLM match
-            return ResolutionResult("match", candidate_name, similarity, "llm")
+            return ResolutionResult('match', candidate_name, similarity, 'llm')
 
     # No match found - this is a new entity
-    return ResolutionResult("new", None, 0.0, "none")
+    return ResolutionResult('new', None, 0.0, 'none')
 
 
 # --- Alias Cache Functions (PostgreSQL) ---
@@ -274,17 +273,17 @@ async def get_cached_alias(
     logger = logging.getLogger(__name__)
     normalized_alias = alias.lower().strip()
 
-    sql = SQL_TEMPLATES["get_alias"]
+    sql = SQL_TEMPLATES['get_alias']
     try:
         result = await db.query(sql, params=[workspace, normalized_alias])
         if result:
             return (
-                result["canonical_entity"],
-                result["method"],
-                result["confidence"],
+                result['canonical_entity'],
+                result['method'],
+                result['confidence'],
             )
     except Exception as e:
-        logger.debug(f"Alias cache lookup error: {e}")
+        logger.debug(f'Alias cache lookup error: {e}')
     return None
 
 
@@ -318,18 +317,18 @@ async def store_alias(
     if normalized_alias == canonical.lower().strip():
         return
 
-    sql = SQL_TEMPLATES["upsert_alias"]
+    sql = SQL_TEMPLATES['upsert_alias']
     try:
         await db.execute(
             sql,
             data={
-                "workspace": workspace,
-                "alias": normalized_alias,
-                "canonical_entity": canonical,
-                "method": method,
-                "confidence": confidence,
-                "create_time": datetime.now(timezone.utc).replace(tzinfo=None),
+                'workspace': workspace,
+                'alias': normalized_alias,
+                'canonical_entity': canonical,
+                'method': method,
+                'confidence': confidence,
+                'create_time': datetime.now(timezone.utc).replace(tzinfo=None),
             },
         )
     except Exception as e:
-        logger.debug(f"Alias cache store error: {e}")
+        logger.debug(f'Alias cache store error: {e}')

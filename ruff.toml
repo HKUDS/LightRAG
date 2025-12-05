@@ -25,6 +25,10 @@ select = [
 ]
 ignore = [
   "E402", # allow imports after other statements (mirrors pre-commit hook)
+  "E501", # ignore line too long
+  "RUF001", # ignore ambiguous characters (intentional for text processing)
+  "RUF002", # ignore ambiguous characters (intentional for text processing)
+  "RUF003", # ignore ambiguous characters (intentional for text processing)
 ]
 fixable = ["ALL"]
 
