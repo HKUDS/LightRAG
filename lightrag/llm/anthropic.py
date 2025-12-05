@@ -2,7 +2,6 @@ from ..utils import verbose_debug, VERBOSE_DEBUG
 import sys
 import os
 import logging
-import numpy as np
 from typing import Any, Union, AsyncIterator
 import pipmaster as pm  # Pipmaster for dynamic library install
 
@@ -14,11 +13,6 @@ else:
 # Install Anthropic SDK if not present
 if not pm.is_installed("anthropic"):
     pm.install("anthropic")
-
-# Add Voyage AI import
-if not pm.is_installed("voyageai"):
-    pm.install("voyageai")
-import voyageai
 
 from anthropic import (
     AsyncAnthropic,
@@ -230,104 +224,3 @@ async def claude_3_haiku_complete(
         **kwargs,
     )
 
-
-# Embedding function (placeholder, as Anthropic does not provide embeddings)
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
-)
-async def anthropic_embed(
-    texts: list[str],
-    model: str = "voyage-3",  # Default to voyage-3 as a good general-purpose model
-    base_url: str = None,
-    api_key: str = None,
-) -> np.ndarray:
-    """
-    Generate embeddings using Voyage AI since Anthropic doesn't provide native embedding support.
-
-    Args:
-        texts: List of text strings to embed
-        model: Voyage AI model name (e.g., "voyage-3", "voyage-3-large", "voyage-code-3")
-        base_url: Optional custom base URL (not used for Voyage AI)
-        api_key: API key for Voyage AI (defaults to VOYAGE_API_KEY environment variable)
-
-    Returns:
-        numpy array of shape (len(texts), embedding_dimension) containing the embeddings
-    """
-    if not api_key:
-        api_key = os.environ.get("VOYAGE_API_KEY")
-        if not api_key:
-            logger.error("VOYAGE_API_KEY environment variable not set")
-            raise ValueError(
-                "VOYAGE_API_KEY environment variable is required for embeddings"
-            )
-
-    try:
-        # Initialize Voyage AI client
-        voyage_client = voyageai.Client(api_key=api_key)
-
-        # Get embeddings
-        result = voyage_client.embed(
-            texts,
-            model=model,
-            input_type="document",  # Assuming document context; could be made configurable
-        )
-
-        # Convert list of embeddings to numpy array
-        embeddings = np.array(result.embeddings, dtype=np.float32)
-
-        logger.debug(f"Generated embeddings for {len(texts)} texts using {model}")
-        verbose_debug(f"Embedding shape: {embeddings.shape}")
-
-        return embeddings
-
-    except Exception as e:
-        logger.error(f"Voyage AI embedding failed: {str(e)}")
-        raise
-
-
-# Optional: a helper function to get available embedding models
-def get_available_embedding_models() -> dict[str, dict]:
-    """
-    Returns a dictionary of available Voyage AI embedding models and their properties.
-    """
-    return {
-        "voyage-3-large": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Best general-purpose and multilingual",
-        },
-        "voyage-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "General-purpose and multilingual",
-        },
-        "voyage-3-lite": {
-            "context_length": 32000,
-            "dimension": 512,
-            "description": "Optimized for latency and cost",
-        },
-        "voyage-code-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Optimized for code",
-        },
-        "voyage-finance-2": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Optimized for finance",
-        },
-        "voyage-law-2": {
-            "context_length": 16000,
-            "dimension": 1024,
-            "description": "Optimized for legal",
-        },
-        "voyage-multimodal-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Multimodal text and images",
-        },
-    }
