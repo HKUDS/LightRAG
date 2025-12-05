@@ -50,6 +50,7 @@ help:
 	@echo "  $(YELLOW)make install$(NC)          Install Python + WebUI dependencies"
 	@echo "  $(YELLOW)make test$(NC)             Run tests"
 	@echo "  $(YELLOW)make lint$(NC)             Run linters"
+	@echo "  $(YELLOW)make reset-demo-tenants$(NC) Reset DB + initialize 2 demo tenants (non-interactive)"
 	@echo ""
 	@echo "$(GREEN)$(BOLD)📡 Service URLs (when running):$(NC)"
 	@echo "  • WebUI:        $(BLUE)http://localhost:5173$(NC)"
@@ -142,6 +143,15 @@ clean-db:
 	@sleep 5
 	@docker compose -f docker-compose.dev-db.yml down -v
 	@echo "$(GREEN)✓ Database volumes removed$(NC)"
+
+# Reset the multi-tenant demo DB and seed it with two demo tenants
+.PHONY: reset-demo-tenants
+reset-demo-tenants:
+	@echo "$(BLUE)🔁 Resetting demo database and provisioning demo tenants (non-interactive)$(NC)"
+	@echo "→ This will DROP the demo database and recreate schema + demo data from 'starter' Makefile"
+	@printf 'yes\n' | make -C starter db-reset
+	@echo "→ Running API-side tenant initializer script (may wait for API to become available)"
+	@python3 scripts/init_demo_tenants.py || echo "$(YELLOW)⚠ Demo initialization may have failed. Ensure API is running and try running 'python3 scripts/init_demo_tenants.py' manually.$(NC)"
 
 # ============================================================================
 # SETUP & UTILITIES
