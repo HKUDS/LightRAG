@@ -1,9 +1,9 @@
 import json
 import re
 
-from lightrag.utils import verbose_debug
-
 import pipmaster as pm  # Pipmaster for dynamic library install
+
+from lightrag.utils import verbose_debug
 
 # install specific modules
 if not pm.is_installed('zhipuai'):

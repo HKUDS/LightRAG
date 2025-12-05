@@ -36,6 +36,7 @@ from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
+
 from lightrag.utils import logger
 
 # Add parent directory to path

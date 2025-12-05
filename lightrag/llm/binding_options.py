@@ -285,7 +285,7 @@ class BindingOptions:
                     sample_stream.write(f'# {arg_item["help"]}\n')
 
                 # Handle JSON formatting for list and dict types
-                if arg_item['type'] == list[str] or arg_item['type'] == dict:
+                if arg_item['type'] is list[str] or arg_item['type'] is dict:
                     default_value = json.dumps(arg_item['default'])
                 else:
                     default_value = arg_item['default']

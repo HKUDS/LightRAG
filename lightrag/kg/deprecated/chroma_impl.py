@@ -4,12 +4,11 @@ from dataclasses import dataclass
 from typing import Any, final
 
 import numpy as np
+from chromadb import HttpClient, PersistentClient  # type: ignore
+from chromadb.config import Settings  # type: ignore
 
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
-
-from chromadb import HttpClient, PersistentClient  # type: ignore
-from chromadb.config import Settings  # type: ignore
 
 
 @final

@@ -835,6 +835,66 @@ class PostgreSQLDB:
         except Exception as e:
             logger.warning(f'Failed to add llm_cache_list column to LIGHTRAG_DOC_CHUNKS: {e}')
 
+    async def _migrate_add_s3_key_columns(self):
+        """Add s3_key column to LIGHTRAG_DOC_FULL and LIGHTRAG_DOC_CHUNKS tables if they don't exist"""
+        tables = [
+            ('lightrag_doc_full', 'LIGHTRAG_DOC_FULL'),
+            ('lightrag_doc_chunks', 'LIGHTRAG_DOC_CHUNKS'),
+        ]
+
+        for table_name_lower, table_name in tables:
+            try:
+                check_column_sql = f"""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = '{table_name_lower}'
+                AND column_name = 's3_key'
+                """
+
+                column_info = await self.query(check_column_sql)
+                if not column_info:
+                    logger.info(f'Adding s3_key column to {table_name} table')
+                    add_column_sql = f"""
+                    ALTER TABLE {table_name}
+                    ADD COLUMN s3_key TEXT NULL
+                    """
+                    await self.execute(add_column_sql)
+                    logger.info(f'Successfully added s3_key column to {table_name} table')
+                else:
+                    logger.info(f's3_key column already exists in {table_name} table')
+            except Exception as e:
+                logger.warning(f'Failed to add s3_key column to {table_name}: {e}')
+
+    async def _migrate_add_chunk_position_columns(self):
+        """Add char_start and char_end columns to LIGHTRAG_DOC_CHUNKS table if they don't exist"""
+        columns = [
+            ('char_start', 'INTEGER NULL'),
+            ('char_end', 'INTEGER NULL'),
+        ]
+
+        for column_name, column_type in columns:
+            try:
+                check_column_sql = f"""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'lightrag_doc_chunks'
+                AND column_name = '{column_name}'
+                """
+
+                column_info = await self.query(check_column_sql)
+                if not column_info:
+                    logger.info(f'Adding {column_name} column to LIGHTRAG_DOC_CHUNKS table')
+                    add_column_sql = f"""
+                    ALTER TABLE LIGHTRAG_DOC_CHUNKS
+                    ADD COLUMN {column_name} {column_type}
+                    """
+                    await self.execute(add_column_sql)
+                    logger.info(f'Successfully added {column_name} column to LIGHTRAG_DOC_CHUNKS table')
+                else:
+                    logger.info(f'{column_name} column already exists in LIGHTRAG_DOC_CHUNKS table')
+            except Exception as e:
+                logger.warning(f'Failed to add {column_name} column to LIGHTRAG_DOC_CHUNKS: {e}')
+
     async def _migrate_doc_status_add_track_id(self):
         """Add track_id column to LIGHTRAG_DOC_STATUS table if it doesn't exist and create index"""
         try:
@@ -1114,9 +1174,16 @@ class PostgreSQLDB:
             ]
 
             # GIN indexes for array membership queries (chunk_ids lookups)
+            # and full-text search (BM25-style keyword search)
             gin_indexes = [
                 ('idx_lightrag_vdb_entity_chunk_ids_gin', 'LIGHTRAG_VDB_ENTITY', 'USING gin (chunk_ids)'),
                 ('idx_lightrag_vdb_relation_chunk_ids_gin', 'LIGHTRAG_VDB_RELATION', 'USING gin (chunk_ids)'),
+                # Full-text search GIN index for BM25 keyword search on chunks
+                (
+                    'idx_lightrag_doc_chunks_content_fts_gin',
+                    'LIGHTRAG_DOC_CHUNKS',
+                    "USING gin (to_tsvector('english', content))",
+                ),
             ]
 
             # Create GIN indexes separately (different syntax)
@@ -1195,6 +1262,18 @@ class PostgreSQLDB:
             self._migrate_text_chunks_add_llm_cache_list(),
             'text_chunks_llm_cache_list',
             'Failed to migrate text chunks llm_cache_list field',
+        )
+
+        await self._run_migration(
+            self._migrate_add_s3_key_columns(),
+            's3_key_columns',
+            'Failed to add s3_key columns to doc tables',
+        )
+
+        await self._run_migration(
+            self._migrate_add_chunk_position_columns(),
+            'chunk_position_columns',
+            'Failed to add char_start/char_end columns to doc chunks table',
         )
 
         await self._run_migration(
@@ -1616,6 +1695,55 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f'PostgreSQL executemany error: {e}, sql: {sql[:100]}...')
             raise
+
+    async def full_text_search(
+        self,
+        query: str,
+        workspace: str | None = None,
+        limit: int = 10,
+        language: str = 'english',
+    ) -> list[dict[str, Any]]:
+        """Perform BM25-style full-text search on document chunks.
+
+        Uses PostgreSQL's native full-text search with ts_rank for ranking.
+
+        Args:
+            query: Search query string
+            workspace: Optional workspace filter (uses self.workspace if not provided)
+            limit: Maximum number of results to return
+            language: Language for text search configuration (default: english)
+
+        Returns:
+            List of matching chunks with content, score, metadata, and s3_key
+        """
+        ws = workspace or self.workspace
+
+        # Use plainto_tsquery for simple query parsing (handles plain text queries)
+        # websearch_to_tsquery could be used for more advanced syntax
+        sql = f"""
+            SELECT
+                id,
+                full_doc_id,
+                chunk_order_index,
+                tokens,
+                content,
+                file_path,
+                s3_key,
+                char_start,
+                char_end,
+                ts_rank(
+                    to_tsvector('{language}', content),
+                    plainto_tsquery('{language}', $1)
+                ) AS score
+            FROM LIGHTRAG_DOC_CHUNKS
+            WHERE workspace = $2
+              AND to_tsvector('{language}', content) @@ plainto_tsquery('{language}', $1)
+            ORDER BY score DESC
+            LIMIT $3
+        """
+
+        results = await self.query(sql, [query, ws, limit], multirows=True)
+        return results if results else []
 
 
 class ClientManager:
@@ -2105,6 +2233,9 @@ class PGKVStorage(BaseKVStorage):
                     v['full_doc_id'],
                     v['content'],
                     v['file_path'],
+                    v.get('s3_key'),  # S3 key for document source
+                    v.get('char_start'),  # Character offset start in source document
+                    v.get('char_end'),  # Character offset end in source document
                     json.dumps(v.get('llm_cache_list', [])),
                     current_time,
                     current_time,
@@ -2121,6 +2252,7 @@ class PGKVStorage(BaseKVStorage):
                     v['content'],
                     v.get('file_path', ''),  # Map file_path to doc_name
                     self.workspace,
+                    v.get('s3_key'),  # S3 key for document source
                 )
                 for k, v in data.items()
             ]
@@ -2266,6 +2398,58 @@ class PGKVStorage(BaseKVStorage):
             return {'status': 'success', 'message': 'data dropped'}
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
+
+    async def update_s3_key_by_doc_id(
+        self, full_doc_id: str, s3_key: str, archive_url: str | None = None
+    ) -> int:
+        """Update s3_key for all chunks of a document after archiving.
+
+        This method is called after a document is moved from S3 staging to archive,
+        to update the database chunks with the new archive location.
+
+        Args:
+            full_doc_id: Document ID to update
+            s3_key: Archive S3 key (e.g., 'archive/default/doc123/file.pdf')
+            archive_url: Optional full S3 URL to update file_path
+
+        Returns:
+            Number of rows updated
+        """
+        if archive_url:
+            # Update both s3_key and file_path
+            sql = """
+                UPDATE LIGHTRAG_DOC_CHUNKS
+                SET s3_key = $1, file_path = $2, update_time = CURRENT_TIMESTAMP
+                WHERE workspace = $3 AND full_doc_id = $4
+            """
+            params = {
+                's3_key': s3_key,
+                'file_path': archive_url,
+                'workspace': self.workspace,
+                'full_doc_id': full_doc_id,
+            }
+        else:
+            # Update only s3_key
+            sql = """
+                UPDATE LIGHTRAG_DOC_CHUNKS
+                SET s3_key = $1, update_time = CURRENT_TIMESTAMP
+                WHERE workspace = $2 AND full_doc_id = $3
+            """
+            params = {
+                's3_key': s3_key,
+                'workspace': self.workspace,
+                'full_doc_id': full_doc_id,
+            }
+
+        result = await self.db.execute(sql, params)
+
+        # Parse the number of rows updated from result like "UPDATE 5"
+        try:
+            count = int(result.split()[-1]) if result else 0
+        except (ValueError, AttributeError, IndexError):
+            count = 0
+        logger.debug(f'[{self.workspace}] Updated {count} chunks with s3_key for doc {full_doc_id}')
+        return count
 
 
 @final
@@ -5026,6 +5210,7 @@ TABLES = {
                     doc_name VARCHAR(1024),
                     content TEXT,
                     meta JSONB,
+                    s3_key TEXT NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
@@ -5040,6 +5225,9 @@ TABLES = {
                     tokens INTEGER,
                     content TEXT,
                     file_path TEXT NULL,
+                    s3_key TEXT NULL,
+                    char_start INTEGER NULL,
+                    char_end INTEGER NULL,
                     llm_cache_list JSONB NULL DEFAULT '[]'::jsonb,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
@@ -5185,11 +5373,12 @@ TABLES = {
 SQL_TEMPLATES = {
     # SQL for KVStorage
     'get_by_id_full_docs': """SELECT id, COALESCE(content, '') as content,
-                                COALESCE(doc_name, '') as file_path
+                                COALESCE(doc_name, '') as file_path, s3_key
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     'get_by_id_text_chunks': """SELECT id, tokens, COALESCE(content, '') as content,
-                                chunk_order_index, full_doc_id, file_path,
+                                chunk_order_index, full_doc_id, file_path, s3_key,
+                                char_start, char_end,
                                 COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
@@ -5201,11 +5390,12 @@ SQL_TEMPLATES = {
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
     'get_by_ids_full_docs': """SELECT id, COALESCE(content, '') as content,
-                                 COALESCE(doc_name, '') as file_path
+                                 COALESCE(doc_name, '') as file_path, s3_key
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id = ANY($2)
                             """,
     'get_by_ids_text_chunks': """SELECT id, tokens, COALESCE(content, '') as content,
-                                  chunk_order_index, full_doc_id, file_path,
+                                  chunk_order_index, full_doc_id, file_path, s3_key,
+                                  char_start, char_end,
                                   COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
                                   EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                   EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
@@ -5257,11 +5447,12 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
     'filter_keys': 'SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})',
-    'upsert_doc_full': """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace)
-                        VALUES ($1, $2, $3, $4)
+    'upsert_doc_full': """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace, s3_key)
+                        VALUES ($1, $2, $3, $4, $5)
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = $2,
                                doc_name = $3,
+                               s3_key = COALESCE($5, LIGHTRAG_DOC_FULL.s3_key),
                                update_time = CURRENT_TIMESTAMP
                        """,
     'upsert_llm_response_cache': """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
@@ -5275,15 +5466,18 @@ SQL_TEMPLATES = {
                                       update_time = CURRENT_TIMESTAMP
                                      """,
     'upsert_text_chunk': """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
-                      chunk_order_index, full_doc_id, content, file_path, llm_cache_list,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      chunk_order_index, full_doc_id, content, file_path, s3_key,
+                      char_start, char_end, llm_cache_list, create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
                       full_doc_id=EXCLUDED.full_doc_id,
                       content = EXCLUDED.content,
                       file_path=EXCLUDED.file_path,
+                      s3_key=COALESCE(EXCLUDED.s3_key, LIGHTRAG_DOC_CHUNKS.s3_key),
+                      char_start=EXCLUDED.char_start,
+                      char_end=EXCLUDED.char_end,
                       llm_cache_list=EXCLUDED.llm_cache_list,
                       update_time = EXCLUDED.update_time
                      """,

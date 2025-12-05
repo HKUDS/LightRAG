@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lightrag.prompt import PROMPTS
 
-
 # =============================================================================
 # Test Data: Entity Extraction (5 Domains)
 # =============================================================================
@@ -427,7 +426,7 @@ async def test_entity_extraction_deep() -> list[EntityResult]:
     """Deep test entity extraction on 5 domains."""
     results = []
 
-    for domain, data in ENTITY_TEST_TEXTS.items():
+    for _domain, data in ENTITY_TEST_TEXTS.items():
         print(f"  Testing {data['name']}...")
 
         prompt = format_entity_prompt(data["text"])

@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 import weakref
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -21,7 +21,6 @@ from hashlib import md5
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
     Protocol,
     cast,
 )
@@ -3044,6 +3043,33 @@ def convert_to_user_format(
     }
 
 
+def _extract_document_title(file_path: str) -> str:
+    """Extract document title from file_path (just the filename without directory)."""
+    if not file_path:
+        return ''
+    # Handle S3 URLs (s3://bucket/path/file.pdf) and regular paths
+    if file_path.startswith('s3://'):
+        # Remove s3://bucket/ prefix and get filename
+        parts = file_path.split('/')
+        return parts[-1] if parts else ''
+    # Handle regular file paths
+    import os
+
+    return os.path.basename(file_path)
+
+
+def _generate_excerpt(content: str, max_length: int = 150) -> str:
+    """Generate a brief excerpt from content."""
+    if not content:
+        return ''
+    # Strip whitespace and truncate
+    excerpt = content.strip()[:max_length]
+    # Add ellipsis if truncated
+    if len(content.strip()) > max_length:
+        excerpt = excerpt.rstrip() + '...'
+    return excerpt
+
+
 def generate_reference_list_from_chunks(
     chunks: list[dict],
 ) -> tuple[list[dict], list[dict]]:
@@ -3052,30 +3078,44 @@ def generate_reference_list_from_chunks(
 
     This function extracts file_paths from chunks, counts their occurrences,
     sorts by frequency and first appearance order, creates reference_id mappings,
-    and builds a reference_list structure.
+    and builds a reference_list structure with enhanced metadata.
+
+    Enhanced fields include:
+    - document_title: Human-readable filename extracted from file_path
+    - s3_key: S3 object key if available
+    - excerpt: First 150 chars from the first chunk of each document
 
     Args:
-        chunks: List of chunk dictionaries with file_path information
+        chunks: List of chunk dictionaries with file_path, s3_key, content,
+                and optional char_start/char_end information
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
-            - reference_list: List of dicts with reference_id and file_path
-            - updated_chunks_with_reference_ids: Original chunks with reference_id field added
+            - reference_list: List of dicts with reference_id, file_path, and enhanced fields
+            - updated_chunks_with_reference_ids: Original chunks with reference_id and excerpt fields
     """
     if not chunks:
         return [], []
 
     # 1. Extract all valid file_paths and count their occurrences
-    file_path_counts = {}
+    # Also collect s3_key and first chunk content for each file_path
+    file_path_counts: dict[str, int] = {}
+    file_path_metadata: dict[str, dict] = {}  # file_path -> {s3_key, first_excerpt}
+
     for chunk in chunks:
         file_path = chunk.get('file_path', '')
         if file_path and file_path != 'unknown_source':
             file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
+            # Collect metadata from first chunk for each file_path
+            if file_path not in file_path_metadata:
+                file_path_metadata[file_path] = {
+                    's3_key': chunk.get('s3_key'),
+                    'first_excerpt': _generate_excerpt(chunk.get('content', '')),
+                }
 
     # 2. Sort file paths by frequency (descending), then by first appearance order
-    # Create a list of (file_path, count, first_index) tuples
     file_path_with_indices = []
-    seen_paths = set()
+    seen_paths: set[str] = set()
     for i, chunk in enumerate(chunks):
         file_path = chunk.get('file_path', '')
         if file_path and file_path != 'unknown_source' and file_path not in seen_paths:
@@ -3091,7 +3131,7 @@ def generate_reference_list_from_chunks(
     for i, file_path in enumerate(unique_file_paths):
         file_path_to_ref_id[file_path] = str(i + 1)
 
-    # 4. Add reference_id field to each chunk
+    # 4. Add reference_id and excerpt fields to each chunk
     updated_chunks = []
     for chunk in chunks:
         chunk_copy = chunk.copy()
@@ -3100,11 +3140,20 @@ def generate_reference_list_from_chunks(
             chunk_copy['reference_id'] = file_path_to_ref_id[file_path]
         else:
             chunk_copy['reference_id'] = ''
+        # Add excerpt from this chunk's content
+        chunk_copy['excerpt'] = _generate_excerpt(chunk_copy.get('content', ''))
         updated_chunks.append(chunk_copy)
 
-    # 5. Build reference_list
+    # 5. Build enhanced reference_list
     reference_list = []
     for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({'reference_id': str(i + 1), 'file_path': file_path})
+        metadata = file_path_metadata.get(file_path, {})
+        reference_list.append({
+            'reference_id': str(i + 1),
+            'file_path': file_path,
+            'document_title': _extract_document_title(file_path),
+            's3_key': metadata.get('s3_key'),
+            'excerpt': metadata.get('first_excerpt', ''),
+        })
 
     return reference_list, updated_chunks

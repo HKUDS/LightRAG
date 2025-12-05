@@ -9,7 +9,6 @@ import struct
 
 import aiohttp
 import numpy as np
-from lightrag.utils import logger
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -21,6 +20,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+from lightrag.utils import logger
 
 
 @retry(

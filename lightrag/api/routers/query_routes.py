@@ -285,6 +285,8 @@ class EnhancedReferenceItem(BaseModel):
     section_title: str | None = Field(default=None, description='Section or chapter title')
     page_range: str | None = Field(default=None, description='Page range (e.g., pp. 45-67)')
     excerpt: str | None = Field(default=None, description='Brief excerpt from the source')
+    s3_key: str | None = Field(default=None, description='S3 object key for source document')
+    presigned_url: str | None = Field(default=None, description='Presigned URL for direct access')
 
 
 async def _extract_and_stream_citations(
@@ -294,6 +296,7 @@ async def _extract_and_stream_citations(
     rag,
     min_similarity: float,
     citation_mode: str,
+    s3_client=None,
 ):
     """Extract citations from response and yield NDJSON lines.
 
@@ -305,10 +308,11 @@ async def _extract_and_stream_citations(
     Args:
         response: The full LLM response text
         chunks: List of chunk dictionaries from retrieval
-        references: List of reference dicts
+        references: List of reference dicts with s3_key and document metadata
         rag: The RAG instance (for embedding function)
         min_similarity: Minimum similarity threshold
         citation_mode: 'inline' or 'footnotes'
+        s3_client: Optional S3Client for generating presigned URLs
 
     Yields:
         NDJSON lines for citation metadata (no duplicate text)
@@ -339,19 +343,31 @@ async def _extract_and_stream_citations(
                 }
             )
 
-        # Build enhanced sources with metadata
+        # Build enhanced sources with metadata and presigned URLs
         sources = []
         for ref in citation_result.references:
-            sources.append(
-                {
-                    'reference_id': ref.reference_id,
-                    'file_path': ref.file_path,
-                    'document_title': ref.document_title,
-                    'section_title': ref.section_title,
-                    'page_range': ref.page_range,
-                    'excerpt': ref.excerpt,
-                }
+            source_item = {
+                'reference_id': ref.reference_id,
+                'file_path': ref.file_path,
+                'document_title': ref.document_title,
+                'section_title': ref.section_title,
+                'page_range': ref.page_range,
+                'excerpt': ref.excerpt,
+                's3_key': getattr(ref, 's3_key', None),
+                'presigned_url': None,
+            }
+
+            # Generate presigned URL if S3 client is available and s3_key exists
+            s3_key = getattr(ref, 's3_key', None) or (
+                ref.__dict__.get('s3_key') if hasattr(ref, '__dict__') else None
             )
+            if s3_client and s3_key:
+                try:
+                    source_item['presigned_url'] = await s3_client.get_presigned_url(s3_key)
+                except Exception as e:
+                    logger.debug(f'Failed to generate presigned URL for {s3_key}: {e}')
+
+            sources.append(source_item)
 
         # Format footnotes if requested
         footnotes = citation_result.footnotes if citation_mode == 'footnotes' else []
@@ -363,7 +379,7 @@ async def _extract_and_stream_citations(
                 {
                     'citations_metadata': {
                         'markers': citation_markers,  # Position-based markers for insertion
-                        'sources': sources,  # Enhanced reference metadata
+                        'sources': sources,  # Enhanced reference metadata with presigned URLs
                         'footnotes': footnotes,  # Pre-formatted footnote strings
                         'uncited_count': len(citation_result.uncited_claims),
                     }
@@ -380,7 +396,15 @@ async def _extract_and_stream_citations(
         yield json.dumps({'citation_error': str(e)}) + '\n'
 
 
-def create_query_routes(rag, api_key: str | None = None, top_k: int = DEFAULT_TOP_K):
+def create_query_routes(rag, api_key: str | None = None, top_k: int = DEFAULT_TOP_K, s3_client=None):
+    """Create query routes with optional S3 client for presigned URL generation in citations.
+
+    Args:
+        rag: LightRAG instance
+        api_key: Optional API key for authentication
+        top_k: Default top_k for retrieval
+        s3_client: Optional S3Client for generating presigned URLs in citation responses
+    """
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
@@ -911,6 +935,7 @@ def create_query_routes(rag, api_key: str | None = None, top_k: int = DEFAULT_TO
                             rag,
                             request.citation_threshold or 0.7,
                             citation_mode,
+                            s3_client,
                         ):
                             yield line
                 else:
@@ -938,6 +963,7 @@ def create_query_routes(rag, api_key: str | None = None, top_k: int = DEFAULT_TO
                             rag,
                             request.citation_threshold or 0.7,
                             citation_mode,
+                            s3_client,
                         ):
                             yield line
 

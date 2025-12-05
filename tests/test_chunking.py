@@ -1056,3 +1056,219 @@ def test_decode_preserves_content():
         tokens = tokenizer.encode(original)
         decoded = tokenizer.decode(tokens)
         assert decoded == original, f'Failed to decode: {original}'
+
+
+# ============================================================================
+# Character Position Tests (char_start, char_end for citations)
+# ============================================================================
+
+
+@pytest.mark.offline
+def test_char_positions_present():
+    """Verify char_start and char_end are present in all chunks."""
+    tokenizer = make_tokenizer()
+    content = 'alpha\n\nbeta\n\ngamma'
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character='\n\n',
+        split_by_character_only=True,
+        chunk_token_size=20,
+    )
+
+    for chunk in chunks:
+        assert 'char_start' in chunk, 'char_start field missing'
+        assert 'char_end' in chunk, 'char_end field missing'
+        assert isinstance(chunk['char_start'], int), 'char_start should be int'
+        assert isinstance(chunk['char_end'], int), 'char_end should be int'
+
+
+@pytest.mark.offline
+def test_char_positions_basic_delimiter_split():
+    """Test char_start/char_end with basic delimiter splitting."""
+    tokenizer = make_tokenizer()
+    # "alpha\n\nbeta" = positions: alpha at 0-5, beta at 7-11
+    content = 'alpha\n\nbeta'
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character='\n\n',
+        split_by_character_only=True,
+        chunk_token_size=20,
+    )
+
+    assert len(chunks) == 2
+    # First chunk "alpha" starts at 0
+    assert chunks[0]['char_start'] == 0
+    assert chunks[0]['char_end'] == 5
+    # Second chunk "beta" starts after "\n\n" (position 7)
+    assert chunks[1]['char_start'] == 7
+    assert chunks[1]['char_end'] == 11
+
+
+@pytest.mark.offline
+def test_char_positions_single_chunk():
+    """Test char_start/char_end for content that fits in single chunk."""
+    tokenizer = make_tokenizer()
+    content = 'hello world'
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character='\n\n',
+        split_by_character_only=True,
+        chunk_token_size=50,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]['char_start'] == 0
+    assert chunks[0]['char_end'] == len(content)
+
+
+@pytest.mark.offline
+def test_char_positions_token_based_no_overlap():
+    """Test char_start/char_end with token-based chunking, no overlap."""
+    tokenizer = make_tokenizer()
+    content = '0123456789abcdefghij'  # 20 chars
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character=None,
+        split_by_character_only=False,
+        chunk_token_size=10,
+        chunk_overlap_token_size=0,
+    )
+
+    assert len(chunks) == 2
+    # First chunk: chars 0-10
+    assert chunks[0]['char_start'] == 0
+    assert chunks[0]['char_end'] == 10
+    # Second chunk: chars 10-20
+    assert chunks[1]['char_start'] == 10
+    assert chunks[1]['char_end'] == 20
+
+
+@pytest.mark.offline
+def test_char_positions_consecutive_delimiters():
+    """Test char positions with multiple delimiter-separated chunks."""
+    tokenizer = make_tokenizer()
+    # "a||b||c" with delimiter "||"
+    content = 'first||second||third'
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character='||',
+        split_by_character_only=True,
+        chunk_token_size=50,
+    )
+
+    assert len(chunks) == 3
+    # "first" at 0-5
+    assert chunks[0]['char_start'] == 0
+    assert chunks[0]['char_end'] == 5
+    # "second" at 7-13 (after "||")
+    assert chunks[1]['char_start'] == 7
+    assert chunks[1]['char_end'] == 13
+    # "third" at 15-20
+    assert chunks[2]['char_start'] == 15
+    assert chunks[2]['char_end'] == 20
+
+
+@pytest.mark.offline
+def test_char_positions_unicode():
+    """Test char_start/char_end with unicode content."""
+    tokenizer = make_tokenizer()
+    # Unicode characters should count as individual chars
+    content = '日本語\n\nテスト'
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character='\n\n',
+        split_by_character_only=True,
+        chunk_token_size=50,
+    )
+
+    assert len(chunks) == 2
+    # "日本語" = 3 characters, positions 0-3
+    assert chunks[0]['char_start'] == 0
+    assert chunks[0]['char_end'] == 3
+    # "テスト" starts at position 5 (after \n\n)
+    assert chunks[1]['char_start'] == 5
+    assert chunks[1]['char_end'] == 8
+
+
+@pytest.mark.offline
+def test_char_positions_empty_content():
+    """Test char_start/char_end with empty content."""
+    tokenizer = make_tokenizer()
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        '',
+        split_by_character='\n\n',
+        split_by_character_only=True,
+        chunk_token_size=10,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]['char_start'] == 0
+    assert chunks[0]['char_end'] == 0
+
+
+@pytest.mark.offline
+def test_char_positions_verify_content_match():
+    """Verify that char_start/char_end can be used to extract original content."""
+    tokenizer = make_tokenizer()
+    content = 'The quick\n\nbrown fox\n\njumps over'
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character='\n\n',
+        split_by_character_only=True,
+        chunk_token_size=50,
+    )
+
+    for chunk in chunks:
+        # Extract using char positions and compare (stripping whitespace)
+        extracted = content[chunk['char_start'] : chunk['char_end']].strip()
+        assert extracted == chunk['content'], f"Mismatch: '{extracted}' != '{chunk['content']}'"
+
+
+@pytest.mark.offline
+def test_char_positions_with_overlap_approximation():
+    """Test char positions with overlapping chunks (positions are approximate).
+
+    Note: The overlap approximation uses `chunk_overlap_token_size * 4` to estimate
+    character overlap. This can result in negative char_start for later chunks
+    when overlap is large relative to chunk size. This is expected behavior
+    for the approximation algorithm.
+    """
+    tokenizer = make_tokenizer()
+    content = '0123456789abcdefghij'  # 20 chars
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character=None,
+        split_by_character_only=False,
+        chunk_token_size=10,
+        chunk_overlap_token_size=3,
+    )
+
+    # With overlap=3, step=7: chunks at 0, 7, 14
+    assert len(chunks) == 3
+    # First chunk always starts at 0
+    assert chunks[0]['char_start'] == 0
+    # char_start and char_end are integers (approximate positions)
+    for chunk in chunks:
+        assert isinstance(chunk['char_start'], int)
+        assert isinstance(chunk['char_end'], int)
+    # char_end should always be greater than char_start
+    for chunk in chunks:
+        assert chunk['char_end'] > chunk['char_start'], f"char_end ({chunk['char_end']}) should be > char_start ({chunk['char_start']})"

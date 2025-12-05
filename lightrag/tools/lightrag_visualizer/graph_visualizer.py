@@ -1,6 +1,3 @@
-import networkx as nx
-import numpy as np
-
 import colorsys
 import os
 import tkinter as tk
@@ -10,6 +7,8 @@ from tkinter import filedialog
 import community
 import glm
 import moderngl
+import networkx as nx
+import numpy as np
 from imgui_bundle import hello_imgui, imgui, immapp
 
 CUSTOM_FONT = 'font.ttf'

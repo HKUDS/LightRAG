@@ -136,6 +136,9 @@ test = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
+    "moto[s3]>=5.0",  # AWS S3 mocking for S3 client tests
+    "httpx>=0.27",  # Async HTTP client for FastAPI testing
+    "aioboto3>=12.0.0,<16.0.0",  # Required for S3 client tests
 ]
 
 # Type-checking/lint extras

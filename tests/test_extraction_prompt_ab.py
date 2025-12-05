@@ -19,8 +19,9 @@ import tiktoken
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lightrag.prompt import PROMPTS
 from lightrag.prompt_optimized import PROMPTS_OPTIMIZED
+
+from lightrag.prompt import PROMPTS
 
 # =============================================================================
 # Sample Texts for Testing
@@ -355,7 +356,7 @@ class TestExtractionPromptAB:
         """Compare prompts across all sample texts."""
         results = []
 
-        for key, sample in SAMPLE_TEXTS.items():
+        for _key, sample in SAMPLE_TEXTS.items():
             print(f"\nProcessing: {sample['name']}...")
 
             original = await run_extraction(PROMPTS, sample["text"])
@@ -410,7 +411,7 @@ async def main() -> None:
 
     results = []
 
-    for key, sample in SAMPLE_TEXTS.items():
+    for _key, sample in SAMPLE_TEXTS.items():
         print(f"Processing: {sample['name']}...")
 
         original = await run_extraction(PROMPTS, sample["text"])

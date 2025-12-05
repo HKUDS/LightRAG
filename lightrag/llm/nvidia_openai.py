@@ -7,6 +7,7 @@ if not pm.is_installed('openai'):
     pm.install('openai')
 
 from typing import Literal
+
 import numpy as np
 from openai import (
     APIConnectionError,

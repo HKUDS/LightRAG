@@ -3,16 +3,18 @@ LightRAG FastAPI Server
 """
 
 import argparse
-from collections.abc import AsyncIterator
 import configparser
-from contextlib import asynccontextmanager
 import logging
 import logging.config
 import os
-from pathlib import Path
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any, cast
 
+import pipmaster as pm
+import uvicorn
 from ascii_colors import ASCIIColors
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -25,10 +27,9 @@ from fastapi.openapi.docs import (
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-import pipmaster as pm
-import uvicorn
 
-from lightrag import LightRAG, __version__ as core_version
+from lightrag import LightRAG
+from lightrag import __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.api.auth import auth_handler
 from lightrag.api.routers.document_routes import (
@@ -38,7 +39,9 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.search_routes import create_search_routes
 from lightrag.api.routers.table_routes import create_table_routes
+from lightrag.api.routers.upload_routes import create_upload_routes
 from lightrag.api.utils_api import (
     check_env_file,
     display_splash_screen,
@@ -59,6 +62,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     get_namespace_data,
 )
+from lightrag.storage.s3_client import S3Client, S3Config
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
 
@@ -318,6 +322,18 @@ def create_app(args):
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
+    # Initialize S3 client if configured (for upload routes)
+    s3_client: S3Client | None = None
+    s3_endpoint_url = os.getenv('S3_ENDPOINT_URL', '')
+    if s3_endpoint_url:
+        try:
+            s3_config = S3Config(endpoint_url=s3_endpoint_url)
+            s3_client = S3Client(s3_config)
+            logger.info(f'S3 client configured for endpoint: {s3_endpoint_url}')
+        except ValueError as e:
+            logger.warning(f'S3 client not initialized: {e}')
+            s3_client = None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
@@ -329,6 +345,11 @@ def create_app(args):
             # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
             await rag.initialize_storages()
 
+            # Initialize S3 client if configured
+            if s3_client is not None:
+                await s3_client.initialize()
+                logger.info('S3 client initialized successfully')
+
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
@@ -337,6 +358,11 @@ def create_app(args):
             yield
 
         finally:
+            # Finalize S3 client if initialized
+            if s3_client is not None:
+                await s3_client.finalize()
+                logger.info('S3 client finalized')
+
             # Clean up database connections
             await rag.finalize_storages()
 
@@ -1006,7 +1032,7 @@ def create_app(args):
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, s3_client))
     app.include_router(create_graph_routes(rag, api_key))
 
     # Register table routes if all storages are PostgreSQL
@@ -1022,6 +1048,21 @@ def create_app(args):
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix='/api')
+
+    # Register upload routes if S3 is configured
+    if s3_client is not None:
+        app.include_router(create_upload_routes(rag, s3_client, api_key))
+        logger.info('S3 upload routes registered at /upload')
+    else:
+        logger.info('S3 not configured - upload routes disabled')
+
+    # Register BM25 search routes if PostgreSQL storage is configured
+    # Full-text search requires PostgreSQLDB for ts_rank queries
+    if args.kv_storage == 'PGKVStorage' and hasattr(rag, 'text_chunks') and hasattr(rag.text_chunks, 'db'):
+        app.include_router(create_search_routes(rag.text_chunks.db, api_key))
+        logger.info('BM25 search routes registered at /search')
+    else:
+        logger.info('PostgreSQL not configured - BM25 search routes disabled')
 
     # Custom Swagger UI endpoint for offline support
     @app.get('/docs', include_in_schema=False)

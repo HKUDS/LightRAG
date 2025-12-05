@@ -44,6 +44,26 @@ services:
       retries: 5
     mem_limit: 2g
 
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: rustfs-test
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+    command: /data
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      # RustFS returns AccessDenied for unauth requests, but that means it's alive
+      test: ["CMD-SHELL", "curl -s http://localhost:9000/ | grep -q 'AccessDenied' || curl -sf http://localhost:9000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+
   lightrag:
     container_name: lightrag-test
     build:
@@ -118,8 +138,17 @@ services:
       - ORPHAN_CONNECTION_THRESHOLD=0.3        # Vector similarity pre-filter threshold
       - ORPHAN_CONFIDENCE_THRESHOLD=0.7        # LLM confidence required for connection
       - ORPHAN_CROSS_CONNECT=true              # Allow orphan-to-orphan connections
+
+      # S3/RustFS Configuration - Document staging and archival
+      - S3_ENDPOINT_URL=http://rustfs:9000
+      - S3_ACCESS_KEY_ID=rustfsadmin
+      - S3_SECRET_ACCESS_KEY=rustfsadmin
+      - S3_BUCKET_NAME=lightrag
+      - S3_REGION=us-east-1
     depends_on:
       postgres:
+        condition: service_healthy
+      rustfs:
         condition: service_healthy
     entrypoint: []
     command:
@@ -142,3 +171,4 @@ services:
 
 volumes:
   pgdata_test:
+  rustfs_data:

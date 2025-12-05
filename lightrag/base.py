@@ -65,11 +65,22 @@ class OllamaServerInfos:
         return f'{self._lightrag_name}:{self._lightrag_tag}'
 
 
-class TextChunkSchema(TypedDict):
+class TextChunkSchema(TypedDict, total=False):
+    """Schema for text chunks with optional position metadata.
+
+    Required fields: tokens, content, full_doc_id, chunk_order_index
+    Optional fields: file_path, s3_key, char_start, char_end
+    """
+
     tokens: int
     content: str
     full_doc_id: str
     chunk_order_index: int
+    # Optional fields for citation support
+    file_path: str | None
+    s3_key: str | None
+    char_start: int | None  # Character offset start in source document
+    char_end: int | None  # Character offset end in source document
 
 
 T = TypeVar('T')

@@ -7,10 +7,10 @@ import os
 import re
 import time
 from collections import Counter, defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal, cast, overload
+from typing import Any, cast
 
 import json_repair
 from dotenv import load_dotenv
@@ -31,9 +31,9 @@ from lightrag.constants import (
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
@@ -231,11 +231,19 @@ def chunking_by_token_size(
     chunk_overlap_token_size: int = 100,
     chunk_token_size: int = 1200,
 ) -> list[dict[str, Any]]:
+    """Split content into chunks by token size, tracking character positions.
+
+    Returns chunks with char_start and char_end for citation support.
+    """
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
         raw_chunks = content.split(split_by_character)
-        new_chunks = []
+        # Track character positions: (tokens, chunk_text, char_start, char_end)
+        new_chunks: list[tuple[int, str, int, int]] = []
+        char_position = 0
+        separator_len = len(split_by_character)
+
         if split_by_character_only:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
@@ -250,32 +258,58 @@ def chunking_by_token_size(
                         chunk_token_limit=chunk_token_size,
                         chunk_preview=chunk[:120],
                     )
-                new_chunks.append((len(_tokens), chunk))
+                chunk_start = char_position
+                chunk_end = char_position + len(chunk)
+                new_chunks.append((len(_tokens), chunk, chunk_start, chunk_end))
+                char_position = chunk_end + separator_len  # Skip separator
         else:
             for chunk in raw_chunks:
+                chunk_start = char_position
                 _tokens = tokenizer.encode(chunk)
                 if len(_tokens) > chunk_token_size:
+                    # Sub-chunking: approximate char positions within the chunk
+                    sub_char_position = 0
                     for start in range(0, len(_tokens), chunk_token_size - chunk_overlap_token_size):
                         chunk_content = tokenizer.decode(_tokens[start : start + chunk_token_size])
-                        new_chunks.append((min(chunk_token_size, len(_tokens) - start), chunk_content))
+                        # Approximate char position based on content length ratio
+                        sub_start = chunk_start + sub_char_position
+                        sub_end = sub_start + len(chunk_content)
+                        new_chunks.append(
+                            (min(chunk_token_size, len(_tokens) - start), chunk_content, sub_start, sub_end)
+                        )
+                        sub_char_position += len(chunk_content) - (chunk_overlap_token_size * 4)  # Approx overlap
                 else:
-                    new_chunks.append((len(_tokens), chunk))
-        for index, (_len, chunk) in enumerate(new_chunks):
+                    chunk_end = chunk_start + len(chunk)
+                    new_chunks.append((len(_tokens), chunk, chunk_start, chunk_end))
+                char_position = chunk_start + len(chunk) + separator_len
+
+        for index, (_len, chunk, char_start, char_end) in enumerate(new_chunks):
             results.append(
                 {
                     'tokens': _len,
                     'content': chunk.strip(),
                     'chunk_order_index': index,
+                    'char_start': char_start,
+                    'char_end': char_end,
                 }
             )
     else:
+        # Token-based chunking: track character positions through decoded content
+        char_position = 0
         for index, start in enumerate(range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)):
             chunk_content = tokenizer.decode(tokens[start : start + chunk_token_size])
+            # For overlapping chunks, approximate positions based on previous chunk
+            char_start = 0 if index == 0 else char_position
+            char_end = char_start + len(chunk_content)
+            char_position = char_start + len(chunk_content) - (chunk_overlap_token_size * 4)  # Approx char overlap
+
             results.append(
                 {
                     'tokens': min(chunk_token_size, len(tokens) - start),
                     'content': chunk_content.strip(),
                     'chunk_order_index': index,
+                    'char_start': char_start,
+                    'char_end': char_end,
                 }
             )
     return results

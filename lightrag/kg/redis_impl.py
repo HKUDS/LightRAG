@@ -115,7 +115,8 @@ class RedisConnectionManager:
         except RuntimeError:
             asyncio.run(cls.release_pool_async(redis_url))
             return
-        loop.create_task(cls.release_pool_async(redis_url))
+        task = loop.create_task(cls.release_pool_async(redis_url))
+        return task
 
     @classmethod
     def close_all_pools(cls):
