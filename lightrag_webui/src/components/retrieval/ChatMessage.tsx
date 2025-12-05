@@ -76,7 +76,8 @@ export const ChatMessage = ({
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
-  // Load KaTeX dynamically
+  // Load KaTeX rehype plugin dynamically
+  // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
@@ -84,7 +85,6 @@ export const ChatMessage = ({
         setKatexPlugin(() => rehypeKatex);
       } catch (error) {
         console.error('Failed to load KaTeX plugin:', error);
-        // Set to null to ensure we don't try to use a failed plugin
         setKatexPlugin(null);
       }
     };

@@ -1,0 +1,206 @@
+# Keep GitHub Actions up to date with GitHub's Dependabot...
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#package-ecosystem
+version: 2
+updates:
+  # ============================================================
+  # GitHub Actions
+  # PR Strategy:
+  #   - All updates (major/minor/patch): Grouped into a single PR
+  # ============================================================
+  - package-ecosystem: github-actions
+    directory: /
+    groups:
+      github-actions:
+        patterns:
+          - "*"  # Group all Actions updates into a single larger pull request
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: "Asia/Shanghai"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    open-pull-requests-limit: 2
+
+  # ============================================================
+  # Python (pip) Dependencies
+  # PR Strategy:
+  #   - Major updates: Individual PR per package (except numpy which is ignored)
+  #   - Minor updates: Grouped by category (llm-providers, storage, etc.)
+  #   - Patch updates: Grouped by category
+  # ============================================================
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      time: "02:00"
+      timezone: "Asia/Shanghai"
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      # Core dependencies - LLM providers and embeddings
+      llm-providers:
+        patterns:
+          - "openai"
+          - "anthropic"
+          - "google-*"
+          - "boto3"
+          - "botocore"
+          - "ollama"
+        update-types:
+          - "minor"
+          - "patch"
+      # Storage backends
+      storage:
+        patterns:
+          - "neo4j"
+          - "pymongo"
+          - "redis"
+          - "psycopg*"
+          - "asyncpg"
+          - "milvus*"
+          - "qdrant*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Data processing and ML
+      data-processing:
+        patterns:
+          - "numpy"
+          - "scipy"
+          - "pandas"
+          - "tiktoken"
+          - "transformers"
+          - "torch*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Web framework and API
+      web-framework:
+        patterns:
+          - "fastapi"
+          - "uvicorn"
+          - "gunicorn"
+          - "starlette"
+          - "pydantic*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Development and testing tools
+      dev-tools:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "pre-commit"
+          - "black"
+          - "mypy"
+        update-types:
+          - "minor"
+          - "patch"
+      # Minor and patch updates for everything else
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "numpy"
+        update-types:
+          - "version-update:semver-major"
+    labels:
+      - "dependencies"
+      - "python"
+    open-pull-requests-limit: 5
+
+  # ============================================================
+  # Frontend (bun) Dependencies
+  # PR Strategy:
+  #   - Major updates: Individual PR per package
+  #   - Minor updates: Grouped by category (react, ui-components, etc.)
+  #   - Patch updates: Grouped by category
+  # ============================================================
+  - package-ecosystem: "bun"
+    directory: "/lightrag_webui"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+      time: "02:00"
+      timezone: "Asia/Shanghai"
+    cooldown:
+      default-days: 5
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      # React ecosystem
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "react-router*"
+          - "@types/react*"
+        update-types:
+          - "minor"
+          - "patch"
+      # UI components and styling
+      ui-components:
+        patterns:
+          - "@radix-ui/*"
+          - "tailwind*"
+          - "@tailwindcss/*"
+          - "lucide-react"
+          - "class-variance-authority"
+          - "clsx"
+        update-types:
+          - "minor"
+          - "patch"
+      # Graph visualization
+      graph-viz:
+        patterns:
+          - "sigma"
+          - "@sigma/*"
+          - "graphology*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Build tools and dev dependencies
+      build-tools:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+          - "typescript"
+          - "eslint*"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "prettier"
+          - "prettier-*"
+          - "@types/bun"
+        update-types:
+          - "minor"
+          - "patch"
+      # Content rendering libraries (math, diagrams, etc.)
+      content-rendering:
+        patterns:
+          - "katex"
+          - "mermaid"
+        update-types:
+          - "minor"
+          - "patch"
+      # All other minor and patch updates
+      frontend-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "frontend"
+    open-pull-requests-limit: 5
