@@ -2,25 +2,37 @@ import json
 import re
 
 from lightrag import LightRAG, QueryParam
-from lightrag.utils import always_get_an_event_loop
+from lightrag.utils import always_get_an_event_loop, logger
 
 
 def extract_queries(file_path):
-    with open(file_path) as f:
-        data = f.read()
+    try:
+        logger.info(f'Reading queries from {file_path}')
+        with open(file_path, encoding='utf-8') as f:
+            data = f.read()
+    except FileNotFoundError:
+        logger.error(f'File not found: {file_path}')
+        return []
+    except OSError as exc:
+        logger.error(f'Error reading file {file_path}: {exc}')
+        return []
 
     data = data.replace('**', '')
-
     queries = re.findall(r'- Question \d+: (.+)', data)
+    if not queries:
+        logger.warning(f'No queries found in {file_path}; unexpected format?')
 
+    logger.info(f'Extracted {len(queries)} queries')
     return queries
 
 
 async def process_query(query_text, rag_instance, query_param):
     try:
+        logger.debug(f'Processing query: {query_text[:100]}...')
         result = await rag_instance.aquery(query_text, param=query_param)
         return {'query': query_text, 'result': result}, None
     except Exception as e:
+        logger.error(f'Error processing query: {e}', exc_info=True)
         return None, {'query': query_text, 'error': str(e)}
 
 
@@ -35,7 +47,19 @@ def run_queries_and_save_to_json(queries, rag_instance, query_param, output_file
         first_entry = True
 
         for query_text in queries:
-            result, error = loop.run_until_complete(process_query(query_text, rag_instance, query_param))
+            try:
+                result, error = loop.run_until_complete(process_query(query_text, rag_instance, query_param))
+            except RuntimeError as e:
+                if 'attached to a different loop' in str(e):
+                    logger.error(f'Event loop mismatch while processing query: {e}')
+                    error = {'query': query_text, 'error': f'Event loop error: {e}'}
+                    result = None
+                else:
+                    raise
+            except Exception as e:
+                logger.error(f'Unexpected error running query: {e}', exc_info=True)
+                error = {'query': query_text, 'error': f'Unexpected error: {e}'}
+                result = None
 
             if result:
                 if not first_entry:

@@ -219,7 +219,9 @@ class InsertTextRequest(BaseModel):
 
     @field_validator('file_source', mode='after')
     @classmethod
-    def strip_source_after(cls, file_source: str) -> str:
+    def strip_source_after(cls, file_source: str | None) -> str | None:
+        if file_source is None:
+            return None
         return file_source.strip()
 
     class Config:
@@ -252,7 +254,9 @@ class InsertTextsRequest(BaseModel):
 
     @field_validator('file_sources', mode='after')
     @classmethod
-    def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
+    def strip_sources_after(cls, file_sources: list[str] | None) -> list[str] | None:
+        if file_sources is None:
+            return None
         return [file_source.strip() for file_source in file_sources]
 
     class Config:
@@ -438,7 +442,7 @@ class DocStatusResponse(BaseModel):
                 'updated_at': '2025-03-31T12:35:30',
                 'track_id': 'upload_20250729_170612_abc123',
                 'chunks_count': 12,
-                'error': None,
+                'error_msg': None,
                 'metadata': {'author': 'John Doe', 'year': 2025},
                 'file_path': 'research_paper.pdf',
             }
@@ -540,7 +544,7 @@ class TrackStatusResponse(BaseModel):
                         'updated_at': '2025-03-31T12:35:30',
                         'track_id': 'upload_20250729_170612_abc123',
                         'chunks_count': 12,
-                        'error': None,
+                        'error_msg': None,
                         'metadata': {'author': 'John Doe', 'year': 2025},
                         'file_path': 'research_paper.pdf',
                     }
@@ -1595,7 +1599,8 @@ async def pipeline_index_texts(
     if not texts:
         return
     if file_sources is not None and len(file_sources) != 0 and len(file_sources) != len(texts):
-        [file_sources.append('unknown_source') for _ in range(len(file_sources), len(texts))]
+        for _ in range(len(file_sources), len(texts)):
+            file_sources.append('unknown_source')
     await rag.apipeline_enqueue_documents(input=texts, file_paths=file_sources, track_id=track_id)
     await rag.apipeline_process_enqueue_documents()
 
@@ -1718,7 +1723,7 @@ async def background_delete_documents(
             file_path = '#'
             try:
                 result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=delete_llm_cache)
-                file_path = getattr(result, 'file_path', '-') if 'result' in locals() else '-'
+                file_path = getattr(result, 'file_path', '-')
                 if result.status == 'success':
                     successful_deletions.append(doc_id)
                     success_msg = f'Document deleted {i}/{total_docs}: {doc_id}[{file_path}]'

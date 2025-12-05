@@ -153,19 +153,22 @@ class CitationExtractor:
         """Build index mapping chunk content to reference IDs."""
         self.chunk_to_ref: dict[str, str] = {}
         self.ref_to_chunks: dict[str, list[dict]] = {}
+        self.path_to_ref: dict[str, str] = {}
 
         # Map file_path to reference_id
-        path_to_ref: dict[str, str] = {}
         for ref in self.references:
-            path_to_ref[ref.get('file_path', '')] = ref.get('reference_id', '')
+            path = ref.get('file_path', '')
+            if path:
+                self.path_to_ref[path] = ref.get('reference_id', '')
 
         # Index chunks by reference
         for chunk in self.chunks:
             file_path = chunk.get('file_path', '')
-            ref_id = path_to_ref.get(file_path, '')
+            ref_id = self.path_to_ref.get(file_path, '')
 
             if ref_id:
-                self.chunk_to_ref[chunk.get('content', '')[:100]] = ref_id
+                chunk_id = chunk.get('id') or chunk.get('chunk_id') or chunk.get('content', '')[:100]
+                self.chunk_to_ref[chunk_id] = ref_id
 
                 if ref_id not in self.ref_to_chunks:
                     self.ref_to_chunks[ref_id] = []
@@ -233,12 +236,7 @@ class CitationExtractor:
 
             if final_score >= self.min_similarity:
                 file_path = chunk.get('file_path', '')
-                # Find reference_id for this chunk
-                ref_id = None
-                for ref in self.references:
-                    if ref.get('file_path') == file_path:
-                        ref_id = ref.get('reference_id')
-                        break
+                ref_id = self.path_to_ref.get(file_path)
 
                 if ref_id:
                     matches.append(

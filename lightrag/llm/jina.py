@@ -99,16 +99,14 @@ async def jina_embed(
         aiohttp.ClientError: If there is a connection error with the Jina API.
         aiohttp.ClientResponseError: If the Jina API returns an error response.
     """
-    if api_key:
-        os.environ['JINA_API_KEY'] = api_key
-
-    if 'JINA_API_KEY' not in os.environ:
+    effective_api_key = api_key or os.environ.get('JINA_API_KEY')
+    if not effective_api_key:
         raise ValueError('JINA_API_KEY environment variable is required')
 
     url = base_url or 'https://api.jina.ai/v1/embeddings'
     headers = {
         'Content-Type': 'application/json',
-        'Authorization': f'Bearer {os.environ["JINA_API_KEY"]}',
+        'Authorization': f'Bearer {effective_api_key}',
     }
     data = {
         'model': model,

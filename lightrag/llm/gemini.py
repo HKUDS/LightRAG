@@ -10,6 +10,7 @@ implementation mirrors the OpenAI helpers while relying on the official
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -37,8 +38,6 @@ if not pm.is_installed('google-genai'):
     pm.install('google-genai')
 if not pm.is_installed('google-api-core'):
     pm.install('google-api-core')
-
-import contextlib
 
 from google import genai  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore

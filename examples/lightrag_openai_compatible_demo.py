@@ -30,7 +30,7 @@ def configure_logging():
     log_file_path = os.path.abspath(os.path.join(log_dir, 'lightrag_compatible_demo.log'))
 
     print(f'\nLightRAG compatible demo log file: {log_file_path}\n')
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv('LOG_MAX_BYTES', 10485760))  # Default 10MB
@@ -123,6 +123,7 @@ async def initialize_rag():
 
 
 async def main():
+    rag = None
     try:
         # Clear old data files
         files_to_delete = [

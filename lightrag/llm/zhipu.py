@@ -3,7 +3,6 @@ import re
 
 from lightrag.utils import verbose_debug
 
-pass
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
@@ -95,8 +94,8 @@ async def zhipu_complete(
 ):
     if history_messages is None:
         history_messages = []
-    # Pop keyword_extraction from kwargs to avoid passing it to zhipu_complete_if_cache
-    keyword_extraction = kwargs.pop('keyword_extraction', None)
+    # Remove keyword_extraction from kwargs if it was passed redundantly
+    kwargs.pop('keyword_extraction', None)
 
     if keyword_extraction:
         # Add a system prompt to guide the model to return JSON format

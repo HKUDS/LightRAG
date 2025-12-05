@@ -3,12 +3,14 @@ import glob
 import json
 import os
 
+from lightrag.utils import logger
+
 
 def extract_unique_contexts(input_directory, output_directory):
     os.makedirs(output_directory, exist_ok=True)
 
     jsonl_files = glob.glob(os.path.join(input_directory, '*.jsonl'))
-    print(f'Found {len(jsonl_files)} JSONL files.')
+    logger.info(f'Found {len(jsonl_files)} JSONL files.')
 
     for file_path in jsonl_files:
         filename = os.path.basename(file_path)
@@ -18,7 +20,7 @@ def extract_unique_contexts(input_directory, output_directory):
 
         unique_contexts_dict = {}
 
-        print(f'Processing file: {filename}')
+        logger.info(f'Processing file: {filename}')
 
         try:
             with open(file_path, encoding='utf-8') as infile:
@@ -32,25 +34,25 @@ def extract_unique_contexts(input_directory, output_directory):
                         if context and context not in unique_contexts_dict:
                             unique_contexts_dict[context] = None
                     except json.JSONDecodeError as e:
-                        print(f'JSON decoding error in file {filename} at line {line_number}: {e}')
+                        logger.error(f'JSON decoding error in file {filename} at line {line_number}: {e}')
         except FileNotFoundError:
-            print(f'File not found: {filename}')
+            logger.error(f'File not found: {filename}')
             continue
         except Exception as e:
-            print(f'An error occurred while processing file {filename}: {e}')
+            logger.error(f'An error occurred while processing file {filename}: {e}')
             continue
 
         unique_contexts_list = list(unique_contexts_dict.keys())
-        print(f'There are {len(unique_contexts_list)} unique `context` entries in the file {filename}.')
+        logger.info(f'There are {len(unique_contexts_list)} unique `context` entries in the file {filename}.')
 
         try:
             with open(output_path, 'w', encoding='utf-8') as outfile:
                 json.dump(unique_contexts_list, outfile, ensure_ascii=False, indent=4)
-            print(f'Unique `context` entries have been saved to: {output_filename}')
+            logger.info(f'Unique `context` entries have been saved to: {output_filename}')
         except Exception as e:
-            print(f'An error occurred while saving to the file {output_filename}: {e}')
+            logger.error(f'An error occurred while saving to the file {output_filename}: {e}')
 
-    print('All files have been processed.')
+    logger.info('All files have been processed.')
 
 
 if __name__ == '__main__':

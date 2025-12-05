@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-def download_tiktoken_cache(cache_dir: str | None = None, models: list | None = None):
+def download_tiktoken_cache(cache_dir: str | None = None, models: list[str] | None = None):
     """Download tiktoken models to local cache
 
     Args:

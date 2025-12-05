@@ -13,10 +13,12 @@ Note: RAGEvaluator is imported lazily to avoid import errors
 when ragas/datasets are not installed.
 """
 
+from typing import Any
+
 __all__ = ['RAGEvaluator']
 
 
-def __getattr__(name):
+def __getattr__(name: str) -> Any:
     """Lazy import to avoid dependency errors when ragas is not installed."""
     if name == 'RAGEvaluator':
         from .eval_rag_quality import RAGEvaluator

@@ -141,7 +141,7 @@ class MigrationTool:
             import configparser
 
             config = configparser.ConfigParser()
-            config.read('config.ini', 'utf-8')
+            config.read('config.ini', encoding='utf-8')
 
             if storage_name == 'RedisKVStorage':
                 return config.has_option('redis', 'uri')

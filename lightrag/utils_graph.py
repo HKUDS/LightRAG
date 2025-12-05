@@ -680,7 +680,7 @@ async def aedit_relation(
                 compute_mdhash_id(target_entity + source_entity, prefix='rel-'),
             ]
             await relationships_vdb.delete(rel_ids_to_delete)
-            logger.debug(f'Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`')
+            logger.debug(f'Relation Edit: delete vdb for `{source_entity}`~`{target_entity}`')
 
             # 2. Update relation information in the graph
             new_edge_data = {**edge_data, **updated_data}
@@ -764,7 +764,7 @@ async def aedit_relation(
                         }
                     )
 
-                    logger.info(f'Relation Delete: update chunk tracking for `{source_entity}`~`{target_entity}`')
+                    logger.info(f'Relation Edit: update chunk tracking for `{source_entity}`~`{target_entity}`')
 
             # 5. Save changes
             await _persist_graph_updates(
@@ -773,7 +773,7 @@ async def aedit_relation(
                 relation_chunks_storage=relation_chunks_storage,
             )
 
-            logger.info(f"Relation Delete: `{source_entity}`~`{target_entity}`' successfully updated")
+            logger.info(f"Relation Edit: `{source_entity}`~`{target_entity}` successfully updated")
             return await get_relation_info(
                 chunk_entity_relation_graph,
                 relationships_vdb,
@@ -1219,7 +1219,7 @@ async def _merge_entities_impl(
             }
 
     # Apply relationship updates
-    logger.info(f'Entity Merge: updatign {len(relation_updates)} relations')
+    logger.info(f'Entity Merge: updating {len(relation_updates)} relations')
     for rel_data in relation_updates.values():
         await chunk_entity_relation_graph.upsert_edge(rel_data['graph_src'], rel_data['graph_tgt'], rel_data['data'])
         logger.info(f'Entity Merge: updating relation `{rel_data["graph_src"]}`~`{rel_data["graph_tgt"]}`')

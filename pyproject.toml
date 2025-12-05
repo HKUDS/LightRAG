@@ -47,7 +47,6 @@ pytest = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
-    "ty",
 ]
 
 api = [
@@ -137,7 +136,11 @@ test = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
-    "ty",
+]
+
+# Type-checking/lint extras
+lint = [
+    "ty>=0.0.1a30",
 ]
 
 evaluation = [

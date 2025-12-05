@@ -285,7 +285,7 @@ class BindingOptions:
                     sample_stream.write(f'# {arg_item["help"]}\n')
 
                 # Handle JSON formatting for list and dict types
-                if arg_item['type'] is list[str] or arg_item['type'] is dict:
+                if arg_item['type'] == list[str] or arg_item['type'] == dict:
                     default_value = json.dumps(arg_item['default'])
                 else:
                     default_value = arg_item['default']
@@ -527,7 +527,7 @@ class OpenAILLMOptions(BindingOptions):
     temperature: float = DEFAULT_TEMPERATURE  # Controls randomness (0.0 to 2.0)
     top_p: float = 1.0  # Nucleus sampling parameter (0.0 to 1.0)
     max_tokens: int | None = None  # Maximum number of tokens to generate(deprecated, use max_completion_tokens instead)
-    extra_body: dict | None = None  # Extra body parameters for OpenRouter of vLLM
+    extra_body: dict[str, Any] | None = None  # Extra body parameters for OpenRouter of vLLM
 
     # Help descriptions
     _help: ClassVar[dict[str, str]] = {

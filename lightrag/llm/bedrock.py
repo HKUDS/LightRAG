@@ -154,9 +154,9 @@ async def bedrock_complete_if_cache(
     if history_messages is None:
         history_messages = []
     if enable_cot:
-        import logging
+        from lightrag.utils import logger
 
-        logging.debug('enable_cot=True is not supported for Bedrock and will be ignored.')
+        logger.debug('enable_cot=True is not supported for Bedrock and will be ignored.')
     # Respect existing env; only set if a non-empty value is available
     access_key = os.environ.get('AWS_ACCESS_KEY_ID') or aws_access_key_id
     secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY') or aws_secret_access_key
@@ -327,7 +327,10 @@ async def bedrock_complete(
     if history_messages is None:
         history_messages = []
     kwargs.pop('keyword_extraction', None)
-    model_name = kwargs['hashing_kv'].global_config['llm_model_name']
+    hashing_kv = kwargs.get('hashing_kv')
+    if not hashing_kv:
+        raise ValueError("'hashing_kv' parameter is required")
+    model_name = hashing_kv.global_config['llm_model_name']
     result = await bedrock_complete_if_cache(
         model_name,
         prompt,

@@ -86,7 +86,9 @@ from lightrag.utils import (
 
 # Query embedding cache configuration (configurable via environment variables)
 QUERY_EMBEDDING_CACHE_TTL = int(os.getenv('QUERY_EMBEDDING_CACHE_TTL', '3600'))  # 1 hour
-QUERY_EMBEDDING_CACHE_MAX_SIZE = int(os.getenv('QUERY_EMBEDDING_CACHE_SIZE', '10000'))
+QUERY_EMBEDDING_CACHE_MAX_SIZE = int(
+    os.getenv('QUERY_EMBEDDING_CACHE_MAX_SIZE', os.getenv('QUERY_EMBEDDING_CACHE_SIZE', '10000'))
+)
 
 # Redis cache configuration
 REDIS_EMBEDDING_CACHE_ENABLED = os.getenv('REDIS_EMBEDDING_CACHE', 'false').lower() == 'true'
@@ -95,6 +97,7 @@ REDIS_URI = os.getenv('REDIS_URI', 'redis://localhost:6379')
 # Local in-memory cache with LRU eviction
 # Structure: {query_hash: (embedding, timestamp)}
 _query_embedding_cache: dict[str, tuple[list[float], float]] = {}
+_query_embedding_cache_lock = asyncio.Lock()
 
 # Global Redis client (lazy initialized)
 _redis_client = None
@@ -164,14 +167,15 @@ async def get_cached_query_embedding(query: str, embedding_func) -> list[float] 
         embedding_result = embedding[0]  # Extract first from batch
 
         # Manage local cache size - LRU eviction of oldest entries
-        if len(_query_embedding_cache) >= QUERY_EMBEDDING_CACHE_MAX_SIZE:
-            # Remove oldest 10% of entries
-            sorted_entries = sorted(_query_embedding_cache.items(), key=lambda x: x[1][1])
-            for old_key, _ in sorted_entries[: QUERY_EMBEDDING_CACHE_MAX_SIZE // 10]:
-                del _query_embedding_cache[old_key]
+        async with _query_embedding_cache_lock:
+            if len(_query_embedding_cache) >= QUERY_EMBEDDING_CACHE_MAX_SIZE:
+                # Remove oldest 10% of entries
+                sorted_entries = sorted(_query_embedding_cache.items(), key=lambda x: x[1][1])
+                for old_key, _ in sorted_entries[: QUERY_EMBEDDING_CACHE_MAX_SIZE // 10]:
+                    del _query_embedding_cache[old_key]
 
-        # Store in local cache
-        _query_embedding_cache[query_hash] = (embedding_result, current_time)
+            # Store in local cache
+            _query_embedding_cache[query_hash] = (embedding_result, current_time)
 
         # Store in Redis (if enabled)
         if REDIS_EMBEDDING_CACHE_ENABLED:
@@ -333,7 +337,7 @@ async def _handle_entity_relation_summary(
                 return final_description if final_description else '', llm_was_used
             else:
                 if total_tokens > summary_context_size and len(current_list) <= 2:
-                    logger.warning(f'Summarizing {entity_or_relation_name}: Oversize descpriton found')
+                    logger.warning(f'Summarizing {entity_or_relation_name}: Oversize description found')
                 # Final summarization of remaining descriptions - LLM will be used
                 final_summary = await _summarize_descriptions(
                     description_type,
@@ -361,7 +365,7 @@ async def _handle_entity_relation_summary(
                     # Force add one more description to ensure minimum 2 per chunk
                     current_chunk.append(desc)
                     chunks.append(current_chunk)
-                    logger.warning(f'Summarizing {entity_or_relation_name}: Oversize descpriton found')
+                    logger.warning(f'Summarizing {entity_or_relation_name}: Oversize description found')
                     current_chunk = []  # next group is empty
                     current_tokens = 0
                 else:  # curren_chunk is ready for summary in reduce phase
@@ -499,7 +503,7 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) != 4 or 'entity' not in record_attributes[0]:
         if len(record_attributes) > 1 and 'entity' in record_attributes[0]:
             logger.warning(
-                f'{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else "N/A"}`'
+                f'{chunk_key}: LLM output format error; found {len(record_attributes)}/4 fields on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else "N/A"}`'
             )
             logger.debug(record_attributes)
         return None
@@ -559,7 +563,7 @@ async def _handle_single_relationship_extraction(
     ):  # treat "relationship" and "relation" interchangeable
         if len(record_attributes) > 1 and 'relation' in record_attributes[0]:
             logger.warning(
-                f'{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else "N/A"}`'
+                f'{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on RELATION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else "N/A"}`'
             )
             logger.debug(record_attributes)
         return None
@@ -2687,14 +2691,12 @@ async def merge_nodes_and_edges(
         file_path: File path for logging
     """
 
+    if full_entities_storage is None or full_relations_storage is None:
+        raise ValueError('full_entities_storage and full_relations_storage are required for merge operations')
     if pipeline_status is None:
         pipeline_status = {}
     if pipeline_status_lock is None:
         pipeline_status_lock = asyncio.Lock()
-    if full_entities_storage is None or full_relations_storage is None:
-        raise ValueError('full_entities_storage and full_relations_storage are required for merge operations')
-    assert full_entities_storage is not None
-    assert full_relations_storage is not None
 
     # Check for cancellation at the start of merge
     if pipeline_status is not None and pipeline_status_lock is not None:
@@ -3405,8 +3407,6 @@ async def kg_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
     llm_callable = cast(Callable[..., Awaitable[str | AsyncIterator[str]]], use_model_func)
-    llm_callable = cast(Callable[..., Awaitable[str | AsyncIterator[str]]], use_model_func)
-    llm_callable = cast(Callable[..., Awaitable[str | AsyncIterator[str]]], use_model_func)
 
     hl_keywords, ll_keywords = await get_keywords_from_query(query, query_param, global_config, hashing_kv)
 
@@ -4081,9 +4081,6 @@ async def _merge_all_chunks(
         raise ValueError('query_param is required for merging chunks')
     if knowledge_graph_inst is None or chunks_vdb is None:
         raise ValueError('knowledge_graph_inst and chunks_vdb are required for chunk merging')
-    assert query_param is not None
-    assert knowledge_graph_inst is not None
-    assert chunks_vdb is not None
     if chunk_tracking is None:
         chunk_tracking = {}
 

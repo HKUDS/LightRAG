@@ -1,16 +1,5 @@
 import networkx as nx
 import numpy as np
-import pipmaster as pm
-
-# Added automatic libraries install using pipmaster
-if not pm.is_installed('moderngl'):
-    pm.install('moderngl')
-if not pm.is_installed('imgui_bundle'):
-    pm.install('imgui_bundle')
-if not pm.is_installed('pyglm'):
-    pm.install('pyglm')
-if not pm.is_installed('python-louvain'):
-    pm.install('python-louvain')
 
 import colorsys
 import os

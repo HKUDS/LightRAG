@@ -1,3 +1,4 @@
+import asyncio
 import configparser
 import logging
 import os
@@ -60,8 +61,8 @@ redis_retry = retry(
 class RedisConnectionManager:
     """Shared Redis connection pool manager to avoid creating multiple pools for the same Redis URI"""
 
-    _pools: ClassVar[dict] = {}
-    _pool_refs: ClassVar[dict] = {}  # Track reference count for each pool
+    _pools: ClassVar[dict[str, ConnectionPool]] = {}
+    _pool_refs: ClassVar[dict[str, int]] = {}  # Track reference count for each pool
     _lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
@@ -86,8 +87,8 @@ class RedisConnectionManager:
         return cls._pools[redis_url]
 
     @classmethod
-    def release_pool(cls, redis_url: str):
-        """Release a reference to the connection pool"""
+    async def release_pool_async(cls, redis_url: str):
+        """Release a reference to the connection pool (async to await disconnect)."""
         with cls._lock:
             if redis_url in cls._pool_refs:
                 cls._pool_refs[redis_url] -= 1
@@ -95,14 +96,26 @@ class RedisConnectionManager:
 
                 # If no more references, close the pool
                 if cls._pool_refs[redis_url] <= 0:
+                    pool = cls._pools.get(redis_url)
                     try:
-                        cls._pools[redis_url].disconnect()
-                        logger.info(f'Closed Redis connection pool for {redis_url} (no more references)')
+                        if pool:
+                            await pool.disconnect()
+                            logger.info(f'Closed Redis connection pool for {redis_url} (no more references)')
                     except Exception as e:
                         logger.error(f'Error closing Redis pool for {redis_url}: {e}')
                     finally:
-                        del cls._pools[redis_url]
-                        del cls._pool_refs[redis_url]
+                        cls._pools.pop(redis_url, None)
+                        cls._pool_refs.pop(redis_url, None)
+
+    @classmethod
+    def release_pool(cls, redis_url: str):
+        """Sync-friendly wrapper that schedules async pool release."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(cls.release_pool_async(redis_url))
+            return
+        loop.create_task(cls.release_pool_async(redis_url))
 
     @classmethod
     def close_all_pools(cls):
@@ -225,7 +238,7 @@ class RedisKVStorage(BaseKVStorage):
 
         # Release the pool reference (will auto-close pool if no more references)
         if hasattr(self, '_redis_url') and self._redis_url:
-            RedisConnectionManager.release_pool(self._redis_url)
+            await RedisConnectionManager.release_pool_async(self._redis_url)
             self._pool = None
             logger.debug(f'[{self.workspace}] Released Redis connection pool reference for {self.namespace}')
 
@@ -506,7 +519,7 @@ class RedisDocStatusStorage(DocStatusStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = '_'
+            self.workspace = ''
             logger.debug(f"[{self.workspace}] Final namespace (no workspace): '{self.namespace}'")
 
         self._redis_url = os.environ.get('REDIS_URI', config.get('redis', 'uri', fallback='redis://localhost:6379'))
@@ -577,7 +590,7 @@ class RedisDocStatusStorage(DocStatusStorage):
 
         # Release the pool reference (will auto-close pool if no more references)
         if hasattr(self, '_redis_url') and self._redis_url:
-            RedisConnectionManager.release_pool(self._redis_url)
+            await RedisConnectionManager.release_pool_async(self._redis_url)
             self._pool = None
             logger.debug(f'[{self.workspace}] Released Redis connection pool reference for doc status {self.namespace}')
 

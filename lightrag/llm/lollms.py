@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -72,15 +73,16 @@ async def lollms_model_if_cache(
     }
 
     # Prepare the full prompt including history
-    full_prompt = ''
+    prompt_parts = []
     if system_prompt:
-        full_prompt += f'{system_prompt}\n'
+        prompt_parts.append(f'{system_prompt}\n')
     for msg in history_messages:
-        full_prompt += f'{msg["role"]}: {msg["content"]}\n'
-    full_prompt += prompt
+        prompt_parts.append(f'{msg["role"]}: {msg["content"]}\n')
+    prompt_parts.append(prompt)
+    full_prompt = ''.join(prompt_parts)
 
     request_data['prompt'] = full_prompt
-    timeout = aiohttp.ClientTimeout(total=kwargs.get('timeout'))
+    timeout = aiohttp.ClientTimeout(total=kwargs.get('timeout', 300))
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         if stream:
@@ -106,13 +108,14 @@ async def lollms_model_complete(
 ) -> str | AsyncIterator[str]:
     """Complete function for lollms model generation."""
 
-    # Extract and remove keyword_extraction from kwargs if present
     if history_messages is None:
         history_messages = []
-    keyword_extraction = kwargs.pop('keyword_extraction', None)
 
     # Get model name from config
-    model_name = kwargs['hashing_kv'].global_config['llm_model_name']
+    try:
+        model_name = kwargs['hashing_kv'].global_config['llm_model_name']
+    except (KeyError, AttributeError) as exc:
+        raise ValueError('Missing required configuration: hashing_kv.global_config.llm_model_name') from exc
 
     # If keyword extraction is needed, we might need to modify the prompt
     # or add specific parameters for JSON output (if lollms supports it)
@@ -146,20 +149,19 @@ async def lollms_embed(texts: list[str], embed_model=None, base_url='http://loca
     """
     api_key = kwargs.pop('api_key', None)
     headers = (
-        {'Content-Type': 'application/json', 'Authorization': api_key}
+        {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
         if api_key
         else {'Content-Type': 'application/json'}
     )
     async with aiohttp.ClientSession(headers=headers) as session:
-        embeddings = []
-        for text in texts:
+        async def fetch_embedding(text: str):
             request_data = {'text': text}
-
-            async with session.post(
-                f'{base_url}/lollms_embed',
-                json=request_data,
-            ) as response:
+            async with session.post(f'{base_url}/lollms_embed', json=request_data) as response:
                 result = await response.json()
-                embeddings.append(result['vector'])
+                if 'vector' not in result:
+                    raise ValueError(f'Unexpected embedding response format: {result}')
+                return result['vector']
+
+        embeddings = await asyncio.gather(*[fetch_embedding(text) for text in texts])
 
         return np.array(embeddings)

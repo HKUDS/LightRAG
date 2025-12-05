@@ -8,13 +8,12 @@
     "rag_storage",
     "documents",
     "inputs",
-    "lightrag/tools/lightrag_visualizer",
     "lightrag/tools/*",
     "lightrag/kg",
     "lightrag/llm",
     "lightrag/evaluation"
   ],
-  "reportMissingImports": "none",
-  "reportMissingModuleSource": "none",
-  "reportMissingTypeStubs": "none"
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "error",
+  "reportMissingTypeStubs": "error"
 }
