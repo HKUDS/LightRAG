@@ -53,6 +53,7 @@
 
 ## 🎉 新闻
 
+- [x] [2025.12.01]🎯📢**企业级多租户支持**由 [Raphaël MANSUY](https://github.com/raphaelmansuy) ([ELITIZON](https://www.elitizon.com)) 贡献：完整的租户隔离、RBAC权限控制、每租户知识库，并完全向后兼容单租户部署。
 - [x] [2025.11.05]🎯📢添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持（API可随查询结果返回召回上下文）。
 - [x] [2025.10.22]🎯📢消除处理**大规模数据集**的性能瓶颈。
 - [x] [2025.09.15]🎯📢显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
@@ -921,6 +922,143 @@ maxclients 500
 * **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
 
 为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL非图存储的工作空间为`default`，PostgreSQL AGE图存储的工作空间为空，Neo4j图存储的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`。
+
+### 🏢 企业级多租户模式
+
+> **由 [Raphaël MANSUY](https://github.com/raphaelmansuy) ([ELITIZON](https://www.elitizon.com)) 贡献**
+
+LightRAG支持企业级多租户功能，提供完整的数据隔离、基于角色的访问控制(RBAC)和每租户知识库管理。这使得SaaS部署成为可能，多个组织可以共享同一基础设施，同时保持严格的数据边界。
+
+#### 运行模式
+
+| 模式 | 环境变量 | 描述 |
+|------|---------|------|
+| **单租户** (默认) | `LIGHTRAG_MULTI_TENANT=false` | 向后兼容模式。与原始LightRAG完全相同，无需租户上下文。 |
+| **多租户** | `LIGHTRAG_MULTI_TENANT=true` | 在WebUI中启用租户/知识库选择。API请求可选择性包含租户上下文。 |
+| **严格多租户** | `LIGHTRAG_MULTI_TENANT_STRICT=true` | 所有API请求必须包含租户上下文（`X-Tenant-ID`、`X-KB-ID`请求头）。 |
+
+#### 快速开始
+
+1. **在`.env`中启用多租户模式**：
+
+```bash
+# 启用多租户模式
+LIGHTRAG_MULTI_TENANT=true
+
+# 可选：要求所有请求都包含租户上下文
+# LIGHTRAG_MULTI_TENANT_STRICT=true
+```
+
+2. **启动服务器**：
+
+```bash
+lightrag-server
+```
+
+3. **通过API创建租户**：
+
+```bash
+curl -X POST http://localhost:9621/api/tenants \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "acme-corp", "tenant_name": "ACME公司"}'
+```
+
+4. **创建知识库**：
+
+```bash
+curl -X POST http://localhost:9621/api/tenants/acme-corp/kbs \
+  -H "Content-Type: application/json" \
+  -d '{"kb_id": "product-docs", "kb_name": "产品文档"}'
+```
+
+5. **在请求中使用租户上下文**：
+
+```bash
+# 带租户上下文插入文档
+curl -X POST http://localhost:9621/documents/text \
+  -H "X-Tenant-ID: acme-corp" \
+  -H "X-KB-ID: product-docs" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "您的文档内容..."}'
+
+# 带租户上下文查询
+curl -X POST http://localhost:9621/query \
+  -H "X-Tenant-ID: acme-corp" \
+  -H "X-KB-ID: product-docs" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "产品是关于什么的？"}'
+```
+
+#### 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    LightRAG 多租户架构                       │
+├─────────────────────────────────────────────────────────────┤
+│  租户: acme-corp            │  租户: globex-inc             │
+│  ┌─────────────────────┐    │  ┌─────────────────────┐      │
+│  │ 知识库: product-docs │    │  │ 知识库: research    │      │
+│  │ 知识库: internal-wiki│    │  │ 知识库: compliance  │      │
+│  └─────────────────────┘    │  └─────────────────────┘      │
+├─────────────────────────────────────────────────────────────┤
+│              共享基础设施（数据隔离）                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │ KV存储   │  │ 向量数据库│  │ 图数据库  │  │ 文档状态 │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 基于角色的访问控制 (RBAC)
+
+| 角色 | 权限 |
+|------|------|
+| `admin` | 完全访问：管理租户、成员、知识库、文档、查询 |
+| `editor` | 创建/删除知识库、管理文档、执行查询 |
+| `viewer` | 读取文档、执行查询 |
+| `viewer:read-only` | 仅执行查询 |
+
+#### 向后兼容性
+
+**对现有部署无破坏性更改：**
+
+- 设置`LIGHTRAG_MULTI_TENANT=false`（默认），LightRAG与之前完全相同
+- 现有数据和API保持完全兼容
+- `workspace`参数仍可用于基本数据隔离
+- 多租户模式为可选功能，需要显式配置
+
+#### 租户配置选项
+
+每个租户可以有自定义配置：
+
+```python
+TenantConfig(
+    # 每租户模型选择
+    llm_model="gpt-4o-mini",
+    embedding_model="bge-m3:latest",
+    rerank_model="jina-reranker-v2-base-multilingual",
+    
+    # 查询默认值
+    top_k=40,
+    cosine_threshold=0.2,
+    
+    # 资源配额
+    max_documents=10000,
+    max_storage_gb=100.0,
+    max_concurrent_queries=10,
+)
+```
+
+#### 存储隔离
+
+所有19种存储后端都实现了多租户隔离：
+
+- **基于文件**：工作空间子目录隔离
+- **基于集合**（MongoDB、Milvus）：命名空间前缀
+- **关系型**（PostgreSQL）：工作空间列过滤
+- **图数据库**（Neo4j、Memgraph）：节点标签隔离
+- **向量数据库**（Qdrant）：基于负载的分区
+
+详细的多租户API文档，请参见[LightRAG服务器API](./lightrag/api/README.md)。
 
 ### AGENTS.md – 自动编程引导文件
 

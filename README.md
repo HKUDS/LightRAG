@@ -51,6 +51,7 @@
 
 ---
 ## 🎉 News
+- [2025.12]🎯[New Feature] **Enterprise Multi-Tenant Support** contributed by [Raphaël MANSUY](https://github.com/raphaelmansuy) ([ELITIZON](https://www.elitizon.com)): Complete tenant isolation with RBAC, per-tenant knowledge bases, and full backward compatibility for single-tenant deployments.
 - [2025.11]🎯[New Feature]: Integrated **RAGAS for Evaluation** and **Langfuse for Tracing**. Updated the API to return retrieved contexts alongside query results to support context precision metrics.
 - [2025.10]🎯[Scalability Enhancement]: Eliminated processing bottlenecks to support **Large-Scale Datasets Efficiently**.
 - [2025.09]🎯[New Feature] Enhances knowledge graph extraction accuracy for **Open-Sourced LLMs** such as Qwen3-30B-A3B.
@@ -969,6 +970,143 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
 
 To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`.
+
+### 🏢 Enterprise Multi-Tenant Mode
+
+> **Contributed by [Raphaël MANSUY](https://github.com/raphaelmansuy) ([ELITIZON](https://www.elitizon.com))**
+
+LightRAG supports enterprise-grade multi-tenancy with complete data isolation, role-based access control (RBAC), and per-tenant knowledge bases. This enables SaaS deployments where multiple organizations share the same infrastructure while maintaining strict data boundaries.
+
+#### Operating Modes
+
+| Mode | Environment Variable | Description |
+|------|---------------------|-------------|
+| **Single-Tenant** (Default) | `LIGHTRAG_MULTI_TENANT=false` | Backward-compatible mode. Works exactly like the original LightRAG. No tenant context required. |
+| **Multi-Tenant** | `LIGHTRAG_MULTI_TENANT=true` | Enables tenant/KB selection in WebUI. API requests can optionally include tenant context. |
+| **Multi-Tenant Strict** | `LIGHTRAG_MULTI_TENANT_STRICT=true` | All API requests MUST include tenant context (`X-Tenant-ID`, `X-KB-ID` headers). |
+
+#### Quick Start
+
+1. **Enable multi-tenant mode** in your `.env`:
+
+```bash
+# Enable multi-tenant mode
+LIGHTRAG_MULTI_TENANT=true
+
+# Optional: Require tenant context on all requests
+# LIGHTRAG_MULTI_TENANT_STRICT=true
+```
+
+2. **Start the server**:
+
+```bash
+lightrag-server
+```
+
+3. **Create a tenant via API**:
+
+```bash
+curl -X POST http://localhost:9621/api/tenants \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "acme-corp", "tenant_name": "ACME Corporation"}'
+```
+
+4. **Create a knowledge base**:
+
+```bash
+curl -X POST http://localhost:9621/api/tenants/acme-corp/kbs \
+  -H "Content-Type: application/json" \
+  -d '{"kb_id": "product-docs", "kb_name": "Product Documentation"}'
+```
+
+5. **Use tenant context in requests**:
+
+```bash
+# Insert document with tenant context
+curl -X POST http://localhost:9621/documents/text \
+  -H "X-Tenant-ID: acme-corp" \
+  -H "X-KB-ID: product-docs" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Your document content here..."}'
+
+# Query with tenant context
+curl -X POST http://localhost:9621/query \
+  -H "X-Tenant-ID: acme-corp" \
+  -H "X-KB-ID: product-docs" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the product about?"}'
+```
+
+#### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    LightRAG Multi-Tenant                     │
+├─────────────────────────────────────────────────────────────┤
+│  Tenant: acme-corp          │  Tenant: globex-inc           │
+│  ┌─────────────────────┐    │  ┌─────────────────────┐      │
+│  │ KB: product-docs    │    │  │ KB: research        │      │
+│  │ KB: internal-wiki   │    │  │ KB: compliance      │      │
+│  └─────────────────────┘    │  └─────────────────────┘      │
+├─────────────────────────────────────────────────────────────┤
+│              Shared Infrastructure (Isolated Data)           │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │ KV Store │  │ VectorDB │  │ GraphDB  │  │DocStatus │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Role-Based Access Control (RBAC)
+
+| Role | Permissions |
+|------|------------|
+| `admin` | Full access: manage tenant, members, KBs, documents, queries |
+| `editor` | Create/delete KBs, manage documents, run queries |
+| `viewer` | Read documents, run queries |
+| `viewer:read-only` | Run queries only |
+
+#### Backward Compatibility
+
+**No breaking changes for existing deployments:**
+
+- With `LIGHTRAG_MULTI_TENANT=false` (default), LightRAG works exactly as before
+- Existing data and APIs remain fully compatible
+- The `workspace` parameter continues to work for basic data isolation
+- Multi-tenant mode is opt-in and requires explicit configuration
+
+#### Tenant Configuration Options
+
+Each tenant can have custom configuration:
+
+```python
+TenantConfig(
+    # Model selection per tenant
+    llm_model="gpt-4o-mini",
+    embedding_model="bge-m3:latest",
+    rerank_model="jina-reranker-v2-base-multilingual",
+    
+    # Query defaults
+    top_k=40,
+    cosine_threshold=0.2,
+    
+    # Resource quotas
+    max_documents=10000,
+    max_storage_gb=100.0,
+    max_concurrent_queries=10,
+)
+```
+
+#### Storage Isolation
+
+All 19 storage backends implement multi-tenant isolation:
+
+- **File-based**: Workspace subdirectory isolation
+- **Collection-based** (MongoDB, Milvus): Namespace prefixes
+- **Relational** (PostgreSQL): Workspace column filtering
+- **Graph** (Neo4j, Memgraph): Node label isolation
+- **Vector** (Qdrant): Payload-based partitioning
+
+For detailed multi-tenant API documentation, see [LightRAG Server API](./lightrag/api/README.md).
 
 ### AGENTS.md -- Guiding Coding Agents
 
