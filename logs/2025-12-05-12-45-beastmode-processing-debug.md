@@ -1,7 +1,7 @@
 # Task Log: Document Processing Debug Session
 
-**Date:** 2025-12-05 12:45  
-**Mode:** Beastmode  
+**Date:** 2025-12-05 12:45
+**Mode:** Beastmode
 **Topic:** Investigation - Document stuck in "Processing" state
 
 ---
@@ -35,7 +35,7 @@ Successfully investigated and resolved a document stuck in "Processing" state fo
 ## Root Cause Analysis
 
 ```
-2025-12-05 03:29:09 - Failed to extract entities and relationships: 
+2025-12-05 03:29:09 - Failed to extract entities and relationships:
 C[1/1]: chunk-408153a6090f3deeeea5a56df844fef8: LLM func: Worker execution timeout after 360s
 ```
 
