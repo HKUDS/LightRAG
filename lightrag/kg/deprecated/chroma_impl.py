@@ -4,13 +4,9 @@ from dataclasses import dataclass
 from typing import Any, final
 
 import numpy as np
-import pipmaster as pm
 
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
-
-if not pm.is_installed('chromadb'):
-    pm.install('chromadb')
 
 from chromadb import HttpClient, PersistentClient  # type: ignore
 from chromadb.config import Settings  # type: ignore
@@ -217,7 +213,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             self._collection.delete(ids=ids)
             logger.debug(f'Successfully deleted {len(ids)} vectors from {self.namespace}')
         except Exception as e:
-            logger.error(f'Error while deleting vectors from {self.namespace}: {e}')
+            logger.error(f'Error while deleting vectors from {self.namespace}: {e!s}')
             raise
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -245,7 +241,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                 **result['metadatas'][0],
             }
         except Exception as e:
-            logger.error(f'Error retrieving vector data for ID {id}: {e}')
+            logger.error(f'Error retrieving vector data for ID {id}: {e!s}')
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:

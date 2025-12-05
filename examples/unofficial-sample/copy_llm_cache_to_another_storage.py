@@ -5,7 +5,6 @@ This handy script helps you to copy the LLM caches from one storage solution to 
 """
 
 import asyncio
-import logging
 import os
 
 from dotenv import load_dotenv
@@ -13,12 +12,11 @@ from dotenv import load_dotenv
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.postgres_impl import PGKVStorage, PostgreSQLDB
 from lightrag.namespace import NameSpace
+from lightrag.utils import logger
 
 load_dotenv()
 ROOT_DIR = os.environ.get('ROOT_DIR')
 WORKING_DIR = f'{ROOT_DIR}/dickens'
-
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -66,13 +64,13 @@ async def copy_from_postgres_to_json():
             if mode not in kv:
                 kv[mode] = {}
             kv[mode][hash_value] = cache_entry
-            print(f'Copying {flattened_key} -> {mode}[{hash_value}]')
+            logger.info(f'Copying {flattened_key} -> {mode}[{hash_value}]')
         else:
-            print(f'Skipping invalid key format: {flattened_key}')
+            logger.warning(f'Skipping invalid key format: {flattened_key}')
 
     await to_llm_response_cache.upsert(kv)
     await to_llm_response_cache.index_done_callback()
-    print('Mission accomplished!')
+    logger.info('Mission accomplished!')
 
 
 async def copy_from_json_to_postgres():
