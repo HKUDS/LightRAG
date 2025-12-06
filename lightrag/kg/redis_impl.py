@@ -41,6 +41,7 @@ MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "200"))
 SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", "30.0"))
 SOCKET_CONNECT_TIMEOUT = float(os.getenv("REDIS_CONNECT_TIMEOUT", "10.0"))
 RETRY_ATTEMPTS = int(os.getenv("REDIS_RETRY_ATTEMPTS", "3"))
+REDIS_TTL = int(os.getenv("REDIS_TTL", "0"))
 
 # Tenacity retry decorator for Redis operations
 redis_retry = retry(
@@ -351,7 +352,12 @@ class RedisKVStorage(BaseKVStorage):
                 # Store the data
                 pipe = redis.pipeline()
                 for k, v in data.items():
-                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    if REDIS_TTL > 0:
+                        pipe.set(
+                            f"{self.final_namespace}:{k}", json.dumps(v), ex=REDIS_TTL
+                        )
+                    else:
+                        pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
                 await pipe.execute()
 
             except json.JSONDecodeError as e:
@@ -502,7 +508,10 @@ class RedisKVStorage(BaseKVStorage):
                     cache_type = cache_entry.get("cache_type", "extract")
                     flattened_key = generate_cache_key(mode, cache_type, cache_hash)
                     full_key = f"{self.final_namespace}:{flattened_key}"
-                    pipe.set(full_key, json.dumps(cache_entry))
+                    if REDIS_TTL:
+                        pipe.set(full_key, json.dumps(cache_entry), ex=REDIS_TTL)
+                    else:
+                        pipe.set(full_key, json.dumps(cache_entry))
                     migration_count += 1
 
             await pipe.execute()
@@ -872,7 +881,12 @@ class RedisDocStatusStorage(DocStatusStorage):
 
                 pipe = redis.pipeline()
                 for k, v in data.items():
-                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    if REDIS_TTL:
+                        pipe.set(
+                            f"{self.final_namespace}:{k}", json.dumps(v), ex=REDIS_TTL
+                        )
+                    else:
+                        pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
                 await pipe.execute()
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")
