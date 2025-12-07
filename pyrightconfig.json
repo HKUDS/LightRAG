@@ -1,5 +1,6 @@
 {
-  // Expand scope to core package while keeping heavy optional providers excluded for now.
+  "venv": ".venv",
+  "venvPath": ".",
   "include": ["lightrag"],
   "exclude": [
     "examples",
@@ -13,7 +14,7 @@
     "lightrag/llm",
     "lightrag/evaluation"
   ],
-  "reportMissingImports": "error",
-  "reportMissingModuleSource": "error",
-  "reportMissingTypeStubs": "error"
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none"
 }

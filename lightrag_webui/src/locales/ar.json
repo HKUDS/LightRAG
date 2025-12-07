@@ -11,6 +11,8 @@
     "knowledgeGraph": "شبكة المعرفة",
     "retrieval": "الاسترجاع",
     "api": "واجهة برمجة التطبيقات",
+    "tables": "الجداول",
+    "storage": "التخزين",
     "projectRepository": "مستودع المشروع",
     "logout": "تسجيل الخروج",
     "frontendNeedsRebuild": "الواجهة الأمامية تحتاج إلى إعادة البناء",
@@ -134,7 +136,8 @@
         "created": "تم الإنشاء",
         "updated": "تم التحديث",
         "metadata": "البيانات الوصفية",
-        "select": "اختيار"
+        "select": "اختيار",
+        "s3Key": "مفتاح S3"
       },
       "status": {
         "all": "الكل",
@@ -452,6 +455,39 @@
     "description": "الرجاء إدخال مفتاح واجهة برمجة التطبيقات للوصول إلى الخدمة",
     "placeholder": "أدخل مفتاح واجهة برمجة التطبيقات",
     "save": "حفظ"
+  },
+  "storagePanel": {
+    "title": "متصفح التخزين",
+    "empty": "هذا المجلد فارغ",
+    "loadFailed": "فشل تحميل محتويات التخزين",
+    "count": "{{folders}} مجلد(ات)، {{objects}} ملف(ات)",
+    "uploadSuccess": "تم رفع {{name}} بنجاح",
+    "uploadFailed": "فشل الرفع: {{error}}",
+    "deleteSuccess": "تم حذف {{name}} بنجاح",
+    "deleteFailed": "فشل الحذف: {{error}}",
+    "downloadFailed": "فشل التحميل: {{error}}",
+    "table": {
+      "name": "الاسم",
+      "size": "الحجم",
+      "modified": "تاريخ التعديل",
+      "actions": "الإجراءات"
+    },
+    "actions": {
+      "upload": "رفع",
+      "download": "تحميل",
+      "delete": "حذف",
+      "retry": "إعادة المحاولة",
+      "view": "عرض"
+    },
+    "viewer": {
+      "pdfPreview": "معاينة PDF غير متاحة في المتصفح",
+      "openPdf": "فتح PDF",
+      "noPreview": "المعاينة غير متاحة لهذا النوع من الملفات"
+    },
+    "confirmDelete": {
+      "title": "تأكيد الحذف",
+      "description": "هل أنت متأكد من حذف \"{{name}}\"؟ لا يمكن التراجع عن هذا الإجراء."
+    }
   },
   "pagination": {
     "showing": "عرض {{start}} إلى {{end}} من أصل {{total}} إدخالات",

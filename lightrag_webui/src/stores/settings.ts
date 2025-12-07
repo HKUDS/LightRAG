@@ -15,7 +15,7 @@ const DEV_STORAGE_CONFIG = import.meta.env.DEV
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW'
-type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api' | 'table-explorer'
+type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api' | 'table-explorer' | 'storage'
 
 interface SettingsState {
   // Document manager settings

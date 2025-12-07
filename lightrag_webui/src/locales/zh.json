@@ -12,6 +12,7 @@
     "retrieval": "检索",
     "api": "API",
     "tables": "数据表",
+    "storage": "存储",
     "projectRepository": "项目仓库",
     "logout": "退出登录",
     "frontendNeedsRebuild": "前端代码需重新构建",
@@ -135,7 +136,8 @@
         "created": "创建时间",
         "updated": "更新时间",
         "metadata": "元数据",
-        "select": "选择"
+        "select": "选择",
+        "s3Key": "S3 存储路径"
       },
       "status": {
         "all": "全部",
@@ -459,6 +461,39 @@
     "description": "请输入您的 API Key 以访问服务",
     "placeholder": "请输入 API Key",
     "save": "保存"
+  },
+  "storagePanel": {
+    "title": "存储浏览器",
+    "empty": "此文件夹为空",
+    "loadFailed": "加载存储内容失败",
+    "count": "{{folders}} 个文件夹，{{objects}} 个文件",
+    "uploadSuccess": "{{name}} 上传成功",
+    "uploadFailed": "上传失败：{{error}}",
+    "deleteSuccess": "{{name}} 删除成功",
+    "deleteFailed": "删除失败：{{error}}",
+    "downloadFailed": "下载失败：{{error}}",
+    "table": {
+      "name": "名称",
+      "size": "大小",
+      "modified": "修改时间",
+      "actions": "操作"
+    },
+    "actions": {
+      "upload": "上传",
+      "download": "下载",
+      "delete": "删除",
+      "retry": "重试",
+      "view": "查看"
+    },
+    "viewer": {
+      "pdfPreview": "浏览器中无法预览PDF",
+      "openPdf": "打开PDF",
+      "noPreview": "此文件类型不支持预览"
+    },
+    "confirmDelete": {
+      "title": "确认删除",
+      "description": "确定要删除 \"{{name}}\" 吗？此操作无法撤销。"
+    }
   },
   "pagination": {
     "showing": "显示第 {{start}} 到 {{end}} 条，共 {{total}} 条记录",

@@ -140,7 +140,7 @@ class S3Client:
     """
 
     config: S3Config
-    _session: aioboto3.Session = field(default=None, init=False, repr=False)
+    _session: aioboto3.Session | None = field(default=None, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
 
     async def initialize(self):
@@ -166,13 +166,16 @@ class S3Client:
     @asynccontextmanager
     async def _get_client(self):
         """Get an S3 client from the session."""
+        if self._session is None:
+            raise RuntimeError("S3Client not initialized")
+
         boto_config = BotoConfig(
             connect_timeout=self.config.connect_timeout,
             read_timeout=self.config.read_timeout,
             retries={"max_attempts": S3_RETRY_ATTEMPTS},
         )
 
-        async with self._session.client(
+        async with self._session.client(  # type: ignore
             "s3",
             endpoint_url=self.config.endpoint_url if self.config.endpoint_url else None,
             config=boto_config,
@@ -388,3 +391,94 @@ class S3Client:
     def get_s3_url(self, s3_key: str) -> str:
         """Get the S3 URL for an object (not presigned, for reference)."""
         return f"s3://{self.config.bucket_name}/{s3_key}"
+
+    @s3_retry
+    async def list_objects(
+        self, prefix: str = "", delimiter: str = "/"
+    ) -> dict[str, Any]:
+        """
+        List objects and common prefixes (virtual folders) under a prefix.
+
+        Uses delimiter to group objects into virtual folders. This enables
+        folder-style navigation in the bucket browser.
+
+        Args:
+            prefix: S3 prefix to list under (e.g., "staging/default/")
+            delimiter: Delimiter for grouping (default "/" for folder navigation)
+
+        Returns:
+            Dict with:
+                - bucket: Bucket name
+                - prefix: The prefix that was listed
+                - folders: List of common prefixes (virtual folders)
+                - objects: List of dicts with key, size, last_modified, content_type
+        """
+        folders: list[str] = []
+        objects: list[dict[str, Any]] = []
+
+        async with self._get_client() as client:
+            paginator = client.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(
+                Bucket=self.config.bucket_name,
+                Prefix=prefix,
+                Delimiter=delimiter,
+            ):
+                # Get common prefixes (virtual folders)
+                for cp in page.get("CommonPrefixes", []):
+                    folders.append(cp["Prefix"])
+
+                # Get objects at this level
+                for obj in page.get("Contents", []):
+                    # Skip the prefix itself if it's a "folder marker"
+                    if obj["Key"] == prefix:
+                        continue
+                    objects.append(
+                        {
+                            "key": obj["Key"],
+                            "size": obj["Size"],
+                            "last_modified": obj["LastModified"].isoformat(),
+                            "content_type": None,  # Would need HEAD request for each
+                        }
+                    )
+
+        return {
+            "bucket": self.config.bucket_name,
+            "prefix": prefix,
+            "folders": folders,
+            "objects": objects,
+        }
+
+    @s3_retry
+    async def upload_object(
+        self,
+        key: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+        metadata: dict[str, str] | None = None,
+    ) -> str:
+        """
+        Upload object to an arbitrary key path.
+
+        Unlike upload_to_staging which enforces a path structure, this method
+        allows uploading to any path in the bucket.
+
+        Args:
+            key: Full S3 key path (e.g., "staging/workspace/doc_id/file.txt")
+            data: File content as bytes
+            content_type: MIME type (default: application/octet-stream)
+            metadata: Optional metadata dict
+
+        Returns:
+            The S3 key where the object was uploaded
+        """
+        async with self._get_client() as client:
+            await client.put_object(
+                Bucket=self.config.bucket_name,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+                Metadata=metadata or {},
+            )
+
+        logger.info(f"Uploaded object: {key} ({len(data)} bytes)")
+        return key

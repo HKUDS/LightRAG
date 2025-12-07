@@ -3211,9 +3211,9 @@ async def extract_entities(
         nonlocal processed_chunks
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
-        content = chunk_dp['content']
+        content = chunk_dp.get('content', '')
         # Get file path from chunk data or use default
-        file_path = chunk_dp.get('file_path', 'unknown_source')
+        file_path = chunk_dp.get('file_path') or 'unknown_source'
 
         # Create cache keys collector for batch processing
         cache_keys_collector = []

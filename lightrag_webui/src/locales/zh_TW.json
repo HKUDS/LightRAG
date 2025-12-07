@@ -11,6 +11,8 @@
     "knowledgeGraph": "知識圖譜",
     "retrieval": "檢索",
     "api": "API",
+    "tables": "資料表",
+    "storage": "儲存空間",
     "projectRepository": "專案庫",
     "logout": "登出",
     "frontendNeedsRebuild": "前端程式碼需重新建置",
@@ -134,7 +136,8 @@
         "created": "建立時間",
         "updated": "更新時間",
         "metadata": "元資料",
-        "select": "選擇"
+        "select": "選擇",
+        "s3Key": "S3 儲存路徑"
       },
       "status": {
         "all": "全部",
@@ -452,6 +455,39 @@
     "description": "請輸入您的 API key 以存取服務",
     "placeholder": "請輸入 API key",
     "save": "儲存"
+  },
+  "storagePanel": {
+    "title": "儲存空間瀏覽器",
+    "empty": "此資料夾為空",
+    "loadFailed": "載入儲存內容失敗",
+    "count": "{{folders}} 個資料夾，{{objects}} 個檔案",
+    "uploadSuccess": "{{name}} 上傳成功",
+    "uploadFailed": "上傳失敗：{{error}}",
+    "deleteSuccess": "{{name}} 刪除成功",
+    "deleteFailed": "刪除失敗：{{error}}",
+    "downloadFailed": "下載失敗：{{error}}",
+    "table": {
+      "name": "名稱",
+      "size": "大小",
+      "modified": "修改時間",
+      "actions": "操作"
+    },
+    "actions": {
+      "upload": "上傳",
+      "download": "下載",
+      "delete": "刪除",
+      "retry": "重試",
+      "view": "檢視"
+    },
+    "viewer": {
+      "pdfPreview": "瀏覽器中無法預覽PDF",
+      "openPdf": "開啟PDF",
+      "noPreview": "此檔案類型不支援預覽"
+    },
+    "confirmDelete": {
+      "title": "確認刪除",
+      "description": "確定要刪除 \"{{name}}\" 嗎？此操作無法復原。"
+    }
   },
   "pagination": {
     "showing": "顯示第 {{start}} 到 {{end}} 筆，共 {{total}} 筆記錄",

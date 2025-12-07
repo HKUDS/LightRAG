@@ -1419,6 +1419,7 @@ export default function DocumentManager() {
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.s3Key')}</TableHead>
                         <TableHead
                           onClick={() => handleSort('created_at')}
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
@@ -1546,6 +1547,20 @@ export default function DocumentManager() {
                             </TableCell>
                             <TableCell>{doc.content_length ?? '-'}</TableCell>
                             <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                            <TableCell className="max-w-[150px] truncate overflow-visible">
+                              {doc.s3_key ? (
+                                <div className="group relative overflow-visible tooltip-container">
+                                  <div className="truncate text-xs text-muted-foreground font-mono">
+                                    {doc.s3_key.split('/').slice(-2).join('/')}
+                                  </div>
+                                  <div className="invisible group-hover:visible tooltip">
+                                    {doc.s3_key}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
                             <TableCell className="truncate">
                               {new Date(doc.created_at).toLocaleString()}
                             </TableCell>

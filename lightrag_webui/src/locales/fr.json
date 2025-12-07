@@ -11,6 +11,8 @@
     "knowledgeGraph": "Graphe de connaissances",
     "retrieval": "Récupération",
     "api": "API",
+    "tables": "Tables",
+    "storage": "Stockage",
     "projectRepository": "Référentiel du projet",
     "logout": "Déconnexion",
     "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
@@ -134,7 +136,8 @@
         "created": "Créé",
         "updated": "Mis à jour",
         "metadata": "Métadonnées",
-        "select": "Sélectionner"
+        "select": "Sélectionner",
+        "s3Key": "Clé S3"
       },
       "status": {
         "all": "Tous",
@@ -452,6 +455,39 @@
     "description": "Veuillez entrer votre clé API pour accéder au service",
     "placeholder": "Entrez votre clé API",
     "save": "Sauvegarder"
+  },
+  "storagePanel": {
+    "title": "Explorateur de stockage",
+    "empty": "Ce dossier est vide",
+    "loadFailed": "Échec du chargement du contenu de stockage",
+    "count": "{{folders}} dossier(s), {{objects}} fichier(s)",
+    "uploadSuccess": "{{name}} téléchargé avec succès",
+    "uploadFailed": "Échec du téléchargement : {{error}}",
+    "deleteSuccess": "{{name}} supprimé avec succès",
+    "deleteFailed": "Échec de la suppression : {{error}}",
+    "downloadFailed": "Échec du téléchargement : {{error}}",
+    "table": {
+      "name": "Nom",
+      "size": "Taille",
+      "modified": "Modifié",
+      "actions": "Actions"
+    },
+    "actions": {
+      "upload": "Télécharger",
+      "download": "Télécharger",
+      "delete": "Supprimer",
+      "retry": "Réessayer",
+      "view": "Voir"
+    },
+    "viewer": {
+      "pdfPreview": "L'aperçu PDF n'est pas disponible dans le navigateur",
+      "openPdf": "Ouvrir le PDF",
+      "noPreview": "L'aperçu n'est pas disponible pour ce type de fichier"
+    },
+    "confirmDelete": {
+      "title": "Confirmer la suppression",
+      "description": "Êtes-vous sûr de vouloir supprimer \"{{name}}\" ? Cette action est irréversible."
+    }
   },
   "pagination": {
     "showing": "Affichage de {{start}} à {{end}} sur {{total}} entrées",

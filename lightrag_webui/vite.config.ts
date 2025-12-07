@@ -11,9 +11,9 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src')
     },
-    // Force all modules to use the same katex instance
-    // This ensures mhchem extension registered in main.tsx is available to rehype-katex
-    dedupe: ['katex']
+    // Force all modules to use the same React and katex instances
+    // This prevents "Invalid hook call" errors from duplicate React copies
+    dedupe: ['react', 'react-dom', 'katex']
   },
   // base: import.meta.env.VITE_BASE_URL || '/webui/',
   base: webuiPrefix,

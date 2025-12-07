@@ -77,8 +77,8 @@ def _handle_bedrock_exception(e: Exception, operation: str = 'Bedrock operation'
 
     # Handle botocore ClientError with specific error codes
     if isinstance(e, ClientError):
-        error_code = cast(Any, e).response.get('Error', {}).get('Code', '')
-        error_msg = cast(Any, e).response.get('Error', {}).get('Message', error_message)
+        error_code = cast(ClientError, e).response.get('Error', {}).get('Code', '')
+        error_msg = cast(ClientError, e).response.get('Error', {}).get('Message', error_message)
 
         # Rate limiting and throttling errors (retryable)
         if error_code in [
@@ -94,7 +94,7 @@ def _handle_bedrock_exception(e: Exception, operation: str = 'Bedrock operation'
             raise BedrockConnectionError(f'Service error: {error_msg}')
 
         # Check for 5xx HTTP status codes (retryable)
-        elif cast(Any, e).response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) >= 500:
+        elif cast(ClientError, e).response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) >= 500:
             logging.error(f'{operation} server error: {error_msg}')
             raise BedrockConnectionError(f'Server error: {error_msg}')
 

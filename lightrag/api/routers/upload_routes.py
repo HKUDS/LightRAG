@@ -8,7 +8,7 @@ This module provides endpoints for:
 """
 
 import mimetypes
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, cast
 
 from fastapi import (
     APIRouter,
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from lightrag import LightRAG
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.kg.postgres_impl import PGDocStatusStorage, PGKVStorage
 from lightrag.storage.s3_client import S3Client
 from lightrag.utils import compute_mdhash_id, logger
 
@@ -176,10 +177,10 @@ def create_upload_routes(
                 doc_id = compute_mdhash_id(content, prefix='doc_')
 
             # Determine content type
-            content_type = file.content_type
-            if not content_type:
-                content_type, _ = mimetypes.guess_type(file.filename or '')
-                content_type = content_type or 'application/octet-stream'
+            final_content_type = file.content_type
+            if not final_content_type:
+                guessed_type, encoding = mimetypes.guess_type(file.filename or '')
+                final_content_type = guessed_type or 'application/octet-stream'
 
             # Upload to S3 staging
             s3_key = await s3_client.upload_to_staging(
@@ -187,10 +188,10 @@ def create_upload_routes(
                 doc_id=doc_id,
                 content=content,
                 filename=file.filename or f'{doc_id}.bin',
-                content_type=content_type,
+                content_type=final_content_type,
                 metadata={
                     'original_size': str(len(content)),
-                    'content_type': content_type,
+                    'content_type': final_content_type,
                 },
             )
 
@@ -407,12 +408,16 @@ def create_upload_routes(
 
                     # Update database chunks with archive s3_key
                     archive_url = s3_client.get_s3_url(archive_key)
-                    updated_count = await rag.text_chunks.update_s3_key_by_doc_id(
+                    updated_count = await cast(PGKVStorage, rag.text_chunks).update_s3_key_by_doc_id(
                         full_doc_id=doc_id,
                         s3_key=archive_key,
                         archive_url=archive_url,
                     )
                     logger.info(f'Updated {updated_count} chunks with archive s3_key: {archive_key}')
+
+                    # Update doc_status with archive s3_key
+                    await cast(PGDocStatusStorage, rag.doc_status).update_s3_key(doc_id, archive_key)
+                    logger.info(f'Updated doc_status with archive s3_key: {archive_key}')
                 except Exception as e:
                     logger.warning(f'Failed to archive document: {e}')
                     # Don't fail the request, processing succeeded

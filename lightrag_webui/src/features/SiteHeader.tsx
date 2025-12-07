@@ -70,6 +70,9 @@ function TabsNavigation() {
             {t('header.tables')}
           </NavigationTab>
         )}
+        <NavigationTab value="storage" currentTab={currentTab}>
+          {t('header.storage')}
+        </NavigationTab>
       </TabsList>
     </div>
   )

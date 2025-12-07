@@ -39,6 +39,7 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.s3_routes import create_s3_routes
 from lightrag.api.routers.search_routes import create_search_routes
 from lightrag.api.routers.table_routes import create_table_routes
 from lightrag.api.routers.upload_routes import create_upload_routes
@@ -62,6 +63,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     get_namespace_data,
 )
+from lightrag.kg.postgres_impl import PGKVStorage
 from lightrag.storage.s3_client import S3Client, S3Config
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
@@ -396,7 +398,7 @@ def create_app(args):
         'tryItOutEnabled': True,
     }
 
-    app = FastAPI(**cast(Any, app_kwargs))
+    app = FastAPI(**cast(dict[str, Any], app_kwargs))
 
     # Add custom validation error handler for /query/data endpoint
     @app.exception_handler(RequestValidationError)
@@ -1049,17 +1051,19 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix='/api')
 
-    # Register upload routes if S3 is configured
+    # Register upload routes and S3 browser if S3 is configured
     if s3_client is not None:
         app.include_router(create_upload_routes(rag, s3_client, api_key))
         logger.info('S3 upload routes registered at /upload')
+        app.include_router(create_s3_routes(s3_client, api_key), prefix='/s3')
+        logger.info('S3 browser routes registered at /s3')
     else:
-        logger.info('S3 not configured - upload routes disabled')
+        logger.info('S3 not configured - upload and browser routes disabled')
 
     # Register BM25 search routes if PostgreSQL storage is configured
     # Full-text search requires PostgreSQLDB for ts_rank queries
     if args.kv_storage == 'PGKVStorage' and hasattr(rag, 'text_chunks') and hasattr(rag.text_chunks, 'db'):
-        app.include_router(create_search_routes(rag.text_chunks.db, api_key))
+        app.include_router(create_search_routes(cast(PGKVStorage, rag.text_chunks).db, api_key))
         logger.info('BM25 search routes registered at /search')
     else:
         logger.info('PostgreSQL not configured - BM25 search routes disabled')
@@ -1466,8 +1470,8 @@ def main():
             }
         )
 
-    print(f'Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}')
-    uvicorn.run(**cast(Any, uvicorn_config))
+    update_uvicorn_mode_config()
+    uvicorn.run(**cast(dict[str, Any], uvicorn_config))
 
 
 if __name__ == '__main__':

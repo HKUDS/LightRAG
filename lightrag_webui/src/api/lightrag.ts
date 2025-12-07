@@ -240,6 +240,7 @@ export type DocStatusResponse = {
   error_msg?: string
   metadata?: Record<string, any>
   file_path: string
+  s3_key?: string
 }
 
 export type DocsStatusesResponse = {
@@ -1178,5 +1179,93 @@ export const getTableData = async (
   const response = await axiosInstance.get(`/tables/${encodeURIComponent(tableName)}/data`, {
     params: { page, page_size: pageSize },
   })
+  return response.data
+}
+
+// =====================
+// S3 Storage Browser API
+// =====================
+
+export type S3ObjectInfo = {
+  key: string
+  size: number
+  last_modified: string
+  content_type: string | null
+}
+
+export type S3ListResponse = {
+  bucket: string
+  prefix: string
+  folders: string[]
+  objects: S3ObjectInfo[]
+}
+
+export type S3DownloadResponse = {
+  key: string
+  url: string
+  expiry_seconds: number
+}
+
+export type S3UploadResponse = {
+  key: string
+  size: number
+  url: string
+}
+
+export type S3DeleteResponse = {
+  key: string
+  status: string
+}
+
+/**
+ * List objects and folders under a prefix in the S3 bucket.
+ * @param prefix - S3 prefix to list (e.g., "staging/default/")
+ * @returns List of folders and objects at the prefix
+ */
+export const s3List = async (prefix = ''): Promise<S3ListResponse> => {
+  const response = await axiosInstance.get('/s3/list', {
+    params: { prefix },
+  })
+  return response.data
+}
+
+/**
+ * Get a presigned download URL for an S3 object.
+ * @param key - Full S3 object key
+ * @param expiry - URL expiry time in seconds (default: 3600)
+ * @returns Presigned download URL
+ */
+export const s3Download = async (key: string, expiry = 3600): Promise<S3DownloadResponse> => {
+  const response = await axiosInstance.get(`/s3/download/${encodeURIComponent(key)}`, {
+    params: { expiry },
+  })
+  return response.data
+}
+
+/**
+ * Upload a file to the S3 bucket.
+ * @param prefix - S3 prefix path (e.g., "staging/default/")
+ * @param file - File to upload
+ * @returns Upload result with key and presigned URL
+ */
+export const s3Upload = async (prefix: string, file: File): Promise<S3UploadResponse> => {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('prefix', prefix)
+  const response = await axiosInstance.post('/s3/upload', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  return response.data
+}
+
+/**
+ * Delete an object from the S3 bucket.
+ * @param key - Full S3 object key to delete
+ * @returns Deletion confirmation
+ */
+export const s3Delete = async (key: string): Promise<S3DeleteResponse> => {
+  const response = await axiosInstance.delete(`/s3/object/${encodeURIComponent(key)}`)
   return response.data
 }

@@ -505,7 +505,11 @@ class OllamaAPI:
                 if user_prompt is not None:
                     param_dict['user_prompt'] = user_prompt
 
-                query_param = QueryParam(**cast(Any, param_dict))
+                # Create QueryParam object from the parsed parameters
+                query_param = QueryParam(**cast(dict[str, Any], param_dict))
+
+                # Execute query using the configured RAG instance
+                # If stream is enabled, return StreamingResponse
 
                 if request.stream:
                     # Determine if the request is prefix with "/bypass"

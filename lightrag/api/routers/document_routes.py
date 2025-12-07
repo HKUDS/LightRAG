@@ -430,6 +430,7 @@ class DocStatusResponse(BaseModel):
     error_msg: str | None = Field(default=None, description='Error message if processing failed')
     metadata: dict[str, Any] | None = Field(default=None, description='Additional metadata about the document')
     file_path: str | None = Field(default=None, description='Path to the document file')
+    s3_key: str | None = Field(default=None, description='S3 storage key for archived documents')
 
     class Config:
         json_schema_extra: ClassVar[dict[str, Any]] = {
@@ -444,7 +445,8 @@ class DocStatusResponse(BaseModel):
                 'chunks_count': 12,
                 'error_msg': None,
                 'metadata': {'author': 'John Doe', 'year': 2025},
-                'file_path': 'research_paper.pdf',
+                'file_path': 's3://lightrag/archive/default/doc_123456/research_paper.pdf',
+                's3_key': 'archive/default/doc_123456/research_paper.pdf',
             }
         }
 
@@ -1045,7 +1047,7 @@ def _extract_pptx(file_bytes: bytes) -> str:
     for slide in prs.slides:
         for shape in slide.shapes:
             if hasattr(shape, 'text'):
-                content += cast(Any, shape).text + '\n'
+                content += shape.text + '\n'  # type: ignore
     return content
 
 
@@ -2463,6 +2465,7 @@ def create_document_routes(rag: LightRAG, doc_manager: DocumentManager, api_key:
                             error_msg=doc_status.error_msg,
                             metadata=doc_status.metadata,
                             file_path=doc_status.file_path,
+                            s3_key=doc_status.s3_key,
                         )
                     )
 
@@ -2721,6 +2724,7 @@ def create_document_routes(rag: LightRAG, doc_manager: DocumentManager, api_key:
                         error_msg=doc_status.error_msg,
                         metadata=doc_status.metadata,
                         file_path=doc_status.file_path,
+                        s3_key=doc_status.s3_key,
                     )
                 )
 
@@ -2800,6 +2804,7 @@ def create_document_routes(rag: LightRAG, doc_manager: DocumentManager, api_key:
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=doc.file_path,
+                        s3_key=doc.s3_key,
                     )
                 )
 

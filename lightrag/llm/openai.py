@@ -121,7 +121,7 @@ def create_openai_async_client(
         if timeout is not None:
             merged_configs['timeout'] = timeout
 
-        return AsyncAzureOpenAI(**cast(Any, merged_configs))
+        return AsyncAzureOpenAI(**cast(dict[str, Any], merged_configs))
     else:
         if not api_key:
             api_key = os.environ['OPENAI_API_KEY']
@@ -316,12 +316,9 @@ async def openai_complete_if_cache(
         raise
 
     if hasattr(response, '__aiter__'):
-        response = cast(Any, response)
-
-        async def inner():
-            # Track if we've started iterating
-            iteration_started = False
-            final_chunk_usage = None
+        async def collected_messages(response):
+            async for chunk in response:
+                chunk_message = chunk.choices[0].delta.content or ""
 
             # COT (Chain of Thought) state tracking
             cot_active = False

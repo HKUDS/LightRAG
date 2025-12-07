@@ -14,6 +14,7 @@ import ApiSite from '@/features/ApiSite'
 import DocumentManager from '@/features/DocumentManager'
 import GraphViewer from '@/features/GraphViewer'
 import RetrievalTesting from '@/features/RetrievalTesting'
+import S3Browser from '@/features/S3Browser'
 import TableExplorer from '@/features/TableExplorer'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
@@ -243,6 +244,12 @@ function App() {
                   className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
                 >
                   <TableExplorer />
+                </TabsContent>
+                <TabsContent
+                  value="storage"
+                  className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+                >
+                  <S3Browser />
                 </TabsContent>
               </div>
             </Tabs>

@@ -456,12 +456,14 @@ def compute_args_hash(*args: Any) -> str:
         return md5(safe_bytes).hexdigest()
 
 
-def compute_mdhash_id(content: str, prefix: str = '') -> str:
+def compute_mdhash_id(content: str | bytes, prefix: str = '') -> str:
     """
-    Compute a unique ID for a given content string.
+    Compute a unique ID for a given content string or bytes.
 
     The ID is a combination of the given prefix and the MD5 hash of the content string.
     """
+    if isinstance(content, bytes):
+        return prefix + md5(content).hexdigest()
     return prefix + compute_args_hash(content)
 
 

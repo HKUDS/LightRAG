@@ -1,15 +1,17 @@
 import colorsys
 import os
 import tkinter as tk
-import traceback
 from tkinter import filedialog
+import traceback
+from typing import cast
 
 import community
 import glm
+from imgui_bundle import hello_imgui, imgui, immapp
 import moderngl
 import networkx as nx
+from networkx.classes.reportviews import DegreeView
 import numpy as np
-from imgui_bundle import hello_imgui, imgui, immapp
 
 CUSTOM_FONT = 'font.ttf'
 
@@ -23,6 +25,7 @@ class Node3D:
     def __init__(self, position: glm.vec3, color: glm.vec3, label: str, size: float, idx: int):
         self.position = position
         self.color = color
+        self.base_color = color  # Initialize base_color
         self.label = label
         self.size = size
         self.idx = idx
@@ -32,7 +35,7 @@ class GraphViewer:
     """Main class for 3D graph visualization"""
 
     def __init__(self):
-        self.glctx = None  # ModernGL context
+        self.glctx: moderngl.Context | None = None  # ModernGL context
         self.graph: nx.Graph | None = None
         self.nodes: list[Node3D] = []
         self.id_node_map: dict[str, Node3D] = {}
@@ -81,7 +84,7 @@ class GraphViewer:
         self.node_id_fbo = None
         self.node_id_texture = None
         self.node_id_depth = None
-        self.node_id_texture_np: np.ndarray = None
+        self.node_id_texture_np: np.ndarray | None = None
 
         # Static data
         self.sphere_data = create_sphere()
@@ -141,7 +144,7 @@ class GraphViewer:
             return
 
         # Handle mouse movement for camera rotation
-        if self.mouse_pressed and self.mouse_button == 1:  # Right mouse button
+        if self.mouse_pressed and self.mouse_button == 1 and self.last_mouse_pos:  # Right mouse button
             dx = self.last_mouse_pos[0] - mouse_pos[0]
             dy = self.last_mouse_pos[1] - mouse_pos[1]  # Reversed for intuitive control
 
@@ -192,6 +195,9 @@ class GraphViewer:
 
     def update_layout(self):
         """Update the graph layout"""
+        if not self.graph:
+            return
+
         pos = nx.spring_layout(
             self.graph,
             dim=3,
@@ -215,7 +221,7 @@ class GraphViewer:
                 node_data = self.graph.nodes[self.selected_node.label]
                 imgui.text(f'Type: {node_data.get("type", "default")}')
 
-                degree = self.graph.degree[self.selected_node.label]
+                degree = cast(DegreeView, self.graph.degree)[self.selected_node.label]
                 imgui.text(f'Degree: {degree}')
 
                 for key, value in node_data.items():
@@ -246,7 +252,7 @@ class GraphViewer:
                         for neighbor, edge_data in connections.items():
                             imgui.table_next_row()
                             imgui.table_set_column_index(0)
-                            if imgui.selectable(str(neighbor), True)[0]:
+                            if imgui.selectable(str(neighbor), True):
                                 # Select neighbor node
                                 self.selected_node = self.id_node_map[neighbor]
                                 self.position = self.selected_node.position - self.front
@@ -263,11 +269,16 @@ class GraphViewer:
     def setup_render_context(self):
         """Initialize ModernGL context"""
         self.glctx = moderngl.create_context()
+        if not self.glctx:
+            return
         self.glctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
         self.glctx.clear_color = self.background_color
 
     def setup_shaders(self):
         """Setup vertex and fragment shaders for node and edge rendering"""
+        if not self.glctx:
+            return
+
         # Node shader program
         self.node_prog = self.glctx.program(
             vertex_shader="""
@@ -544,7 +555,7 @@ class GraphViewer:
             pos = {node: coords * scale for node, coords in pos.items()}
 
         # Calculate degree-based sizes
-        degrees = dict(self.graph.degree())
+        degrees = dict(cast(DegreeView, self.graph.degree)())
         max_degree = max(degrees.values()) if degrees else 1
         min_degree = min(degrees.values()) if degrees else 1
 
@@ -577,7 +588,7 @@ class GraphViewer:
 
     def get_node_color(self, node_id: str) -> glm.vec3:
         """Get RGBA color based on community"""
-        if self.communities and node_id in self.communities:
+        if self.communities and node_id in self.communities and self.community_colors:
             comm_id = self.communities[node_id]
             color = self.community_colors[comm_id]
             return color
@@ -585,7 +596,7 @@ class GraphViewer:
 
     def update_buffers(self):
         """Update vertex buffers with current node and edge data using batch rendering"""
-        if not self.graph:
+        if not self.graph or not self.glctx:
             return
 
         # Update node buffers
@@ -773,16 +784,22 @@ class GraphViewer:
         # Convert to a PIL Image and save as PNG
         from PIL import Image
 
+        if self.node_id_texture_np is None:
+            return
+
         scaled_array = self.node_id_texture_np * 255
         img = Image.fromarray(
             scaled_array.astype(np.uint8),
             'RGBA',
         )
-        img = img.transpose(method=Image.FLIP_TOP_BOTTOM)
+        img = img.transpose(method=Image.Transpose.FLIP_TOP_BOTTOM)  # type: ignore
         img.save(filename)
 
     def render_id_map(self, mvp: glm.mat4):
         """Render an offscreen id map where each node is drawn with a unique id color."""
+        if not self.glctx:
+            return
+
         # Lazy initialization of id framebuffer
         if self.node_id_texture is not None and (
             self.node_id_texture.width != self.window_width or self.node_id_texture.height != self.window_height
@@ -802,7 +819,8 @@ class GraphViewer:
             self.node_id_texture_np = np.zeros((self.window_height, self.window_width, 4), dtype=np.float32)
 
         # Bind the offscreen framebuffer
-        self.node_id_fbo.use()
+        if self.node_id_fbo:
+            self.node_id_fbo.use()
         self.glctx.clear(0, 0, 0, 0)
 
         # Render nodes
@@ -813,10 +831,14 @@ class GraphViewer:
 
         # Revert to default framebuffer
         self.glctx.screen.use()
-        self.node_id_texture.read_into(self.node_id_texture_np.data)
+        if self.node_id_texture and self.node_id_texture_np is not None:
+            self.node_id_texture.read_into(self.node_id_texture_np.data)
 
     def render(self):
         """Render the graph"""
+        if not self.glctx:
+            return
+
         # Clear screen
         self.glctx.clear(*self.background_color, depth=1)
 

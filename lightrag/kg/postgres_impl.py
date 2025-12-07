@@ -836,10 +836,11 @@ class PostgreSQLDB:
             logger.warning(f'Failed to add llm_cache_list column to LIGHTRAG_DOC_CHUNKS: {e}')
 
     async def _migrate_add_s3_key_columns(self):
-        """Add s3_key column to LIGHTRAG_DOC_FULL and LIGHTRAG_DOC_CHUNKS tables if they don't exist"""
+        """Add s3_key column to LIGHTRAG_DOC_FULL, LIGHTRAG_DOC_CHUNKS, and LIGHTRAG_DOC_STATUS tables if they don't exist"""
         tables = [
             ('lightrag_doc_full', 'LIGHTRAG_DOC_FULL'),
             ('lightrag_doc_chunks', 'LIGHTRAG_DOC_CHUNKS'),
+            ('lightrag_doc_status', 'LIGHTRAG_DOC_STATUS'),
         ]
 
         for table_name_lower, table_name in tables:
@@ -3049,6 +3050,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=element.get('error_msg'),
                 track_id=element.get('track_id'),
+                s3_key=element.get('s3_key'),
             )
 
         return docs_by_status
@@ -3101,6 +3103,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 track_id=element.get('track_id'),
                 metadata=metadata,
                 error_msg=element.get('error_msg'),
+                s3_key=element.get('s3_key'),
             )
 
         return docs_by_track_id
@@ -3213,6 +3216,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 track_id=element.get('track_id'),
                 metadata=metadata,
                 error_msg=element.get('error_msg'),
+                s3_key=element.get('s3_key'),
             )
             documents.append((doc_id, doc_status))
 
@@ -3328,10 +3332,10 @@ class PGDocStatusStorage(DocStatusStorage):
                 logger.warning(f'[{self.workspace}] Unable to parse datetime string: {dt_str}')
                 return None
 
-        # Modified SQL to include created_at, updated_at, chunks_list, track_id, metadata, and error_msg in both INSERT and UPDATE operations
+        # Modified SQL to include created_at, updated_at, chunks_list, track_id, metadata, error_msg, and s3_key in both INSERT and UPDATE operations
         # All fields are updated from the input data in both INSERT and UPDATE cases
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,created_at,updated_at)
-                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,s3_key,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                   on conflict(id,workspace) do update set
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
@@ -3342,6 +3346,7 @@ class PGDocStatusStorage(DocStatusStorage):
                   track_id = EXCLUDED.track_id,
                   metadata = EXCLUDED.metadata,
                   error_msg = EXCLUDED.error_msg,
+                  s3_key = EXCLUDED.s3_key,
                   created_at = EXCLUDED.created_at,
                   updated_at = EXCLUDED.updated_at"""
 
@@ -3364,6 +3369,7 @@ class PGDocStatusStorage(DocStatusStorage):
                     v.get('track_id'),
                     json.dumps(v.get('metadata', {})),
                     v.get('error_msg'),
+                    v.get('s3_key'),
                     created_at,
                     updated_at,
                 )
@@ -3371,6 +3377,26 @@ class PGDocStatusStorage(DocStatusStorage):
 
         if batch_data:
             await self.db.executemany(sql, batch_data)
+
+    async def update_s3_key(self, doc_id: str, s3_key: str) -> bool:
+        """Update s3_key for a document after archiving.
+
+        Args:
+            doc_id: Document ID to update
+            s3_key: S3 storage key (e.g., 'archive/default/doc123/file.pdf')
+
+        Returns:
+            True if update was successful
+        """
+        sql = """
+            UPDATE LIGHTRAG_DOC_STATUS
+            SET s3_key = $1, updated_at = CURRENT_TIMESTAMP
+            WHERE workspace = $2 AND id = $3
+        """
+        params = {'s3_key': s3_key, 'workspace': self.workspace, 'id': doc_id}
+        await self.db.execute(sql, params)
+        logger.debug(f'[{self.workspace}] Updated s3_key for doc {doc_id}: {s3_key}')
+        return True
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
@@ -5305,6 +5331,7 @@ TABLES = {
                    track_id varchar(255) NULL,
                    metadata JSONB NULL DEFAULT '{}'::jsonb,
                    error_msg TEXT NULL,
+                   s3_key TEXT NULL,
                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                    CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)

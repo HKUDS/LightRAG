@@ -12,6 +12,7 @@
     "retrieval": "Retrieval",
     "api": "API",
     "tables": "Tables",
+    "storage": "Storage",
     "projectRepository": "Project Repository",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",
@@ -142,7 +143,8 @@
         "created": "Created",
         "updated": "Updated",
         "metadata": "Metadata",
-        "select": "Select"
+        "select": "Select",
+        "s3Key": "S3 Key"
       },
       "status": {
         "all": "All",
@@ -514,6 +516,39 @@
     "description": "Please enter your API key to access the service",
     "placeholder": "Enter your API key",
     "save": "Save"
+  },
+  "storagePanel": {
+    "title": "Storage Browser",
+    "empty": "This folder is empty",
+    "loadFailed": "Failed to load storage contents",
+    "count": "{{folders}} folder(s), {{objects}} file(s)",
+    "uploadSuccess": "{{name}} uploaded successfully",
+    "uploadFailed": "Upload failed: {{error}}",
+    "deleteSuccess": "{{name}} deleted successfully",
+    "deleteFailed": "Delete failed: {{error}}",
+    "downloadFailed": "Download failed: {{error}}",
+    "table": {
+      "name": "Name",
+      "size": "Size",
+      "modified": "Modified",
+      "actions": "Actions"
+    },
+    "actions": {
+      "upload": "Upload",
+      "download": "Download",
+      "delete": "Delete",
+      "retry": "Retry",
+      "view": "View"
+    },
+    "viewer": {
+      "pdfPreview": "PDF preview is not available in the browser",
+      "openPdf": "Open PDF",
+      "noPreview": "Preview is not available for this file type"
+    },
+    "confirmDelete": {
+      "title": "Confirm Delete",
+      "description": "Are you sure you want to delete \"{{name}}\"? This action cannot be undone."
+    }
   },
   "pagination": {
     "showing": "Showing {{start}} to {{end}} of {{total}} entries",
