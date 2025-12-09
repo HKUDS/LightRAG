@@ -56,6 +56,7 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
 )
 from lightrag.entity_resolution import EntityResolutionConfig
+from lightrag.kg.postgres_impl import PGKVStorage
 from lightrag.kg.shared_storage import (
     # set_default_workspace,
     cleanup_keyed_lock,
@@ -63,7 +64,6 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     get_namespace_data,
 )
-from lightrag.kg.postgres_impl import PGKVStorage
 from lightrag.storage.s3_client import S3Client, S3Config
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
@@ -921,66 +921,19 @@ def create_app(args):
     else:
         logger.info('Embedding max_token_size: not set (90% token warning disabled)')
 
-    # Configure rerank function based on args.rerank_bindingparameter
+    # Configure local rerank function
     rerank_model_func = None
-    if args.rerank_binding != 'null':
-        from lightrag.rerank import ali_rerank, cohere_rerank, jina_rerank
+    if args.enable_rerank:
+        from lightrag.rerank import DEFAULT_RERANK_MODEL, create_local_rerank_func
 
-        # Map rerank binding to corresponding function
-        rerank_functions = {
-            'cohere': cohere_rerank,
-            'jina': jina_rerank,
-            'aliyun': ali_rerank,
-        }
-
-        # Select the appropriate rerank function based on binding
-        selected_rerank_func = rerank_functions.get(args.rerank_binding)
-        if not selected_rerank_func:
-            logger.error(f'Unsupported rerank binding: {args.rerank_binding}')
-            raise ValueError(f'Unsupported rerank binding: {args.rerank_binding}')
-
-        # Get default values from selected_rerank_func if args values are None
-        if args.rerank_model is None or args.rerank_binding_host is None:
-            sig = inspect.signature(selected_rerank_func)
-
-            # Set default model if args.rerank_model is None
-            if args.rerank_model is None and 'model' in sig.parameters:
-                default_model = sig.parameters['model'].default
-                if default_model != inspect.Parameter.empty:
-                    args.rerank_model = default_model
-
-            # Set default base_url if args.rerank_binding_host is None
-            if args.rerank_binding_host is None and 'base_url' in sig.parameters:
-                default_base_url = sig.parameters['base_url'].default
-                if default_base_url != inspect.Parameter.empty:
-                    args.rerank_binding_host = default_base_url
-
-        async def server_rerank_func(
-            query: str, documents: list, top_n: int | None = None, extra_body: dict | None = None
-        ):
-            """Server rerank function with configuration from environment variables"""
-            # Prepare kwargs for rerank function
-            kwargs = {
-                'query': query,
-                'documents': documents,
-                'top_n': top_n,
-                'api_key': args.rerank_binding_api_key,
-                'model': args.rerank_model,
-                'base_url': args.rerank_binding_host,
-            }
-
-            # Add Cohere-specific parameters if using cohere binding
-            if args.rerank_binding == 'cohere':
-                # Enable chunking if configured (useful for models with token limits like ColBERT)
-                kwargs['enable_chunking'] = get_env_value('RERANK_ENABLE_CHUNKING', False, bool)
-                kwargs['max_tokens_per_doc'] = get_env_value('RERANK_MAX_TOKENS_PER_DOC', 4096, int)
-
-            return await selected_rerank_func(**kwargs, extra_body=extra_body)
-
-        rerank_model_func = server_rerank_func
-        logger.info(
-            f'Reranking is enabled: {args.rerank_model or "default model"} using {args.rerank_binding} provider'
-        )
+        model_name = args.rerank_model or DEFAULT_RERANK_MODEL
+        try:
+            rerank_model_func = create_local_rerank_func(model_name)
+            logger.info(f'Local reranking enabled with model: {model_name}')
+        except Exception as e:
+            logger.error(f'Failed to initialize local reranker: {e}')
+            logger.warning('Continuing without reranking')
+            rerank_model_func = None
     else:
         logger.info('Reranking is disabled')
 
@@ -1062,11 +1015,21 @@ def create_app(args):
 
     # Register BM25 search routes if PostgreSQL storage is configured
     # Full-text search requires PostgreSQLDB for ts_rank queries
-    if args.kv_storage == 'PGKVStorage' and hasattr(rag, 'text_chunks') and hasattr(rag.text_chunks, 'db'):
-        app.include_router(create_search_routes(cast(PGKVStorage, rag.text_chunks).db, api_key))
+    # Pass kv_storage (not db) - db is accessed lazily after app startup
+    if args.kv_storage == 'PGKVStorage' and hasattr(rag, 'text_chunks'):
+        app.include_router(create_search_routes(rag.text_chunks, api_key))
         logger.info('BM25 search routes registered at /search')
     else:
         logger.info('PostgreSQL not configured - BM25 search routes disabled')
+
+    # Register metrics and explain routes for observability
+    from lightrag.api.routers.explain_routes import create_explain_routes
+    from lightrag.api.routers.metrics_routes import create_metrics_routes
+
+    app.include_router(create_metrics_routes(api_key))
+    logger.info('Metrics routes registered at /metrics')
+    app.include_router(create_explain_routes(rag, api_key))
+    logger.info('Query explain routes registered at /query/explain')
 
     # Custom Swagger UI endpoint for offline support
     @app.get('/docs', include_in_schema=False)
@@ -1228,11 +1191,9 @@ def create_app(args):
                     'enable_llm_cache': args.enable_llm_cache,
                     'workspace': default_workspace,
                     'max_graph_nodes': args.max_graph_nodes,
-                    # Rerank configuration
+                    # Rerank configuration (local model)
                     'enable_rerank': rerank_model_func is not None,
-                    'rerank_binding': args.rerank_binding,
                     'rerank_model': args.rerank_model if rerank_model_func else None,
-                    'rerank_binding_host': args.rerank_binding_host if rerank_model_func else None,
                     # Environment variable status (requested configuration)
                     'summary_language': args.summary_language,
                     'force_llm_summary_on_merge': args.force_llm_summary_on_merge,
@@ -1341,63 +1302,66 @@ def configure_logging():
     log_backup_count = get_env_value('LOG_BACKUP_COUNT', DEFAULT_LOG_BACKUP_COUNT, int)
 
     logging.config.dictConfig(
-        {
-            'version': 1,
-            'disable_existing_loggers': False,
-            'formatters': {
-                'default': {
-                    'format': '%(levelname)s: %(message)s',
+        cast(
+            dict[str, Any],
+            {
+                'version': 1,
+                'disable_existing_loggers': False,
+                'formatters': {
+                    'default': {
+                        'format': '%(levelname)s: %(message)s',
+                    },
+                    'detailed': {
+                        'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    },
                 },
-                'detailed': {
-                    'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                'handlers': {
+                    'console': {
+                        'formatter': 'default',
+                        'class': 'logging.StreamHandler',
+                        'stream': 'ext://sys.stderr',
+                    },
+                    'file': {
+                        'formatter': 'detailed',
+                        'class': 'logging.handlers.RotatingFileHandler',
+                        'filename': log_file_path,
+                        'maxBytes': log_max_bytes,
+                        'backupCount': log_backup_count,
+                        'encoding': 'utf-8',
+                    },
+                },
+                'loggers': {
+                    # Configure all uvicorn related loggers
+                    'uvicorn': {
+                        'handlers': ['console', 'file'],
+                        'level': 'INFO',
+                        'propagate': False,
+                    },
+                    'uvicorn.access': {
+                        'handlers': ['console', 'file'],
+                        'level': 'INFO',
+                        'propagate': False,
+                        'filters': ['path_filter'],
+                    },
+                    'uvicorn.error': {
+                        'handlers': ['console', 'file'],
+                        'level': 'INFO',
+                        'propagate': False,
+                    },
+                    'lightrag': {
+                        'handlers': ['console', 'file'],
+                        'level': 'INFO',
+                        'propagate': False,
+                        'filters': ['path_filter'],
+                    },
+                },
+                'filters': {
+                    'path_filter': {
+                        '()': 'lightrag.utils.LightragPathFilter',
+                    },
                 },
             },
-            'handlers': {
-                'console': {
-                    'formatter': 'default',
-                    'class': 'logging.StreamHandler',
-                    'stream': 'ext://sys.stderr',
-                },
-                'file': {
-                    'formatter': 'detailed',
-                    'class': 'logging.handlers.RotatingFileHandler',
-                    'filename': log_file_path,
-                    'maxBytes': log_max_bytes,
-                    'backupCount': log_backup_count,
-                    'encoding': 'utf-8',
-                },
-            },
-            'loggers': {
-                # Configure all uvicorn related loggers
-                'uvicorn': {
-                    'handlers': ['console', 'file'],
-                    'level': 'INFO',
-                    'propagate': False,
-                },
-                'uvicorn.access': {
-                    'handlers': ['console', 'file'],
-                    'level': 'INFO',
-                    'propagate': False,
-                    'filters': ['path_filter'],
-                },
-                'uvicorn.error': {
-                    'handlers': ['console', 'file'],
-                    'level': 'INFO',
-                    'propagate': False,
-                },
-                'lightrag': {
-                    'handlers': ['console', 'file'],
-                    'level': 'INFO',
-                    'propagate': False,
-                    'filters': ['path_filter'],
-                },
-            },
-            'filters': {
-                'path_filter': {
-                    '()': 'lightrag.utils.LightragPathFilter',
-                },
-            },
-        }
+        )
     )
 
 

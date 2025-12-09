@@ -44,19 +44,25 @@ GRAPH_FIELD_SEP = '<SEP>'
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
 DEFAULT_CHUNK_TOP_K = 20
-DEFAULT_MAX_ENTITY_TOKENS = 6000
-DEFAULT_MAX_RELATION_TOKENS = 8000
-DEFAULT_MAX_TOTAL_TOKENS = 30000
-DEFAULT_COSINE_THRESHOLD = 0.40  # Balanced: 0.35 too permissive, 0.45 breaks local mode
-DEFAULT_RELATED_CHUNK_NUMBER = 8  # Increased from 5 for better context coverage
+# Token limits increased for modern 128K+ context models (GPT-4o-mini, Claude, etc.)
+# Top-k already limits count; these are safety ceilings, not aggressive truncation targets
+DEFAULT_MAX_ENTITY_TOKENS = 16000
+DEFAULT_MAX_RELATION_TOKENS = 16000
+DEFAULT_MAX_TOTAL_TOKENS = 60000
+DEFAULT_COSINE_THRESHOLD = 0.35
+DEFAULT_RELATED_CHUNK_NUMBER = 12
 DEFAULT_KG_CHUNK_PICK_METHOD = 'VECTOR'
 
 # TODO: Deprated. All conversation_history messages is send to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults
+# Local reranking is enabled by default using mixedbread-ai/mxbai-rerank-xsmall-v1
+DEFAULT_ENABLE_RERANK = True
+# Minimum rerank score to keep a result - filters out clearly irrelevant chunks
+# Note: mxbai-rerank-xsmall-v1 produces scores in 0.01-0.15 range for domain content
+# Set to 0.0 to disable filtering (keep all reranked results, just reorder them)
 DEFAULT_MIN_RERANK_SCORE = 0.0
-DEFAULT_RERANK_BINDING = 'null'
 
 # Default source ids limit in meta data for entity and relation
 DEFAULT_MAX_SOURCE_IDS_PER_ENTITY = 300
@@ -74,14 +80,11 @@ VALID_SOURCE_IDS_LIMIT_METHODS = {
 # Maximum number of file paths stored in entity/relation file_path field (For displayed only, does not affect query performance)
 DEFAULT_MAX_FILE_PATHS = 100
 
-# Field length of file_path in Milvus Schema for entity and relation (Should not be changed)
-# file_path must store all file paths up to the DEFAULT_MAX_FILE_PATHS limit within the metadata.
-DEFAULT_MAX_FILE_PATH_LENGTH = 32768
-# Placeholder for more file paths in meta data for entity and relation (Should not be changed)
+# Placeholder when file_path list exceeds DEFAULT_MAX_FILE_PATHS (used by all storage backends)
 DEFAULT_FILE_PATH_MORE_PLACEHOLDER = 'truncated'
 
-# Default temperature for LLM
-DEFAULT_TEMPERATURE = 1.0
+# Default temperature for LLM (lower = more deterministic, less hallucination risk)
+DEFAULT_TEMPERATURE = 0.3
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
@@ -98,6 +101,11 @@ DEFAULT_TIMEOUT = 300
 DEFAULT_LLM_TIMEOUT = 180
 DEFAULT_EMBEDDING_TIMEOUT = 30
 
+# Topic connectivity check configuration
+DEFAULT_MIN_RELATIONSHIP_DENSITY = 0.3  # Minimum ratio of relationships to entities
+DEFAULT_MIN_ENTITY_COVERAGE = 0.5  # Minimum ratio of entities connected by relationships
+DEFAULT_CHECK_TOPIC_CONNECTIVITY = True  # Enable topic connectivity check by default
+
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB
 DEFAULT_LOG_BACKUP_COUNT = 5  # Default 5 backups
@@ -109,3 +117,14 @@ DEFAULT_OLLAMA_MODEL_TAG = 'latest'
 DEFAULT_OLLAMA_MODEL_SIZE = 7365960935
 DEFAULT_OLLAMA_CREATED_AT = '2024-01-15T00:00:00Z'
 DEFAULT_OLLAMA_DIGEST = 'sha256:lightrag'
+
+# Full-text search cache configuration
+# Shorter TTL than embedding cache since document content changes more frequently
+DEFAULT_FTS_CACHE_TTL = 300  # 5 minutes
+DEFAULT_FTS_CACHE_MAX_SIZE = 5000  # Smaller than embedding cache
+DEFAULT_FTS_CACHE_ENABLED = True
+
+# Metrics configuration
+DEFAULT_METRICS_ENABLED = True
+DEFAULT_METRICS_HISTORY_SIZE = 1000  # Queries to keep in circular buffer
+DEFAULT_METRICS_WINDOW_SECONDS = 3600  # 1 hour window for percentile calculations

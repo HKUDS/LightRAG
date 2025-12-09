@@ -204,6 +204,101 @@ async def get_cached_query_embedding(query: str, embedding_func) -> list[float] 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / '.env', override=False)
 
 
+class TimingContext:
+    """Context manager for collecting timing information during query execution.
+
+    Provides both synchronous and context manager interfaces for measuring
+    execution time of different query stages.
+
+    Example:
+        timing = TimingContext()
+        timing.start('keyword_extraction')
+        # ... do work ...
+        timing.stop('keyword_extraction')
+
+        # Or with context manager:
+        with timing.measure('vector_search'):
+            # ... do work ...
+
+        print(timing.timings)  # {'keyword_extraction': 123.4, 'vector_search': 567.8}
+    """
+
+    def __init__(self) -> None:
+        """Initialize timing context."""
+        self.timings: dict[str, float] = {}
+        self._start_times: dict[str, float] = {}
+        self._total_start: float = time.perf_counter()
+
+    def start(self, stage: str) -> None:
+        """Start timing a stage.
+
+        Args:
+            stage: Name of the stage to time
+        """
+        self._start_times[stage] = time.perf_counter()
+
+    def stop(self, stage: str) -> float:
+        """Stop timing a stage and record the duration.
+
+        Args:
+            stage: Name of the stage to stop
+
+        Returns:
+            Duration in milliseconds
+        """
+        if stage in self._start_times:
+            elapsed = (time.perf_counter() - self._start_times[stage]) * 1000
+            self.timings[stage] = elapsed
+            del self._start_times[stage]
+            return elapsed
+        return 0.0
+
+    def measure(self, stage: str):
+        """Context manager for timing a stage.
+
+        Args:
+            stage: Name of the stage to time
+
+        Yields:
+            None
+        """
+        return _TimingContextManager(self, stage)
+
+    def get_total_ms(self) -> float:
+        """Get total elapsed time since context creation.
+
+        Returns:
+            Total time in milliseconds
+        """
+        return (time.perf_counter() - self._total_start) * 1000
+
+    def finalize(self) -> dict[str, float]:
+        """Finalize timing and return all recorded durations.
+
+        Sets the 'total' timing to elapsed time since context creation.
+
+        Returns:
+            Dictionary of stage -> duration_ms
+        """
+        self.timings['total'] = self.get_total_ms()
+        return self.timings
+
+
+class _TimingContextManager:
+    """Internal context manager for TimingContext.measure()."""
+
+    def __init__(self, timing_ctx: TimingContext, stage: str) -> None:
+        self._timing_ctx = timing_ctx
+        self._stage = stage
+
+    def __enter__(self) -> None:
+        self._timing_ctx.start(self._stage)
+        return None
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._timing_ctx.stop(self._stage)
+
+
 def _truncate_entity_identifier(identifier: str, limit: int, chunk_key: str, identifier_role: str) -> str:
     """Truncate entity identifiers that exceed the configured length limit."""
 
@@ -3486,12 +3581,21 @@ async def kg_query(
     user_prompt = f'\n\n{query_param.user_prompt}' if query_param.user_prompt else 'n/a'
     response_type = query_param.response_type if query_param.response_type else 'Multiple Paragraphs'
 
+    # Build coverage guidance based on context sparsity
+    coverage_guidance = (
+        PROMPTS['coverage_guidance_limited']
+        if context_result.coverage_level == 'limited'
+        else PROMPTS['coverage_guidance_good']
+    )
+    logger.debug(f'[kg_query] Coverage level: {context_result.coverage_level}')
+
     # Build system prompt
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS['rag_response']
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
         context_data=context_result.context,
+        coverage_guidance=coverage_guidance,
     )
 
     user_query = query
@@ -3686,6 +3790,14 @@ async def extract_keywords_only(
 
     hl_keywords = keywords_data.get('high_level_keywords', [])
     ll_keywords = keywords_data.get('low_level_keywords', [])
+
+    # 5b. Extract years from query that LLM might have missed (defensive heuristic)
+    # This applies to ANY domain - financial reports, historical events, etc.
+    years_in_query = re.findall(r'\b(19|20)\d{2}\b', text)
+    for year in years_in_query:
+        if year not in ll_keywords:
+            ll_keywords.append(year)
+            logger.debug(f'Added year "{year}" to low_level_keywords from query')
 
     # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
@@ -3933,6 +4045,151 @@ async def _perform_kg_search(
     }
 
 
+def _check_topic_connectivity(
+    entities_context: list[dict],
+    relations_context: list[dict],
+    min_relationship_density: float = 0.3,
+    min_entity_coverage: float = 0.5,
+    min_doc_coverage: float = 0.15,  # Lower threshold for document connectivity
+) -> tuple[bool, str]:
+    """
+    Check if retrieved entities are topically connected.
+
+    Connectivity is established if EITHER:
+    1. Entities come from the same source document (file_path) - uses min_doc_coverage threshold
+    2. Entities are connected via graph relationships (BFS) - uses min_entity_coverage threshold
+
+    The document coverage threshold (min_doc_coverage) is lower than graph coverage because
+    vector search often pulls semantically similar entities from multiple documents.
+    Even 15% from a single document indicates strong topical relevance.
+
+    Args:
+        entities_context: List of entity dictionaries from retrieval
+        relations_context: List of relationship dictionaries from retrieval
+        min_relationship_density: Minimum ratio of relationships to entities (0.0-1.0)
+        min_entity_coverage: Minimum ratio of entities in largest graph component (0.0-1.0)
+        min_doc_coverage: Minimum ratio of entities from a single document (0.0-1.0)
+
+    Returns:
+        (is_connected, reason) where:
+        - is_connected: True if topics form a connected graph or share document
+        - reason: Explanation if connectivity check failed
+    """
+    if not entities_context:
+        return True, ''  # No entities = let existing empty-context logic handle it
+
+    # Build set of entity names and track file_path for each (case-insensitive)
+    entity_names = set()
+    entity_files: dict[str, str] = {}  # entity_name -> primary file_path
+
+    for e in entities_context:
+        name = e.get('entity', e.get('entity_name', '')).lower()
+        if not name:
+            continue
+        entity_names.add(name)
+
+        # Extract primary file_path (before <SEP> if multiple)
+        file_path = e.get('file_path', '')
+        if file_path:
+            primary_file = file_path.split('<SEP>')[0].strip()
+            if primary_file:
+                entity_files[name] = primary_file
+
+    if not entity_names:
+        return True, ''  # Can't check without entity names
+
+    # Check 1: Document connectivity
+    # If entities from the same document meet the coverage threshold, pass
+    file_to_entities: dict[str, set[str]] = {}
+    for name, file_path in entity_files.items():
+        file_to_entities.setdefault(file_path, set()).add(name)
+
+    # Debug: Log document distribution
+    if file_to_entities:
+        doc_summary = ', '.join(f'"{fp}": {len(ents)}' for fp, ents in sorted(file_to_entities.items(), key=lambda x: -len(x[1]))[:5])
+        logger.info(f'Topic connectivity: Document distribution (top 5): [{doc_summary}] total_entities={len(entity_names)}')
+    else:
+        logger.info(f'Topic connectivity: No file_path data available for {len(entity_names)} entities')
+
+    for file_path, file_entities in file_to_entities.items():
+        doc_coverage = len(file_entities) / len(entity_names)
+        if doc_coverage >= min_doc_coverage:
+            logger.info(
+                f'Topic connectivity: PASS (document) - {len(file_entities)}/{len(entity_names)} '
+                f'entities from "{file_path}" ({doc_coverage:.0%} coverage, threshold={min_doc_coverage:.0%})'
+            )
+            return True, ''
+
+    # Check 2: Graph connectivity (original logic)
+    if not relations_context:
+        # Log document distribution for debugging
+        doc_summary = ', '.join(f'{fp}: {len(ents)}' for fp, ents in file_to_entities.items())
+        logger.info(f'Topic connectivity: FAIL - no relations, docs=[{doc_summary}]')
+        return False, 'Retrieved entities have no connecting relationships or common document'
+
+    # Build adjacency list from relationships
+    # Only include edges where BOTH endpoints are in our entity set
+    adjacency: dict[str, set[str]] = {name: set() for name in entity_names}
+    edges_in_subgraph = 0
+
+    for rel in relations_context:
+        src = (rel.get('src_id') or rel.get('source') or rel.get('entity1') or '').lower()
+        tgt = (rel.get('tgt_id') or rel.get('target') or rel.get('entity2') or '').lower()
+
+        # Only count edges where BOTH endpoints are in our retrieved entities
+        if src in entity_names and tgt in entity_names and src != tgt:
+            adjacency[src].add(tgt)
+            adjacency[tgt].add(src)
+            edges_in_subgraph += 1
+
+    # Check if we have enough edges connecting entities to each other
+    if edges_in_subgraph == 0:
+        doc_summary = ', '.join(f'{fp}: {len(ents)}' for fp, ents in file_to_entities.items())
+        logger.info(
+            f'Topic connectivity: FAIL - {len(relations_context)} relations but 0 connect '
+            f'retrieved entities to each other, docs=[{doc_summary}]'
+        )
+        return False, 'Retrieved entities are not connected to each other by relationships or common document'
+
+    # Use BFS to find connected components
+    visited = set()
+    components = []
+
+    for start_node in entity_names:
+        if start_node in visited:
+            continue
+
+        # BFS from this node
+        component = set()
+        queue = [start_node]
+        while queue:
+            node = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            component.add(node)
+            for neighbor in adjacency[node]:
+                if neighbor not in visited:
+                    queue.append(neighbor)
+
+        components.append(component)
+
+    # Check component coverage
+    largest_component = max(components, key=len) if components else set()
+    coverage = len(largest_component) / len(entity_names) if entity_names else 0
+
+    logger.info(
+        f'Topic connectivity: {len(entity_names)} entities, {edges_in_subgraph} connecting edges, '
+        f'{len(components)} components, largest={len(largest_component)} ({coverage:.0%} coverage)'
+    )
+
+    if coverage < min_entity_coverage:
+        logger.info(f'Topic connectivity: FAIL - graph coverage {coverage:.0%} < threshold {min_entity_coverage:.0%}')
+        return False, f'Entities form {len(components)} disconnected clusters (largest covers {coverage:.0%})'
+
+    return True, ''
+
+
 async def _apply_token_truncation(
     search_result: dict[str, Any],
     query_param: QueryParam,
@@ -4020,11 +4277,20 @@ async def _apply_token_truncation(
             }
         )
 
-    logger.debug(f'Before truncation: {len(entities_context)} entities, {len(relations_context)} relations')
+    original_entity_count = len(entities_context)
+    original_relation_count = len(relations_context)
 
-    # Apply token-based truncation
+    # Check if truncation is disabled
+    disable_truncation = getattr(query_param, 'disable_truncation', False)
+
+    # Track truncated counts for logging
+    truncated_entity_count = original_entity_count
+    truncated_relation_count = original_relation_count
+
+    # Apply token-based truncation (safety ceiling, not aggressive limiting)
+    # Top-k already limits retrieval count; this is a fallback for very long descriptions
     if entities_context:
-        # Remove file_path and created_at for token calculation
+        # Remove file_path and created_at for token calculation (metadata not sent to LLM)
         entities_context_for_truncation = []
         for entity in entities_context:
             entity_copy = entity.copy()
@@ -4032,12 +4298,20 @@ async def _apply_token_truncation(
             entity_copy.pop('created_at', None)
             entities_context_for_truncation.append(entity_copy)
 
-        entities_context = truncate_list_by_token_size(
+        truncated_entities = truncate_list_by_token_size(
             entities_context_for_truncation,
             key=lambda x: '\n'.join(json.dumps(item, ensure_ascii=False) for item in [x]),
             max_token_size=max_entity_tokens,
             tokenizer=tokenizer,
         )
+        # Restore file_path from original entities_context (needed for connectivity check)
+        entity_name_to_file_path = {e['entity']: e.get('file_path', '') for e in entities_context}
+        for entity in truncated_entities:
+            entity['file_path'] = entity_name_to_file_path.get(entity['entity'], '')
+
+        truncated_entity_count = len(truncated_entities)
+        if not disable_truncation:
+            entities_context = truncated_entities
 
     if relations_context:
         # Remove file_path and created_at for token calculation
@@ -4048,14 +4322,41 @@ async def _apply_token_truncation(
             relation_copy.pop('created_at', None)
             relations_context_for_truncation.append(relation_copy)
 
-        relations_context = truncate_list_by_token_size(
+        truncated_relations = truncate_list_by_token_size(
             relations_context_for_truncation,
             key=lambda x: '\n'.join(json.dumps(item, ensure_ascii=False) for item in [x]),
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
+        # Restore file_path from original relations_context (for consistency)
+        relation_key_to_file_path = {(r['entity1'], r['entity2']): r.get('file_path', '') for r in relations_context}
+        for relation in truncated_relations:
+            relation['file_path'] = relation_key_to_file_path.get((relation['entity1'], relation['entity2']), '')
 
-    logger.info(f'After truncation: {len(entities_context)} entities, {len(relations_context)} relations')
+        truncated_relation_count = len(truncated_relations)
+        if not disable_truncation:
+            relations_context = truncated_relations
+
+    # Calculate how many would be dropped
+    entities_would_drop = original_entity_count - truncated_entity_count
+    relations_would_drop = original_relation_count - truncated_relation_count
+
+    # Log if token ceiling was/would be hit
+    if entities_would_drop > 0 or relations_would_drop > 0:
+        if disable_truncation:
+            logger.warning(
+                f'Token ceiling exceeded (truncation disabled): would have dropped '
+                f'{entities_would_drop} entities, {relations_would_drop} relations. '
+                f'Keeping all {original_entity_count} entities, {original_relation_count} relations.'
+            )
+        else:
+            logger.warning(
+                f'Token ceiling hit: dropped {entities_would_drop} entities (limit={max_entity_tokens} tokens), '
+                f'{relations_would_drop} relations (limit={max_relation_tokens} tokens). '
+                f'Increase token limits or set disable_truncation=True.'
+            )
+
+    logger.info(f'Context: {len(entities_context)} entities, {len(relations_context)} relations')
 
     # Create filtered original data based on truncated context
     filtered_entities = []
@@ -4412,6 +4713,20 @@ async def _build_query_context(
         text_chunks_db.global_config,
     )
 
+    # Stage 2.5: Check topic connectivity
+    # Skip for: naive (no graph), bypass (no retrieval)
+    # This prevents hallucination when querying unrelated topics like "diabetes + renewable energy"
+    if query_param.check_topic_connectivity and query_param.mode not in ('naive', 'bypass'):
+        is_connected, reason = _check_topic_connectivity(
+            truncation_result['entities_context'],
+            truncation_result['relations_context'],
+            min_relationship_density=query_param.min_relationship_density,
+            min_entity_coverage=query_param.min_entity_coverage,
+        )
+        if not is_connected:
+            logger.info(f'Topic connectivity check failed: {reason}')
+            return None  # Return None to trigger "no context" response
+
     # Stage 3: Merge chunks using filtered entities/relations
     merged_chunks = await _merge_all_chunks(
         filtered_entities=truncation_result['filtered_entities'],
@@ -4465,12 +4780,24 @@ async def _build_query_context(
         'final_chunks_count': len(raw_data.get('data', {}).get('chunks', [])),
     }
 
+    # Calculate context sparsity to guide LLM response
+    # Sparse context = LLM should be more conservative about inferences
+    entity_count = len(truncation_result.get('filtered_entities', []))
+    relation_count = len(truncation_result.get('filtered_relations', []))
+    chunk_count = len(raw_data.get('data', {}).get('chunks', []))
+    is_sparse = entity_count < 3 or relation_count < 2 or chunk_count < 2
+    coverage_level = 'limited' if is_sparse else 'good'
+
+    logger.debug(
+        f'[_build_query_context] Context sparsity: entities={entity_count}, relations={relation_count}, chunks={chunk_count} -> coverage={coverage_level}'
+    )
+
     logger.debug(f'[_build_query_context] Context length: {len(context) if context else 0}')
     logger.debug(
         f'[_build_query_context] Raw data entities: {len(raw_data.get("data", {}).get("entities", []))}, relationships: {len(raw_data.get("data", {}).get("relationships", []))}, chunks: {len(raw_data.get("data", {}).get("chunks", []))}'
     )
 
-    return QueryContextResult(context=context, raw_data=raw_data)
+    return QueryContextResult(context=context, raw_data=raw_data, coverage_level=coverage_level)
 
 
 async def _get_node_data(

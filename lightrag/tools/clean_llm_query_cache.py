@@ -3,7 +3,7 @@
 LLM Query Cache Cleanup Tool for LightRAG
 
 This tool cleans up LLM query cache (mix:*, hybrid:*, local:*, global:*)
-from KV storage implementations while preserving workspace isolation.
+from PGKVStorage while preserving workspace isolation.
 
 Usage:
     python -m lightrag.tools.clean_llm_query_cache
@@ -11,10 +11,7 @@ Usage:
     python lightrag/tools/clean_llm_query_cache.py
 
 Supported KV Storage Types:
-    - JsonKVStorage
-    - RedisKVStorage
     - PGKVStorage
-    - MongoKVStorage
 """
 
 import asyncio
@@ -43,17 +40,12 @@ setup_logger('lightrag', level='INFO')
 
 # Storage type configurations
 STORAGE_TYPES = {
-    '1': 'JsonKVStorage',
-    '2': 'RedisKVStorage',
-    '3': 'PGKVStorage',
-    '4': 'MongoKVStorage',
+    '1': 'PGKVStorage',
 }
 
 # Workspace environment variable mapping
 WORKSPACE_ENV_MAP = {
     'PGKVStorage': 'POSTGRES_WORKSPACE',
-    'MongoKVStorage': 'MONGODB_WORKSPACE',
-    'RedisKVStorage': 'REDIS_WORKSPACE',
 }
 
 # Query cache modes
@@ -158,16 +150,12 @@ class CleanupTool:
             config = configparser.ConfigParser()
             config.read('config.ini', 'utf-8')
 
-            if storage_name == 'RedisKVStorage':
-                return config.has_option('redis', 'uri')
-            elif storage_name == 'PGKVStorage':
+            if storage_name == 'PGKVStorage':
                 return (
                     config.has_option('postgres', 'user')
                     and config.has_option('postgres', 'password')
                     and config.has_option('postgres', 'database')
                 )
-            elif storage_name == 'MongoKVStorage':
-                return config.has_option('mongodb', 'uri') and config.has_option('mongodb', 'database')
 
             return False
         except Exception:
@@ -214,22 +202,10 @@ class CleanupTool:
         Returns:
             Storage class
         """
-        if storage_name == 'JsonKVStorage':
-            from lightrag.kg.json_kv_impl import JsonKVStorage
-
-            return JsonKVStorage
-        elif storage_name == 'RedisKVStorage':
-            from lightrag.kg.redis_impl import RedisKVStorage
-
-            return RedisKVStorage
-        elif storage_name == 'PGKVStorage':
+        if storage_name == 'PGKVStorage':
             from lightrag.kg.postgres_impl import PGKVStorage
 
             return PGKVStorage
-        elif storage_name == 'MongoKVStorage':
-            from lightrag.kg.mongo_impl import MongoKVStorage
-
-            return MongoKVStorage
         else:
             raise ValueError(f'Unsupported storage type: {storage_name}')
 
@@ -267,57 +243,6 @@ class CleanupTool:
 
         return storage
 
-    async def count_query_caches_json(self, storage) -> dict[str, dict[str, int]]:
-        """Count query caches in JsonKVStorage by mode and cache_type
-
-        Args:
-            storage: JsonKVStorage instance
-
-        Returns:
-            Dictionary with counts for each mode and cache_type
-        """
-        counts = {mode: {'query': 0, 'keywords': 0} for mode in QUERY_MODES}
-
-        async with storage._storage_lock:
-            for key in storage._data:
-                for mode in QUERY_MODES:
-                    if key.startswith(f'{mode}:query:'):
-                        counts[mode]['query'] += 1
-                    elif key.startswith(f'{mode}:keywords:'):
-                        counts[mode]['keywords'] += 1
-
-        return counts
-
-    async def count_query_caches_redis(self, storage) -> dict[str, dict[str, int]]:
-        """Count query caches in RedisKVStorage by mode and cache_type
-
-        Args:
-            storage: RedisKVStorage instance
-
-        Returns:
-            Dictionary with counts for each mode and cache_type
-        """
-        counts = {mode: {'query': 0, 'keywords': 0} for mode in QUERY_MODES}
-
-        print('Scanning Redis keys...', end='', flush=True)
-
-        async with storage._get_redis_connection() as redis:
-            for mode in QUERY_MODES:
-                for cache_type in CACHE_TYPES:
-                    pattern = f'{mode}:{cache_type}:*'
-                    prefixed_pattern = f'{storage.final_namespace}:{pattern}'
-                    cursor = 0
-
-                    while True:
-                        cursor, keys = await redis.scan(cursor, match=prefixed_pattern, count=DEFAULT_BATCH_SIZE)
-                        counts[mode][cache_type] += len(keys)
-
-                        if cursor == 0:
-                            break
-
-        print()  # New line after progress
-        return counts
-
     async def count_query_caches_pg(self, storage) -> dict[str, dict[str, int]]:
         """Count query caches in PostgreSQL by mode and cache_type
 
@@ -354,34 +279,6 @@ class CleanupTool:
 
         return counts
 
-    async def count_query_caches_mongo(self, storage) -> dict[str, dict[str, int]]:
-        """Count query caches in MongoDB by mode and cache_type
-
-        Args:
-            storage: MongoKVStorage instance
-
-        Returns:
-            Dictionary with counts for each mode and cache_type
-        """
-        counts = {mode: {'query': 0, 'keywords': 0} for mode in QUERY_MODES}
-
-        print('Counting MongoDB documents...', end='', flush=True)
-        start_time = time.time()
-
-        for mode in QUERY_MODES:
-            for cache_type in CACHE_TYPES:
-                pattern = f'^{mode}:{cache_type}:'
-                query = {'_id': {'$regex': pattern}}
-                count = await storage._data.count_documents(query)
-                counts[mode][cache_type] = count
-
-        elapsed = time.time() - start_time
-        if elapsed > 1:
-            print(f' (took {elapsed:.1f}s)', end='')
-        print()  # New line
-
-        return counts
-
     async def count_query_caches(self, storage, storage_name: str) -> dict[str, dict[str, int]]:
         """Count query caches from any storage type efficiently
 
@@ -392,143 +289,10 @@ class CleanupTool:
         Returns:
             Dictionary with counts for each mode and cache_type
         """
-        if storage_name == 'JsonKVStorage':
-            return await self.count_query_caches_json(storage)
-        elif storage_name == 'RedisKVStorage':
-            return await self.count_query_caches_redis(storage)
-        elif storage_name == 'PGKVStorage':
+        if storage_name == 'PGKVStorage':
             return await self.count_query_caches_pg(storage)
-        elif storage_name == 'MongoKVStorage':
-            return await self.count_query_caches_mongo(storage)
         else:
             raise ValueError(f'Unsupported storage type: {storage_name}')
-
-    async def delete_query_caches_json(self, storage, cleanup_type: str, stats: CleanupStats):
-        """Delete query caches from JsonKVStorage
-
-        Args:
-            storage: JsonKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        # Collect keys to delete
-        async with storage._storage_lock:
-            keys_to_delete = []
-            for key in storage._data:
-                should_delete = False
-                for mode in QUERY_MODES:
-                    if cleanup_type == 'all':
-                        if key.startswith(f'{mode}:query:') or key.startswith(f'{mode}:keywords:'):
-                            should_delete = True
-                    elif cleanup_type == 'query':
-                        if key.startswith(f'{mode}:query:'):
-                            should_delete = True
-                    elif cleanup_type == 'keywords' and key.startswith(f'{mode}:keywords:'):
-                        should_delete = True
-
-                if should_delete:
-                    keys_to_delete.append(key)
-
-        # Delete in batches
-        total_keys = len(keys_to_delete)
-        stats.total_batches = (total_keys + self.batch_size - 1) // self.batch_size
-
-        print('\n=== Starting Cleanup ===')
-        print(f'💡 Processing {self.batch_size:,} records at a time from JsonKVStorage\n')
-
-        for batch_idx in range(stats.total_batches):
-            start_idx = batch_idx * self.batch_size
-            end_idx = min((batch_idx + 1) * self.batch_size, total_keys)
-            batch_keys = keys_to_delete[start_idx:end_idx]
-
-            try:
-                async with storage._storage_lock:
-                    for key in batch_keys:
-                        del storage._data[key]
-
-                # CRITICAL: Set update flag so changes persist to disk
-                # Without this, deletions remain in-memory only and are lost on exit
-                await set_all_update_flags(storage.namespace, workspace=storage.workspace)
-
-                # Success
-                stats.successful_batches += 1
-                stats.successfully_deleted += len(batch_keys)
-
-                # Calculate progress
-                progress = (stats.successfully_deleted / total_keys) * 100
-                bar_length = 20
-                filled_length = int(bar_length * stats.successfully_deleted // total_keys)
-                bar = '█' * filled_length + '░' * (bar_length - filled_length)
-
-                print(
-                    f'Batch {batch_idx + 1}/{stats.total_batches}: {bar} '
-                    f'{stats.successfully_deleted:,}/{total_keys:,} ({progress:.1f}%) ✓'
-                )
-
-            except Exception as e:
-                stats.add_error(batch_idx + 1, e, len(batch_keys))
-                print(f'Batch {batch_idx + 1}/{stats.total_batches}: ✗ FAILED - {type(e).__name__}: {e!s}')
-
-    async def delete_query_caches_redis(self, storage, cleanup_type: str, stats: CleanupStats):
-        """Delete query caches from RedisKVStorage
-
-        Args:
-            storage: RedisKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        # Build patterns to delete
-        patterns = []
-        for mode in QUERY_MODES:
-            if cleanup_type == 'all':
-                patterns.append(f'{mode}:query:*')
-                patterns.append(f'{mode}:keywords:*')
-            elif cleanup_type == 'query':
-                patterns.append(f'{mode}:query:*')
-            elif cleanup_type == 'keywords':
-                patterns.append(f'{mode}:keywords:*')
-
-        print('\n=== Starting Cleanup ===')
-        print(f'💡 Processing Redis keys in batches of {self.batch_size:,}\n')
-
-        batch_idx = 0
-        total_deleted = 0
-
-        async with storage._get_redis_connection() as redis:
-            for pattern in patterns:
-                prefixed_pattern = f'{storage.final_namespace}:{pattern}'
-                cursor = 0
-
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=prefixed_pattern, count=self.batch_size)
-
-                    if keys:
-                        batch_idx += 1
-                        stats.total_batches += 1
-
-                        try:
-                            # Delete batch using pipeline
-                            pipe = redis.pipeline()
-                            for key in keys:
-                                pipe.delete(key)
-                            await pipe.execute()
-
-                            # Success
-                            stats.successful_batches += 1
-                            stats.successfully_deleted += len(keys)
-                            total_deleted += len(keys)
-
-                            # Progress
-                            print(f'Batch {batch_idx}: Deleted {len(keys):,} keys (Total: {total_deleted:,}) ✓')
-
-                        except Exception as e:
-                            stats.add_error(batch_idx, e, len(keys))
-                            print(f'Batch {batch_idx}: ✗ FAILED - {type(e).__name__}: {e!s}')
-
-                    if cursor == 0:
-                        break
-
-                    await asyncio.sleep(0)
 
     async def delete_query_caches_pg(self, storage, cleanup_type: str, stats: CleanupStats):
         """Delete query caches from PostgreSQL
@@ -581,48 +345,6 @@ class CleanupTool:
             stats.add_error(1, e, stats.total_to_delete)
             print(f'✗ DELETE failed: {type(e).__name__}: {e!s}')
 
-    async def delete_query_caches_mongo(self, storage, cleanup_type: str, stats: CleanupStats):
-        """Delete query caches from MongoDB
-
-        Args:
-            storage: MongoKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        # Build regex patterns
-        patterns = []
-        for mode in QUERY_MODES:
-            if cleanup_type == 'all':
-                patterns.append(f'^{mode}:query:')
-                patterns.append(f'^{mode}:keywords:')
-            elif cleanup_type == 'query':
-                patterns.append(f'^{mode}:query:')
-            elif cleanup_type == 'keywords':
-                patterns.append(f'^{mode}:keywords:')
-
-        print('\n=== Starting Cleanup ===')
-        print('💡 Executing MongoDB deleteMany operations\n')
-
-        total_deleted = 0
-        for idx, pattern in enumerate(patterns, 1):
-            try:
-                query = {'_id': {'$regex': pattern}}
-                result = await storage._data.delete_many(query)
-                deleted_count = result.deleted_count
-
-                stats.total_batches += 1
-                stats.successful_batches += 1
-                stats.successfully_deleted += deleted_count
-                total_deleted += deleted_count
-
-                print(f'Pattern {idx}/{len(patterns)}: Deleted {deleted_count:,} records ✓')
-
-            except Exception as e:
-                stats.add_error(idx, e, 0)
-                print(f'Pattern {idx}/{len(patterns)}: ✗ FAILED - {type(e).__name__}: {e!s}')
-
-        print(f'\nTotal deleted: {total_deleted:,} records')
-
     async def delete_query_caches(self, storage, storage_name: str, cleanup_type: str, stats: CleanupStats):
         """Delete query caches from any storage type
 
@@ -632,14 +354,8 @@ class CleanupTool:
             cleanup_type: 'all', 'query', or 'keywords'
             stats: CleanupStats object to track progress
         """
-        if storage_name == 'JsonKVStorage':
-            await self.delete_query_caches_json(storage, cleanup_type, stats)
-        elif storage_name == 'RedisKVStorage':
-            await self.delete_query_caches_redis(storage, cleanup_type, stats)
-        elif storage_name == 'PGKVStorage':
+        if storage_name == 'PGKVStorage':
             await self.delete_query_caches_pg(storage, cleanup_type, stats)
-        elif storage_name == 'MongoKVStorage':
-            await self.delete_query_caches_mongo(storage, cleanup_type, stats)
         else:
             raise ValueError(f'Unsupported storage type: {storage_name}')
 
@@ -797,7 +513,7 @@ class CleanupTool:
 
         # Custom input handling with exit support
         while True:
-            choice = input('\nSelect storage type (1-4) (Press Enter to exit): ').strip()
+            choice = input('\nSelect storage type (1) (Press Enter to exit): ').strip()
 
             # Check for exit
             if choice == '' or choice == '0':
@@ -811,25 +527,6 @@ class CleanupTool:
             print(f'✗ Invalid choice. Please enter one of: {", ".join(STORAGE_TYPES.keys())}')
 
         storage_name = STORAGE_TYPES[choice]
-
-        # Special warning for JsonKVStorage about concurrent access
-        if storage_name == 'JsonKVStorage':
-            print('\n' + '=' * 60)
-            print(f'{BOLD_RED}⚠️  IMPORTANT WARNING - JsonKVStorage Concurrency{RESET}')
-            print('=' * 60)
-            print('\nJsonKVStorage is an in-memory database that does NOT support')
-            print('concurrent access to the same file by multiple programs.')
-            print('\nBefore proceeding, please ensure that:')
-            print('  • LightRAG Server is completely shut down')
-            print('  • No other programs are accessing the storage files')
-            print('\n' + '=' * 60)
-
-            confirm = input('\nHas LightRAG Server been shut down? (yes/no): ').strip().lower()
-            if confirm != 'yes':
-                print('\n✓ Operation cancelled - Please shut down LightRAG Server first')
-                return None, None, None
-
-            print('✓ Proceeding with JsonKVStorage cleanup...')
 
         # Check configuration (warnings only, doesn't block)
         print('\nChecking configuration...')
@@ -857,20 +554,13 @@ class CleanupTool:
                     print(f'     - {var}')
 
             print('  2. config.ini file (medium priority)')
-            if storage_name == 'RedisKVStorage':
-                print('     [redis]')
-                print('     uri = redis://localhost:6379')
-            elif storage_name == 'PGKVStorage':
+            if storage_name == 'PGKVStorage':
                 print('     [postgres]')
                 print('     host = localhost')
                 print('     port = 5432')
                 print('     user = postgres')
                 print('     password = yourpassword')
                 print('     database = lightrag')
-            elif storage_name == 'MongoKVStorage':
-                print('     [mongodb]')
-                print('     uri = mongodb://root:root@localhost:27017/')
-                print('     database = LightRAG')
 
             return None, None, None
 

@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 import configparser
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from functools import partial
 import inspect
 import json
 import os
 import time
 import traceback
-import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from functools import partial
 from typing import (
     Any,
     Literal,
     cast,
     final,
 )
+import warnings
 
 from dotenv import load_dotenv
 
@@ -132,16 +132,16 @@ class LightRAG:
     # Storage
     # ---
 
-    kv_storage: str = field(default='JsonKVStorage')
+    kv_storage: str = field(default='PGKVStorage')
     """Storage backend for key-value data."""
 
-    vector_storage: str = field(default='NanoVectorDBStorage')
+    vector_storage: str = field(default='PGVectorStorage')
     """Storage backend for vector embeddings."""
 
-    graph_storage: str = field(default='NetworkXStorage')
+    graph_storage: str = field(default='PGGraphStorage')
     """Storage backend for knowledge graphs."""
 
-    doc_status_storage: str = field(default='JsonDocStatusStorage')
+    doc_status_storage: str = field(default='PGDocStatusStorage')
     """Storage type for tracking document processing statuses."""
 
     # Workspace
@@ -1026,28 +1026,10 @@ class LightRAG:
         )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
-        # Direct imports for default storage implementations
-        if storage_name == 'JsonKVStorage':
-            from lightrag.kg.json_kv_impl import JsonKVStorage
-
-            return JsonKVStorage
-        elif storage_name == 'NanoVectorDBStorage':
-            from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
-
-            return NanoVectorDBStorage
-        elif storage_name == 'NetworkXStorage':
-            from lightrag.kg.networkx_impl import NetworkXStorage
-
-            return NetworkXStorage
-        elif storage_name == 'JsonDocStatusStorage':
-            from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
-
-            return JsonDocStatusStorage
-        else:
-            # Fallback to dynamic import for other storage implementations
-            import_path = STORAGES[storage_name]
-            storage_class = lazy_external_import(import_path, storage_name)
-            return storage_class
+        # Fallback to dynamic import for other storage implementations
+        import_path = STORAGES[storage_name]
+        storage_class = lazy_external_import(import_path, storage_name)
+        return storage_class
 
     def insert(
         self,
@@ -1129,9 +1111,7 @@ class LightRAG:
         loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks, doc_id))
 
     # TODO: deprecated, use ainsert instead
-    async def ainsert_custom_chunks(
-        self, full_text: str, text_chunks: list[str], doc_id: str | None = None
-    ) -> None:
+    async def ainsert_custom_chunks(self, full_text: str, text_chunks: list[str], doc_id: str | None = None) -> None:
         update_storage = False
         try:
             # Clean input texts
@@ -1153,7 +1133,7 @@ class LightRAG:
             logger.info(f'Inserting {len(new_docs)} docs')
 
             if not self.tokenizer:
-                raise ValueError("Tokenizer is not initialized")
+                raise ValueError('Tokenizer is not initialized')
 
             inserting_chunks: dict[str, Any] = {}
             for index, chunk_text in enumerate(text_chunks):
@@ -1302,7 +1282,7 @@ class LightRAG:
         new_docs = {doc_id: new_docs[doc_id] for doc_id in unique_new_doc_ids if doc_id in new_docs}
 
         if not new_docs:
-            logger.warning("No new unique documents were found.")
+            logger.warning('No new unique documents were found.')
             return track_id
 
         # 4. Store document content in full_docs and status in doc_status
@@ -1697,13 +1677,11 @@ class LightRAG:
                             # Get document content from full_docs
                             content_data = await self.full_docs.get_by_id(doc_id)
                             if not content_data:
-                                raise Exception(
-                                    f"Document content not found in full_docs for doc_id: {doc_id}"
-                                )
-                            content = content_data["content"]
+                                raise Exception(f'Document content not found in full_docs for doc_id: {doc_id}')
+                            content = content_data['content']
 
                             if self.tokenizer is None:
-                                raise ValueError("Tokenizer is not initialized")
+                                raise ValueError('Tokenizer is not initialized')
 
                             # Call chunking function, supporting both sync and async implementations
                             chunking_result = self.chunking_func(
@@ -3425,12 +3403,8 @@ class LightRAG:
 
                     # If there was no original exception, this persistence error becomes the main error
                     if original_exception is None:
-                        return DeletionResult(
-                            status='fail',
-                            doc_id=doc_id,
-                            message=f'Deletion completed but failed to persist changes: {persistence_error}',
-                            status_code=500,
-                            file_path=file_path,
+                        raise RuntimeError(
+                            f'Deletion completed but failed to persist changes: {persistence_error}'
                         )
                     # If there was an original exception, log the persistence error but don't override the original error
                     # The original error result was already returned in the except block
@@ -3445,8 +3419,15 @@ class LightRAG:
                     completion_msg = f'Deletion process completed for document: {doc_id}'
                     pipeline_status['latest_message'] = completion_msg
                     pipeline_status['history_messages'].append(completion_msg)
-                    logger.info(completion_msg)
 
+        # Success path if no exceptions were raised
+        return DeletionResult(
+            status='success',
+            doc_id=doc_id,
+            message=log_message,
+            status_code=200,
+            file_path=file_path,
+        )
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
 
@@ -3925,7 +3906,7 @@ class LightRAG:
 
                     try:
                         if not self.llm_model_func:
-                            logger.warning("LLM model function not initialized")
+                            logger.warning('LLM model function not initialized')
                             continue
                         # Call LLM for validation
                         llm_callable = cast(Callable[[str], Awaitable[str]], self.llm_model_func)

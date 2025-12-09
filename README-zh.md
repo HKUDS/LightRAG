@@ -288,7 +288,7 @@ if __name__ == "__main__":
 | **参数** | **类型** | **说明** | **默认值** |
 |--------------|----------|-----------------|-------------|
 | **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `PGKVStorage` | `PGKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
 | **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
@@ -779,7 +779,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 * KV_STORAGE 支持的实现名称
 
 ```
-JsonKVStorage    JsonFile(默认)
+PGKVStorage      PostgreSQL（默认）
 PGKVStorage      Postgres
 RedisKVStorage   Redis
 MongoKVStorage   MogonDB
@@ -927,7 +927,7 @@ maxclients 500
 
 通过 workspace 参数可以不同实现不同LightRAG实例之间的存储数据隔离。LightRAG在初始化后workspace就已经确定，之后修改workspace是无效的。下面是不同类型的存储实现工作空间的方式：
 
-- **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
+- **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** （已移除，现仅支持 PostgreSQL 存储栈）
 - **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, QdrantVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
 - **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
 

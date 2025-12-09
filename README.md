@@ -123,13 +123,13 @@ if __name__ == "__main__":
 ## 📦 Features & Architecture
 
 ### Storage Backends
-LightRAG supports multiple storage backends. This fork adds robust S3 support for document storage.
+LightRAG now targets a single, production-grade stack: PostgreSQL with pgvector and AGE-compatible graph support. Object storage remains pluggable (S3 or local).
 
 | Type | Implementations |
 |------|-----------------|
-| **KV Storage** | JsonKVStorage, PGKVStorage, RedisKVStorage, MongoKVStorage |
-| **Vector Storage** | NanoVectorDB, PGVector, Milvus, Chroma, Qdrant, Faiss |
-| **Graph Storage** | NetworkX, Neo4J, AGE (PostgreSQL), Memgraph |
+| **KV Storage** | PGKVStorage |
+| **Vector Storage** | PGVectorStorage (pgvector) |
+| **Graph Storage** | PGGraphStorage (AGE/PG) |
 | **Object Storage** | **S3Storage (New)**, LocalFileStorage |
 
 ### Specialized API Routes

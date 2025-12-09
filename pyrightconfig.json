@@ -2,18 +2,6 @@
   "venv": ".venv",
   "venvPath": ".",
   "include": ["lightrag"],
-  "exclude": [
-    "examples",
-    "tests",
-    "reproduce",
-    "rag_storage",
-    "documents",
-    "inputs",
-    "lightrag/tools/*",
-    "lightrag/kg",
-    "lightrag/llm",
-    "lightrag/evaluation"
-  ],
   "reportMissingImports": "none",
   "reportMissingModuleSource": "none",
   "reportMissingTypeStubs": "none"

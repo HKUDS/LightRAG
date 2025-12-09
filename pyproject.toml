@@ -11,7 +11,7 @@ authors = [
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
@@ -23,17 +23,17 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
+    "flashrank>=0.2.10",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
-    "nano-vectordb",
-    "networkx",
     "numpy>=1.24.0,<2.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
     "python-dotenv",
+    "sentence-transformers>=5.1.2",
     "setuptools",
     "tenacity",
     "tiktoken",
@@ -54,8 +54,6 @@ api = [
     "aiohttp",
     "configparser",
     "json_repair",
-    "nano-vectordb",
-    "networkx",
     "numpy>=1.24.0,<2.0.0",
     "openai>=2.0.0,<3.0.0",
     "pandas>=2.0.0,<2.4.0",
@@ -104,12 +102,7 @@ docling = [
 # Offline deployment dependencies (layered design for flexibility)
 offline-storage = [
     # Storage backend dependencies
-    "redis>=5.0.0,<8.0.0",
-    "neo4j>=5.0.0,<7.0.0",
-    "pymilvus>=2.6.2,<3.0.0",
-    "pymongo>=4.0.0,<5.0.0",
     "asyncpg>=0.29.0,<1.0.0",
-    "qdrant-client>=1.11.0,<2.0.0",
 ]
 
 offline-llm = [
@@ -161,7 +154,6 @@ observability = [
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
-lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
@@ -191,4 +183,4 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"

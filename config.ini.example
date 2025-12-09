@@ -1,25 +1,3 @@
-[neo4j]
-uri = neo4j+s://xxxxxxxx.databases.neo4j.io
-username = neo4j
-password = your-password
-connection_pool_size = 100
-connection_timeout = 30.0
-connection_acquisition_timeout = 30.0
-max_transaction_retry_time = 30.0
-max_connection_lifetime = 300.0
-liveness_check_timeout = 30.0
-keep_alive = true
-
-[mongodb]
-uri = mongodb+srv://name:password@your-cluster-address
-database = lightrag
-
-[redis]
-uri=redis://localhost:6379/1
-
-[qdrant]
-uri = http://localhost:16333
-
 [postgres]
 host = localhost
 port = 5432
@@ -35,6 +13,3 @@ ivfflat_lists = 100
 vchordrq_build_options =
 vchordrq_probes =
 vchordrq_epsilon = 1.9
-
-[memgraph]
-uri = bolt://localhost:7687

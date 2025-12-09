@@ -21,7 +21,7 @@ Comprehensive test coverage for LightRAG's workspace isolation feature, ensuring
 - **Test 4: Multi-Workspace Concurrency** - Concurrent operations don't interfere
 - **Test 8: Update Flags Isolation** - Flag management respects workspace boundaries
 - **Test 9: Empty Workspace Standardization** - Edge case handling for empty workspace strings
-- **Test 10: JsonKVStorage Integration** - Storage layer properly isolates data
+-- **Test 10: (removed)** - Legacy JsonKVStorage integration test removed after consolidating on PostgreSQL
 
 ### 2. Lock Mechanism Tests
 **Tests:** 2, 5, 6
@@ -253,7 +253,7 @@ async def test_new_feature():
 |-----------|:--------------:|:--------------:|:---------------:|:--------------:|:---:|
 | shared_storage | ✅ T1, T4 | ✅ T2, T5, T6 | ✅ T3 | ✅ T7 | ✅ T11 |
 | update_flags | ✅ T8 | - | - | - | - |
-| JsonKVStorage | ✅ T10 | - | - | - | ✅ T11 |
+| JsonKVStorage | (removed) | - | - | - | ✅ T11 |
 | LightRAG Core | - | - | - | - | ✅ T11 |
 | Namespace | ✅ T9 | - | ✅ T3 | ✅ T7 | - |
 

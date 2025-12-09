@@ -26,7 +26,6 @@ from lightrag.constants import (
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_RERANK_BINDING,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
@@ -54,10 +53,11 @@ ollama_server_infos = OllamaServerInfos()
 
 
 class DefaultRAGStorageConfig:
-    KV_STORAGE = 'JsonKVStorage'
-    VECTOR_STORAGE = 'NanoVectorDBStorage'
-    GRAPH_STORAGE = 'NetworkXStorage'
-    DOC_STATUS_STORAGE = 'JsonDocStatusStorage'
+    # Postgres-backed storages are the only supported option.
+    KV_STORAGE = 'PGKVStorage'
+    VECTOR_STORAGE = 'PGVectorStorage'
+    GRAPH_STORAGE = 'PGGraphStorage'
+    DOC_STATUS_STORAGE = 'PGDocStatusStorage'
 
 
 def get_default_host(binding_type: str) -> str:
@@ -246,11 +246,16 @@ def parse_args() -> argparse.Namespace:
         help='Embedding binding type (default: from env or ollama)',
     )
     parser.add_argument(
-        '--rerank-binding',
-        type=str,
-        default=get_env_value('RERANK_BINDING', DEFAULT_RERANK_BINDING),
-        choices=['null', 'cohere', 'jina', 'aliyun'],
-        help=f'Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})',
+        '--enable-rerank',
+        action='store_true',
+        default=get_env_value('ENABLE_RERANK', True, bool),
+        help='Enable local reranking with sentence-transformers (default: True)',
+    )
+    parser.add_argument(
+        '--disable-rerank',
+        action='store_true',
+        default=False,
+        help='Disable reranking (overrides --enable-rerank)',
     )
 
     # Document loading engine configuration
@@ -386,11 +391,11 @@ def parse_args() -> argparse.Namespace:
     args.guest_token_expire_hours = get_env_value('GUEST_TOKEN_EXPIRE_HOURS', 24, int)
     args.jwt_algorithm = get_env_value('JWT_ALGORITHM', 'HS256')
 
-    # Rerank model configuration
+    # Rerank model configuration (local model)
     args.rerank_model = get_env_value('RERANK_MODEL', None)
-    args.rerank_binding_host = get_env_value('RERANK_BINDING_HOST', None)
-    args.rerank_binding_api_key = get_env_value('RERANK_BINDING_API_KEY', None)
-    # Note: rerank_binding is already set by argparse, no need to override from env
+    # Handle --disable-rerank flag
+    if args.disable_rerank:
+        args.enable_rerank = False
 
     # Min rerank score configuration
     args.min_rerank_score = get_env_value('MIN_RERANK_SCORE', DEFAULT_MIN_RERANK_SCORE, float)

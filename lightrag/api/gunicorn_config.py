@@ -22,13 +22,13 @@ log_max_bytes = get_env_value('LOG_MAX_BYTES', DEFAULT_LOG_MAX_BYTES, int)
 log_backup_count = get_env_value('LOG_BACKUP_COUNT', DEFAULT_LOG_BACKUP_COUNT, int)
 
 # These variables will be set by run_with_gunicorn.py
-workers = None
-bind = None
-loglevel = None
-certfile = None
-keyfile = None
-timeout = None
-keepalive = None
+workers: int | None = None
+bind: str | None = None
+loglevel: str | None = None
+certfile: str | None = None
+keyfile: str | None = None
+timeout: int | None = None
+keepalive: int | None = None
 
 # Enable preload_app option
 preload_app = True

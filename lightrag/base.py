@@ -15,11 +15,14 @@ from typing import (
 from dotenv import load_dotenv
 
 from .constants import (
+    DEFAULT_CHECK_TOPIC_CONNECTIVITY,
     DEFAULT_CHUNK_TOP_K,
     DEFAULT_HISTORY_TURNS,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MIN_ENTITY_COVERAGE,
+    DEFAULT_MIN_RELATIONSHIP_DENSITY,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
     DEFAULT_OLLAMA_MODEL_NAME,
@@ -166,6 +169,122 @@ class QueryParam:
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
     """
+
+    # Topic connectivity settings
+    check_topic_connectivity: bool = DEFAULT_CHECK_TOPIC_CONNECTIVITY
+    """Whether to verify retrieved entities are connected by relationships.
+    When enabled, queries about unrelated topics return 'no context' instead of
+    hallucinating connections. Set False to allow intentional cross-domain queries.
+    """
+
+    min_relationship_density: float = DEFAULT_MIN_RELATIONSHIP_DENSITY
+    """Minimum ratio of relationships to entities (0.0-1.0).
+    Lower values allow more loosely connected topics. Default 0.3 means
+    at least 30% as many relationships as entities are required.
+    """
+
+    min_entity_coverage: float = DEFAULT_MIN_ENTITY_COVERAGE
+    """Minimum ratio of entities that must be connected by relationships (0.0-1.0).
+    Default 0.5 means at least 50% of retrieved entities must appear in relationships.
+    """
+
+    disable_truncation: bool = False
+    """If True, disables token-based truncation of entities and relations.
+    When disabled, a warning is logged if the token ceiling would have been hit,
+    but all content is kept. Use with caution for very large result sets.
+    """
+
+
+@dataclass
+class QueryTimingInfo:
+    """Timing breakdown for query execution stages (in milliseconds)."""
+
+    total_ms: float = 0.0
+    """Total query execution time."""
+
+    keyword_extraction_ms: float = 0.0
+    """Time spent extracting keywords from query."""
+
+    vector_search_ms: float = 0.0
+    """Time spent on vector similarity search."""
+
+    graph_traversal_ms: float = 0.0
+    """Time spent traversing knowledge graph."""
+
+    context_building_ms: float = 0.0
+    """Time spent building context for LLM."""
+
+    llm_generation_ms: float = 0.0
+    """Time spent waiting for LLM response."""
+
+    rerank_ms: float = 0.0
+    """Time spent on reranking (if enabled)."""
+
+
+@dataclass
+class QueryRetrievalStats:
+    """Statistics about retrieval results."""
+
+    entities_found: int = 0
+    """Number of entities retrieved from vector search."""
+
+    relations_found: int = 0
+    """Number of relations retrieved."""
+
+    chunks_found: int = 0
+    """Number of text chunks retrieved."""
+
+    entities_after_truncation: int = 0
+    """Number of entities after token truncation."""
+
+    relations_after_truncation: int = 0
+    """Number of relations after token truncation."""
+
+    connectivity_passed: bool = True
+    """Whether topic connectivity check passed."""
+
+    connectivity_reason: str = ''
+    """Reason if connectivity check failed."""
+
+
+@dataclass
+class QueryTokenStats:
+    """Token usage statistics for query."""
+
+    context_tokens: int = 0
+    """Tokens used for context (entities + relations + chunks)."""
+
+    prompt_tokens: int = 0
+    """Total tokens in prompt sent to LLM."""
+
+    estimated_response_tokens: int = 0
+    """Estimated tokens in LLM response."""
+
+
+@dataclass
+class QueryExplainResult:
+    """Complete explain result for a query execution."""
+
+    query: str
+    """The original query string."""
+
+    mode: str
+    """Query mode used (local, global, hybrid, mix, naive)."""
+
+    timing: QueryTimingInfo
+    """Timing breakdown for each stage."""
+
+    retrieval: QueryRetrievalStats
+    """Statistics about retrieval results."""
+
+    tokens: QueryTokenStats
+    """Token usage statistics."""
+
+    keywords: dict[str, list[str]] = field(default_factory=dict)
+    """Extracted keywords: {'high_level': [...], 'low_level': [...]}."""
+
+    cache_hit: bool = False
+    """Whether LLM cache was hit."""
 
 
 @dataclass
@@ -870,10 +989,12 @@ class QueryContextResult:
     Attributes:
         context: LLM context string
         raw_data: Complete structured data including reference_list
+        coverage_level: 'good' or 'limited' - indicates context density for LLM guidance
     """
 
     context: str
     raw_data: dict[str, Any]
+    coverage_level: str = 'good'  # 'good' or 'limited' based on context sparsity
 
     @property
     def reference_list(self) -> list[dict[str, str]]:

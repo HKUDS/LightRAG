@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-LLM Cache Migration Tool for LightRAG
+LLM Cache Migration Tool for LightRAG (PostgreSQL only)
 
 This tool migrates LLM response cache (default:extract:* and default:summary:*)
-between different KV storage implementations while preserving workspace isolation.
+between PostgreSQL-backed KV storage instances while preserving workspace isolation.
 
 Usage:
     python -m lightrag.tools.migrate_llm_cache
@@ -11,10 +11,7 @@ Usage:
     python lightrag/tools/migrate_llm_cache.py
 
 Supported KV Storage Types:
-    - JsonKVStorage
-    - RedisKVStorage
     - PGKVStorage
-    - MongoKVStorage
 """
 
 import asyncio
@@ -43,19 +40,14 @@ load_dotenv(dotenv_path='.env', override=False)
 # Setup logger
 setup_logger('lightrag', level='INFO')
 
-# Storage type configurations
+# Storage type configurations (PostgreSQL only)
 STORAGE_TYPES = {
-    '1': 'JsonKVStorage',
-    '2': 'RedisKVStorage',
-    '3': 'PGKVStorage',
-    '4': 'MongoKVStorage',
+    '1': 'PGKVStorage',
 }
 
 # Workspace environment variable mapping
 WORKSPACE_ENV_MAP = {
     'PGKVStorage': 'POSTGRES_WORKSPACE',
-    'MongoKVStorage': 'MONGODB_WORKSPACE',
-    'RedisKVStorage': 'REDIS_WORKSPACE',
 }
 
 # Default batch size for migration
@@ -143,16 +135,12 @@ class MigrationTool:
             config = configparser.ConfigParser()
             config.read('config.ini', encoding='utf-8')
 
-            if storage_name == 'RedisKVStorage':
-                return config.has_option('redis', 'uri')
-            elif storage_name == 'PGKVStorage':
+            if storage_name == 'PGKVStorage':
                 return (
                     config.has_option('postgres', 'user')
                     and config.has_option('postgres', 'password')
                     and config.has_option('postgres', 'database')
                 )
-            elif storage_name == 'MongoKVStorage':
-                return config.has_option('mongodb', 'uri') and config.has_option('mongodb', 'database')
 
             return False
         except Exception:
@@ -176,7 +164,7 @@ class MigrationTool:
         missing_vars = [var for var in required_vars if var not in os.environ]
 
         if missing_vars:
-            print(f'⚠️  Warning: Missing environment variables: {", ".join(missing_vars)}')
+            print(f'⚠️  Warning: Missing environment variables: {', '.join(missing_vars)}')
 
             # Check if config.ini has configuration
             has_config = self.check_config_ini_for_storage(storage_name)
@@ -191,7 +179,7 @@ class MigrationTool:
         return True
 
     def count_available_storage_types(self) -> int:
-        """Count available storage types (with env vars, config.ini, or defaults)
+        """Count available storage types (with env vars or config.ini)
 
         Returns:
             Number of available storage types
@@ -199,22 +187,17 @@ class MigrationTool:
         available_count = 0
 
         for storage_name in STORAGE_TYPES.values():
-            # Check if storage requires configuration
             required_vars = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
 
-            if not required_vars:
-                # JsonKVStorage, MongoKVStorage etc. - no config needed
+            # Check if has environment variables
+            has_env = all(var in os.environ for var in required_vars)
+            if has_env:
                 available_count += 1
             else:
-                # Check if has environment variables
-                has_env = all(var in os.environ for var in required_vars)
-                if has_env:
+                # Check if has config.ini configuration
+                has_config = self.check_config_ini_for_storage(storage_name)
+                if has_config:
                     available_count += 1
-                else:
-                    # Check if has config.ini configuration
-                    has_config = self.check_config_ini_for_storage(storage_name)
-                    if has_config:
-                        available_count += 1
 
         return available_count
 
@@ -227,22 +210,10 @@ class MigrationTool:
         Returns:
             Storage class
         """
-        if storage_name == 'JsonKVStorage':
-            from lightrag.kg.json_kv_impl import JsonKVStorage
-
-            return JsonKVStorage
-        elif storage_name == 'RedisKVStorage':
-            from lightrag.kg.redis_impl import RedisKVStorage
-
-            return RedisKVStorage
-        elif storage_name == 'PGKVStorage':
+        if storage_name == 'PGKVStorage':
             from lightrag.kg.postgres_impl import PGKVStorage
 
             return PGKVStorage
-        elif storage_name == 'MongoKVStorage':
-            from lightrag.kg.mongo_impl import MongoKVStorage
-
-            return MongoKVStorage
         else:
             raise ValueError(f'Unsupported storage type: {storage_name}')
 
@@ -279,85 +250,6 @@ class MigrationTool:
         await storage.initialize()
 
         return storage
-
-    async def get_default_caches_json(self, storage) -> dict[str, Any]:
-        """Get default caches from JsonKVStorage
-
-        Args:
-            storage: JsonKVStorage instance
-
-        Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
-        """
-        # Access _data directly - it's a dict from shared_storage
-        async with storage._storage_lock:
-            filtered = {}
-            for key, value in storage._data.items():
-                if key.startswith('default:extract:') or key.startswith('default:summary:'):
-                    filtered[key] = value.copy()
-            return filtered
-
-    async def get_default_caches_redis(self, storage, batch_size: int = 1000) -> dict[str, Any]:
-        """Get default caches from RedisKVStorage with pagination
-
-        Args:
-            storage: RedisKVStorage instance
-            batch_size: Number of keys to process per batch
-
-        Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
-        """
-        import json
-
-        cache_data = {}
-
-        # Use _get_redis_connection() context manager
-        async with storage._get_redis_connection() as redis:
-            for pattern in ['default:extract:*', 'default:summary:*']:
-                # Add namespace prefix to pattern
-                prefixed_pattern = f'{storage.final_namespace}:{pattern}'
-                cursor = 0
-
-                while True:
-                    # SCAN already implements cursor-based pagination
-                    cursor, keys = await redis.scan(cursor, match=prefixed_pattern, count=batch_size)
-
-                    if keys:
-                        # Process this batch using pipeline with error handling
-                        try:
-                            pipe = redis.pipeline()
-                            for key in keys:
-                                pipe.get(key)
-                            values = await pipe.execute()
-
-                            for key, value in zip(keys, values, strict=False):
-                                if value:
-                                    key_str = key.decode() if isinstance(key, bytes) else key
-                                    # Remove namespace prefix to get original key
-                                    original_key = key_str.replace(f'{storage.final_namespace}:', '', 1)
-                                    cache_data[original_key] = json.loads(value)
-
-                        except Exception as e:
-                            # Pipeline execution failed, fall back to individual gets
-                            print(f'⚠️  Pipeline execution failed for batch, using individual gets: {e}')
-                            for key in keys:
-                                try:
-                                    value = await redis.get(key)
-                                    if value:
-                                        key_str = key.decode() if isinstance(key, bytes) else key
-                                        original_key = key_str.replace(f'{storage.final_namespace}:', '', 1)
-                                        cache_data[original_key] = json.loads(value)
-                                except Exception as individual_error:
-                                    print(f'⚠️  Failed to get individual key {key}: {individual_error}')
-                                    continue
-
-                    if cursor == 0:
-                        break
-
-                    # Yield control periodically to avoid blocking
-                    await asyncio.sleep(0)
-
-        return cache_data
 
     async def get_default_caches_pg(self, storage, batch_size: int = 1000) -> dict[str, Any]:
         """Get default caches from PGKVStorage with pagination
@@ -417,109 +309,11 @@ class MigrationTool:
 
         return cache_data
 
-    async def get_default_caches_mongo(self, storage, batch_size: int = 1000) -> dict[str, Any]:
-        """Get default caches from MongoKVStorage with cursor-based pagination
-
-        Args:
-            storage: MongoKVStorage instance
-            batch_size: Number of documents to process per batch
-
-        Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
-        """
-        cache_data = {}
-
-        # MongoDB query with regex - use _data not collection
-        query = {'_id': {'$regex': '^default:(extract|summary):'}}
-
-        # Use cursor without to_list() - process in batches
-        cursor = storage._data.find(query).batch_size(batch_size)
-
-        async for doc in cursor:
-            # Process each document as it comes
-            doc_copy = doc.copy()
-            key = doc_copy.pop('_id')
-
-            # Filter ALL MongoDB/database-specific fields
-            # Following .clinerules: "Always filter deprecated/incompatible fields during deserialization"
-            for field_name in ['namespace', 'workspace', '_id', 'content']:
-                doc_copy.pop(field_name, None)
-
-            cache_data[key] = doc_copy.copy()
-
-            # Periodically yield control (every batch_size documents)
-            if len(cache_data) % batch_size == 0:
-                await asyncio.sleep(0)
-
-        return cache_data
-
     async def get_default_caches(self, storage, storage_name: str) -> dict[str, Any]:
-        """Get default caches from any storage type
-
-        Args:
-            storage: Storage instance
-            storage_name: Storage type name
-
-        Returns:
-            Dictionary of cache entries
-        """
-        if storage_name == 'JsonKVStorage':
-            return await self.get_default_caches_json(storage)
-        elif storage_name == 'RedisKVStorage':
-            return await self.get_default_caches_redis(storage)
-        elif storage_name == 'PGKVStorage':
+        """Get default caches from PostgreSQL storage"""
+        if storage_name == 'PGKVStorage':
             return await self.get_default_caches_pg(storage)
-        elif storage_name == 'MongoKVStorage':
-            return await self.get_default_caches_mongo(storage)
-        else:
-            raise ValueError(f'Unsupported storage type: {storage_name}')
-
-    async def count_default_caches_json(self, storage) -> int:
-        """Count default caches in JsonKVStorage - O(N) but very fast in-memory
-
-        Args:
-            storage: JsonKVStorage instance
-
-        Returns:
-            Total count of cache records
-        """
-        async with storage._storage_lock:
-            return sum(
-                1 for key in storage._data if key.startswith('default:extract:') or key.startswith('default:summary:')
-            )
-
-    async def count_default_caches_redis(self, storage) -> int:
-        """Count default caches in RedisKVStorage using SCAN with progress display
-
-        Args:
-            storage: RedisKVStorage instance
-
-        Returns:
-            Total count of cache records
-        """
-        count = 0
-        print('Scanning Redis keys...', end='', flush=True)
-
-        async with storage._get_redis_connection() as redis:
-            for pattern in ['default:extract:*', 'default:summary:*']:
-                prefixed_pattern = f'{storage.final_namespace}:{pattern}'
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=prefixed_pattern, count=DEFAULT_COUNT_BATCH_SIZE)
-                    count += len(keys)
-
-                    # Show progress
-                    print(
-                        f'\rScanning Redis keys... found {count:,} records',
-                        end='',
-                        flush=True,
-                    )
-
-                    if cursor == 0:
-                        break
-
-        print()  # New line after progress
-        return count
+        raise ValueError(f'Unsupported storage type: {storage_name}')
 
     async def count_default_caches_pg(self, storage) -> int:
         """Count default caches in PostgreSQL using COUNT(*) with progress indicator
@@ -553,145 +347,11 @@ class MigrationTool:
 
         return result['count'] if result else 0
 
-    async def count_default_caches_mongo(self, storage) -> int:
-        """Count default caches in MongoDB using count_documents with progress indicator
-
-        Args:
-            storage: MongoKVStorage instance
-
-        Returns:
-            Total count of cache records
-        """
-        query = {'_id': {'$regex': '^default:(extract|summary):'}}
-
-        print('Counting MongoDB documents...', end='', flush=True)
-        start_time = time.time()
-
-        count = await storage._data.count_documents(query)
-
-        elapsed = time.time() - start_time
-        if elapsed > 1:
-            print(f' (took {elapsed:.1f}s)', end='')
-        print()  # New line
-
-        return count
-
     async def count_default_caches(self, storage, storage_name: str) -> int:
-        """Count default caches from any storage type efficiently
-
-        Args:
-            storage: Storage instance
-            storage_name: Storage type name
-
-        Returns:
-            Total count of cache records
-        """
-        if storage_name == 'JsonKVStorage':
-            return await self.count_default_caches_json(storage)
-        elif storage_name == 'RedisKVStorage':
-            return await self.count_default_caches_redis(storage)
-        elif storage_name == 'PGKVStorage':
+        """Count default caches from PostgreSQL efficiently"""
+        if storage_name == 'PGKVStorage':
             return await self.count_default_caches_pg(storage)
-        elif storage_name == 'MongoKVStorage':
-            return await self.count_default_caches_mongo(storage)
-        else:
-            raise ValueError(f'Unsupported storage type: {storage_name}')
-
-    async def stream_default_caches_json(self, storage, batch_size: int):
-        """Stream default caches from JsonKVStorage - yields batches
-
-        Args:
-            storage: JsonKVStorage instance
-            batch_size: Size of each batch to yield
-
-        Yields:
-            Dictionary batches of cache entries
-
-        Note:
-            This method creates a snapshot of matching items while holding the lock,
-            then releases the lock before yielding batches. This prevents deadlock
-            when the target storage (also JsonKVStorage) tries to acquire the same
-            lock during upsert operations.
-        """
-        # Create a snapshot of matching items while holding the lock
-        async with storage._storage_lock:
-            matching_items = [
-                (key, value)
-                for key, value in storage._data.items()
-                if key.startswith('default:extract:') or key.startswith('default:summary:')
-            ]
-
-        # Now iterate over snapshot without holding lock
-        batch = {}
-        for key, value in matching_items:
-            batch[key] = value.copy()
-            if len(batch) >= batch_size:
-                yield batch
-                batch = {}
-
-        # Yield remaining items
-        if batch:
-            yield batch
-
-    async def stream_default_caches_redis(self, storage, batch_size: int):
-        """Stream default caches from RedisKVStorage - yields batches
-
-        Args:
-            storage: RedisKVStorage instance
-            batch_size: Size of each batch to yield
-
-        Yields:
-            Dictionary batches of cache entries
-        """
-        import json
-
-        async with storage._get_redis_connection() as redis:
-            for pattern in ['default:extract:*', 'default:summary:*']:
-                prefixed_pattern = f'{storage.final_namespace}:{pattern}'
-                cursor = 0
-
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=prefixed_pattern, count=batch_size)
-
-                    if keys:
-                        try:
-                            pipe = redis.pipeline()
-                            for key in keys:
-                                pipe.get(key)
-                            values = await pipe.execute()
-
-                            batch = {}
-                            for key, value in zip(keys, values, strict=False):
-                                if value:
-                                    key_str = key.decode() if isinstance(key, bytes) else key
-                                    original_key = key_str.replace(f'{storage.final_namespace}:', '', 1)
-                                    batch[original_key] = json.loads(value)
-
-                            if batch:
-                                yield batch
-
-                        except Exception as e:
-                            print(f'⚠️  Pipeline execution failed for batch: {e}')
-                            # Fall back to individual gets
-                            batch = {}
-                            for key in keys:
-                                try:
-                                    value = await redis.get(key)
-                                    if value:
-                                        key_str = key.decode() if isinstance(key, bytes) else key
-                                        original_key = key_str.replace(f'{storage.final_namespace}:', '', 1)
-                                        batch[original_key] = json.loads(value)
-                                except Exception as individual_error:
-                                    print(f'⚠️  Failed to get individual key {key}: {individual_error}')
-                                    continue
-
-                            if batch:
-                                yield batch
-
-                    if cursor == 0:
-                        break
-
-                    await asyncio.sleep(0)
+        raise ValueError(f'Unsupported storage type: {storage_name}')
 
     async def stream_default_caches_pg(self, storage, batch_size: int):
         """Stream default caches from PostgreSQL - yields batches
@@ -747,63 +407,13 @@ class MigrationTool:
             offset += batch_size
             await asyncio.sleep(0)
 
-    async def stream_default_caches_mongo(self, storage, batch_size: int):
-        """Stream default caches from MongoDB - yields batches
-
-        Args:
-            storage: MongoKVStorage instance
-            batch_size: Size of each batch to yield
-
-        Yields:
-            Dictionary batches of cache entries
-        """
-        query = {'_id': {'$regex': '^default:(extract|summary):'}}
-        cursor = storage._data.find(query).batch_size(batch_size)
-
-        batch = {}
-        async for doc in cursor:
-            doc_copy = doc.copy()
-            key = doc_copy.pop('_id')
-
-            # Filter MongoDB/database-specific fields
-            for field_name in ['namespace', 'workspace', '_id', 'content']:
-                doc_copy.pop(field_name, None)
-
-            batch[key] = doc_copy.copy()
-
-            if len(batch) >= batch_size:
-                yield batch
-                batch = {}
-
-        # Yield remaining items
-        if batch:
-            yield batch
-
     async def stream_default_caches(self, storage, storage_name: str, batch_size: int | None = None):
-        """Stream default caches from any storage type - unified interface
-
-        Args:
-            storage: Storage instance
-            storage_name: Storage type name
-            batch_size: Size of each batch to yield (defaults to self.batch_size)
-
-        Yields:
-            Dictionary batches of cache entries
-        """
+        """Stream default caches from PostgreSQL - unified interface"""
         if batch_size is None:
             batch_size = self.batch_size
 
-        if storage_name == 'JsonKVStorage':
-            async for batch in self.stream_default_caches_json(storage, batch_size):
-                yield batch
-        elif storage_name == 'RedisKVStorage':
-            async for batch in self.stream_default_caches_redis(storage, batch_size):
-                yield batch
-        elif storage_name == 'PGKVStorage':
+        if storage_name == 'PGKVStorage':
             async for batch in self.stream_default_caches_pg(storage, batch_size):
-                yield batch
-        elif storage_name == 'MongoKVStorage':
-            async for batch in self.stream_default_caches_mongo(storage, batch_size):
                 yield batch
         else:
             raise ValueError(f'Unsupported storage type: {storage_name}')
@@ -922,7 +532,7 @@ class MigrationTool:
             if choice in available_types:
                 break
 
-            print(f'✗ Invalid choice. Please enter one of: {", ".join(available_types.keys())}')
+            print(f'✗ Invalid choice. Please enter one of: {', '.join(available_types.keys())}')
 
         storage_name = available_types[choice]
 
@@ -938,14 +548,11 @@ class MigrationTool:
         try:
             storage = await self.initialize_storage(storage_name, workspace)
             print(f'- Storage Type: {storage_name}')
-            print(f'- Workspace: {workspace if workspace else "(default)"}')
+            print(f'- Workspace: {workspace if workspace else "(default)"}\n')
             print('- Connection Status: ✓ Success')
 
             # Show configuration source for transparency
-            if storage_name == 'RedisKVStorage':
-                config_source = 'environment variable' if 'REDIS_URI' in os.environ else 'config.ini or default'
-                print(f'- Configuration Source: {config_source}')
-            elif storage_name == 'PGKVStorage' or storage_name == 'MongoKVStorage':
+            if storage_name == 'PGKVStorage':
                 config_source = (
                     'environment variables'
                     if all(var in os.environ for var in STORAGE_ENV_REQUIREMENTS[storage_name])
@@ -964,20 +571,13 @@ class MigrationTool:
                     print(f'     - {var}')
 
             print('  2. config.ini file (medium priority)')
-            if storage_name == 'RedisKVStorage':
-                print('     [redis]')
-                print('     uri = redis://localhost:6379')
-            elif storage_name == 'PGKVStorage':
+            if storage_name == 'PGKVStorage':
                 print('     [postgres]')
                 print('     host = localhost')
                 print('     port = 5432')
                 print('     user = postgres')
                 print('     password = yourpassword')
                 print('     database = lightrag')
-            elif storage_name == 'MongoKVStorage':
-                print('     [mongodb]')
-                print('     uri = mongodb://root:root@localhost:27017/')
-                print('     database = LightRAG')
 
             return None, None, None, 0
 
@@ -1004,7 +604,10 @@ class MigrationTool:
         return storage, storage_name, workspace, total_count
 
     async def migrate_caches(
-        self, source_data: dict[str, Any], target_storage, target_storage_name: str
+        self,
+        source_data: dict[str, Any],
+        target_storage,
+        target_storage_name: str,
     ) -> MigrationStats:
         """Migrate caches in batches with error tracking (Legacy mode - loads all data)
 
@@ -1202,10 +805,10 @@ class MigrationTool:
 
             print('\nFirst 5 errors:')
             for i, error in enumerate(stats.errors[:5], 1):
-                print(f'\n  {i}. Batch {error["batch"]}')
-                print(f'     Type: {error["error_type"]}')
-                print(f'     Message: {error["error_msg"]}')
-                print(f'     Records lost: {error["records_lost"]:,}')
+                print(f'\n  {i}. Batch {error['batch']}')
+                print(f'     Type: {error['error_type']}')
+                print(f'     Message: {error['error_msg']}')
+                print(f'     Records lost: {error['records_lost']:,}')
 
             if len(stats.errors) > 5:
                 print(f'\n  ... and {len(stats.errors) - 5} more errors')

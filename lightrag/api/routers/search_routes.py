@@ -66,14 +66,14 @@ class SearchResponse(BaseModel):
 
 
 def create_search_routes(
-    db: PostgreSQLDB,
+    kv_storage: Any,
     api_key: str | None = None,
 ) -> APIRouter:
     """
     Create search routes for BM25 full-text search.
 
     Args:
-        db: PostgreSQLDB instance for executing searches
+        kv_storage: PGKVStorage instance (db accessed lazily at request time)
         api_key: Optional API key for authentication
 
     Returns:
@@ -85,6 +85,13 @@ def create_search_routes(
     )
 
     optional_api_key = get_combined_auth_dependency(api_key)
+
+    def get_db() -> PostgreSQLDB:
+        """Get db lazily - initialized after app startup."""
+        db = getattr(kv_storage, 'db', None)
+        if db is None:
+            raise HTTPException(status_code=503, detail='Database not yet initialized')
+        return db
 
     @router.get(
         '',
@@ -119,6 +126,7 @@ def create_search_routes(
     ) -> SearchResponse:
         """Perform BM25 full-text search on chunks."""
         try:
+            db = get_db()
             results = await db.full_text_search(
                 query=q,
                 workspace=workspace,

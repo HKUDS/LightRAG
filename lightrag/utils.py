@@ -2455,9 +2455,17 @@ async def apply_rerank_if_enabled(
                         doc['rerank_score'] = relevance_score
                         reranked_docs.append(doc)
 
-                logger.info(
-                    f'Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks'
-                )
+                # Log score distribution for debugging
+                if reranked_docs:
+                    scores = [d.get('rerank_score', 0) for d in reranked_docs]
+                    logger.info(
+                        f'Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks '
+                        f'(scores: min={min(scores):.3f}, max={max(scores):.3f}, avg={sum(scores)/len(scores):.3f})'
+                    )
+                else:
+                    logger.info(
+                        f'Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks'
+                    )
                 return reranked_docs
             else:
                 # Legacy format: assume it's already reranked documents

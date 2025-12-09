@@ -17,6 +17,9 @@ from typing import Any
 
 __all__ = ['RAGEvaluator']
 
+# Stub to satisfy static analyzers; lazily loaded in __getattr__
+RAGEvaluator: Any
+
 
 def __getattr__(name: str) -> Any:
     """Lazy import to avoid dependency errors when ragas is not installed."""

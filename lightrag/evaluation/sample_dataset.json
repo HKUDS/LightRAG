@@ -17,7 +17,7 @@
     },
     {
       "question": "What vector databases does LightRAG support and what are their key characteristics?",
-      "ground_truth": "LightRAG supports multiple vector databases including ChromaDB for simple deployment and efficient similarity search, Neo4j for graph-based knowledge representation with vector capabilities, Milvus for high-performance vector search at scale, Qdrant for fast similarity search with filtering and production-ready infrastructure, MongoDB Atlas for combined document storage and vector search, Redis for in-memory low-latency vector search, and a built-in nano-vectordb that eliminates external dependencies for small projects. This multi-database support enables developers to choose appropriate backends based on scale, performance, and infrastructure requirements.",
+      "ground_truth": "LightRAG now standardizes on PostgreSQL with pgvector for vectors and AGE-compatible graph storage, simplifying setup and focusing tuning and operations on a single, reliable backend.",
       "project": "lightrag_evaluation_sample"
     },
     {

@@ -121,10 +121,3 @@ class ChunkTokenLimitExceededError(ValueError):
         self.chunk_token_limit = chunk_token_limit
         self.chunk_preview = truncated_preview
 
-
-class QdrantMigrationError(Exception):
-    """Raised when Qdrant data migration from legacy collections fails."""
-
-    def __init__(self, message: str):
-        super().__init__(message)
-        self.message = message

@@ -48,7 +48,7 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import httpx
 from dotenv import load_dotenv
@@ -80,6 +80,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path='.env', override=False)
 
+# Placeholder annotations for optional dependencies
+ChatOpenAI: Any = None
+OpenAIEmbeddings: Any = None
+LangchainLLMWrapper: Any = None
+AnswerRelevancy: Any = None
+ContextPrecision: Any = None
+ContextRecall: Any = None
+Faithfulness: Any = None
+Dataset: Any = None
+evaluate: Any = None
+tqdm: Any = None
+
 # Conditional imports - will raise ImportError if dependencies not installed
 try:
     from datasets import Dataset
@@ -101,6 +113,13 @@ except ImportError:
     Dataset = None
     evaluate = None
     LangchainLLMWrapper = None
+    ChatOpenAI = None
+    OpenAIEmbeddings = None
+    AnswerRelevancy = None
+    ContextPrecision = None
+    ContextRecall = None
+    Faithfulness = None
+    tqdm = None
 
 
 CONNECT_TIMEOUT_SECONDS = 180.0
@@ -118,7 +137,7 @@ class RAGEvaluator:
 
     def __init__(
         self,
-        test_dataset_path: str | None = None,
+        test_dataset_path: str | Path | None = None,
         rag_api_url: str | None = None,
         query_mode: str = 'mix',
         debug_mode: bool = False,
@@ -999,8 +1018,7 @@ def generate_mode_comparison(
             # Find best mode (ignore None values)
             valid_scores = {m: s for m, s in scores.items() if s is not None}
             if valid_scores:
-                best_mode = max(valid_scores, key=valid_scores.get)
-                best_score = valid_scores[best_mode]
+                best_mode, best_score = max(valid_scores.items(), key=lambda item: item[1])
             else:
                 best_mode = 'N/A'
                 best_score = 0

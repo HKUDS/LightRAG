@@ -164,31 +164,33 @@ PROMPTS[
     'rag_response'
 ] = """You're helping someone understand a topic. Write naturally, like explaining to a curious friend.
 
-Focus on directly answering the question asked. Include only information relevant to the query.
-
+COMPREHENSIVENESS:
+- Cover ALL major aspects and methodologies mentioned in the context
+- If the context mentions specific frameworks, tools, or processes, include them
+- Don't leave out key technical terms or acronyms - explain what they mean
+{coverage_guidance}
 STYLE RULES:
 - Flowing paragraphs, NOT bullets or numbered lists
 - Connect sentences with transitions (however, this means, for example)
-- Combine related facts into sentences rather than listing separately
 - Vary sentence length - mix short and long
 
-GOOD EXAMPLE:
-"Machine learning is a branch of AI that enables computers to learn from data without explicit programming. The field includes several approaches: supervised learning uses labeled data, while unsupervised learning finds hidden patterns. Deep learning, using multi-layer neural networks, has proven especially effective for image recognition and language processing."
-
-BAD EXAMPLE:
-"- Machine learning: branch of AI
-- Learns from data
-- Types: supervised, unsupervised
-- Deep learning uses neural networks"
-
-Answer using ONLY the context below. Prefer information from the context over general knowledge.
-Do NOT include [1], [2] citations - they're added automatically.
+Answer using ONLY the context below. Do NOT include [1], [2] citations - they're added automatically.
 
 {user_prompt}
 
 Context:
 {context_data}
 """
+
+# Coverage guidance templates (injected based on context sparsity detection)
+PROMPTS['coverage_guidance_limited'] = """
+CONTEXT NOTICE: The retrieved information for this topic is LIMITED.
+- Only state facts that appear explicitly in the context below
+- If key aspects of the question aren't covered, acknowledge: "The available information does not specify [aspect]"
+- Avoid inferring or generalizing beyond what's stated
+"""
+
+PROMPTS['coverage_guidance_good'] = ''  # Empty for well-covered topics
 
 # Strict mode suffix - append when response_type="strict"
 PROMPTS['rag_response_strict_suffix'] = """
@@ -263,7 +265,11 @@ Output valid JSON (no markdown):
 
 Guidelines:
 - high_level: Topic categories, question types, abstract themes
-- low_level: Specific terms from the query (entities, technical terms, key concepts)
+- low_level: Specific terms from the query including:
+  * Named entities (people, organizations, places)
+  * Technical terms and key concepts
+  * Dates, years, and time periods (e.g., "2017", "Q3 2024")
+  * Document names, report titles, and identifiers
 - Extract at least 1 keyword per category for meaningful queries
 - Only return empty lists for nonsensical input (e.g., "asdfgh", "hello")
 

@@ -21,6 +21,20 @@ AZURE_OPENAI_ENDPOINT = os.getenv('AZURE_OPENAI_ENDPOINT')
 AZURE_EMBEDDING_DEPLOYMENT = os.getenv('AZURE_EMBEDDING_DEPLOYMENT')
 AZURE_EMBEDDING_API_VERSION = os.getenv('AZURE_EMBEDDING_API_VERSION')
 
+# Ensure all required environment variables are set
+if not AZURE_OPENAI_API_VERSION:
+    raise ValueError("AZURE_OPENAI_API_VERSION is not set")
+if not AZURE_OPENAI_DEPLOYMENT:
+    raise ValueError("AZURE_OPENAI_DEPLOYMENT is not set")
+if not AZURE_OPENAI_API_KEY:
+    raise ValueError("AZURE_OPENAI_API_KEY is not set")
+if not AZURE_OPENAI_ENDPOINT:
+    raise ValueError("AZURE_OPENAI_ENDPOINT is not set")
+if not AZURE_EMBEDDING_DEPLOYMENT:
+    raise ValueError("AZURE_EMBEDDING_DEPLOYMENT is not set")
+if not AZURE_EMBEDDING_API_VERSION:
+    raise ValueError("AZURE_EMBEDDING_API_VERSION is not set")
+
 WORKING_DIR = './dickens'
 
 if os.path.exists(WORKING_DIR):
