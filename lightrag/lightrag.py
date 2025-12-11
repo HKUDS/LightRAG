@@ -118,6 +118,7 @@ from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
+
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
@@ -535,6 +536,11 @@ class LightRAG:
             )
         self.embedding_token_limit = embedding_max_token_size
 
+        # Capture embedding model name before decoration so we don't lose it to wrappers
+        self.embedding_model_name = (
+            self.embedding_func.__class__.__name__ if self.embedding_func else "unknown"
+        )
+
         # --- CAPTURE EMBEDDING DIMENSION (NEW) ---
         self.embedding_dim = None
         if self.embedding_func and hasattr(self.embedding_func, "embedding_dim"):
@@ -698,11 +704,10 @@ class LightRAG:
             # First run: Save the metadata
             meta_data = {
                 "embedding_dim": self.embedding_dim,
-                "embedding_model_func": self.embedding_func.__class__.__name__
-                if self.embedding_func
-                else "unknown",
-                "created_at": str(os.path.abspath(self.working_dir)),
+                "embedding_model_func": self.embedding_model_name,
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
+
             # Ensure directory exists
             if not os.path.exists(self.working_dir):
                 os.makedirs(self.working_dir)
