@@ -58,17 +58,16 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 ---Examples---
 {examples}
-
----Real Data to be Processed---
-<Input>
-Entity_types: [{entity_types}]
 """
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
 Extract entities and relationships from the input text below.
 
----Input Text---
-Text:
+---Data to be Processed---
+<Entity_types>
+[{entity_types}]
+
+<Input Text>
 ```
 {input_text}
 ```
@@ -101,7 +100,10 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """<Input Text>
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
@@ -126,7 +128,10 @@ relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}rever
 {completion_delimiter}
 
 """,
-    """<Input Text>
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
 ```
 Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
 
@@ -153,7 +158,10 @@ relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Mar
 {completion_delimiter}
 
 """,
-    """<Input Text>
+    """<Entity_types>
+["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+
+<Input Text>
 ```
 At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
 ```
