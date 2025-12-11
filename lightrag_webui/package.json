@@ -29,15 +29,15 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
-    "@react-sigma/core": "^5.0.4",
-    "@react-sigma/graph-search": "^5.0.4",
-    "@react-sigma/layout-circlepack": "^5.0.4",
-    "@react-sigma/layout-circular": "^5.0.4",
-    "@react-sigma/layout-force": "^5.0.4",
-    "@react-sigma/layout-forceatlas2": "^5.0.4",
-    "@react-sigma/layout-noverlap": "^5.0.4",
-    "@react-sigma/layout-random": "^5.0.4",
-    "@react-sigma/minimap": "^5.0.5",
+    "@react-sigma/core": "^5.0.6",
+    "@react-sigma/graph-search": "^5.0.6",
+    "@react-sigma/layout-circlepack": "^5.0.6",
+    "@react-sigma/layout-circular": "^5.0.6",
+    "@react-sigma/layout-force": "^5.0.6",
+    "@react-sigma/layout-forceatlas2": "^5.0.6",
+    "@react-sigma/layout-noverlap": "^5.0.6",
+    "@react-sigma/layout-random": "^5.0.6",
+    "@react-sigma/minimap": "^5.0.6",
     "@sigma/edge-curve": "^3.1.0",
     "@sigma/node-border": "^3.0.0",
     "@tanstack/react-table": "^8.21.3",
@@ -54,7 +54,7 @@
     "i18next": "^25.6.3",
     "katex": "^0.16.25",
     "mermaid": "^11.12.1",
-    "lucide-react": "^0.554.0",
+    "lucide-react": "^0.555.0",
     "minisearch": "^7.2.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
@@ -78,7 +78,7 @@
     "tailwind-scrollbar": "^4.0.2",
     "typography": "^0.16.24",
     "unist-util-visit": "^5.0.0",
-    "zustand": "^5.0.8"
+    "zustand": "^5.0.9"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -101,12 +101,12 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "graphology-types": "^0.24.8",
-    "prettier": "^3.6.2",
-    "prettier-plugin-tailwindcss": "^0.7.1",
+    "prettier": "^3.7.1",
+    "prettier-plugin-tailwindcss": "^0.7.2",
     "typescript-eslint": "^8.48.0",
     "tailwindcss": "^4.1.17",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.6"
   }
 }
