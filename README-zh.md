@@ -407,6 +407,11 @@ LightRAG 需要利用LLM和Embeding模型来完成文档索引和知识库查询
 * LightRAG还支持类OpenAI的聊天/嵌入API：
 
 ```python
+import os
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
@@ -420,8 +425,9 @@ async def llm_model_func(
         **kwargs
     )
 
+@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192)
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embed(
+    return await openai_embed.func(
         texts,
         model="solar-embedding-1-large-query",
         api_key=os.getenv("UPSTAGE_API_KEY"),
@@ -432,15 +438,16 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=4096,
-            func=embedding_func
-        )
+        embedding_func=embedding_func  # 直接传入装饰后的函数
     )
 
     await rag.initialize_storages()
     return rag
 ```
+
+> **关于嵌入函数封装的重要说明：**
+>
+> `EmbeddingFunc` 不能嵌套封装。已经被 `@wrap_embedding_func_with_attrs` 装饰过的嵌入函数（如 `openai_embed`、`ollama_embed` 等）不能再次使用 `EmbeddingFunc()` 封装。这就是为什么在创建自定义嵌入函数时，我们调用 `xxx_embed.func`（底层未封装的函数）而不是直接调用 `xxx_embed`。
 
 </details>
 
@@ -473,24 +480,26 @@ rag = LightRAG(
 
 <details>
 <summary> <b>使用Ollama模型</b> </summary>
+
 如果您想使用Ollama模型，您需要拉取计划使用的模型和嵌入模型，例如`nomic-embed-text`。
 
 然后您只需要按如下方式设置LightRAG：
 
 ```python
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
+
 # 使用Ollama模型初始化LightRAG
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # 使用Ollama模型进行文本生成
     llm_model_name='your_model_name', # 您的模型名称
-    # 使用Ollama嵌入函数
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        func=lambda texts: ollama_embed(
-            texts,
-            embed_model="nomic-embed-text"
-        )
-    ),
+    embedding_func=embedding_func,  # 直接传入装饰后的函数
 )
 ```
 
@@ -529,21 +538,26 @@ ollama create -f Modelfile qwen2m
 您可以使用`llm_model_kwargs`参数配置ollama：
 
 ```python
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
+
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # 使用Ollama模型进行文本生成
     llm_model_name='your_model_name', # 您的模型名称
     llm_model_kwargs={"options": {"num_ctx": 32768}},
-    # 使用Ollama嵌入函数
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        func=lambda texts: ollama_embed(
-            texts,
-            embed_model="nomic-embed-text"
-        )
-    ),
+    embedding_func=embedding_func,  # 直接传入装饰后的函数
 )
 ```
+
+> **关于嵌入函数封装的重要说明：**
+>
+> `EmbeddingFunc` 不能嵌套封装。已经被 `@wrap_embedding_func_with_attrs` 装饰过的嵌入函数（如 `openai_embed`、`ollama_embed` 等）不能再次使用 `EmbeddingFunc()` 封装。这就是为什么在创建自定义嵌入函数时，我们调用 `xxx_embed.func`（底层未封装的函数）而不是直接调用 `xxx_embed`。
 
 * **低RAM GPU**
 
@@ -556,7 +570,7 @@ rag = LightRAG(
 LightRAG支持与LlamaIndex集成 (`llm/llama_index_impl.py`):
 
 - 通过LlamaIndex与OpenAI和其他提供商集成
-- 详细设置和示例请参见[LlamaIndex文档](lightrag/llm/Readme.md)
+- 详细设置和示例请参见[LlamaIndex文档](https://developers.llamaindex.ai/python/framework/)
 
 **使用示例：**
 
@@ -618,9 +632,10 @@ if __name__ == "__main__":
 
 **详细文档和示例，请参见：**
 
-- [LlamaIndex文档](lightrag/llm/Readme.md)
-- [直接OpenAI示例](examples/lightrag_llamaindex_direct_demo.py)
-- [LiteLLM代理示例](examples/lightrag_llamaindex_litellm_demo.py)
+- [LlamaIndex文档](https://developers.llamaindex.ai/python/framework/)
+- [直接OpenAI示例](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM代理示例](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
+- [LiteLLM+OPIK代理示例](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
 
 </details>
 
@@ -1523,7 +1538,7 @@ LANGFUSE_ENABLE_TRACE=true
 
 ## RAGAS评估
 
-**RAGAS**（Retrieval Augmented Generation Assessment，检索增强生成评估）是一个使用LLM对RAG系统进行无参考评估的框架。我们提供了基于RAGAS的评估脚本。详细信息请参阅[基于RAGAS的评估框架](lightrag/evaluation/README.md)。
+**RAGAS**（Retrieval Augmented Generation Assessment，检索增强生成评估）是一个使用LLM对RAG系统进行无参考评估的框架。我们提供了基于RAGAS的评估脚本。详细信息请参阅[基于RAGAS的评估框架](lightrag/evaluation/README_EVALUASTION_RAGAS.md)。
 
 ## 评估
 
