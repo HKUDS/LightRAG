@@ -292,7 +292,7 @@ A full list of LightRAG init parameters:
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances |  |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`MemgraphStorage`,`TigerGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
@@ -791,7 +791,8 @@ MongoKVStorage   MongoDB
 NetworkXStorage      NetworkX (default)
 Neo4JStorage         Neo4J
 PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
+MemgraphStorage      Memgraph
+TigerGraphStorage    TigerGraph
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -931,6 +932,44 @@ async def initialize_rag():
     # Initialize database connections
     await rag.initialize_storages()
     # Initialize pipeline status for document processing
+    return rag
+```
+
+</details>
+
+<details>
+<summary> <b>Using TigerGraph for Storage</b> </summary>
+
+* TigerGraph is a high-performance, distributed graph database with native GSQL query language.
+* You can run TigerGraph locally using Docker for easy testing:
+* See: https://www.tigergraph.com/developer/
+
+```python
+export TIGERGRAPH_URI="http://localhost:9000"
+export TIGERGRAPH_USERNAME="tigergraph"
+export TIGERGRAPH_PASSWORD="tigergraph"
+export TIGERGRAPH_GRAPH_NAME="lightrag_graph"
+
+# Setup logger for LightRAG
+setup_logger("lightrag", level="INFO")
+
+# When you launch the project, override the default KG: NetworkX
+# by specifying graph_storage="TigerGraphStorage".
+
+# Note: Default settings use NetworkX
+# Initialize LightRAG with TigerGraph implementation.
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
+        graph_storage="TigerGraphStorage", #<-----------override KG default
+    )
+
+    # Initialize database connections
+    await rag.initialize_storages()
+    # Initialize pipeline status for document processing
+    await initialize_pipeline_status()
+
     return rag
 ```
 
