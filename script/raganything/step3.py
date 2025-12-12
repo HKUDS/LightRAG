@@ -20,25 +20,21 @@ if project_root not in sys.path:
 # 讀取 .env
 load_dotenv()
 
-# === 🔥 [新增] 黑名單設定 ===
-# 填入不想注入的文件資料夾名稱 (即 doc_label)
-# 例如: ["SFC", "Old_Report_2023"]
+# === 🔥 黑名單設定 ===
 SKIP_FILES = [
     "SFC",
     "Example_Doc_To_Skip"
 ]
-# ============================
+# ====================
 
 # 引入 LightRAG
 try:
     import lightrag 
     from lightrag import LightRAG
     from lightrag.utils import EmbeddingFunc
-    # 引入官方函數
     from lightrag.llm.openai import azure_openai_complete, openai_embed
     
     logger.info("✅ 成功載入 LightRAG")
-    logger.info(f"📍 LightRAG 來源: {os.path.dirname(lightrag.__file__)}")
     
 except ImportError as e:
     logger.error(f"❌ 找不到 LightRAG 或相關模組: {e}")
@@ -59,12 +55,11 @@ STEP2_BASE_DIR = "./data/output/step2_output_granular"
 ENV_LLM_MODEL = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini") 
 ENV_EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
-# 手動獲取 SiliconFlow 的 Key 和 URL
 SF_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("EMBEDDING_BINDING_API_KEY") or os.getenv("SILICONFLOW_API_KEY")
 SF_BASE_URL = os.getenv("OPENAI_BASE_URL") or os.getenv("EMBEDDING_BINDING_HOST") or "https://api.siliconflow.cn/v1"
 
 if not SF_API_KEY:
-    logger.error("❌ 找不到 API Key！請檢查 .env 是否包含 OPENAI_API_KEY 或 SILICONFLOW_API_KEY")
+    logger.error("❌ 找不到 API Key！請檢查 .env")
     sys.exit(1)
 
 async def main():
@@ -81,14 +76,10 @@ async def main():
     if not os.path.exists(WORKING_DIR): os.makedirs(WORKING_DIR)
     
     logger.info("🚀 初始化 LightRAG (Azure + SiliconFlow)...")
-    logger.info(f"📋 LLM: {ENV_LLM_MODEL} | Embedding: {ENV_EMBED_MODEL}")
-    logger.info(f"🔌 Embedding Endpoint: {SF_BASE_URL}")
-
+    
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=azure_openai_complete,
-        
-        # 明確傳入 api_key 和 base_url
         embedding_func=EmbeddingFunc(
             embedding_dim=1024, 
             max_token_size=512,
@@ -100,7 +91,9 @@ async def main():
             )
         ),
         chunk_token_size=512, 
-        chunk_overlap_token_size=50
+        chunk_overlap_token_size=50,
+        embedding_func_max_async=1, # 降速避免 403
+        max_parallel_insert=1       # 降速避免 403
     )
 
     logger.info("⚙️ 正在初始化 Storage...")
@@ -111,14 +104,11 @@ async def main():
     total_files = len(all_json_files)
     
     for i, json_file_path in enumerate(all_json_files):
-        # 取得資料夾名稱作為 doc_label (例如 "SFC")
         doc_label = os.path.basename(os.path.dirname(json_file_path))
         
-        # === 🚫 Blacklist Check (新增檢查邏輯) ===
         if doc_label in SKIP_FILES:
             logger.warning(f"🚫 [{i+1}/{total_files}] 跳過黑名單文件: {doc_label}")
             continue
-        # ========================================
 
         logger.info(f"\n📄 [File {i+1}/{total_files}] 處理中: {doc_label}")
         
@@ -129,6 +119,7 @@ async def main():
             logger.error(f"❌ 讀取 JSON 失敗 ({doc_label}): {e}")
             continue
 
+        # 整理頁面內容
         pages_map = defaultdict(str)
         for block in blocks:
             page_num = block.get('page', 'Unknown')
@@ -139,27 +130,64 @@ async def main():
             pages_map[page_num] += f"{sep}{content}{sep}"
 
         sorted_pages = sorted(pages_map.items(), key=lambda x: int(x[0]) if isinstance(x[0], int) or str(x[0]).isdigit() else 9999)
-        file_success_count = 0
+        
+        # === 🔥 [新邏輯] 動態合併 Buffer ===
+        TARGET_CHUNK_SIZE = 3000  # 目標字元數，約 1000-1500 tokens
+        
+        buffer_content = ""
+        start_page = -1
+        end_page = -1
+        chunk_count = 0
         total_pages = len(pages_map)
 
-        logger.info(f"   ↳ 共有 {total_pages} 頁，正在寫入 Graph...")
+        logger.info(f"   ↳ 共有 {total_pages} 頁，正在進行語義合併寫入 (Target Size: {TARGET_CHUNK_SIZE})...")
 
-        for page_num, full_content in sorted_pages:
-            if len(full_content) < 10: continue
+        for j, (page_num, page_content) in enumerate(sorted_pages):
+            # 略過太短的頁面（可能是雜訊）
+            if len(page_content) < 10: continue
             
-            source_id = f"{doc_label} <Page {page_num}>"
-            final_text = f"Source: {source_id}\n\n{full_content}"
+            # 初始化當前 Buffer 的起始頁碼
+            if start_page == -1:
+                start_page = page_num
+            
+            # 加入頁面分隔符號，幫助 LLM 識別
+            sep = f"\n\n--- Page {page_num} ---\n\n" if buffer_content else f"--- Page {page_num} ---\n"
+            buffer_content += sep + page_content
+            end_page = page_num
 
-            try:
-                await rag.ainsert(final_text, file_paths=source_id)
+            # 判斷是否寫入 (Buffer 夠大 或 已經是最後一頁)
+            is_last_page = (j == len(sorted_pages) - 1)
+            
+            if len(buffer_content) >= TARGET_CHUNK_SIZE or is_last_page:
                 
-                file_success_count += 1
-                if file_success_count % 10 == 0: 
-                    logger.info(f"     ⏳ 已注入 {file_success_count}/{total_pages} 頁...")
-            except Exception as e:
-                logger.error(f"     ❌ 注入失敗 (Page {page_num}): {e}")
+                # 產生 Source ID (e.g., "HSBC <Page 1-3>")
+                if start_page == end_page:
+                    page_range_str = f"<Page {start_page}>"
+                else:
+                    page_range_str = f"<Page {start_page}-{end_page}>"
+                
+                source_id = f"{doc_label} {page_range_str}"
+                final_text = f"Source: {source_id}\n\n{buffer_content}"
 
-        logger.success(f"✅ 文件 {doc_label} 完成！共注入 {file_success_count} 頁")
+                try:
+                    await rag.ainsert(final_text, file_paths=source_id)
+                    chunk_count += 1
+                    logger.info(f"     ✅ 注入區塊: {source_id} (Size: {len(buffer_content)})")
+                except Exception as e:
+                    logger.error(f"     ❌ 注入失敗 ({source_id}): {e}")
+
+                # === 重置 Buffer (保留 Overlap) ===
+                # 簡單的 Sliding Window：保留最後一頁作為下一個區塊的上下文
+                OVERLAP_SIZE = 500
+                if len(page_content) > OVERLAP_SIZE and not is_last_page:
+                    buffer_content = f"...(Context from Page {end_page})\n{page_content[-OVERLAP_SIZE:]}"
+                else:
+                    buffer_content = ""
+                
+                # 重置 start_page，讓下一圈迴圈設定新的起始頁
+                start_page = -1
+
+        logger.success(f"✅ 文件 {doc_label} 完成！共產生 {chunk_count} 個合併區塊")
 
     logger.info("\n" + "="*40)
     logger.success(f"🎉 所有文件處理完畢！")

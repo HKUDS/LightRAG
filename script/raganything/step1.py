@@ -155,7 +155,7 @@ def process_single_file(input_path, output_base_dir, step1_std_base_dir, config)
 
 def main():
     # === 設定區 ===
-    input_dir = "./data/input"
+    input_dir = "./data/input/__enqueued__"
     output_dir = "./data/output/step1_vlm_output"
     
     # 輸出根目錄
