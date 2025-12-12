@@ -1,0 +1,4 @@
+uv pip install "transformers==4.57.1"
+uv pip install torch torchvision torchaudio
+uv pip install accelerate
+uv pip install python-dotenv

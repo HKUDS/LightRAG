@@ -10,6 +10,7 @@ services:
     ports:
       - "${PORT:-9621}:9621"
     volumes:
+      - ./lightrag/prompt.py:/app/lightrag/prompt.py
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini

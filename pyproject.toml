@@ -37,6 +37,7 @@ dependencies = [
     "setuptools",
     "tenacity",
     "tiktoken",
+    "transformers==4.56.0",
     "xlsxwriter>=3.1.0",
 ]
 
