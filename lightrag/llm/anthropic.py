@@ -223,4 +223,3 @@ async def claude_3_haiku_complete(
         enable_cot=enable_cot,
         **kwargs,
     )
-
