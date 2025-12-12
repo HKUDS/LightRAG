@@ -12,6 +12,7 @@ STORAGE_IMPLEMENTATIONS = {
         "implementations": [
             "NetworkXStorage",
             "Neo4JStorage",
+            "FalkorDBStorage",
             "PGGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
@@ -54,6 +55,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
+    "FalkorDBStorage": ["FALKORDB_HOST", "FALKORDB_PORT"],
     "MongoGraphStorage": [
         "MONGO_URI",
         "MONGO_DATABASE",
@@ -100,6 +102,7 @@ STORAGES = {
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",
     "JsonDocStatusStorage": ".kg.json_doc_status_impl",
     "Neo4JStorage": ".kg.neo4j_impl",
+    "FalkorDBStorage": ".kg.falkordb_impl",
     "MilvusVectorDBStorage": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
     "MongoDocStatusStorage": ".kg.mongo_impl",
