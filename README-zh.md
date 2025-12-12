@@ -53,28 +53,24 @@
 
 ## 🎉 新闻
 
-- [x] [2025.11.05]🎯📢添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持。
-- [x] [2025.10.22]🎯📢消除处理**大规模数据集**的瓶颈。
-- [x] [2025.09.15]🎯📢显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
-- [x] [2025.08.29]🎯📢现已支持**Reranker**，显著提升混合查询性能。
-- [x] [2025.08.04]🎯📢支持**文档删除**并重新生成知识图谱以确保查询性能。
-- [x] [2025.06.16]🎯📢我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
-- [X] [2025.06.05]🎯📢LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
-- [X] [2025.03.18]🎯📢LightRAG现已支持引文功能。
-- [X] [2025.02.05]🎯📢我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
-- [X] [2025.01.13]🎯📢我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
-- [X] [2025.01.06]🎯📢现在您可以[使用PostgreSQL进行存储](#using-postgresql-for-storage)。
-- [X] [2024.11.25]🎯📢LightRAG现在支持无缝集成[自定义知识图谱](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg)，使用户能够用自己的领域专业知识增强系统。
-- [X] [2024.11.19]🎯📢LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
-- [X] [2024.11.11]🎯📢LightRAG现在支持[通过实体名称删除实体](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete)。
-- [X] [2024.11.09]🎯📢推出[LightRAG Gui](https://lightrag-gui.streamlit.app)，允许您插入、查询、可视化和下载LightRAG知识。
-- [X] [2024.11.04]🎯📢现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
-- [X] [2024.10.29]🎯📢LightRAG现在通过`textract`支持多种文件类型，包括PDF、DOC、PPT和CSV。
-- [X] [2024.10.20]🎯📢我们为LightRAG添加了一个新功能：图形可视化。
-- [X] [2024.10.18]🎯📢我们添加了[LightRAG介绍视频](https://youtu.be/oageL-1I0GE)的链接。感谢作者！
-- [X] [2024.10.17]🎯📢我们创建了一个[Discord频道](https://discord.gg/yF2MmDJyGJ)！欢迎加入分享和讨论！🎉🎉
-- [X] [2024.10.16]🎯📢LightRAG现在支持[Ollama模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
-- [X] [2024.10.15]🎯📢LightRAG现在支持[Hugging Face模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
+- [2025.11.05]🎯添加**基于RAGAS的**评估框架和**Langfuse**可观测性支持（API可随查询结果返回召回上下文）。
+- [2025.10.22]🎯消除处理**大规模数据集**的性能瓶颈。
+- [2025.09.15]🎯显著提升**小型LLM**（如Qwen3-30B-A3B）的知识图谱提取准确性。
+- [2025.08.29]🎯现已支持**Reranker**，显著提升混合查询性能(现已设为默认查询模式)。
+- [2025.08.04]🎯支持**文档删除**并重新生成知识图谱以确保查询性能。
+- [2025.06.16]🎯我们的团队发布了[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，一个用于无缝处理文本、图像、表格和方程式的全功能多模态 RAG 系统。
+- [2025.06.05]🎯LightRAG现已集成[RAG-Anything](https://github.com/HKUDS/RAG-Anything)，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
+- [2025.03.18]🎯LightRAG现已支持参考文献功能。
+- [2025.02.12]🎯现在您可以使用MongoDB作为一体化存储解决方案。
+- [2025.02.05]🎯我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
+- [2025.01.13]🎯我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
+- [2025.01.06]🎯现在您可以使用PostgreSQL作为一体化存储解决方案。
+- [2024.11.19]🎯LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
+- [2024.11.09]🎯推出LightRAG Webui，允许您插入、查询、可视化LightRAG知识。
+- [2024.11.04]🎯现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
+- [2024.10.18]🎯我们添加了[LightRAG介绍视频](https://youtu.be/oageL-1I0GE)的链接。感谢作者！
+- [2024.10.17]🎯我们创建了一个[Discord频道](https://discord.gg/yF2MmDJyGJ)！欢迎加入分享和讨论！🎉🎉
+- [2024.10.16]🎯LightRAG现在支持[Ollama模型](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)！
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
@@ -411,6 +407,11 @@ LightRAG 需要利用LLM和Embeding模型来完成文档索引和知识库查询
 * LightRAG还支持类OpenAI的聊天/嵌入API：
 
 ```python
+import os
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
@@ -424,8 +425,9 @@ async def llm_model_func(
         **kwargs
     )
 
+@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192)
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embed(
+    return await openai_embed.func(
         texts,
         model="solar-embedding-1-large-query",
         api_key=os.getenv("UPSTAGE_API_KEY"),
@@ -436,15 +438,16 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=4096,
-            func=embedding_func
-        )
+        embedding_func=embedding_func  # 直接传入装饰后的函数
     )
 
     await rag.initialize_storages()
     return rag
 ```
+
+> **关于嵌入函数封装的重要说明：**
+>
+> `EmbeddingFunc` 不能嵌套封装。已经被 `@wrap_embedding_func_with_attrs` 装饰过的嵌入函数（如 `openai_embed`、`ollama_embed` 等）不能再次使用 `EmbeddingFunc()` 封装。这就是为什么在创建自定义嵌入函数时，我们调用 `xxx_embed.func`（底层未封装的函数）而不是直接调用 `xxx_embed`。
 
 </details>
 
@@ -477,24 +480,26 @@ rag = LightRAG(
 
 <details>
 <summary> <b>使用Ollama模型</b> </summary>
+
 如果您想使用Ollama模型，您需要拉取计划使用的模型和嵌入模型，例如`nomic-embed-text`。
 
 然后您只需要按如下方式设置LightRAG：
 
 ```python
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
+
 # 使用Ollama模型初始化LightRAG
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # 使用Ollama模型进行文本生成
     llm_model_name='your_model_name', # 您的模型名称
-    # 使用Ollama嵌入函数
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        func=lambda texts: ollama_embed(
-            texts,
-            embed_model="nomic-embed-text"
-        )
-    ),
+    embedding_func=embedding_func,  # 直接传入装饰后的函数
 )
 ```
 
@@ -533,21 +538,26 @@ ollama create -f Modelfile qwen2m
 您可以使用`llm_model_kwargs`参数配置ollama：
 
 ```python
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await ollama_embed.func(texts, embed_model="nomic-embed-text")
+
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,  # 使用Ollama模型进行文本生成
     llm_model_name='your_model_name', # 您的模型名称
     llm_model_kwargs={"options": {"num_ctx": 32768}},
-    # 使用Ollama嵌入函数
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        func=lambda texts: ollama_embed(
-            texts,
-            embed_model="nomic-embed-text"
-        )
-    ),
+    embedding_func=embedding_func,  # 直接传入装饰后的函数
 )
 ```
+
+> **关于嵌入函数封装的重要说明：**
+>
+> `EmbeddingFunc` 不能嵌套封装。已经被 `@wrap_embedding_func_with_attrs` 装饰过的嵌入函数（如 `openai_embed`、`ollama_embed` 等）不能再次使用 `EmbeddingFunc()` 封装。这就是为什么在创建自定义嵌入函数时，我们调用 `xxx_embed.func`（底层未封装的函数）而不是直接调用 `xxx_embed`。
 
 * **低RAM GPU**
 
@@ -560,7 +570,7 @@ rag = LightRAG(
 LightRAG支持与LlamaIndex集成 (`llm/llama_index_impl.py`):
 
 - 通过LlamaIndex与OpenAI和其他提供商集成
-- 详细设置和示例请参见[LlamaIndex文档](lightrag/llm/Readme.md)
+- 详细设置和示例请参见[LlamaIndex文档](https://developers.llamaindex.ai/python/framework/)
 
 **使用示例：**
 
@@ -622,9 +632,10 @@ if __name__ == "__main__":
 
 **详细文档和示例，请参见：**
 
-- [LlamaIndex文档](lightrag/llm/Readme.md)
-- [直接OpenAI示例](examples/lightrag_llamaindex_direct_demo.py)
-- [LiteLLM代理示例](examples/lightrag_llamaindex_litellm_demo.py)
+- [LlamaIndex文档](https://developers.llamaindex.ai/python/framework/)
+- [直接OpenAI示例](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM代理示例](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
+- [LiteLLM+OPIK代理示例](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
 
 </details>
 
@@ -885,7 +896,7 @@ rag = LightRAG(
 
 对于生产级场景，您很可能想要利用企业级解决方案。PostgreSQL可以为您提供一站式储解解决方案，作为KV存储、向量数据库（pgvector）和图数据库（apache AGE）。支持 PostgreSQL 版本为16.6或以上。
 
-* 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（请务必阅读概述）：https://hub.docker.com/r/shangor/postgres-for-rag
+* 如果您是初学者并想避免麻烦，推荐使用docker，请从这个镜像开始（默认帐号密码:rag/rag）：https://hub.docker.com/r/gzdaniel/postgres-for-rag
 * Apache AGE的性能不如Neo4j。追求高性能的图数据库请使用Noe4j。
 
 </details>
@@ -1527,7 +1538,7 @@ LANGFUSE_ENABLE_TRACE=true
 
 ## RAGAS评估
 
-**RAGAS**（Retrieval Augmented Generation Assessment，检索增强生成评估）是一个使用LLM对RAG系统进行无参考评估的框架。我们提供了基于RAGAS的评估脚本。详细信息请参阅[基于RAGAS的评估框架](lightrag/evaluation/README.md)。
+**RAGAS**（Retrieval Augmented Generation Assessment，检索增强生成评估）是一个使用LLM对RAG系统进行无参考评估的框架。我们提供了基于RAGAS的评估脚本。详细信息请参阅[基于RAGAS的评估框架](lightrag/evaluation/README_EVALUASTION_RAGAS.md)。
 
 ## 评估
 

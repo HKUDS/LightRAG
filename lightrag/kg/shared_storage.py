@@ -1700,3 +1700,17 @@ def get_default_workspace() -> str:
     """
     global _default_workspace
     return _default_workspace
+
+
+def get_pipeline_status_lock(
+    enable_logging: bool = False, workspace: str = None
+) -> NamespaceLock:
+    """Return unified storage lock for pipeline status data consistency.
+
+    This function is for compatibility with legacy code only.
+    """
+    global _default_workspace
+    actual_workspace = workspace if workspace else _default_workspace
+    return get_namespace_lock(
+        "pipeline_status", workspace=actual_workspace, enable_logging=enable_logging
+    )

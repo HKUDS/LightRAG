@@ -8,7 +8,10 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
-from lightrag.exceptions import PipelineCancelledException
+from lightrag.exceptions import (
+    PipelineCancelledException,
+    ChunkTokenLimitExceededError,
+)
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -109,6 +112,17 @@ def chunking_by_token_size(
         if split_by_character_only:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
+                if len(_tokens) > chunk_token_size:
+                    logger.warning(
+                        "Chunk split_by_character exceeds token limit: len=%d limit=%d",
+                        len(_tokens),
+                        chunk_token_size,
+                    )
+                    raise ChunkTokenLimitExceededError(
+                        chunk_tokens=len(_tokens),
+                        chunk_token_limit=chunk_token_size,
+                        chunk_preview=chunk[:120],
+                    )
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
@@ -383,8 +397,8 @@ async def _handle_single_entity_extraction(
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
-            logger.warning(
-                f"Entity extraction error: entity name became empty after cleaning. Original: '{record_attributes[1]}'"
+            logger.info(
+                f"Empty entity name found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
 
@@ -460,14 +474,14 @@ async def _handle_single_relationship_extraction(
 
         # Validate entity names after all cleaning steps
         if not source:
-            logger.warning(
-                f"Relationship extraction error: source entity became empty after cleaning. Original: '{record_attributes[1]}'"
+            logger.info(
+                f"Empty source entity found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
 
         if not target:
-            logger.warning(
-                f"Relationship extraction error: target entity became empty after cleaning. Original: '{record_attributes[2]}'"
+            logger.info(
+                f"Empty target entity found after sanitization. Original: '{record_attributes[2]}'"
             )
             return None
 
@@ -2818,9 +2832,11 @@ async def extract_entities(
         cache_keys_collector = []
 
         # Get initial extraction
+        # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
         entity_extraction_system_prompt = PROMPTS[
             "entity_extraction_system_prompt"
-        ].format(**{**context_base, "input_text": content})
+        ].format(**context_base)
+        # Format user prompts with input_text for each chunk
         entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
@@ -3250,10 +3266,16 @@ async def extract_keywords_only(
     It ONLY extracts keywords (hl_keywords, ll_keywords).
     """
 
-    # 1. Handle cache if needed - add cache type for keywords
+    # 1. Build the examples
+    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+
+    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+
+    # 2. Handle cache if needed - add cache type for keywords
     args_hash = compute_args_hash(
         param.mode,
         text,
+        language,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -3269,11 +3291,6 @@ async def extract_keywords_only(
             logger.warning(
                 "Invalid cache format for keywords, proceeding with extraction"
             )
-
-    # 2. Build the examples
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
-
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 3. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
