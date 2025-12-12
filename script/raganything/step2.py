@@ -3,6 +3,7 @@ import json
 import time
 import base64
 import sys
+import glob
 from loguru import logger
 from dotenv import load_dotenv  
 
@@ -10,9 +11,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # === 1. 設定區 (Configuration) ===
-# SiliconFlow API Key
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 MODEL_NAME = "thudm/glm-4.1v-9b-thinking" 
+
+# 🔥 [新增] 黑名單：填入不想處理的檔案名稱 (資料夾名稱/file_stem)
+# 例如: ["SFC", "Another_Doc", "Old_Report"]
+SKIP_FILES = [
+    "SFC", 
+    "Example_Doc_To_Skip"
+]
 
 # 設定 Log 目錄
 LOG_DIR = "./logs"
@@ -20,7 +27,7 @@ if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
 # 設定 Loguru
-log_file = os.path.join(LOG_DIR, f"step2_resume_{time.strftime('%Y%m%d_%H%M%S')}.log")
+log_file = os.path.join(LOG_DIR, f"step2_split_run_{time.strftime('%Y%m%d_%H%M%S')}.log")
 logger.remove() 
 logger.add(sys.stderr, level="INFO") 
 logger.add(log_file, rotation="10 MB", level="DEBUG", encoding="utf-8")
@@ -31,7 +38,6 @@ logger.info(f"📝 Log 檔案已建立: {log_file}")
 HAS_AI = False
 ai_client = None
 
-# 初始化 OpenAI Client
 try:
     from openai import OpenAI
     if SILICONFLOW_API_KEY and "你的_SILICONFLOW_KEY" not in SILICONFLOW_API_KEY:
@@ -44,10 +50,9 @@ try:
     else:
         logger.warning("⚠️ 未填寫 SILICONFLOW_API_KEY，將跳過 AI 描述功能")
 except ImportError:
-    logger.error("⚠️ 缺少 openai 套件，請執行: pip install openai")
+    logger.error("⚠️ 缺少 openai 套件")
 
 def encode_image(image_path):
-    """將圖片轉為 Base64"""
     if not os.path.exists(image_path): 
         logger.error(f"❌ 找不到圖片: {image_path}")
         return None
@@ -73,7 +78,7 @@ def call_vision_llm(img_path, mode="table", context_text=""):
         if mode == "table":
             system_prompt = "You are an expert OCR engine. Transcribe the table in the image into a clean Markdown table."
             user_msg = f"{context_instruction}\nTask: Output ONLY the markdown table content. Handle merged cells. No explanations."
-        else: # Image / Chart
+        else: 
             system_prompt = "You are a helpful assistant describing images for a RAG system."
             user_msg = f"{context_instruction}\nTask: Provide a detailed description of this image. Extract key data points, trends, and the title."
 
@@ -100,149 +105,178 @@ def call_vision_llm(img_path, mode="table", context_text=""):
         return None
 
 def main():
-    # 路徑設定
-    input_json = "./data/input/step1_output/intermediate_result.json"
-    output_dir = "./data/output/step2_output_granular"
-    output_path = os.path.join(output_dir, "granular_content.json")
+    # === 設定路徑 ===
+    step1_base_dir = "./data/input/step1_output"
+    output_base_dir = "./data/output/step2_output_granular"
+
+    if not os.path.exists(step1_base_dir):
+        logger.error(f"❌ 找不到 Step 1 輸出目錄: {step1_base_dir}")
+        return
+
+    # 掃描所有 input json
+    all_json_files = glob.glob(os.path.join(step1_base_dir, "*", "intermediate_result.json"))
     
-    if not os.path.exists(input_json):
-        input_json_fallback = "./data/input/step1_output/intermediate_result.json"
-        if os.path.exists(input_json_fallback):
-            input_json = input_json_fallback
-            output_dir = "./data/output/step2_output_granular"
-            output_path = os.path.join(output_dir, "granular_content.json")
-        else:
-            logger.critical(f"❌ 找不到輸入檔案: {input_json}")
-            return
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    # === 🔄 斷點續傳邏輯 (Resume Logic) ===
-    processed_blocks = []
-    processed_ids = set() # 用來記錄邊啲已經做過
-
-    if os.path.exists(output_path):
-        logger.info(f"📂 發現舊有檔案: {output_path}，嘗試讀取以進行續傳...")
-        try:
-            with open(output_path, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-                if isinstance(existing_data, list):
-                    processed_blocks = existing_data
-                    # 建立 ID Set (Page + Bbox String)
-                    for block in processed_blocks:
-                        pid = f"{block['page']}_{str(block['bbox'])}"
-                        processed_ids.add(pid)
-                    logger.success(f"✅ 成功載入 {len(processed_blocks)} 個已處理區塊，將會跳過這些。")
-        except Exception as e:
-            logger.warning(f"⚠️ 讀取舊檔失敗 ({e})，將會重新開始。")
-            processed_blocks = []
-
-    logger.info(f"🚀 [Step 2] 啟動處理... 讀取: {input_json}")
-    
-    with open(input_json, "r", encoding="utf-8") as f:
-        content_list = json.load(f)
-    
-    base_dir = os.path.dirname(input_json)
-    stats = {"text": 0, "table": 0, "image": 0, "ai_processed": 0, "skipped": 0}
-
-    for idx, item in enumerate(content_list):
-        item_type = item.get('type')
-        page_idx = item.get('page_idx', 0)
+    if not all_json_files:
+        logger.error(f"❌ 在 {step1_base_dir} 找不到任何 intermediate_result.json")
+        return
         
-        # 處理 Bbox: 轉為 List [x, y, w, h] (你原本的修正)
-        raw_bbox = item.get('bbox') or item.get('rect')
-        bbox = [int(b) for b in raw_bbox] if raw_bbox else None
-        
-        # 構造唯一 ID
-        current_id = f"{page_idx + 1}_{str(bbox)}"
+    logger.info(f"📦 發現 {len(all_json_files)} 個檔案待處理...")
 
-        # 🛑 檢查是否已處理 (Skip Check)
-        if current_id in processed_ids:
-            stats["skipped"] += 1
-            if idx % 100 == 0: logger.info(f"⏭️ 跳過已處理區塊 (進度: {idx}/{len(content_list)})")
+    # === 逐個檔案處理 (Per-File Loop) ===
+    for i, json_file_path in enumerate(all_json_files):
+        # 1. 準備路徑和資料夾
+        file_stem = os.path.basename(os.path.dirname(json_file_path))
+        
+        # === 🚫 Blacklist Check (新增檢查邏輯) ===
+        if file_stem in SKIP_FILES:
+            logger.warning(f"🚫 [{i+1}/{len(all_json_files)}] 跳過黑名單檔案: {file_stem}")
             continue
+        # ========================================
 
-        # === 處理新區塊 ===
-        rel_path = item.get('img_path', '')
-        abs_img_path = os.path.join(base_dir, rel_path) if rel_path else None
+        current_base_dir = os.path.dirname(json_file_path)
         
-        block_data = {
-            "type": item_type,
-            "page": page_idx + 1,
-            "bbox": bbox,
-            "content": "",
-            "original_img": rel_path
-        }
+        # 建立專屬輸出目錄: output/doc_name/granular_content.json
+        current_output_dir = os.path.join(output_base_dir, file_stem)
+        current_output_path = os.path.join(current_output_dir, "granular_content.json")
+        
+        if not os.path.exists(current_output_dir):
+            os.makedirs(current_output_dir)
 
-        # Context Logic
-        context_text = ""
-        if idx > 0 and content_list[idx-1].get('type') == 'text':
-            prev_text = content_list[idx-1].get('text', '').strip()
-            context_text += f"Preceding Text: {prev_text[-500:]}\n"
-        if idx < len(content_list) - 1 and content_list[idx+1].get('type') == 'text':
-            next_text = content_list[idx+1].get('text', '').strip()
-            context_text += f"Following Text: {next_text[:200]}"
+        logger.info(f"\n🚀 [{i+1}/{len(all_json_files)}] 正在處理: {file_stem}")
+        logger.info(f"   📂 輸出位置: {current_output_path}")
 
-        # --- [A] Text ---
-        if item_type == 'text':
-            text = item.get('text', '').strip()
-            if text:
-                block_data["content"] = text
+        # 2. 針對「這個檔案」的斷點續傳邏輯
+        processed_blocks = [] # 這次執行要產生的完整列表
+        existing_map = {}     # 用來快速查找舊資料
+        
+        if os.path.exists(current_output_path):
+            try:
+                with open(current_output_path, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+                    if isinstance(existing_data, list):
+                        # 建立 ID -> Block 的對照表
+                        for block in existing_data:
+                            if "unique_id" in block:
+                                existing_map[block["unique_id"]] = block
+                        logger.info(f"   🔄 載入舊進度: {len(existing_map)} 筆資料，將檢查內容完整性...")
+            except Exception as e:
+                logger.warning(f"   ⚠️ 讀取舊檔失敗，將重新開始: {e}")
+                existing_map = {}
+
+        # 3. 讀取輸入與處理
+        with open(json_file_path, "r", encoding="utf-8") as f:
+            content_list = json.load(f)
+
+        stats = {"text": 0, "table": 0, "image": 0, "ai_processed": 0, "skipped": 0}
+
+        for idx, item in enumerate(content_list):
+            item_type = item.get('type')
+            page_idx = item.get('page_idx', 0)
+            
+            raw_bbox = item.get('bbox') or item.get('rect')
+            bbox = [int(b) for b in raw_bbox] if raw_bbox else None
+            
+            # 生成 ID
+            current_id = f"{file_stem}_{page_idx}_{str(bbox)}"
+
+            # === 💡 Skip Logic ===
+            old_block = existing_map.get(current_id)
+            should_skip = False
+
+            if old_block:
+                old_content = old_block.get("content", "").strip()
+                
+                # A: Text -> Skip
+                if item_type == 'text':
+                    should_skip = True
+                
+                # B: Image/Table -> Check Content Length
+                elif item_type in ['table', 'image']:
+                    if len(old_content) > 5:
+                        should_skip = True
+                    else:
+                        logger.info(f"   ⚠️ 發現舊資料但內容為空，將重新執行 AI: P{page_idx+1} {item_type}")
+
+            if should_skip:
+                processed_blocks.append(old_block) # 直接使用舊的區塊
+                stats["skipped"] += 1
+                continue
+            # =====================
+
+            # 如果不 Skip，就準備進行處理
+            
+            # 準備路徑
+            rel_path = item.get('img_path', '')
+            abs_img_path = None
+            if rel_path:
+                abs_img_path = os.path.join(current_base_dir, rel_path)
+
+            block_data = {
+                "type": item_type,
+                "page": page_idx + 1,
+                "bbox": bbox,
+                "content": "",
+                "original_img": rel_path,
+                "source_file": file_stem,
+                "unique_id": current_id 
+            }
+
+            # Context
+            context_text = ""
+            if idx > 0 and content_list[idx-1].get('type') == 'text':
+                context_text += f"Pre: {content_list[idx-1].get('text', '')[-200:]}\n"
+
+            # --- Process ---
+            if item_type == 'text':
+                text = item.get('text', '').strip()
+                if text:
+                    block_data["content"] = text
+                    processed_blocks.append(block_data)
+                    stats["text"] += 1
+
+            elif item_type == 'table':
+                logger.info(f"   🔍 [Table] P{page_idx+1}")
+                content = item.get('table_body', '')
+                if HAS_AI and abs_img_path and os.path.exists(abs_img_path):
+                    ai_content = call_vision_llm(abs_img_path, mode="table", context_text=context_text)
+                    if ai_content:
+                        content = ai_content
+                        stats["ai_processed"] += 1
+                
+                caption = "".join(item.get('table_caption', []))
+                if caption: content = f"**Table Caption:** {caption}\n\n{content}"
+                block_data["content"] = content
                 processed_blocks.append(block_data)
-                processed_ids.add(current_id)
-                stats["text"] += 1
+                stats["table"] += 1
 
-        # --- [B] Table ---
-        elif item_type == 'table':
-            logger.info(f"🔍 [Table] P{page_idx+1} 處理中...")
-            content = item.get('table_body', '')
-            if HAS_AI and abs_img_path:
-                ai_content = call_vision_llm(abs_img_path, mode="table", context_text=context_text)
-                if ai_content:
-                    content = ai_content
-                    stats["ai_processed"] += 1
-            
-            caption = "".join(item.get('table_caption', []))
-            if caption: content = f"**Table Caption:** {caption}\n\n{content}"
-            block_data["content"] = content
-            processed_blocks.append(block_data)
-            processed_ids.add(current_id)
-            stats["table"] += 1
+            elif item_type == 'image':
+                logger.info(f"   🖼️ [Image] P{page_idx+1}")
+                caption = "".join(item.get('image_caption', []))
+                if HAS_AI and abs_img_path and os.path.exists(abs_img_path):
+                    ai_desc = call_vision_llm(abs_img_path, mode="caption", context_text=context_text)
+                    if ai_desc:
+                        caption = f"{caption}\n**Image Description:** {ai_desc}".strip()
+                        stats["ai_processed"] += 1
+                
+                block_data["content"] = caption
+                processed_blocks.append(block_data)
+                stats["image"] += 1
 
-        # --- [C] Image ---
-        elif item_type == 'image':
-            logger.info(f"🖼️ [Image] P{page_idx+1} 處理中...")
-            caption = "".join(item.get('image_caption', []))
-            if HAS_AI and abs_img_path:
-                ai_desc = call_vision_llm(abs_img_path, mode="caption", context_text=context_text)
-                if ai_desc:
-                    caption = f"{caption}\n**Image Description:** {ai_desc}".strip()
-                    stats["ai_processed"] += 1
-            
-            block_data["content"] = caption
-            processed_blocks.append(block_data)
-            processed_ids.add(current_id)
-            stats["image"] += 1
-            
-        # 💾 自動存檔 (Auto-Save): 每 5 個新 Item 就儲存一次
-        newly_processed = stats["text"] + stats["table"] + stats["image"]
-        if newly_processed > 0 and newly_processed % 5 == 0:
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(processed_blocks, f, ensure_ascii=False, indent=2)
+            # 💾 Per-File Auto-Save
+            new_processed_count = stats["text"] + stats["table"] + stats["image"]
+            if new_processed_count > 0 and new_processed_count % 5 == 0:
+                 with open(current_output_path, "w", encoding="utf-8") as f:
+                    json.dump(processed_blocks, f, ensure_ascii=False, indent=2)
 
-        if idx > 0 and idx % 50 == 0:
-            logger.info(f"⏳ 進度: {idx}/{len(content_list)} (New: {newly_processed}, Skipped: {stats['skipped']})...")
+        # 4. 完成該檔案，最終儲存
+        with open(current_output_path, "w", encoding="utf-8") as f:
+            json.dump(processed_blocks, f, ensure_ascii=False, indent=2)
 
-    # 最後儲存
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(processed_blocks, f, ensure_ascii=False, indent=2)
+        logger.success(f"✅ 文件 {file_stem} 處理完成")
+        logger.info(f"   📊 統計: New={len(processed_blocks)-stats['skipped']} | Skipped (Reused)={stats['skipped']} | AI Calls={stats['ai_processed']}")
 
     logger.success("=" * 40)
-    logger.success(f"🎉 處理完成！總區塊數: {len(processed_blocks)}")
-    logger.info(f"📊 統計: New AI Calls={stats['ai_processed']} | Skipped={stats['skipped']}")
-    logger.success(f"💾 檔案已儲存: {output_path}")
-    logger.success("=" * 40)
+    logger.success(f"🎉 所有檔案處理完畢！")
 
 if __name__ == "__main__":
     main()

@@ -12,7 +12,7 @@ services:
     volumes:
       - ./lightrag/prompt.py:/app/lightrag/prompt.py
       - ./data/rag_storage:/app/data/rag_storage
-      - ./data/inputs:/app/data/inputs
+      - ./data/input:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
     env_file:
