@@ -157,7 +157,9 @@ def create_search_routes(
             )
 
         except Exception as e:
-            logger.error(f'Search failed: {e}')
+            if isinstance(e, HTTPException):
+                raise
+            logger.error('Search failed: %s', e)
             raise HTTPException(status_code=500, detail=f'Search failed: {e}') from e
 
     return router

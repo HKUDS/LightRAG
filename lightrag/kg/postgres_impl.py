@@ -40,7 +40,8 @@ if not pm.is_installed('asyncpg'):
     pm.install('asyncpg')
 
 import asyncpg  # type: ignore
-from asyncpg import Pool  # type: ignore
+from asyncpg import Connection, Pool  # type: ignore
+from asyncpg.pool import PoolConnectionProxy  # type: ignore
 from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
@@ -75,6 +76,7 @@ class PostgreSQLDB:
         self.vector_index_type = config.get('vector_index_type')
         self.hnsw_m = config.get('hnsw_m')
         self.hnsw_ef = config.get('hnsw_ef')
+        self.hnsw_ef_search = config.get('hnsw_ef_search')
         self.ivfflat_lists = config.get('ivfflat_lists')
         self.vchordrq_build_options = config.get('vchordrq_build_options')
         self.vchordrq_probes = config.get('vchordrq_probes')
@@ -307,7 +309,7 @@ class PostgreSQLDB:
 
     async def _run_with_retry(
         self,
-        operation: Callable[[asyncpg.Connection], Awaitable[T]],
+        operation: Callable[[Connection | PoolConnectionProxy], Awaitable[T]],
         *,
         with_age: bool = False,
         graph_name: str | None = None,
@@ -351,7 +353,9 @@ class PostgreSQLDB:
                         await self.configure_age(connection, graph_name)
                     elif with_age and not graph_name:
                         raise ValueError('Graph name is required when with_age is True')
-                    if self.vector_index_type == 'VCHORDRQ':
+                    if self.vector_index_type == 'HNSW':
+                        await self.configure_hnsw(connection)
+                    elif self.vector_index_type == 'VCHORDRQ':
                         await self.configure_vchordrq(connection)
                     return await operation(connection)
 
@@ -391,7 +395,7 @@ class PostgreSQLDB:
             raise
 
     @staticmethod
-    async def configure_vector_extension(connection: asyncpg.Connection) -> None:
+    async def configure_vector_extension(connection: Connection | PoolConnectionProxy) -> None:
         """Create VECTOR extension if it doesn't exist for vector similarity operations."""
         try:
             await connection.execute('CREATE EXTENSION IF NOT EXISTS vector')  # type: ignore
@@ -401,7 +405,7 @@ class PostgreSQLDB:
             # Don't raise - let the system continue without vector extension
 
     @staticmethod
-    async def configure_age_extension(connection: asyncpg.Connection) -> None:
+    async def configure_age_extension(connection: Connection | PoolConnectionProxy) -> None:
         """Create AGE extension if it doesn't exist for graph operations."""
         try:
             await connection.execute('CREATE EXTENSION IF NOT EXISTS AGE CASCADE')  # type: ignore
@@ -411,7 +415,7 @@ class PostgreSQLDB:
             # Don't raise - let the system continue without AGE extension
 
     @staticmethod
-    async def configure_age(connection: asyncpg.Connection, graph_name: str) -> None:
+    async def configure_age(connection: Connection | PoolConnectionProxy, graph_name: str) -> None:
         """Set the Apache AGE environment and creates a graph if it does not exist.
 
         This method:
@@ -433,7 +437,7 @@ class PostgreSQLDB:
         ):
             pass
 
-    async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
+    async def configure_vchordrq(self, connection: Connection | PoolConnectionProxy) -> None:
         """Configure VCHORDRQ extension for vector similarity search.
 
         Raises:
@@ -453,6 +457,21 @@ class PostgreSQLDB:
         if self.vchordrq_epsilon is not None:
             await connection.execute(f'SET vchordrq.epsilon TO {self.vchordrq_epsilon}')
             logger.debug(f'PostgreSQL, VCHORDRQ epsilon set to: {self.vchordrq_epsilon}')
+
+    async def configure_hnsw(self, connection: Connection | PoolConnectionProxy) -> None:
+        """Configure HNSW search parameters for this connection.
+
+        Sets the ef_search parameter which controls the trade-off between
+        search accuracy and speed. Higher values give better recall but
+        slower queries.
+
+        Note:
+            This method does not catch exceptions. Configuration errors will fail-fast,
+            while transient connection errors will be retried by _run_with_retry.
+        """
+        if self.hnsw_ef_search is not None:
+            await connection.execute(f'SET hnsw.ef_search = {int(self.hnsw_ef_search)}')
+            logger.debug(f'PostgreSQL, HNSW ef_search set to: {self.hnsw_ef_search}')
 
     async def _run_migration(self, migration_coro, migration_name: str, error_msg: str) -> bool:
         """Run a migration with error tracking.
@@ -1611,9 +1630,7 @@ class PostgreSQLDB:
                     await self.execute(create_sql[vector_index_type].format(vector_index_name=vector_index_name, k=k))
                     logger.info(f'Successfully created vector index {vector_index_name} on table {k}')
                 else:
-                    logger.info(
-                        f'{vector_index_type} vector index {vector_index_name} already exists on table {k}'
-                    )
+                    logger.info(f'{vector_index_type} vector index {vector_index_name} already exists on table {k}')
             except Exception as e:
                 logger.error(f'Failed to create vector index on table {k}, Got: {e}')
 
@@ -1648,7 +1665,7 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]] | None:
-        async def _operation(connection: asyncpg.Connection) -> Any:
+        async def _operation(connection: Connection | PoolConnectionProxy) -> Any:
             prepared_params = tuple(params) if params else ()
             if prepared_params:
                 rows = await connection.fetch(sql, *prepared_params)
@@ -1681,7 +1698,7 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
     ):
-        async def _operation(connection: asyncpg.Connection) -> Any:
+        async def _operation(connection: Connection | PoolConnectionProxy) -> Any:
             prepared_values = tuple(data.values()) if data else ()
             try:
                 if not data:
@@ -1729,7 +1746,7 @@ class PostgreSQLDB:
         if not data_list:
             return
 
-        async def _operation(connection: asyncpg.Connection) -> None:
+        async def _operation(connection: Connection | PoolConnectionProxy) -> None:
             for i in range(0, len(data_list), batch_size):
                 batch = data_list[i : i + batch_size]
                 await connection.executemany(sql, batch)
@@ -1884,6 +1901,12 @@ class ClientManager:
                 os.environ.get(
                     'POSTGRES_HNSW_EF',
                     config.get('postgres', 'hnsw_ef', fallback='64'),
+                )
+            ),
+            'hnsw_ef_search': int(
+                os.environ.get(
+                    'POSTGRES_HNSW_EF_SEARCH',
+                    config.get('postgres', 'hnsw_ef_search', fallback='200'),
                 )
             ),
             'ivfflat_lists': int(
@@ -2478,9 +2501,7 @@ class PGKVStorage(BaseKVStorage):
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
 
-    async def update_s3_key_by_doc_id(
-        self, full_doc_id: str, s3_key: str, archive_url: str | None = None
-    ) -> int:
+    async def update_s3_key_by_doc_id(self, full_doc_id: str, s3_key: str, archive_url: str | None = None) -> int:
         """Update s3_key for all chunks of a document after archiving.
 
         This method is called after a document is moved from S3 staging to archive,
@@ -2686,6 +2707,280 @@ class PGVectorStorage(BaseVectorStorage):
         db = self._db_required()
         results = await db.query(sql, params=list(params.values()), multirows=True)
         return results
+
+    async def hybrid_search(
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] | None = None,
+        bm25_weight: float = 0.3,
+        language: str = 'english',
+    ) -> list[dict[str, Any]]:
+        """Combine vector similarity search with BM25 full-text search using RRF.
+
+        This hybrid approach leverages the strengths of both retrieval methods:
+        - Vector search: Captures semantic similarity (good for paraphrases)
+        - BM25: Captures exact keyword matches (good for names, dates, acronyms)
+
+        Uses Reciprocal Rank Fusion (RRF) to combine the ranked results.
+
+        Args:
+            query: Search query string
+            top_k: Number of final results to return
+            query_embedding: Optional pre-computed query embedding
+            bm25_weight: Weight for BM25 results (0.0-1.0). Higher = more BM25 influence.
+                        Note: RRF naturally handles ranking, this affects how many BM25
+                        results to retrieve (more weight = retrieve more BM25 results).
+            language: Language for BM25 text search (default: 'english')
+
+        Returns:
+            List of chunks with content, metadata, and rrf_score
+        """
+        from lightrag.utils import reciprocal_rank_fusion
+
+        # Determine how many results to fetch from each source
+        # Fetch more than top_k to allow RRF to work effectively
+        vector_fetch_k = int(top_k * 2)
+        bm25_fetch_k = int(top_k * (1 + bm25_weight))  # Scale by weight
+
+        # 1. Vector search (existing method)
+        vector_results = await self.query(query, top_k=vector_fetch_k, query_embedding=query_embedding)
+
+        # 2. BM25 full-text search (query LIGHTRAG_DOC_CHUNKS directly)
+        bm25_sql = f"""
+            SELECT
+                id,
+                full_doc_id,
+                chunk_order_index,
+                tokens,
+                content,
+                file_path,
+                ts_rank(
+                    to_tsvector('{language}', content),
+                    plainto_tsquery('{language}', $1)
+                ) AS bm25_score
+            FROM LIGHTRAG_DOC_CHUNKS
+            WHERE workspace = $2
+              AND to_tsvector('{language}', content) @@ plainto_tsquery('{language}', $1)
+            ORDER BY bm25_score DESC
+            LIMIT $3
+        """
+
+        db = self._db_required()
+        bm25_results = await db.query(
+            bm25_sql,
+            params=[query, self.workspace, bm25_fetch_k],
+            multirows=True,
+        )
+        bm25_results = bm25_results if bm25_results else []
+
+        # Mark source type for debugging
+        for r in vector_results:
+            r['source_type'] = 'vector'
+        for r in bm25_results:
+            r['source_type'] = 'bm25'
+
+        # 3. Combine using Reciprocal Rank Fusion
+        fused_results = reciprocal_rank_fusion(
+            [vector_results, bm25_results],
+            id_key='id',
+            k=60,  # Standard RRF constant
+        )
+
+        logger.debug(
+            f'[{self.workspace}] Hybrid search: {len(vector_results)} vector + '
+            f'{len(bm25_results)} BM25 → {len(fused_results[:top_k])} fused'
+        )
+
+        return fused_results[:top_k]
+
+    async def get_entity_linked_chunk_ids(
+        self,
+        keywords: list[str],
+        top_k_per_keyword: int = 5,
+    ) -> set[str]:
+        """Get chunk IDs linked to entities matching the given keywords.
+
+        This is used for entity-aware retrieval boosting: when a query mentions
+        specific entities (like "SARP"), we want to prioritize chunks that are
+        linked to those entities in the knowledge graph.
+
+        Args:
+            keywords: List of keywords to match against entity names
+            top_k_per_keyword: Max entities to match per keyword (controls expansion)
+
+        Returns:
+            Set of chunk IDs linked to matched entities
+        """
+        if not keywords:
+            return set()
+
+        db = self._db_required()
+        all_chunk_ids: set[str] = set()
+
+        # Search for entities matching each keyword
+        # Use similarity search on entity names (case-insensitive, partial match)
+        entity_search_sql = """
+            SELECT entity_name, chunk_ids
+            FROM LIGHTRAG_VDB_ENTITY
+            WHERE workspace = $1
+              AND (
+                  entity_name ILIKE $2
+                  OR entity_name ILIKE $3
+              )
+            LIMIT $4
+        """
+
+        for keyword in keywords:
+            try:
+                # Search for exact match and partial match
+                exact_pattern = keyword
+                partial_pattern = f'%{keyword}%'
+
+                results = await db.query(
+                    entity_search_sql,
+                    params=[self.workspace, exact_pattern, partial_pattern, top_k_per_keyword],
+                    multirows=True,
+                )
+
+                if results:
+                    for row in results:
+                        chunk_ids = row.get('chunk_ids', [])
+                        if chunk_ids:
+                            # chunk_ids is stored as a PostgreSQL array
+                            if isinstance(chunk_ids, list):
+                                all_chunk_ids.update(chunk_ids)
+                            elif isinstance(chunk_ids, str):
+                                # Handle JSON string format if needed
+                                try:
+                                    parsed = json.loads(chunk_ids)
+                                    all_chunk_ids.update(parsed)
+                                except json.JSONDecodeError:
+                                    all_chunk_ids.add(chunk_ids)
+
+                    logger.debug(
+                        f'[{self.workspace}] Entity search for "{keyword}": '
+                        f'{len(results)} entities, {len(all_chunk_ids)} total chunk_ids'
+                    )
+
+            except Exception as e:
+                logger.warning(f'[{self.workspace}] Entity search error for "{keyword}": {e}')
+                continue
+
+        return all_chunk_ids
+
+    async def hybrid_search_with_entity_boost(
+        self,
+        query: str,
+        top_k: int,
+        entity_keywords: list[str] | None = None,
+        query_embedding: list[float] | None = None,
+        bm25_weight: float = 0.3,
+        entity_boost: float = 1.5,
+        language: str = 'english',
+    ) -> list[dict[str, Any]]:
+        """Hybrid search with entity-aware boosting for improved precision.
+
+        Extends hybrid_search by boosting chunks that are linked to entities
+        mentioned in the query. This helps retrieve the RIGHT documents when
+        multiple similar documents exist (e.g., different "lessons learned" docs).
+
+        Args:
+            query: Search query string
+            top_k: Number of final results to return
+            entity_keywords: Keywords to match against entity names for boosting
+            query_embedding: Optional pre-computed query embedding
+            bm25_weight: Weight for BM25 results (0.0-1.0)
+            entity_boost: Multiplier for chunks linked to query entities (default: 1.5)
+            language: Language for BM25 text search
+
+        Returns:
+            List of chunks with content, metadata, and boosted rrf_score
+        """
+        from lightrag.utils import reciprocal_rank_fusion
+
+        # Get entity-linked chunk IDs for boosting
+        entity_chunk_ids: set[str] = set()
+        if entity_keywords:
+            entity_chunk_ids = await self.get_entity_linked_chunk_ids(entity_keywords)
+            if entity_chunk_ids:
+                logger.info(
+                    f'[{self.workspace}] Entity boost: {len(entity_chunk_ids)} chunks '
+                    f'linked to entities matching {entity_keywords}'
+                )
+
+        # Fetch more results to allow for entity-based reranking
+        vector_fetch_k = int(top_k * 2.5)  # Increased from 2 to allow more entity matches
+        bm25_fetch_k = int(top_k * (1.5 + bm25_weight))
+
+        # 1. Vector search
+        vector_results = await self.query(query, top_k=vector_fetch_k, query_embedding=query_embedding)
+
+        # 2. BM25 full-text search
+        bm25_sql = f"""
+            SELECT
+                id,
+                full_doc_id,
+                chunk_order_index,
+                tokens,
+                content,
+                file_path,
+                ts_rank(
+                    to_tsvector('{language}', content),
+                    plainto_tsquery('{language}', $1)
+                ) AS bm25_score
+            FROM LIGHTRAG_DOC_CHUNKS
+            WHERE workspace = $2
+              AND to_tsvector('{language}', content) @@ plainto_tsquery('{language}', $1)
+            ORDER BY bm25_score DESC
+            LIMIT $3
+        """
+
+        db = self._db_required()
+        bm25_results = await db.query(
+            bm25_sql,
+            params=[query, self.workspace, bm25_fetch_k],
+            multirows=True,
+        )
+        bm25_results = bm25_results if bm25_results else []
+
+        # Mark source type
+        for r in vector_results:
+            r['source_type'] = 'vector'
+        for r in bm25_results:
+            r['source_type'] = 'bm25'
+
+        # 3. Combine using RRF
+        fused_results = reciprocal_rank_fusion(
+            [vector_results, bm25_results],
+            id_key='id',
+            k=60,
+        )
+
+        # 4. Apply entity boost to chunks linked to query entities
+        if entity_chunk_ids:
+            boosted_count = 0
+            for result in fused_results:
+                chunk_id = result.get('id', '')
+                if chunk_id in entity_chunk_ids:
+                    original_score = result.get('rrf_score', 0)
+                    result['rrf_score'] = original_score * entity_boost
+                    result['entity_boosted'] = True
+                    boosted_count += 1
+
+            # Re-sort by boosted scores
+            fused_results = sorted(fused_results, key=lambda x: x.get('rrf_score', 0), reverse=True)
+
+            logger.info(
+                f'[{self.workspace}] Entity boost applied to {boosted_count}/{len(fused_results)} chunks'
+            )
+
+        logger.debug(
+            f'[{self.workspace}] Hybrid+entity search: {len(vector_results)} vector + '
+            f'{len(bm25_results)} BM25 + entity boost → {len(fused_results[:top_k])} results'
+        )
+
+        return fused_results[:top_k]
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -4329,7 +4624,7 @@ class PGGraphStorage(BaseGraphStorage):
                    $$, $1) AS (n agtype)"""
 
         try:
-                await self._query(query, readonly=False, params={'node_id': label})
+            await self._query(query, readonly=False, params={'node_id': label})
         except Exception as e:
             logger.error(f'[{self.workspace}] Error during node deletion: {e}')
             raise
@@ -5038,11 +5333,7 @@ class PGGraphStorage(BaseGraphStorage):
         """
         # Use global_config max_graph_nodes as default if max_nodes is None
         max_nodes_default = int(self.global_config.get('max_graph_nodes', 1000))
-        if max_nodes is None:
-            max_nodes = max_nodes_default
-        else:
-            # Limit max_nodes to not exceed global_config max_graph_nodes
-            max_nodes = min(max_nodes, max_nodes_default)
+        max_nodes = max_nodes_default if max_nodes is None else min(max_nodes, max_nodes_default)
         kg = KnowledgeGraph()
 
         # Handle wildcard query - get all nodes

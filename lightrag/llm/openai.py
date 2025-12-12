@@ -178,7 +178,7 @@ async def openai_complete_if_cache(
     azure_deployment: str | None = None,
     api_version: str | None = None,
     **kwargs: Any,
-) -> str:
+) -> str | AsyncIterator[str]:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
 
     This function supports automatic integration of reasoning content from models that provide
@@ -292,12 +292,18 @@ async def openai_complete_if_cache(
     # For Azure OpenAI, we must use the deployment name instead of the model name
     api_model = azure_deployment if use_azure and azure_deployment else model
 
+    typed_messages = cast(Any, messages)
+
     try:
         # Don't use async with context manager, use client directly
         if 'response_format' in kwargs:
-            response = await openai_async_client.chat.completions.parse(model=api_model, messages=messages, **kwargs)
+            response = await openai_async_client.chat.completions.parse(
+                model=api_model, messages=typed_messages, **kwargs
+            )
         else:
-            response = await openai_async_client.chat.completions.create(model=api_model, messages=messages, **kwargs)
+            response = await openai_async_client.chat.completions.create(
+                model=api_model, messages=typed_messages, **kwargs
+            )
     except APITimeoutError as e:
         logger.error(f'OpenAI API Timeout Error: {e}')
         await openai_async_client.close()  # Ensure client is closed
@@ -316,9 +322,12 @@ async def openai_complete_if_cache(
         raise
 
     if hasattr(response, '__aiter__'):
+
         async def collected_messages(response):
+            final_chunk_usage: Any | None = None
+            iteration_started = False
             async for chunk in response:
-                chunk_message = chunk.choices[0].delta.content or ""
+                chunk.choices[0].delta.content or ''
 
             # COT (Chain of Thought) state tracking
             cot_active = False
@@ -470,7 +479,7 @@ async def openai_complete_if_cache(
                 except Exception as client_close_error:
                     logger.warning(f'Failed to close OpenAI client in streaming finally block: {client_close_error}')
 
-        return inner()
+        return collected_messages(response)
 
     else:
         try:
@@ -585,7 +594,7 @@ async def gpt_4o_complete(
     enable_cot: bool = False,
     keyword_extraction=False,
     **kwargs,
-) -> str:
+) -> str | AsyncIterator[str]:
     if history_messages is None:
         history_messages = []
     return await openai_complete_if_cache(
@@ -606,7 +615,7 @@ async def gpt_4o_mini_complete(
     enable_cot: bool = False,
     keyword_extraction=False,
     **kwargs,
-) -> str:
+) -> str | AsyncIterator[str]:
     if history_messages is None:
         history_messages = []
     return await openai_complete_if_cache(
@@ -627,7 +636,7 @@ async def nvidia_openai_complete(
     enable_cot: bool = False,
     keyword_extraction=False,
     **kwargs,
-) -> str:
+) -> str | AsyncIterator[str]:
     if history_messages is None:
         history_messages = []
     result = await openai_complete_if_cache(
@@ -748,7 +757,7 @@ async def openai_embed(
 
 # Azure OpenAI wrapper functions for backward compatibility
 async def azure_openai_complete_if_cache(
-    model,
+    model: str | None,
     prompt,
     system_prompt: str | None = None,
     history_messages: list[dict[str, Any]] | None = None,
@@ -761,7 +770,7 @@ async def azure_openai_complete_if_cache(
     api_version: str | None = None,
     keyword_extraction: bool = False,
     **kwargs,
-):
+) -> str | AsyncIterator[str]:
     """Azure OpenAI completion wrapper function.
 
     This function provides backward compatibility by wrapping the unified
@@ -771,7 +780,7 @@ async def azure_openai_complete_if_cache(
     full feature parity and API consistency.
     """
     # Handle Azure-specific environment variables and parameters
-    deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT') or model or os.getenv('LLM_MODEL')
+    deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT') or model or os.getenv('LLM_MODEL') or 'gpt-4o-mini'
     base_url = base_url or os.getenv('AZURE_OPENAI_ENDPOINT') or os.getenv('LLM_BINDING_HOST')
     api_key = api_key or os.getenv('AZURE_OPENAI_API_KEY') or os.getenv('LLM_BINDING_API_KEY')
     api_version = (
@@ -804,7 +813,7 @@ async def azure_openai_complete(
     history_messages=None,
     keyword_extraction=False,
     **kwargs,
-) -> str:
+) -> str | AsyncIterator[str]:
     """Azure OpenAI complete wrapper function.
 
     Provides backward compatibility for azure_openai_complete calls.

@@ -227,7 +227,8 @@ async def main():
 
     results = []
     for i, test_case in enumerate(TEST_CASES, 1):
-        print(f'\n🧪 Test {i}: {test_case["category"].upper()} - {test_case["description"]}')
+        category = str(test_case['category']).upper()
+        print(f'\n🧪 Test {i}: {category} - {test_case["description"]}')
         print(f'   Query: "{test_case["query"]}"')
 
         result = await evaluate_test_case(test_case)

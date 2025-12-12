@@ -1271,4 +1271,6 @@ def test_char_positions_with_overlap_approximation():
         assert isinstance(chunk['char_end'], int)
     # char_end should always be greater than char_start
     for chunk in chunks:
-        assert chunk['char_end'] > chunk['char_start'], f"char_end ({chunk['char_end']}) should be > char_start ({chunk['char_start']})"
+        assert chunk['char_end'] > chunk['char_start'], (
+            f'char_end ({chunk["char_end"]}) should be > char_start ({chunk["char_start"]})'
+        )

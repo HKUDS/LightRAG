@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from lightrag.utils import logger
+
 
 @dataclass
 class MetricComparison:
@@ -301,10 +303,10 @@ Examples:
 
     # Validate files exist
     if not baseline_path.exists():
-        print(f'Error: Baseline file not found: {baseline_path}')
+        logger.error('Error: Baseline file not found: %s', baseline_path)
         sys.exit(1)
     if not experiment_path.exists():
-        print(f'Error: Experiment file not found: {experiment_path}')
+        logger.error('Error: Experiment file not found: %s', experiment_path)
         sys.exit(1)
 
     # Run analysis
@@ -318,7 +320,7 @@ Examples:
         output_path = Path(args.output)
         with open(output_path, 'w') as f:
             json.dump(analysis, f, indent=2)
-        print(f'\nComparison saved to: {output_path}')
+        logger.info('Comparison saved to: %s', output_path)
 
     # Exit with status based on verdict
     if analysis['verdict'] in ('SIGNIFICANT_REGRESSION',):

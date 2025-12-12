@@ -20,6 +20,8 @@ from pathlib import Path
 
 import httpx
 
+from lightrag.utils import logger
+
 # Wikipedia API endpoint (no auth required)
 WIKI_API = 'https://en.wikipedia.org/w/api.php'
 
@@ -60,18 +62,18 @@ async def fetch_article(title: str, client: httpx.AsyncClient) -> dict | None:
 
     # Check for HTTP errors
     if response.status_code != 200:
-        print(f'    HTTP {response.status_code} for {title}')
+        logger.error('HTTP %s for %s', response.status_code, title)
         return None
 
     # Handle empty response
     if not response.content:
-        print(f'    Empty response for {title}')
+        logger.warning('Empty response for %s', title)
         return None
 
     try:
         data = response.json()
     except Exception as e:
-        print(f'    JSON parse error for {title}: {e}')
+        logger.error('JSON parse error for %s: %s', title, e)
         return None
 
     pages = data.get('query', {}).get('pages', {})
@@ -107,10 +109,10 @@ async def download_articles(
         for domain in domains:
             titles = ARTICLES.get(domain, [])
             if not titles:
-                print(f'[{domain.upper()}] Unknown domain, skipping')
+                logger.warning('[%s] Unknown domain, skipping', domain.upper())
                 continue
 
-            print(f'[{domain.upper()}] Downloading {len(titles)} articles...')
+            logger.info('[%s] Downloading %d articles...', domain.upper(), len(titles))
 
             for title in titles:
                 article = await fetch_article(title, client)
@@ -121,7 +123,7 @@ async def download_articles(
                     filepath.write_text(article['content'])
 
                     word_count = len(article['content'].split())
-                    print(f'  ✓ {title}: {word_count:,} words')
+                    logger.info('  ✓ %s: %s words', title, f'{word_count:,}')
 
                     articles.append(
                         {
@@ -133,7 +135,7 @@ async def download_articles(
                         }
                     )
                 else:
-                    print(f'  ✗ {title}: Not found')
+                    logger.warning('  ✗ %s: Not found', title)
 
     return articles
 

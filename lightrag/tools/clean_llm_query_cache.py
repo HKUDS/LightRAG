@@ -20,7 +20,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from dotenv import load_dotenv
 
@@ -28,7 +28,6 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
-from lightrag.kg.shared_storage import set_all_update_flags
 from lightrag.namespace import NameSpace
 from lightrag.utils import setup_logger
 
@@ -235,7 +234,7 @@ class CleanupTool:
             namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
             workspace=workspace,
             global_config=global_config,
-            embedding_func=None,
+            embedding_func=cast(Any, None),
         )
 
         # Initialize the storage (may raise exception if connection fails)

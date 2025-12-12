@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import global_args
 
@@ -17,7 +17,7 @@ class TokenPayload(BaseModel):
     sub: str  # Username
     exp: datetime  # Expiration time
     role: str = 'user'  # User role, default is regular user
-    metadata: dict = {}  # Additional metadata
+    metadata: dict = Field(default_factory=dict)  # Additional metadata
 
 
 class AuthHandler:
@@ -83,9 +83,6 @@ class AuthHandler:
             expire_timestamp = payload['exp']
             expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
 
-            if datetime.now(timezone.utc) > expire_time:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token expired')
-
             # Return complete payload instead of just username
             return {
                 'username': payload['sub'],
@@ -93,6 +90,8 @@ class AuthHandler:
                 'metadata': payload.get('metadata', {}),
                 'exp': expire_time,
             }
+        except jwt.ExpiredSignatureError as e:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token expired') from e
         except jwt.PyJWTError as e:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid token') from e
 

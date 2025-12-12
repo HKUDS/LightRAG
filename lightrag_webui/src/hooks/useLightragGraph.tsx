@@ -1,17 +1,35 @@
-import { queryGraphs } from '@/api/lightrag'
+import type Graph from 'graphology'
+import { UndirectedGraph } from 'graphology'
+import { useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import seedrandom from 'seedrandom'
+import { toast } from 'sonner'
+import {
+  type LightragEdgeType,
+  type LightragGraphType,
+  type LightragNodeType,
+  queryGraphs,
+} from '@/api/lightrag'
 import * as Constants from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { type RawEdgeType, RawGraph, type RawNodeType, useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
-import type Graph from 'graphology'
-import { UndirectedGraph } from 'graphology'
-import { useCallback, useEffect, useRef } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-
 import { DEFAULT_NODE_COLOR, resolveNodeColor } from '@/utils/graphColor'
-import seedrandom from 'seedrandom'
+
+// Internal mutable types for graph processing
+// These extend API types with visualization properties added during data transformation
+type MutableNodeType = LightragNodeType & {
+  x: number
+  y: number
+  degree: number
+  size: number
+  color?: string
+}
+
+type MutableEdgeType = LightragEdgeType & {
+  dynamicId: string
+}
 
 // Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
@@ -64,7 +82,7 @@ const validateGraph = (graph: RawGraph) => {
   for (const edge of graph.edges) {
     const source = graph.getNode(edge.source)
     const target = graph.getNode(edge.target)
-    if (source == undefined || target == undefined) {
+    if (source === undefined || target === undefined) {
       console.log('Graph validation failed: edge references non-existent node')
       return false
     }
@@ -81,6 +99,7 @@ export type NodeType = {
   size: number
   color: string
   highlighted?: boolean
+  db_degree?: number
 }
 export type EdgeType = {
   label: string
@@ -97,7 +116,7 @@ const fetchGraph = async (
   minDegree = 0,
   includeOrphans = false
 ) => {
-  let rawData: any = null
+  let rawData: LightragGraphType | null = null
 
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
@@ -122,8 +141,11 @@ const fetchGraph = async (
     const nodeIdMap: Record<string, number> = {}
     const edgeIdMap: Record<string, number> = {}
 
-    for (let i = 0; i < rawData.nodes.length; i++) {
-      const node = rawData.nodes[i]
+    // Cast nodes to mutable type for adding visualization properties
+    const mutableNodes = rawData.nodes as unknown as MutableNodeType[]
+
+    for (let i = 0; i < mutableNodes.length; i++) {
+      const node = mutableNodes[i]
       nodeIdMap[node.id] = i
 
       node.x = Math.random()
@@ -132,20 +154,23 @@ const fetchGraph = async (
       node.size = 10
     }
 
-    for (let i = 0; i < rawData.edges.length; i++) {
-      const edge = rawData.edges[i]
+    // Cast edges to mutable type for adding dynamicId
+    const mutableEdges = rawData.edges as unknown as MutableEdgeType[]
+
+    for (let i = 0; i < mutableEdges.length; i++) {
+      const edge = mutableEdges[i]
       edgeIdMap[edge.id] = i
 
       const source = nodeIdMap[edge.source]
       const target = nodeIdMap[edge.target]
       if (source !== undefined && target !== undefined) {
-        const sourceNode = rawData.nodes[source]
+        const sourceNode = mutableNodes[source]
         if (!sourceNode) {
           console.error(`Source node ${edge.source} is undefined`)
           continue
         }
 
-        const targetNode = rawData.nodes[target]
+        const targetNode = mutableNodes[target]
         if (!targetNode) {
           console.error(`Target node ${edge.target} is undefined`)
           continue
@@ -156,26 +181,27 @@ const fetchGraph = async (
     }
 
     // generate node size
-    let minDegree = Number.MAX_SAFE_INTEGER
-    let maxDegree = 0
+    let minDegreeVal = Number.MAX_SAFE_INTEGER
+    let maxDegreeVal = 0
 
-    for (const node of rawData.nodes) {
-      minDegree = Math.min(minDegree, node.degree)
-      maxDegree = Math.max(maxDegree, node.degree)
+    for (const node of mutableNodes) {
+      minDegreeVal = Math.min(minDegreeVal, node.degree)
+      maxDegreeVal = Math.max(maxDegreeVal, node.degree)
     }
-    const range = maxDegree - minDegree
+    const range = maxDegreeVal - minDegreeVal
     if (range > 0) {
       const scale = Constants.maxNodeSize - Constants.minNodeSize
-      for (const node of rawData.nodes) {
+      for (const node of mutableNodes) {
         node.size = Math.round(
-          Constants.minNodeSize + scale * Math.pow((node.degree - minDegree) / range, 0.5)
+          Constants.minNodeSize + scale * ((node.degree - minDegreeVal) / range) ** 0.5
         )
       }
     }
 
     rawGraph = new RawGraph()
-    rawGraph.nodes = rawData.nodes
-    rawGraph.edges = rawData.edges
+    // Cast back to RawNodeType/RawEdgeType since we've added all required properties
+    rawGraph.nodes = mutableNodes as unknown as RawNodeType[]
+    rawGraph.edges = mutableEdges as unknown as RawEdgeType[]
     rawGraph.nodeIdMap = nodeIdMap
     rawGraph.edgeIdMap = edgeIdMap
 
@@ -255,7 +281,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
     const sizeScale = maxEdgeSize - minEdgeSize
     graph.forEachEdge((edge) => {
       const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
-      const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+      const scaledSize = minEdgeSize + sizeScale * ((weight - minWeight) / weightRange) ** 0.5
       graph.setEdgeAttribute(edge, 'size', scaledSize)
     })
   } else {
@@ -280,7 +306,9 @@ const useLightrangeGraph = () => {
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
+  // Subscribe to trigger re-render when graph data updates
   const graphDataVersion = useGraphStore.use.graphDataVersion()
+  void graphDataVersion
 
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
@@ -384,7 +412,7 @@ const useLightrangeGraph = () => {
           const data = result?.rawGraph
 
           // Assign colors based on entity_type *after* fetching
-          if (data && data.nodes) {
+          if (data?.nodes) {
             data.nodes.forEach((node) => {
               // Use entity_type instead of type
               const nodeEntityType = node.properties?.entity_type as string | undefined
@@ -424,7 +452,7 @@ const useLightrangeGraph = () => {
 
             // Check if the empty graph is due to 401 authentication error
             const errorMessage = useBackendState.getState().message
-            const isAuthError = errorMessage && errorMessage.includes('Authentication required')
+            const isAuthError = errorMessage?.includes('Authentication required')
 
             // Only clear queryLabel if it's not an auth error and current label is not empty
             if (!isAuthError && currentQueryLabel) {
@@ -481,16 +509,7 @@ const useLightrangeGraph = () => {
           state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
         })
     }
-  }, [
-    queryLabel,
-    maxQueryDepth,
-    maxNodes,
-    minDegree,
-    includeOrphans,
-    isFetching,
-    t,
-    graphDataVersion,
-  ])
+  }, [queryLabel, maxQueryDepth, maxNodes, minDegree, includeOrphans, isFetching, t])
 
   // Handle node expansion
   useEffect(() => {
@@ -682,7 +701,7 @@ const useLightrangeGraph = () => {
               const limitedDegree = Math.min(newDegree, maxDegree + 1)
 
               const newSize = Math.round(
-                Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
+                Constants.minNodeSize + scale * ((limitedDegree - minDegree) / range) ** 0.5
               )
 
               sigmaGraph.setNodeAttribute(nodeId, 'size', newSize)
@@ -704,8 +723,7 @@ const useLightrangeGraph = () => {
 
           sigmaGraph.forEachEdge((edge) => {
             const weight = sigmaGraph.getEdgeAttribute(edge, 'originalWeight') || 1
-            const scaledSize =
-              minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+            const scaledSize = minEdgeSize + sizeScale * ((weight - minWeight) / weightRange) ** 0.5
             sigmaGraph.setEdgeAttribute(edge, 'size', scaledSize)
           })
         }
@@ -754,14 +772,15 @@ const useLightrangeGraph = () => {
 
         // Add new nodes
         for (const nodeId of nodesToAdd) {
-          const newNode = processedNodes.find((n) => n.id === nodeId)!
+          const newNode = processedNodes.find((n) => n.id === nodeId)
+          if (!newNode) continue
           const nodeDegree = nodeDegrees.get(nodeId) || 0
 
           // Calculate node size
           // Limit nodeDegree to maxDegree + 1 to prevent new nodes from being too large
           const limitedDegree = Math.min(nodeDegree, maxDegree + 1)
           const nodeSize = Math.round(
-            Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
+            Constants.minNodeSize + scale * ((limitedDegree - minDegree) / range) ** 0.5
           )
 
           // Calculate angle for polar coordinates
@@ -803,7 +822,8 @@ const useLightrangeGraph = () => {
 
         // Add new edges
         for (const edgeId of edgesToAdd) {
-          const newEdge = processedEdges.find((e) => e.id === edgeId)!
+          const newEdge = processedEdges.find((e) => e.id === edgeId)
+          if (!newEdge) continue
 
           // Skip if edge already exists
           if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
@@ -854,7 +874,7 @@ const useLightrangeGraph = () => {
           const finalDegree = sigmaGraph.degree(nodeId)
           const limitedDegree = Math.min(finalDegree, maxDegree + 1)
           const newSize = Math.round(
-            Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
+            Constants.minNodeSize + scale * ((limitedDegree - minDegree) / range) ** 0.5
           )
           sigmaGraph.setNodeAttribute(nodeId, 'size', newSize)
           nodeToExpand.size = newSize

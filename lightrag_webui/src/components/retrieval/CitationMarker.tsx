@@ -5,10 +5,10 @@
  * showing source metadata like document title, section, page, and excerpt.
  */
 
+import { FileTextIcon } from 'lucide-react'
 import type { CitationSource } from '@/api/lightrag'
 import Badge from '@/components/ui/Badge'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/HoverCard'
-import { FileTextIcon } from 'lucide-react'
 
 interface CitationMarkerProps {
   /** The citation marker text, e.g., "[1]" or "[1,2]" */
@@ -24,12 +24,7 @@ interface CitationMarkerProps {
 /**
  * Interactive citation marker with hover card showing source metadata
  */
-export function CitationMarker({
-  marker,
-  referenceIds,
-  confidence,
-  sources,
-}: CitationMarkerProps) {
+export function CitationMarker({ marker, referenceIds, confidence, sources }: CitationMarkerProps) {
   // Find sources matching our reference IDs
   const matchingSources = sources.filter((s) => referenceIds.includes(s.reference_id))
 
@@ -72,9 +67,7 @@ export function CitationMarker({
 
               {/* Page range */}
               {source.page_range && (
-                <p className="text-xs text-muted-foreground pl-6">
-                  Pages: {source.page_range}
-                </p>
+                <p className="text-xs text-muted-foreground pl-6">Pages: {source.page_range}</p>
               )}
 
               {/* Excerpt */}
@@ -85,7 +78,10 @@ export function CitationMarker({
               )}
 
               {/* File path */}
-              <p className="text-xs text-muted-foreground/70 pl-6 truncate" title={source.file_path}>
+              <p
+                className="text-xs text-muted-foreground/70 pl-6 truncate"
+                title={source.file_path}
+              >
                 {source.file_path}
               </p>
             </div>
@@ -122,9 +118,9 @@ export function renderTextWithCitations(
   const citationPattern = /\[(\d+(?:,\d+)*)\]/g
   const parts: React.ReactNode[] = []
   let lastIndex = 0
-  let match: RegExpExecArray | null
+  let match: RegExpExecArray | null = citationPattern.exec(text)
 
-  while ((match = citationPattern.exec(text)) !== null) {
+  while (match !== null) {
     // Add text before the citation
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index))
@@ -150,6 +146,7 @@ export function renderTextWithCitations(
     )
 
     lastIndex = match.index + match[0].length
+    match = citationPattern.exec(text)
   }
 
   // Add remaining text

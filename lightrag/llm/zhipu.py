@@ -81,7 +81,9 @@ async def zhipu_complete_if_cache(
 
     response = client.chat.completions.create(model=model, messages=messages, **kwargs)
 
-    return response.choices[0].message.content
+    # Access choices directly - this function doesn't support streaming
+    content = response.choices[0].message.content  # type: ignore[union-attr]
+    return content or ''
 
 
 async def zhipu_complete(

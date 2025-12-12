@@ -1,8 +1,8 @@
-import Button from '@/components/ui/Button'
-import { controlButtonVariant } from '@/lib/constants'
 import { useFullScreen } from '@react-sigma/core'
 import { MaximizeIcon, MinimizeIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import Button from '@/components/ui/Button'
+import { controlButtonVariant } from '@/lib/constants'
 
 /**
  * Component that toggles full screen mode.

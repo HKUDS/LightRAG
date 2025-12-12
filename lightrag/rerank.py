@@ -1,14 +1,15 @@
 """
 Local reranker using sentence-transformers CrossEncoder.
 
-Uses mixedbread-ai/mxbai-rerank-xsmall-v1 by default - a small but effective
-cross-encoder model that runs entirely locally without API calls.
+Uses cross-encoder/ms-marco-MiniLM-L-6-v2 by default - a 22M param model with
+excellent accuracy and clean score separation (-11 to +10 range).
+Runs entirely locally without API calls.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
 import os
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol, SupportsFloat, TypedDict, runtime_checkable
 
 from .utils import logger
@@ -17,7 +18,8 @@ from .utils import logger
 _reranker_model: RerankerModel | None = None
 _reranker_model_name: str | None = None
 
-# Default model - best quality/size tradeoff from benchmarks
+# Default model - mxbai-rerank-xsmall-v1 performs best on domain-specific content
+# Used for ordering only (no score filtering) - see constants.py DEFAULT_MIN_RERANK_SCORE
 DEFAULT_RERANK_MODEL = 'mixedbread-ai/mxbai-rerank-xsmall-v1'
 
 

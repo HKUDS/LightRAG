@@ -1,19 +1,19 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { Document, Page, pdfjs } from 'react-pdf'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import {
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronUpIcon,
-  ChevronDownIcon,
-  MinusIcon,
-  PlusIcon,
   Loader2Icon,
   Maximize2Icon,
   MaximizeIcon,
   MinimizeIcon,
+  MinusIcon,
+  PlusIcon,
   SearchIcon,
   XIcon,
 } from 'lucide-react'
@@ -108,7 +108,7 @@ export default function PDFViewer({ url }: PDFViewerProps) {
         entries.forEach((entry) => {
           if (entry.intersectionRatio > maxVisibility) {
             maxVisibility = entry.intersectionRatio
-            const pageNum = parseInt(entry.target.getAttribute('data-page') || '1')
+            const pageNum = parseInt(entry.target.getAttribute('data-page') || '1', 10)
             mostVisiblePage = pageNum
           }
         })
@@ -138,6 +138,72 @@ export default function PDFViewer({ url }: PDFViewerProps) {
     return () => document.removeEventListener('fullscreenchange', handler)
   }, [])
 
+  // Define all callback functions before effects that use them
+  const goToPage = useCallback(
+    (page: number) => {
+      const targetPage = Math.max(1, Math.min(page, numPages))
+      const pageElement = pageRefs.current.get(targetPage)
+      if (pageElement) {
+        pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+      setCurrentPage(targetPage)
+      setInputValue(String(targetPage))
+    },
+    [numPages]
+  )
+
+  const zoomIn = useCallback(() => {
+    setFitMode('manual')
+    setScale((s) => Math.min(2, s + 0.25))
+  }, [])
+
+  const zoomOut = useCallback(() => {
+    setFitMode('manual')
+    setScale((s) => Math.max(0.5, s - 0.25))
+  }, [])
+
+  const toggleFitWidth = useCallback(() => {
+    if (fitMode === 'width') {
+      setFitMode('manual')
+      const saved = localStorage.getItem(ZOOM_KEY)
+      if (saved) setScale(parseFloat(saved))
+    } else {
+      setFitMode('width')
+      setScale(calculateFitWidth())
+    }
+  }, [fitMode, calculateFitWidth])
+
+  const toggleFullscreen = useCallback(async () => {
+    if (!document.fullscreenElement) {
+      await viewerRef.current?.requestFullscreen()
+    } else {
+      await document.exitFullscreen()
+    }
+  }, [])
+
+  const closeSearch = useCallback(() => {
+    setShowSearch(false)
+    setSearchQuery('')
+    setMatches([])
+    setCurrentMatchIndex(0)
+    viewerRef.current?.focus()
+  }, [])
+
+  // Search navigation - must be after goToPage since they depend on it
+  const nextMatch = useCallback(() => {
+    if (matches.length === 0) return
+    const nextIndex = (currentMatchIndex + 1) % matches.length
+    setCurrentMatchIndex(nextIndex)
+    goToPage(matches[nextIndex].pageNum)
+  }, [matches, currentMatchIndex, goToPage])
+
+  const prevMatch = useCallback(() => {
+    if (matches.length === 0) return
+    const prevIndex = (currentMatchIndex - 1 + matches.length) % matches.length
+    setCurrentMatchIndex(prevIndex)
+    goToPage(matches[prevIndex].pageNum)
+  }, [matches, currentMatchIndex, goToPage])
+
   // Search: Find matches when query changes
   useEffect(() => {
     if (!searchQuery.trim() || textContent.size === 0) {
@@ -151,12 +217,12 @@ export default function PDFViewer({ url }: PDFViewerProps) {
 
     textContent.forEach((text, pageNum) => {
       const lowerText = text.toLowerCase()
-      let startIndex = 0
+      let startIndex = lowerText.indexOf(query)
       let matchIndex = 0
 
-      while ((startIndex = lowerText.indexOf(query, startIndex)) !== -1) {
+      while (startIndex !== -1) {
         results.push({ pageNum, matchIndex })
-        startIndex += query.length
+        startIndex = lowerText.indexOf(query, startIndex + query.length)
         matchIndex++
       }
     })
@@ -168,7 +234,7 @@ export default function PDFViewer({ url }: PDFViewerProps) {
     if (results.length > 0) {
       goToPage(results[0].pageNum)
     }
-  }, [searchQuery, textContent])
+  }, [searchQuery, textContent, goToPage])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -246,82 +312,32 @@ export default function PDFViewer({ url }: PDFViewerProps) {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [currentPage, numPages, isFullscreen, showSearch, matches, currentMatchIndex])
-
-  const goToPage = (page: number) => {
-    const targetPage = Math.max(1, Math.min(page, numPages))
-    const pageElement = pageRefs.current.get(targetPage)
-    if (pageElement) {
-      pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-    setCurrentPage(targetPage)
-    setInputValue(String(targetPage))
-  }
-
-  const zoomIn = () => {
-    setFitMode('manual')
-    setScale((s) => Math.min(2, s + 0.25))
-  }
-
-  const zoomOut = () => {
-    setFitMode('manual')
-    setScale((s) => Math.max(0.5, s - 0.25))
-  }
-
-  const toggleFitWidth = () => {
-    if (fitMode === 'width') {
-      setFitMode('manual')
-      const saved = localStorage.getItem(ZOOM_KEY)
-      if (saved) setScale(parseFloat(saved))
-    } else {
-      setFitMode('width')
-      setScale(calculateFitWidth())
-    }
-  }
-
-  const toggleFullscreen = async () => {
-    if (!document.fullscreenElement) {
-      await viewerRef.current?.requestFullscreen()
-    } else {
-      await document.exitFullscreen()
-    }
-  }
-
-  // Search navigation
-  const nextMatch = () => {
-    if (matches.length === 0) return
-    const nextIndex = (currentMatchIndex + 1) % matches.length
-    setCurrentMatchIndex(nextIndex)
-    goToPage(matches[nextIndex].pageNum)
-  }
-
-  const prevMatch = () => {
-    if (matches.length === 0) return
-    const prevIndex = (currentMatchIndex - 1 + matches.length) % matches.length
-    setCurrentMatchIndex(prevIndex)
-    goToPage(matches[prevIndex].pageNum)
-  }
-
-  const closeSearch = () => {
-    setShowSearch(false)
-    setSearchQuery('')
-    setMatches([])
-    setCurrentMatchIndex(0)
-    viewerRef.current?.focus()
-  }
+  }, [
+    currentPage,
+    numPages,
+    isFullscreen,
+    showSearch,
+    closeSearch,
+    goToPage,
+    nextMatch,
+    prevMatch,
+    toggleFullscreen,
+    zoomIn,
+    zoomOut,
+  ])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputValue(e.target.value)
   }
 
   const handleInputBlur = () => {
-    const page = parseInt(inputValue) || 1
+    const page = parseInt(inputValue, 10) || 1
     goToPage(page)
   }
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
-      const page = parseInt(inputValue) || 1
+      const page = parseInt(inputValue, 10) || 1
       goToPage(page)
     }
   }
@@ -334,9 +350,7 @@ export default function PDFViewer({ url }: PDFViewerProps) {
       try {
         const page = await pdf.getPage(i)
         const content = await page.getTextContent()
-        const text = content.items
-          .map((item) => ('str' in item ? item.str : ''))
-          .join(' ')
+        const text = content.items.map((item) => ('str' in item ? item.str : '')).join(' ')
         textMap.set(i, text)
       } catch {
         // Skip pages that fail to extract
@@ -375,7 +389,7 @@ export default function PDFViewer({ url }: PDFViewerProps) {
       if (parts.length === 1) return str
 
       return parts
-        .map((part, i) => {
+        .map((part) => {
           if (part.toLowerCase() === searchQuery.toLowerCase()) {
             return `<mark class="bg-yellow-300 dark:bg-yellow-600 rounded px-0.5">${part}</mark>`
           }
@@ -387,11 +401,7 @@ export default function PDFViewer({ url }: PDFViewerProps) {
   )
 
   return (
-    <div
-      ref={viewerRef}
-      className={cn('flex flex-col h-full', isFullscreen && 'bg-background')}
-      tabIndex={0}
-    >
+    <div ref={viewerRef} className={cn('flex flex-col h-full', isFullscreen && 'bg-background')}>
       {/* Search bar */}
       {showSearch && (
         <div className="flex items-center gap-2 p-2 border-b bg-background flex-shrink-0">
@@ -474,7 +484,7 @@ export default function PDFViewer({ url }: PDFViewerProps) {
           <div className="flex flex-col items-center py-4 gap-4 min-w-fit">
             {Array.from({ length: numPages }, (_, i) => (
               <div
-                key={i}
+                key={`pdf-page-${i + 1}`}
                 ref={(el) => {
                   if (el) pageRefs.current.set(i + 1, el)
                 }}

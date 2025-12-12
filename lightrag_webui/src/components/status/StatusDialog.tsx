@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { LightragStatus } from '@/api/lightrag'
 import {
   Dialog,
@@ -6,7 +7,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/Dialog'
-import { useTranslation } from 'react-i18next'
 import StatusCard from './StatusCard'
 
 interface StatusDialogProps {

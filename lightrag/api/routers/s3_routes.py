@@ -89,9 +89,6 @@ class S3DeleteResponse(BaseModel):
     status: str = Field(description='Deletion status')
 
 
-router = APIRouter(tags=['S3 Storage'])
-
-
 def create_s3_routes(s3_client: S3Client, api_key: str | None = None) -> APIRouter:
     """
     Create S3 browser routes with the given S3 client.
@@ -103,6 +100,7 @@ def create_s3_routes(s3_client: S3Client, api_key: str | None = None) -> APIRout
     Returns:
         APIRouter with S3 browser endpoints
     """
+    router = APIRouter(tags=['S3 Storage'])
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.get('/list', response_model=S3ListResponse, dependencies=[Depends(combined_auth)])
@@ -283,14 +281,6 @@ def create_s3_routes(s3_client: S3Client, api_key: str | None = None) -> APIRout
             S3DeleteResponse confirming deletion
         """
         try:
-            # Check if object exists first
-            exists = await s3_client.object_exists(key)
-            if not exists:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f'Object not found: {key}',
-                )
-
             await s3_client.delete_object(key)
 
             logger.info(f'Deleted S3 object: {key}')
@@ -299,6 +289,11 @@ def create_s3_routes(s3_client: S3Client, api_key: str | None = None) -> APIRout
                 key=key,
                 status='deleted',
             )
+        except FileNotFoundError as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f'Object not found: {key}',
+            ) from e
         except HTTPException:
             raise
         except Exception as e:

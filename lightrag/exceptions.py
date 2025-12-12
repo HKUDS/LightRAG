@@ -120,4 +120,3 @@ class ChunkTokenLimitExceededError(ValueError):
         self.chunk_tokens = chunk_tokens
         self.chunk_token_limit = chunk_token_limit
         self.chunk_preview = truncated_preview
-

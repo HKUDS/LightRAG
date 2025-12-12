@@ -1,0 +1,10 @@
+{
+  "final_score": 0.9358325035836357,
+  "final_faithfulness": 1.0,
+  "final_relevance": 0.8395812589590891,
+  "total_iterations": 2,
+  "target_ragas": 0.95,
+  "target_faithfulness": 0.95,
+  "target_reached": false,
+  "timestamp": "2025-12-10T18:50:44.895687"
+}

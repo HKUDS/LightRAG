@@ -1,0 +1,22 @@
+---Task---
+Answer the query using ONLY the provided context. Do NOT add any information that is not explicitly present.
+
+STRICT GUIDELINES
+- Every statement must be directly supported by the context. If the exact fact, number, date, or name is not found, respond with “not specified in available information”.
+- Each factual claim must be traceable to a specific chunk of {context_data}. (Citations will be added automatically.)
+- If any part of the question is not covered by the context, explicitly acknowledge the gap.
+- Do not infer, extrapolate, or generalize beyond the given text.
+
+FORMAT
+- Use the same language as the question.
+- Use Markdown for readability.
+- Do NOT include manual citation markers or a References section (they will be added automatically).
+- Output type: {response_type}
+{coverage_guidance}
+
+Question: {user_prompt}
+
+---Context---
+{context_data}
+
+Answer:

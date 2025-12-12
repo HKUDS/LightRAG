@@ -32,10 +32,10 @@ try:
         ConnectionError as BotocoreConnectionError,
     )
 except ImportError:
-    # If botocore is not installed, define placeholders
-    ClientError = Exception
-    BotocoreConnectionError = Exception
-    ReadTimeoutError = Exception
+    # If botocore is not installed, define placeholders as exception types
+    ClientError: type[Exception] = Exception
+    BotocoreConnectionError: type[Exception] = Exception
+    ReadTimeoutError: type[Exception] = Exception
 
 
 class BedrockError(Exception):
@@ -77,8 +77,8 @@ def _handle_bedrock_exception(e: Exception, operation: str = 'Bedrock operation'
 
     # Handle botocore ClientError with specific error codes
     if isinstance(e, ClientError):
-        error_code = cast(ClientError, e).response.get('Error', {}).get('Code', '')
-        error_msg = cast(ClientError, e).response.get('Error', {}).get('Message', error_message)
+        error_code = cast(Any, e).response.get('Error', {}).get('Code', '')
+        error_msg = cast(Any, e).response.get('Error', {}).get('Message', error_message)
 
         # Rate limiting and throttling errors (retryable)
         if error_code in [
@@ -94,7 +94,7 @@ def _handle_bedrock_exception(e: Exception, operation: str = 'Bedrock operation'
             raise BedrockConnectionError(f'Service error: {error_msg}')
 
         # Check for 5xx HTTP status codes (retryable)
-        elif cast(ClientError, e).response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) >= 500:
+        elif cast(Any, e).response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) >= 500:
             logging.error(f'{operation} server error: {error_msg}')
             raise BedrockConnectionError(f'Server error: {error_msg}')
 
@@ -293,7 +293,8 @@ async def bedrock_complete_if_cache(
 
     # For non-streaming responses, use the standard async context manager pattern
     session = aioboto3.Session()
-    async with session.client('bedrock-runtime', region_name=region) as bedrock_async_client:
+    client_cm = cast(Any, session.client('bedrock-runtime', region_name=region))
+    async with client_cm as bedrock_async_client:
         try:
             # Use converse for non-streaming responses
             response = await bedrock_async_client.converse(**args, **kwargs)
@@ -370,7 +371,8 @@ async def bedrock_embed(
     region = os.environ.get('AWS_REGION')
 
     session = aioboto3.Session()
-    async with session.client('bedrock-runtime', region_name=region) as bedrock_async_client:
+    client_cm = cast(Any, session.client('bedrock-runtime', region_name=region))
+    async with client_cm as bedrock_async_client:
         try:
             if (model_provider := model.split('.')[0]) == 'amazon':
                 embed_texts = []

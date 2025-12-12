@@ -1,6 +1,7 @@
 import os
 import re
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import pipmaster as pm
 
@@ -11,6 +12,8 @@ if not pm.is_installed('ollama'):
 
 import numpy as np
 import ollama
+
+ollama = cast(Any, ollama)
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -86,7 +89,7 @@ async def _ollama_model_if_cache(
 
     host = _coerce_host_for_cloud_model(host, model)
 
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
+    ollama_client = cast(Any, ollama).AsyncClient(host=host, timeout=timeout, headers=headers)
 
     try:
         messages = []
@@ -181,7 +184,7 @@ async def ollama_embed(texts: list[str], embed_model: str = 'bge-m3:latest', **k
 
     host = _coerce_host_for_cloud_model(host, embed_model)
 
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
+    ollama_client = cast(Any, ollama).AsyncClient(host=host, timeout=timeout, headers=headers)
     try:
         options = kwargs.pop('options', {})
         data = await ollama_client.embed(model=embed_model, input=texts, options=options)

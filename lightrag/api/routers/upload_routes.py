@@ -8,7 +8,7 @@ This module provides endpoints for:
 """
 
 import mimetypes
-from typing import Annotated, Any, ClassVar, cast
+from typing import Annotated, Any, ClassVar
 
 from fastapi import (
     APIRouter,
@@ -179,7 +179,7 @@ def create_upload_routes(
             # Determine content type
             final_content_type = file.content_type
             if not final_content_type:
-                guessed_type, encoding = mimetypes.guess_type(file.filename or '')
+                guessed_type, _encoding = mimetypes.guess_type(file.filename or '')
                 final_content_type = guessed_type or 'application/octet-stream'
 
             # Upload to S3 staging
@@ -408,16 +408,16 @@ def create_upload_routes(
 
                     # Update database chunks with archive s3_key
                     archive_url = s3_client.get_s3_url(archive_key)
-                    updated_count = await cast(PGKVStorage, rag.text_chunks).update_s3_key_by_doc_id(
-                        full_doc_id=doc_id,
-                        s3_key=archive_key,
-                        archive_url=archive_url,
-                    )
-                    logger.info(f'Updated {updated_count} chunks with archive s3_key: {archive_key}')
-
-                    # Update doc_status with archive s3_key
-                    await cast(PGDocStatusStorage, rag.doc_status).update_s3_key(doc_id, archive_key)
-                    logger.info(f'Updated doc_status with archive s3_key: {archive_key}')
+                    if isinstance(rag.text_chunks, PGKVStorage):
+                        updated_count = await rag.text_chunks.update_s3_key_by_doc_id(
+                            full_doc_id=doc_id,
+                            s3_key=archive_key,
+                            archive_url=archive_url,
+                        )
+                        logger.info(f'Updated {updated_count} chunks with archive s3_key: {archive_key}')
+                    if isinstance(rag.doc_status, PGDocStatusStorage):
+                        await rag.doc_status.update_s3_key(doc_id, archive_key)
+                        logger.info(f'Updated doc_status with archive s3_key: {archive_key}')
                 except Exception as e:
                     logger.warning(f'Failed to archive document: {e}')
                     # Don't fail the request, processing succeeded

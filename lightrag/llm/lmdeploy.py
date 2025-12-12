@@ -1,11 +1,7 @@
-import pipmaster as pm  # Pipmaster for dynamic library install
-
-# install specific modules
-if not pm.is_installed('lmdeploy'):
-    pm.install('lmdeploy[all]')
-
 from functools import lru_cache
+from typing import Any, cast
 
+import pipmaster as pm  # Pipmaster for dynamic library install
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -29,7 +25,10 @@ def initialize_lmdeploy_pipeline(
     model_format='hf',
     quant_policy=0,
 ):
-    from lmdeploy import ChatTemplateConfig, TurbomindEngineConfig, pipeline
+    if not pm.is_installed('lmdeploy'):
+        raise RuntimeError('lmdeploy is not installed. Please install with `pip install lmdeploy[all]`.')
+
+    from lmdeploy import ChatTemplateConfig, TurbomindEngineConfig, pipeline  # type: ignore[attr-defined]
 
     lmdeploy_pipe = pipeline(
         model_path=model,
@@ -92,7 +91,9 @@ async def lmdeploy_model_if_cache(
         logger.debug('enable_cot=True is not supported for lmdeploy and will be ignored.')
     try:
         import lmdeploy
-        from lmdeploy import GenerationConfig, version_info
+
+        lmdeploy = cast(Any, lmdeploy)
+        from lmdeploy import GenerationConfig, version_info  # type: ignore[attr-defined]
     except Exception as e:
         raise ImportError('Please install lmdeploy before initialize lmdeploy backend.') from e
     kwargs.pop('hashing_kv', None)

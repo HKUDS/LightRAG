@@ -1,19 +1,18 @@
-import { queryText, queryTextStream } from '@/api/lightrag'
+import { CopyIcon, EraserIcon, SendIcon } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import type { CitationsMetadata, QueryMode } from '@/api/lightrag'
+import { queryText, queryTextStream } from '@/api/lightrag'
 import { ChatMessage, type MessageWithError } from '@/components/retrieval/ChatMessage'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Textarea from '@/components/ui/Textarea'
 import { useDebounce } from '@/hooks/useDebounce'
-import { throttle } from '@/lib/utils'
-import { errorMessage } from '@/lib/utils'
+import { errorMessage, throttle } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { copyToClipboard } from '@/utils/clipboard'
-import { CopyIcon, EraserIcon, SendIcon } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
 // Helper function to generate unique IDs with browser compatibility
 const generateUniqueId = () => {
@@ -50,16 +49,16 @@ const parseCOTContent = (content: string) => {
   const startMatches: number[] = []
   const endMatches: number[] = []
 
-  let startIndex = 0
-  while ((startIndex = content.indexOf(thinkStartTag, startIndex)) !== -1) {
+  let startIndex = content.indexOf(thinkStartTag)
+  while (startIndex !== -1) {
     startMatches.push(startIndex)
-    startIndex += thinkStartTag.length
+    startIndex = content.indexOf(thinkStartTag, startIndex + thinkStartTag.length)
   }
 
-  let endIndex = 0
-  while ((endIndex = content.indexOf(thinkEndTag, endIndex)) !== -1) {
+  let endIndex = content.indexOf(thinkEndTag)
+  while (endIndex !== -1) {
     endMatches.push(endIndex)
-    endIndex += thinkEndTag.length
+    endIndex = content.indexOf(thinkEndTag, endIndex + thinkEndTag.length)
   }
 
   // Analyze COT state
@@ -157,7 +156,7 @@ export default function RetrievalTesting() {
   const adjustTextareaHeight = useCallback((element: HTMLTextAreaElement) => {
     requestAnimationFrame(() => {
       element.style.height = 'auto'
-      element.style.height = Math.min(element.scrollHeight, 120) + 'px'
+      element.style.height = `${Math.min(element.scrollHeight, 120)}px`
     })
   }, [])
 
@@ -182,7 +181,7 @@ export default function RetrievalTesting() {
       // Parse query mode prefix
       const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
       const prefixMatch = inputValue.match(/^\/(\w+)\s+([\s\S]+)/)
-      let modeOverride: QueryMode | undefined = undefined
+      let modeOverride: QueryMode | undefined
       let actualQuery = inputValue
 
       // If input starts with a slash, but does not match the valid prefix pattern, treat as error
@@ -297,13 +296,14 @@ export default function RetrievalTesting() {
         // Simple heuristic: look for ```mermaid ... ```
         const mermaidBlockRegex = /```mermaid\s+([\s\S]+?)```/g
         let mermaidRendered = false
-        let match
-        while ((match = mermaidBlockRegex.exec(assistantMessage.content)) !== null) {
+        let match: RegExpExecArray | null = mermaidBlockRegex.exec(assistantMessage.content)
+        while (match !== null) {
           // If the block is not too short, consider it complete
           if (match[1] && match[1].trim().length > 10) {
             mermaidRendered = true
             break
           }
+          match = mermaidBlockRegex.exec(assistantMessage.content)
         }
         assistantMessage.mermaidRendered = mermaidRendered
 
@@ -344,7 +344,7 @@ export default function RetrievalTesting() {
       const state = useSettingsStore.getState()
 
       // Add user prompt to history if it exists and is not empty
-      if (state.querySettings.user_prompt && state.querySettings.user_prompt.trim()) {
+      if (state.querySettings.user_prompt?.trim()) {
         state.addUserPromptToHistory(state.querySettings.user_prompt.trim())
       }
 
@@ -410,7 +410,7 @@ export default function RetrievalTesting() {
                 // Append footnotes if provided
                 let finalContent = annotatedContent
                 if (metadata.footnotes && metadata.footnotes.length > 0) {
-                  finalContent += '\n\n---\n\n**References:**\n' + metadata.footnotes.join('\n')
+                  finalContent += `\n\n---\n\n**References:**\n${metadata.footnotes.join('\n')}`
                 }
 
                 // Update message with annotated content and store citation metadata for HoverCards
@@ -436,7 +436,7 @@ export default function RetrievalTesting() {
           )
           if (errorMessage) {
             if (assistantMessage.content) {
-              errorMessage = assistantMessage.content + '\n' + errorMessage
+              errorMessage = `${assistantMessage.content}\n${errorMessage}`
             }
             updateAssistantMessage(errorMessage, true)
           }
@@ -494,7 +494,7 @@ export default function RetrievalTesting() {
         }
       }
     },
-    [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
+    [inputValue, isLoading, messages, t, scrollToBottom]
   )
 
   const handleKeyDown = useCallback(
@@ -505,7 +505,7 @@ export default function RetrievalTesting() {
         const target = e.target as HTMLInputElement | HTMLTextAreaElement
         const start = target.selectionStart || 0
         const end = target.selectionEnd || 0
-        const newValue = inputValue.slice(0, start) + '\n' + inputValue.slice(end)
+        const newValue = `${inputValue.slice(0, start)}\n${inputValue.slice(end)}`
         setInputValue(newValue)
 
         // Set cursor position after the newline and adjust height if needed
@@ -522,7 +522,7 @@ export default function RetrievalTesting() {
       } else if (e.key === 'Enter' && !e.shiftKey) {
         // Enter: Submit form
         e.preventDefault()
-        handleSubmit(e as any)
+        handleSubmit(e as unknown as React.FormEvent)
       }
     },
     [inputValue, handleSubmit, adjustTextareaHeight]
@@ -550,7 +550,7 @@ export default function RetrievalTesting() {
 
         // Set cursor position to end of pasted content
         setTimeout(() => {
-          if (inputRef.current && inputRef.current.setSelectionRange) {
+          if (inputRef.current?.setSelectionRange) {
             const newCursorPosition = start + pastedText.length
             inputRef.current.setSelectionRange(newCursorPosition, newCursorPosition)
           }
@@ -576,14 +576,14 @@ export default function RetrievalTesting() {
         }
       })
     }
-  }, [hasMultipleLines, inputValue.length]) // Include inputValue.length dependency
+  }, [inputValue.length]) // Include inputValue.length dependency
 
   // Effect to adjust textarea height when switching to multi-line mode
   useEffect(() => {
     if (hasMultipleLines && inputRef.current && inputRef.current.tagName === 'TEXTAREA') {
       adjustTextareaHeight(inputRef.current as HTMLTextAreaElement)
     }
-  }, [hasMultipleLines, inputValue, adjustTextareaHeight])
+  }, [hasMultipleLines, adjustTextareaHeight])
 
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
@@ -680,8 +680,8 @@ export default function RetrievalTesting() {
   // Use a longer debounce time for better performance with large message updates
   const debouncedMessages = useDebounce(messages, 150)
   useEffect(() => {
-    // Only auto-scroll if enabled
-    if (shouldFollowScrollRef.current) {
+    // Only auto-scroll if enabled and there are messages
+    if (shouldFollowScrollRef.current && debouncedMessages.length > 0) {
       // Force scroll to bottom when messages change
       scrollToBottom()
     }
@@ -690,7 +690,7 @@ export default function RetrievalTesting() {
   const clearMessages = useCallback(() => {
     setMessages([])
     useSettingsStore.getState().setRetrievalHistory([])
-  }, [setMessages])
+  }, [])
 
   // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(
@@ -771,9 +771,16 @@ export default function RetrievalTesting() {
         <div className="relative grow">
           <div
             ref={messagesContainerRef}
+            role="log"
+            aria-live="polite"
             className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
             onClick={() => {
               if (shouldFollowScrollRef.current) {
+                shouldFollowScrollRef.current = false
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && shouldFollowScrollRef.current) {
                 shouldFollowScrollRef.current = false
               }
             }}
@@ -824,81 +831,84 @@ export default function RetrievalTesting() {
           </div>
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="flex shrink-0 items-center gap-2"
-          autoComplete="on"
-          method="post"
-          action="#"
-          role="search"
-        >
-          {/* Hidden submit button to ensure form meets HTML standards */}
-          <input type="submit" style={{ display: 'none' }} tabIndex={-1} />
-          <Button
-            type="button"
-            variant="outline"
-            onClick={clearMessages}
-            disabled={isLoading}
-            size="sm"
+        <search>
+          <form
+            onSubmit={handleSubmit}
+            className="flex shrink-0 items-center gap-2"
+            autoComplete="on"
+            method="post"
+            action="#"
           >
-            <EraserIcon />
-            {t('retrievePanel.retrieval.clear')}
-          </Button>
-          <div className="flex-1 relative">
-            <label htmlFor="query-input" className="sr-only">
-              {t('retrievePanel.retrieval.placeholder')}
-            </label>
-            {hasMultipleLines ? (
-              <Textarea
-                ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-                id="query-input"
-                autoComplete="on"
-                className="w-full min-h-[40px] max-h-[120px] overflow-y-auto"
-                value={inputValue}
-                onChange={handleChange}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                placeholder={t('retrievePanel.retrieval.placeholder')}
-                disabled={isLoading}
-                rows={1}
-                style={{
-                  resize: 'none',
-                  height: 'auto',
-                  minHeight: '40px',
-                  maxHeight: '120px',
-                }}
-                onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
-                  const target = e.target as HTMLTextAreaElement
-                  requestAnimationFrame(() => {
-                    target.style.height = 'auto'
-                    target.style.height = Math.min(target.scrollHeight, 120) + 'px'
-                  })
-                }}
-              />
-            ) : (
-              <Input
-                ref={inputRef as React.RefObject<HTMLInputElement>}
-                id="query-input"
-                autoComplete="on"
-                className="w-full"
-                value={inputValue}
-                onChange={handleChange}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                placeholder={t('retrievePanel.retrieval.placeholder')}
-                disabled={isLoading}
-              />
-            )}
-            {/* Error message below input */}
-            {inputError && (
-              <div className="absolute left-0 top-full mt-1 text-xs text-red-500">{inputError}</div>
-            )}
-          </div>
-          <Button type="submit" variant="default" disabled={isLoading} size="sm">
-            <SendIcon />
-            {t('retrievePanel.retrieval.send')}
-          </Button>
-        </form>
+            {/* Hidden submit button to ensure form meets HTML standards */}
+            <input type="submit" style={{ display: 'none' }} tabIndex={-1} />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={clearMessages}
+              disabled={isLoading}
+              size="sm"
+            >
+              <EraserIcon />
+              {t('retrievePanel.retrieval.clear')}
+            </Button>
+            <div className="flex-1 relative">
+              <label htmlFor="query-input" className="sr-only">
+                {t('retrievePanel.retrieval.placeholder')}
+              </label>
+              {hasMultipleLines ? (
+                <Textarea
+                  ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+                  id="query-input"
+                  autoComplete="on"
+                  className="w-full min-h-[40px] max-h-[120px] overflow-y-auto"
+                  value={inputValue}
+                  onChange={handleChange}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  placeholder={t('retrievePanel.retrieval.placeholder')}
+                  disabled={isLoading}
+                  rows={1}
+                  style={{
+                    resize: 'none',
+                    height: 'auto',
+                    minHeight: '40px',
+                    maxHeight: '120px',
+                  }}
+                  onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
+                    const target = e.target as HTMLTextAreaElement
+                    requestAnimationFrame(() => {
+                      target.style.height = 'auto'
+                      target.style.height = `${Math.min(target.scrollHeight, 120)}px`
+                    })
+                  }}
+                />
+              ) : (
+                <Input
+                  ref={inputRef as React.RefObject<HTMLInputElement>}
+                  id="query-input"
+                  autoComplete="on"
+                  className="w-full"
+                  value={inputValue}
+                  onChange={handleChange}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  placeholder={t('retrievePanel.retrieval.placeholder')}
+                  disabled={isLoading}
+                />
+              )}
+              {/* Error message below input */}
+              {inputError && (
+                <div className="absolute left-0 top-full mt-1 text-xs text-red-500">
+                  {inputError}
+                </div>
+              )}
+            </div>
+            <Button type="submit" variant="default" disabled={isLoading} size="sm">
+              <SendIcon />
+              {t('retrievePanel.retrieval.send')}
+            </Button>
+          </form>
+        </search>
       </div>
       <QuerySettings />
     </div>

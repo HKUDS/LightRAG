@@ -1,0 +1,25 @@
+{
+  "iteration": 0,
+  "timestamp": "2025-12-10T18:37:29.560296",
+  "best_score": 0.9127154492283065,
+  "variants": [
+    {
+      "variant_name": "baseline",
+      "source": "baseline",
+      "faithfulness": 0.0,
+      "relevance": 0.0,
+      "ragas_score": 0.0,
+      "total_latency_ms": 0.0,
+      "query_count": 0
+    },
+    {
+      "variant_name": "llm_mutation",
+      "source": "llm_mutation",
+      "faithfulness": 0.991869918699187,
+      "relevance": 0.7939837450219857,
+      "ragas_score": 0.9127154492283065,
+      "total_latency_ms": 68376.39791611582,
+      "query_count": 3
+    }
+  ]
+}

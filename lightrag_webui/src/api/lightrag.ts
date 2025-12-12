@@ -1,3 +1,4 @@
+import axios, { type AxiosError } from 'axios'
 import {
   backendBaseUrl,
   popularLabelsDefaultLimit,
@@ -6,13 +7,21 @@ import {
 import { errorMessage } from '@/lib/utils'
 import { navigationService } from '@/services/navigation'
 import { useSettingsStore } from '@/stores/settings'
-import axios, { type AxiosError } from 'axios'
 
 // Types
+// Property values can be primitive types, arrays, or nested objects
+export type PropertyValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PropertyValue[]
+  | { [key: string]: PropertyValue }
+
 export type LightragNodeType = {
   id: string
   labels: string[]
-  properties: Record<string, any>
+  properties: Record<string, PropertyValue>
 }
 
 export type LightragEdgeType = {
@@ -20,47 +29,50 @@ export type LightragEdgeType = {
   source: string
   target: string
   type: string
-  properties: Record<string, any>
+  properties: Record<string, PropertyValue>
 }
 
 export type LightragGraphType = {
   nodes: LightragNodeType[]
   edges: LightragEdgeType[]
+  is_truncated?: boolean
+}
+
+export type LightragConfiguration = {
+  llm_binding: string
+  llm_binding_host: string
+  llm_model: string
+  embedding_binding: string
+  embedding_binding_host: string
+  embedding_model: string
+  kv_storage: string
+  doc_status_storage: string
+  graph_storage: string
+  vector_storage: string
+  workspace?: string
+  max_graph_nodes?: string
+  enable_rerank?: boolean
+  rerank_binding?: string | null
+  rerank_model?: string | null
+  rerank_binding_host?: string | null
+  summary_language: string
+  force_llm_summary_on_merge: boolean
+  max_parallel_insert: number
+  max_async: number
+  embedding_func_max_async: number
+  embedding_batch_num: number
+  cosine_threshold: number
+  min_rerank_score: number
+  related_chunk_number: number
+  auto_connect_orphans?: boolean
 }
 
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
   input_directory: string
-  configuration: {
-    llm_binding: string
-    llm_binding_host: string
-    llm_model: string
-    embedding_binding: string
-    embedding_binding_host: string
-    embedding_model: string
-    kv_storage: string
-    doc_status_storage: string
-    graph_storage: string
-    vector_storage: string
-    workspace?: string
-    max_graph_nodes?: string
-    enable_rerank?: boolean
-    rerank_binding?: string | null
-    rerank_model?: string | null
-    rerank_binding_host?: string | null
-    summary_language: string
-    force_llm_summary_on_merge: boolean
-    max_parallel_insert: number
-    max_async: number
-    embedding_func_max_async: number
-    embedding_batch_num: number
-    cosine_threshold: number
-    min_rerank_score: number
-    related_chunk_number: number
-    auto_connect_orphans?: boolean
-  }
-  update_status?: Record<string, any>
+  configuration: LightragConfiguration
+  update_status?: Record<string, PropertyValue>
   core_version?: string
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
@@ -105,11 +117,11 @@ export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypas
  * Citation marker with position data for frontend insertion
  */
 export type CitationMarker = {
-  marker: string              // e.g., "[1]" or "[1,2]"
-  insert_position: number     // Character position to insert marker
-  reference_ids: string[]     // Reference IDs this marker cites
-  confidence: number          // Match confidence (0.0-1.0)
-  text_preview: string        // Preview of the cited text
+  marker: string // e.g., "[1]" or "[1,2]"
+  insert_position: number // Character position to insert marker
+  reference_ids: string[] // Reference IDs this marker cites
+  confidence: number // Match confidence (0.0-1.0)
+  text_preview: string // Preview of the cited text
 }
 
 /**
@@ -128,10 +140,10 @@ export type CitationSource = {
  * Consolidated citation metadata from backend
  */
 export type CitationsMetadata = {
-  markers: CitationMarker[]   // Position-based markers for insertion
-  sources: CitationSource[]   // Enhanced reference metadata
-  footnotes: string[]         // Pre-formatted footnote strings
-  uncited_count: number       // Number of claims without citations
+  markers: CitationMarker[] // Position-based markers for insertion
+  sources: CitationSource[] // Enhanced reference metadata
+  footnotes: string[] // Pre-formatted footnote strings
+  uncited_count: number // Number of claims without citations
 }
 
 export type Message = {
@@ -141,7 +153,7 @@ export type Message = {
   displayContent?: string
   thinkingTime?: number | null
   citationsProcessed?: boolean
-  citationsMetadata?: CitationsMetadata  // New consolidated citation data
+  citationsMetadata?: CitationsMetadata // New consolidated citation data
 }
 
 export type QueryRequest = {
@@ -190,7 +202,7 @@ export type QueryResponse = {
 export type EntityUpdateResponse = {
   status: string
   message: string
-  data: Record<string, any>
+  data: Record<string, PropertyValue>
   operation_summary?: {
     merged: boolean
     merge_status: 'success' | 'failed' | 'not_attempted'
@@ -238,7 +250,7 @@ export type DocStatusResponse = {
   track_id?: string
   chunks_count?: number
   error_msg?: string
-  metadata?: Record<string, any>
+  metadata?: Record<string, PropertyValue>
   file_path: string
   s3_key?: string
 }
@@ -305,7 +317,7 @@ export type PipelineStatusResponse = {
   cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]
-  update_status?: Record<string, any>
+  update_status?: Record<string, PropertyValue>
 }
 
 export type LoginResponse = {
@@ -337,7 +349,7 @@ axiosInstance.interceptors.request.use((config) => {
 
   // Always include token if it exists, regardless of path
   if (token) {
-    config.headers['Authorization'] = `Bearer ${token}`
+    config.headers.Authorization = `Bearer ${token}`
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
@@ -459,7 +471,7 @@ export const queryTextStream = async (
     Accept: 'application/x-ndjson',
   }
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`
+    headers.Authorization = `Bearer ${token}`
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey
@@ -664,7 +676,9 @@ export const uploadDocument = async (
     onUploadProgress:
       onUploadProgress !== undefined
         ? (progressEvent) => {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total!)
+            const percentCompleted = Math.round(
+              (progressEvent.loaded * 100) / (progressEvent.total ?? 1)
+            )
             onUploadProgress(percentCompleted)
           }
         : undefined,
@@ -804,7 +818,7 @@ export const loginToServer = async (username: string, password: string): Promise
  */
 export const updateEntity = async (
   entityName: string,
-  updatedData: Record<string, any>,
+  updatedData: Record<string, PropertyValue>,
   allowRename = false,
   allowMerge = false
 ): Promise<EntityUpdateResponse> => {
@@ -827,7 +841,7 @@ export const updateEntity = async (
 export const updateRelation = async (
   sourceEntity: string,
   targetEntity: string,
-  updatedData: Record<string, any>
+  updatedData: Record<string, PropertyValue>
 ): Promise<DocActionResponse> => {
   const response = await axiosInstance.post('/graph/relation/edit', {
     source_id: sourceEntity,
@@ -987,7 +1001,7 @@ export type TableSchema = {
 }
 
 export type TableDataResponse = {
-  data: Record<string, any>[]
+  data: Record<string, PropertyValue>[]
   total: number
   page: number
   page_size: number
@@ -1034,7 +1048,7 @@ const mockSchemas: Record<string, string> = {
 );`,
 }
 
-const mockTableData: Record<string, any[]> = {
+const mockTableData: Record<string, Record<string, PropertyValue>[]> = {
   lightrag_doc_status: [
     {
       id: 'doc_001',

@@ -69,12 +69,8 @@ class MetricsResponse(BaseModel):
     cache_stats: CacheStats
     embed_stats: EmbedStats
     fts_cache_stats: FTSCacheStats
-    mode_distribution: dict[str, int] = Field(
-        description='Query count by mode in the time window'
-    )
-    legacy_stats: dict[str, int] = Field(
-        description='Legacy statistics from utils.statistic_data'
-    )
+    mode_distribution: dict[str, int] = Field(description='Query count by mode in the time window')
+    legacy_stats: dict[str, int] = Field(description='Legacy statistics from utils.statistic_data')
 
     class Config:
         json_schema_extra: ClassVar[dict[str, Any]] = {
@@ -174,9 +170,7 @@ def create_metrics_routes(api_key: str | None = None) -> APIRouter:
                 queries_in_window=stats['queries_in_window'],
                 window_seconds=stats['window_seconds'],
                 latency_percentiles=(
-                    LatencyPercentiles(**stats['latency_percentiles'])
-                    if stats['latency_percentiles']
-                    else None
+                    LatencyPercentiles(**stats['latency_percentiles']) if stats['latency_percentiles'] else None
                 ),
                 cache_stats=CacheStats(**stats['cache_stats']),
                 embed_stats=EmbedStats(**stats['embed_stats']),

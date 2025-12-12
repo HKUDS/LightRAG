@@ -1,12 +1,12 @@
 import '@/lib/extensions' // Import all global extensions
-import ThemeProvider from '@/components/ThemeProvider'
-import LoginPage from '@/features/LoginPage'
-import { navigationService } from '@/services/navigation'
-import { useAuthStore } from '@/stores/state'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Route, HashRouter as Router, Routes, useNavigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
+import ThemeProvider from '@/components/ThemeProvider'
+import LoginPage from '@/features/LoginPage'
+import { navigationService } from '@/services/navigation'
+import { useAuthStore } from '@/stores/state'
 import App from './App'
 
 const queryClient = new QueryClient({

@@ -1,12 +1,29 @@
+import { GitBranchPlus, Link, Scissors } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { PropertyValue } from '@/api/lightrag'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
 import Text from '@/components/ui/Text'
 import useLightragGraph from '@/hooks/useLightragGraph'
 import { type RawEdgeType, type RawNodeType, useGraphStore } from '@/stores/graph'
-import { GitBranchPlus, Link, Scissors } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 import EditablePropertyRow from './EditablePropertyRow'
+
+// Type-safe helpers to extract values from PropertyValue union type
+const asString = (value: PropertyValue | undefined): string | undefined => {
+  if (typeof value === 'string') return value
+  if (value == null) return undefined
+  return String(value)
+}
+
+const asNumber = (value: PropertyValue | undefined): number => {
+  if (typeof value === 'number') return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isNaN(parsed) ? 0 : parsed
+  }
+  return 0
+}
 
 /**
  * Component that view properties of elements in graph.
@@ -17,7 +34,9 @@ const PropertiesView = () => {
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
+  // Subscribe to trigger re-render when graph data updates
   const graphDataVersion = useGraphStore.use.graphDataVersion()
+  void graphDataVersion
 
   const [currentElement, setCurrentElement] = useState<NodeType | EdgeType | null>(null)
   const [currentType, setCurrentType] = useState<'node' | 'edge' | null>(null)
@@ -41,37 +60,27 @@ const PropertiesView = () => {
     }
 
     if (element) {
-      if (type == 'node') {
-        setCurrentElement(refineNodeProperties(element as any))
+      if (type === 'node') {
+        setCurrentElement(refineNodeProperties(element as RawNodeType))
       } else {
-        setCurrentElement(refineEdgeProperties(element as any))
+        setCurrentElement(refineEdgeProperties(element as RawEdgeType))
       }
       setCurrentType(type)
     } else {
       setCurrentElement(null)
       setCurrentType(null)
     }
-  }, [
-    focusedNode,
-    selectedNode,
-    focusedEdge,
-    selectedEdge,
-    graphDataVersion, // Add dependency on graphDataVersion to refresh when data changes
-    setCurrentElement,
-    setCurrentType,
-    getNode,
-    getEdge,
-  ])
+  }, [focusedNode, selectedNode, focusedEdge, selectedEdge, getNode, getEdge])
 
   if (!currentElement) {
-    return <></>
+    return null
   }
   return (
     <div className="bg-background/80 max-w-xs rounded-lg border-2 p-2 text-xs backdrop-blur-lg">
-      {currentType == 'node' ? (
-        <NodePropertiesView node={currentElement as any} />
+      {currentType === 'node' ? (
+        <NodePropertiesView node={currentElement as NodeType} />
       ) : (
-        <EdgePropertiesView edge={currentElement as any} />
+        <EdgePropertiesView edge={currentElement as EdgeType} />
       )}
     </div>
   )
@@ -121,9 +130,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
             relationships.push({
               type: 'Neighbour',
               id: neighbourId,
-              label: neighbour.properties['entity_id']
-                ? neighbour.properties['entity_id']
-                : neighbour.labels.join(', '),
+              label: asString(neighbour.properties.entity_id) || neighbour.labels.join(', '),
             })
           }
         }
@@ -141,8 +148,8 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
 
 const refineEdgeProperties = (edge: RawEdgeType): EdgeType => {
   const state = useGraphStore.getState()
-  let sourceNode: RawNodeType | undefined = undefined
-  let targetNode: RawNodeType | undefined = undefined
+  let sourceNode: RawNodeType | undefined
+  let targetNode: RawNodeType | undefined
 
   if (state.sigmaGraph && state.rawGraph) {
     try {
@@ -190,7 +197,7 @@ const PropertyRow = ({
   truncate,
 }: {
   name: string
-  value: any
+  value: PropertyValue
   onClick?: () => void
   tooltip?: string
   nodeId?: string
@@ -212,11 +219,11 @@ const PropertyRow = ({
   }
 
   // Utility function to convert <SEP> to newlines
-  const formatValueWithSeparators = (value: any): string => {
-    if (typeof value === 'string') {
-      return value.replace(/<SEP>/g, ';\n')
+  const formatValueWithSeparators = (val: PropertyValue): string => {
+    if (typeof val === 'string') {
+      return val.replace(/<SEP>/g, ';\n')
     }
-    return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+    return JSON.stringify(val, null, 2)
   }
 
   // Format the value to convert <SEP> to newlines
@@ -328,19 +335,20 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
           </Text>
           <div className="flex items-center gap-2">
             <Text size="xs">{node.degree}</Text>
-            {node.properties?.db_degree != null && node.properties.db_degree > node.degree && (
+            {asNumber(node.properties?.db_degree) > node.degree && (
               <Badge
                 variant="outline"
                 className="text-xs px-1.5 py-0 text-amber-600 border-amber-400"
               >
-                {node.properties.db_degree} {t('graphPanel.propertiesView.node.inDatabase')}
+                {asNumber(node.properties.db_degree)}{' '}
+                {t('graphPanel.propertiesView.node.inDatabase')}
               </Badge>
             )}
           </div>
         </div>
       </div>
       {/* Load Hidden Connections button for nodes with hidden database connections */}
-      {(node.properties?.db_degree || 0) > node.degree && (
+      {asNumber(node.properties?.db_degree) > node.degree && (
         <div className="py-2">
           <Button
             size="sm"
@@ -350,7 +358,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
           >
             <Link className="h-4 w-4 mr-2" />
             {t('graphPanel.propertiesView.node.loadConnections', {
-              count: node.properties.db_degree - node.degree,
+              count: asNumber(node.properties.db_degree) - node.degree,
             })}
           </Button>
         </div>
@@ -369,12 +377,12 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
                 name={name}
                 value={node.properties[name]}
                 nodeId={String(node.id)}
-                entityId={node.properties['entity_id']}
+                entityId={asString(node.properties.entity_id)}
                 entityType="node"
                 isEditable={
                   name === 'description' || name === 'entity_id' || name === 'entity_type'
                 }
-                truncate={node.properties['truncate']}
+                truncate={asString(node.properties.truncate)}
               />
             )
           })}
@@ -447,10 +455,10 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
                 edgeId={String(edge.id)}
                 dynamicId={String(edge.dynamicId)}
                 entityType="edge"
-                sourceId={edge.sourceNode?.properties['entity_id'] || edge.source}
-                targetId={edge.targetNode?.properties['entity_id'] || edge.target}
+                sourceId={asString(edge.sourceNode?.properties.entity_id) || edge.source}
+                targetId={asString(edge.targetNode?.properties.entity_id) || edge.target}
                 isEditable={name === 'description' || name === 'keywords'}
-                truncate={edge.properties['truncate']}
+                truncate={asString(edge.properties.truncate)}
               />
             )
           })}

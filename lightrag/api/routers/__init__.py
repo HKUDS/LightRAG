@@ -12,10 +12,10 @@ from .upload_routes import create_upload_routes
 
 __all__ = [
     'OllamaAPI',
-    'document_router',
-    'graph_router',
-    'query_router',
     'create_s3_routes',
     'create_search_routes',
     'create_upload_routes',
+    'document_router',
+    'graph_router',
+    'query_router',
 ]

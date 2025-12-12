@@ -3,7 +3,6 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-import shutil
 import traceback
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -1037,7 +1036,6 @@ def _extract_pptx(file_bytes: bytes) -> str:
     Returns:
         str: Extracted text content
     """
-    from typing import Any, cast
 
     from pptx import Presentation  # type: ignore
 
@@ -1600,10 +1598,12 @@ async def pipeline_index_texts(
     """
     if not texts:
         return
-    if file_sources is not None and len(file_sources) != 0 and len(file_sources) != len(texts):
-        for _ in range(len(file_sources), len(texts)):
-            file_sources.append('unknown_source')
-    await rag.apipeline_enqueue_documents(input=texts, file_paths=file_sources, track_id=track_id)
+    normalized_sources = None
+    if file_sources:
+        normalized_sources = list(file_sources)
+        while len(normalized_sources) < len(texts):
+            normalized_sources.append('unknown_source')
+    await rag.apipeline_enqueue_documents(input=texts, file_paths=normalized_sources, track_id=track_id)
     await rag.apipeline_process_enqueue_documents()
 
 
@@ -1946,8 +1946,12 @@ def create_document_routes(rag: LightRAG, doc_manager: DocumentManager, api_key:
                     track_id='',
                 )
 
-            with open(file_path, 'wb') as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            async with aiofiles.open(file_path, 'wb') as buffer:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    await buffer.write(chunk)
 
             track_id = generate_track_id('upload')
 
@@ -2164,7 +2168,7 @@ def create_document_routes(rag: LightRAG, doc_manager: DocumentManager, api_key:
                 }
             )
             # Cleaning history_messages without breaking it as a shared list object
-            del pipeline_status['history_messages'][:]
+            pipeline_status['history_messages'].clear()
             pipeline_status['history_messages'].append('Starting document clearing process')
 
         try:

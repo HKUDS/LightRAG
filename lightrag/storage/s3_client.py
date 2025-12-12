@@ -17,8 +17,8 @@ from typing import Any, ClassVar
 
 import pipmaster as pm
 
-if not pm.is_installed("aioboto3"):
-    pm.install("aioboto3")
+if not pm.is_installed('aioboto3'):
+    pm.install('aioboto3')
 
 import aioboto3
 from botocore.config import Config as BotoConfig
@@ -34,15 +34,15 @@ from tenacity import (
 from lightrag.utils import logger
 
 # Constants with environment variable support
-S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
-S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID", "")
-S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "lightrag")
-S3_REGION = os.getenv("S3_REGION", "us-east-1")
-S3_RETRY_ATTEMPTS = int(os.getenv("S3_RETRY_ATTEMPTS", "3"))
-S3_CONNECT_TIMEOUT = int(os.getenv("S3_CONNECT_TIMEOUT", "10"))
-S3_READ_TIMEOUT = int(os.getenv("S3_READ_TIMEOUT", "30"))
-S3_PRESIGNED_URL_EXPIRY = int(os.getenv("S3_PRESIGNED_URL_EXPIRY", "3600"))  # 1 hour
+S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL', '')
+S3_ACCESS_KEY_ID = os.getenv('S3_ACCESS_KEY_ID', '')
+S3_SECRET_ACCESS_KEY = os.getenv('S3_SECRET_ACCESS_KEY', '')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'lightrag')
+S3_REGION = os.getenv('S3_REGION', 'us-east-1')
+S3_RETRY_ATTEMPTS = int(os.getenv('S3_RETRY_ATTEMPTS', '3'))
+S3_CONNECT_TIMEOUT = int(os.getenv('S3_CONNECT_TIMEOUT', '10'))
+S3_READ_TIMEOUT = int(os.getenv('S3_READ_TIMEOUT', '30'))
+S3_PRESIGNED_URL_EXPIRY = int(os.getenv('S3_PRESIGNED_URL_EXPIRY', '3600'))  # 1 hour
 
 
 # Retry decorator for S3 operations
@@ -69,9 +69,7 @@ class S3Config:
 
     def __post_init__(self):
         if not self.access_key_id or not self.secret_access_key:
-            raise ValueError(
-                "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set"
-            )
+            raise ValueError('S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set')
 
 
 class S3ClientManager:
@@ -85,7 +83,7 @@ class S3ClientManager:
     def get_session(cls, config: S3Config) -> aioboto3.Session:
         """Get or create a session for the given S3 config."""
         # Use endpoint + access_key as session key
-        session_key = f"{config.endpoint_url}:{config.access_key_id}"
+        session_key = f'{config.endpoint_url}:{config.access_key_id}'
 
         with cls._lock:
             if session_key not in cls._sessions:
@@ -95,26 +93,22 @@ class S3ClientManager:
                     region_name=config.region,
                 )
                 cls._session_refs[session_key] = 0
-                logger.info(f"Created shared S3 session for {config.endpoint_url}")
+                logger.info(f'Created shared S3 session for {config.endpoint_url}')
 
             cls._session_refs[session_key] += 1
-            logger.debug(
-                f"S3 session {session_key} reference count: {cls._session_refs[session_key]}"
-            )
+            logger.debug(f'S3 session {session_key} reference count: {cls._session_refs[session_key]}')
 
         return cls._sessions[session_key]
 
     @classmethod
     def release_session(cls, config: S3Config):
         """Release a reference to the session."""
-        session_key = f"{config.endpoint_url}:{config.access_key_id}"
+        session_key = f'{config.endpoint_url}:{config.access_key_id}'
 
         with cls._lock:
             if session_key in cls._session_refs:
                 cls._session_refs[session_key] -= 1
-                logger.debug(
-                    f"S3 session {session_key} reference count: {cls._session_refs[session_key]}"
-                )
+                logger.debug(f'S3 session {session_key} reference count: {cls._session_refs[session_key]}')
 
 
 @dataclass
@@ -154,29 +148,29 @@ class S3Client:
         await self._ensure_bucket_exists()
 
         self._initialized = True
-        logger.info(f"S3 client initialized for bucket: {self.config.bucket_name}")
+        logger.info(f'S3 client initialized for bucket: {self.config.bucket_name}')
 
     async def finalize(self):
         """Release resources."""
         if self._initialized:
             S3ClientManager.release_session(self.config)
             self._initialized = False
-            logger.info("S3 client finalized")
+            logger.info('S3 client finalized')
 
     @asynccontextmanager
     async def _get_client(self):
         """Get an S3 client from the session."""
         if self._session is None:
-            raise RuntimeError("S3Client not initialized")
+            raise RuntimeError('S3Client not initialized')
 
         boto_config = BotoConfig(
             connect_timeout=self.config.connect_timeout,
             read_timeout=self.config.read_timeout,
-            retries={"max_attempts": S3_RETRY_ATTEMPTS},
+            retries={'max_attempts': S3_RETRY_ATTEMPTS},
         )
 
         async with self._session.client(  # type: ignore
-            "s3",
+            's3',
             endpoint_url=self.config.endpoint_url if self.config.endpoint_url else None,
             config=boto_config,
         ) as client:
@@ -187,29 +181,32 @@ class S3Client:
         async with self._get_client() as client:
             try:
                 await client.head_bucket(Bucket=self.config.bucket_name)
-                logger.debug(f"Bucket {self.config.bucket_name} exists")
+                logger.debug(f'Bucket {self.config.bucket_name} exists')
             except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "")
-                if error_code in ("404", "NoSuchBucket"):
-                    logger.info(f"Creating bucket: {self.config.bucket_name}")
-                    await client.create_bucket(Bucket=self.config.bucket_name)
+                error_code = e.response.get('Error', {}).get('Code', '')
+                if error_code in ('404', 'NoSuchBucket'):
+                    logger.info(f'Creating bucket: {self.config.bucket_name}')
+                    create_kwargs: dict[str, Any] = {'Bucket': self.config.bucket_name}
+                    if self.config.region and self.config.region != 'us-east-1':
+                        create_kwargs['CreateBucketConfiguration'] = {'LocationConstraint': self.config.region}
+                    await client.create_bucket(**create_kwargs)
                 else:
                     raise
 
     def _make_staging_key(self, workspace: str, doc_id: str, filename: str) -> str:
         """Generate S3 key for staging area."""
-        safe_filename = filename.replace("/", "_").replace("\\", "_")
-        return f"staging/{workspace}/{doc_id}/{safe_filename}"
+        safe_filename = filename.replace('/', '_').replace('\\', '_')
+        return f'staging/{workspace}/{doc_id}/{safe_filename}'
 
     def _make_archive_key(self, workspace: str, doc_id: str, filename: str) -> str:
         """Generate S3 key for archive area."""
-        safe_filename = filename.replace("/", "_").replace("\\", "_")
-        return f"archive/{workspace}/{doc_id}/{safe_filename}"
+        safe_filename = filename.replace('/', '_').replace('\\', '_')
+        return f'archive/{workspace}/{doc_id}/{safe_filename}'
 
     def _staging_to_archive_key(self, staging_key: str) -> str:
         """Convert staging key to archive key."""
-        if staging_key.startswith("staging/"):
-            return "archive/" + staging_key[8:]
+        if staging_key.startswith('staging/'):
+            return 'archive/' + staging_key[8:]
         return staging_key
 
     @s3_retry
@@ -219,7 +216,7 @@ class S3Client:
         doc_id: str,
         content: bytes | str,
         filename: str,
-        content_type: str = "application/octet-stream",
+        content_type: str = 'application/octet-stream',
         metadata: dict[str, str] | None = None,
     ) -> str:
         """
@@ -239,16 +236,16 @@ class S3Client:
         s3_key = self._make_staging_key(workspace, doc_id, filename)
 
         if isinstance(content, str):
-            content = content.encode("utf-8")
+            content = content.encode('utf-8')
 
         # Calculate content hash for deduplication
         content_hash = hashlib.sha256(content).hexdigest()
 
         upload_metadata = {
-            "workspace": workspace,
-            "doc_id": doc_id,
-            "original_filename": filename,
-            "content_hash": content_hash,
+            'workspace': workspace,
+            'doc_id': doc_id,
+            'original_filename': filename,
+            'content_hash': content_hash,
             **(metadata or {}),
         }
 
@@ -261,7 +258,7 @@ class S3Client:
                 Metadata=upload_metadata,
             )
 
-        logger.info(f"Uploaded to staging: {s3_key} ({len(content)} bytes)")
+        logger.info(f'Uploaded to staging: {s3_key} ({len(content)} bytes)')
         return s3_key
 
     @s3_retry
@@ -277,10 +274,10 @@ class S3Client:
                 Bucket=self.config.bucket_name,
                 Key=s3_key,
             )
-            content = await response["Body"].read()
-            metadata = response.get("Metadata", {})
+            content = await response['Body'].read()
+            metadata = response.get('Metadata', {})
 
-        logger.debug(f"Retrieved object: {s3_key} ({len(content)} bytes)")
+        logger.debug(f'Retrieved object: {s3_key} ({len(content)} bytes)')
         return content, metadata
 
     @s3_retry
@@ -300,17 +297,26 @@ class S3Client:
             # Copy to archive
             await client.copy_object(
                 Bucket=self.config.bucket_name,
-                CopySource={"Bucket": self.config.bucket_name, "Key": staging_key},
+                CopySource={'Bucket': self.config.bucket_name, 'Key': staging_key},
                 Key=archive_key,
             )
 
             # Delete from staging
-            await client.delete_object(
-                Bucket=self.config.bucket_name,
-                Key=staging_key,
-            )
+            try:
+                await client.delete_object(
+                    Bucket=self.config.bucket_name,
+                    Key=staging_key,
+                )
+            except Exception as e:
+                logger.error(
+                    'Copied %s to %s but failed to delete staging object: %s',
+                    staging_key,
+                    archive_key,
+                    e,
+                )
+                raise
 
-        logger.info(f"Moved to archive: {staging_key} -> {archive_key}")
+        logger.info(f'Moved to archive: {staging_key} -> {archive_key}')
         return archive_key
 
     @s3_retry
@@ -321,7 +327,7 @@ class S3Client:
                 Bucket=self.config.bucket_name,
                 Key=s3_key,
             )
-        logger.info(f"Deleted object: {s3_key}")
+        logger.info(f'Deleted object: {s3_key}')
 
     @s3_retry
     async def list_staging(self, workspace: str) -> list[dict[str, Any]]:
@@ -331,28 +337,25 @@ class S3Client:
         Returns:
             List of dicts with key, size, last_modified
         """
-        prefix = f"staging/{workspace}/"
+        prefix = f'staging/{workspace}/'
         objects = []
 
         async with self._get_client() as client:
-            paginator = client.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(
-                Bucket=self.config.bucket_name, Prefix=prefix
-            ):
-                for obj in page.get("Contents", []):
+            paginator = client.get_paginator('list_objects_v2')
+            async for page in paginator.paginate(Bucket=self.config.bucket_name, Prefix=prefix):
+                for obj in page.get('Contents', []):
                     objects.append(
                         {
-                            "key": obj["Key"],
-                            "size": obj["Size"],
-                            "last_modified": obj["LastModified"].isoformat(),
+                            'key': obj['Key'],
+                            'size': obj['Size'],
+                            'last_modified': obj['LastModified'].isoformat(),
                         }
                     )
 
         return objects
 
-    async def get_presigned_url(
-        self, s3_key: str, expiry: int | None = None
-    ) -> str:
+    @s3_retry
+    async def get_presigned_url(self, s3_key: str, expiry: int | None = None) -> str:
         """
         Generate a presigned URL for direct access.
 
@@ -367,13 +370,14 @@ class S3Client:
 
         async with self._get_client() as client:
             url = await client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.config.bucket_name, "Key": s3_key},
+                'get_object',
+                Params={'Bucket': self.config.bucket_name, 'Key': s3_key},
                 ExpiresIn=expiry,
             )
 
         return url
 
+    @s3_retry
     async def object_exists(self, s3_key: str) -> bool:
         """Check if an object exists."""
         async with self._get_client() as client:
@@ -384,18 +388,16 @@ class S3Client:
                 )
                 return True
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "404":
+                if e.response.get('Error', {}).get('Code') == '404':
                     return False
                 raise
 
     def get_s3_url(self, s3_key: str) -> str:
         """Get the S3 URL for an object (not presigned, for reference)."""
-        return f"s3://{self.config.bucket_name}/{s3_key}"
+        return f's3://{self.config.bucket_name}/{s3_key}'
 
     @s3_retry
-    async def list_objects(
-        self, prefix: str = "", delimiter: str = "/"
-    ) -> dict[str, Any]:
+    async def list_objects(self, prefix: str = '', delimiter: str = '/') -> dict[str, Any]:
         """
         List objects and common prefixes (virtual folders) under a prefix.
 
@@ -417,35 +419,35 @@ class S3Client:
         objects: list[dict[str, Any]] = []
 
         async with self._get_client() as client:
-            paginator = client.get_paginator("list_objects_v2")
+            paginator = client.get_paginator('list_objects_v2')
             async for page in paginator.paginate(
                 Bucket=self.config.bucket_name,
                 Prefix=prefix,
                 Delimiter=delimiter,
             ):
                 # Get common prefixes (virtual folders)
-                for cp in page.get("CommonPrefixes", []):
-                    folders.append(cp["Prefix"])
+                for cp in page.get('CommonPrefixes', []):
+                    folders.append(cp['Prefix'])
 
                 # Get objects at this level
-                for obj in page.get("Contents", []):
+                for obj in page.get('Contents', []):
                     # Skip the prefix itself if it's a "folder marker"
-                    if obj["Key"] == prefix:
+                    if obj['Key'] == prefix:
                         continue
                     objects.append(
                         {
-                            "key": obj["Key"],
-                            "size": obj["Size"],
-                            "last_modified": obj["LastModified"].isoformat(),
-                            "content_type": None,  # Would need HEAD request for each
+                            'key': obj['Key'],
+                            'size': obj['Size'],
+                            'last_modified': obj['LastModified'].isoformat(),
+                            'content_type': None,  # Would need HEAD request for each
                         }
                     )
 
         return {
-            "bucket": self.config.bucket_name,
-            "prefix": prefix,
-            "folders": folders,
-            "objects": objects,
+            'bucket': self.config.bucket_name,
+            'prefix': prefix,
+            'folders': folders,
+            'objects': objects,
         }
 
     @s3_retry
@@ -453,7 +455,7 @@ class S3Client:
         self,
         key: str,
         data: bytes,
-        content_type: str = "application/octet-stream",
+        content_type: str = 'application/octet-stream',
         metadata: dict[str, str] | None = None,
     ) -> str:
         """
@@ -480,5 +482,5 @@ class S3Client:
                 Metadata=metadata or {},
             )
 
-        logger.info(f"Uploaded object: {key} ({len(data)} bytes)")
+        logger.info(f'Uploaded object: {key} ({len(data)} bytes)')
         return key

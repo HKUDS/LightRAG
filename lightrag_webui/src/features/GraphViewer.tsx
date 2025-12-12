@@ -1,9 +1,10 @@
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import type { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
-import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
+import { createEdgeCurveProgram, EdgeCurvedArrowProgram } from '@sigma/edge-curve'
 import { NodeBorderProgram } from '@sigma/node-border'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Sigma } from 'sigma'
 import { EdgeArrowProgram, NodeCircleProgram, NodePointProgram } from 'sigma/rendering'
 import type { Settings as SigmaSettings } from 'sigma/settings'
 
@@ -139,7 +140,7 @@ const GraphEvents = () => {
 
 const GraphViewer = () => {
   const [isThemeSwitching, setIsThemeSwitching] = useState(false)
-  const sigmaRef = useRef<any>(null)
+  const sigmaRef = useRef<Sigma | null>(null)
   const prevTheme = useRef<string>('')
 
   const isFetching = useGraphStore.use.isFetching()

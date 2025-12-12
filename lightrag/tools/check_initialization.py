@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from lightrag import LightRAG
 from lightrag.base import StoragesStatus
+from lightrag.utils import logger
 
 
 async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) -> bool:
@@ -41,7 +42,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
     issues = []
     warnings = []
 
-    print('🔍 Checking LightRAG initialization status...\n')
+    logger.info('🔍 Checking LightRAG initialization status...')
 
     # Check storage initialization status
     if not hasattr(rag_instance, '_storages_status'):
@@ -49,7 +50,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
     elif rag_instance._storages_status != StoragesStatus.INITIALIZED:
         issues.append(f'Storages not initialized (status: {rag_instance._storages_status.name})')
     else:
-        print('✅ Storage status: INITIALIZED')
+        logger.info('✅ Storage status: INITIALIZED')
 
     # Check individual storage components
     storage_components = [
@@ -66,7 +67,7 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
     ]
 
     if verbose:
-        print('\n📦 Storage Components:')
+        logger.debug('📦 Storage Components:')
 
     for component, description in storage_components:
         if not hasattr(rag_instance, component):
@@ -79,46 +80,46 @@ async def check_lightrag_setup(rag_instance: LightRAG, verbose: bool = False) ->
                 if storage._storage_lock is None:
                     issues.append(f'Storage {component} not initialized (lock is None)')
                 elif verbose:
-                    print(f'  ✅ {description}: Ready')
+                    logger.debug('  ✅ %s: Ready', description)
             elif verbose:
-                print(f'  ✅ {description}: Ready')
+                logger.debug('  ✅ %s: Ready', description)
 
-    # Check pipeline status
+        # Check pipeline status
     try:
         from lightrag.kg.shared_storage import get_namespace_data
 
-        get_namespace_data('pipeline_status', workspace=rag_instance.workspace)
-        print('✅ Pipeline status: INITIALIZED')
+        await get_namespace_data('pipeline_status', workspace=rag_instance.workspace)
+        logger.info('✅ Pipeline status: INITIALIZED')
     except KeyError:
         issues.append('Pipeline status not initialized - call rag.initialize_storages() first')
     except Exception as e:
         issues.append(f'Error checking pipeline status: {e!s}')
 
     # Print results
-    print('\n' + '=' * 50)
+    logger.info('=' * 50)
 
     if issues:
-        print('❌ Issues found:\n')
+        logger.error('❌ Issues found:')
         for issue in issues:
-            print(f'  • {issue}')
+            logger.error('  • %s', issue)
 
-        print('\n📝 To fix, run this initialization sequence:\n')
-        print('  await rag.initialize_storages()')
-        print('\n📚 Documentation: https://github.com/HKUDS/LightRAG#important-initialization-requirements')
+        logger.info('📝 To fix, run this initialization sequence:')
+        logger.info('  await rag.initialize_storages()')
+        logger.info('📚 Documentation: https://github.com/HKUDS/LightRAG#important-initialization-requirements')
 
         if warnings and verbose:
-            print('\n⚠️  Warnings (might be normal):')
+            logger.warning('⚠️  Warnings (might be normal):')
             for warning in warnings:
-                print(f'  • {warning}')
+                logger.warning('  • %s', warning)
 
         return False
     else:
-        print('✅ LightRAG is properly initialized and ready to use!')
+        logger.info('✅ LightRAG is properly initialized and ready to use!')
 
         if warnings and verbose:
-            print('\n⚠️  Warnings (might be normal):')
+            logger.warning('⚠️  Warnings (might be normal):')
             for warning in warnings:
-                print(f'  • {warning}')
+                logger.warning('  • %s', warning)
 
         return True
 
@@ -127,9 +128,9 @@ async def demo():
     """Demonstrate the diagnostic tool with a test instance."""
     from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 
-    print('=' * 50)
-    print('LightRAG Initialization Diagnostic Tool')
-    print('=' * 50)
+    logger.info('=' * 50)
+    logger.info('LightRAG Initialization Diagnostic Tool')
+    logger.info('=' * 50)
 
     # Create test instance
     rag = LightRAG(
@@ -138,16 +139,19 @@ async def demo():
         llm_model_func=gpt_4o_mini_complete,
     )
 
-    print('\n🔄 Initializing storages...\n')
+    logger.info('🔄 Initializing storages...')
     await rag.initialize_storages()  # Auto-initializes pipeline_status
 
-    print('\n🔍 Checking initialization status:\n')
+    logger.info('🔍 Checking initialization status...')
     await check_lightrag_setup(rag, verbose=True)
 
     # Cleanup
     import shutil
 
-    shutil.rmtree('./test_diagnostic', ignore_errors=True)
+    try:
+        shutil.rmtree('./test_diagnostic')
+    except Exception as e:
+        logger.warning('Failed to clean demo directory ./test_diagnostic: %s', e)
 
 
 if __name__ == '__main__':
@@ -167,5 +171,5 @@ if __name__ == '__main__':
     if args.demo:
         asyncio.run(demo())
     else:
-        print('Run with --demo to see the diagnostic tool in action')
-        print('Or import this module and use check_lightrag_setup() with your instance')
+        logger.info('Run with --demo to see the diagnostic tool in action')
+        logger.info('Or import this module and use check_lightrag_setup() with your instance')

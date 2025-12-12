@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.base import QueryParam
 from lightrag.constants import DEFAULT_TOP_K
+from lightrag.storage.s3_client import S3Client
 from lightrag.utils import logger
 
 router = APIRouter(tags=['query'])
@@ -358,9 +359,7 @@ async def _extract_and_stream_citations(
             }
 
             # Generate presigned URL if S3 client is available and s3_key exists
-            s3_key = getattr(ref, 's3_key', None) or (
-                ref.__dict__.get('s3_key') if hasattr(ref, '__dict__') else None
-            )
+            s3_key = getattr(ref, 's3_key', None)
             if s3_client and s3_key:
                 try:
                     source_item['presigned_url'] = await s3_client.get_presigned_url(s3_key)
@@ -396,7 +395,12 @@ async def _extract_and_stream_citations(
         yield json.dumps({'citation_error': str(e)}) + '\n'
 
 
-def create_query_routes(rag, api_key: str | None = None, top_k: int = DEFAULT_TOP_K, s3_client=None):
+def create_query_routes(
+    rag,
+    api_key: str | None = None,
+    top_k: int = DEFAULT_TOP_K,
+    s3_client: S3Client | None = None,
+):
     """Create query routes with optional S3 client for presigned URL generation in citations.
 
     Args:

@@ -41,7 +41,6 @@ from lightrag.kg.shared_storage import (
     set_all_update_flags,
     set_default_workspace,
 )
-from lightrag.utils import EmbeddingFunc
 
 # =============================================================================
 # Test Configuration

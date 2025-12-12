@@ -1,7 +1,7 @@
-import { cn } from '@/lib/utils'
 import { ChevronDown, X } from 'lucide-react'
 import type React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { cn } from '@/lib/utils'
 import Input from './Input'
 
 interface UserPromptInputWithHistoryProps {
@@ -138,6 +138,7 @@ export default function UserPromptInputWithHistory({
   )
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: Hover detection for UX enhancement
     <div
       className="relative"
       ref={dropdownRef}
@@ -178,7 +179,7 @@ export default function UserPromptInputWithHistory({
         <div className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg max-h-96 overflow-auto min-w-0">
           {history.map((prompt, index) => (
             <div
-              key={index}
+              key={`prompt-${prompt.slice(0, 32)}-${index}`}
               className={cn(
                 'flex items-center justify-between pl-3 pr-1 py-2 text-sm hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
                 'border-b border-gray-100 dark:border-gray-600 last:border-b-0',

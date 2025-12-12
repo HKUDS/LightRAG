@@ -11,11 +11,12 @@ services:
       POSTGRES_USER: lightrag
       POSTGRES_PASSWORD: lightrag_pass
     ports:
-      - "5433:5432"  # Use 5433 to avoid conflict with agent-sdk postgres
+      - '5433:5433' # Use 5433 to avoid conflict with agent-sdk postgres
     volumes:
       - pgdata_test:/var/lib/postgresql/data
     command: |
       postgres
+      -p 5433
       -c shared_preload_libraries='vector,age'
       -c max_connections=150
       -c shared_buffers=768MB
@@ -38,7 +39,7 @@ services:
       -c default_statistics_target=200
       -c hash_mem_multiplier=4
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag"]
+      test: ['CMD-SHELL', 'pg_isready -U lightrag -d lightrag -p 5433']
       interval: 5s
       timeout: 5s
       retries: 5
@@ -48,8 +49,8 @@ services:
     image: rustfs/rustfs:latest
     container_name: rustfs-test
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web console
+      - '9000:9000' # S3 API
+      - '9001:9001' # Web console
     environment:
       RUSTFS_ACCESS_KEY: rustfsadmin
       RUSTFS_SECRET_KEY: rustfsadmin
@@ -58,7 +59,11 @@ services:
       - rustfs_data:/data
     healthcheck:
       # RustFS returns AccessDenied for unauth requests, but that means it's alive
-      test: ["CMD-SHELL", "curl -s http://localhost:9000/ | grep -q 'AccessDenied' || curl -sf http://localhost:9000/"]
+      test:
+        [
+          'CMD-SHELL',
+          "curl -s http://localhost:9000/ | grep -q 'AccessDenied' || curl -sf http://localhost:9000/",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -70,7 +75,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "9622:9621"  # Use 9622 to avoid conflict
+      - '9622:9621' # Use 9622 to avoid conflict
     volumes:
       - ./data/rag_storage_test:/app/data/rag_storage
       - ./data/inputs_test:/app/data/inputs
@@ -105,7 +110,7 @@ services:
       - LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
       - LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
       - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
+      - POSTGRES_PORT=5433
       - POSTGRES_USER=lightrag
       - POSTGRES_PASSWORD=lightrag_pass
       - POSTGRES_DATABASE=lightrag
@@ -122,22 +127,22 @@ services:
       # Processing - Matching agent-sdk working settings
       - MAX_ASYNC=96
       - MAX_PARALLEL_INSERT=10
-      - EMBEDDING_FUNC_MAX_ASYNC=2             # Match llamacpp parallel slots (prevent queue backlog)
+      - EMBEDDING_FUNC_MAX_ASYNC=2 # Match llamacpp parallel slots (prevent queue backlog)
       - EMBEDDING_BATCH_NUM=48
 
       # Gunicorn - 8 workers x 4 threads = 32 concurrent handlers
       - GUNICORN_CMD_ARGS=--workers=8 --worker-class=gthread --threads=4 --worker-connections=1000 --timeout=120 --keep-alive=5 --graceful-timeout=30
 
       # Extraction - Using agent-sdk defaults for reliable ingestion
-      - CHUNK_SIZE=1200                        # Default chunk size (agent-sdk default)
-      - CHUNK_OVERLAP_SIZE=100                 # Default overlap
+      - CHUNK_SIZE=1200 # Default chunk size (agent-sdk default)
+      - CHUNK_OVERLAP_SIZE=100 # Default overlap
       # MAX_GLEANING defaults to 1 (removed override of 2)
 
       # Orphan Connection - Use UI button for manual triggering
       # AUTO_CONNECT_ORPHANS is set to false above (manual mode)
-      - ORPHAN_CONNECTION_THRESHOLD=0.3        # Vector similarity pre-filter threshold
-      - ORPHAN_CONFIDENCE_THRESHOLD=0.7        # LLM confidence required for connection
-      - ORPHAN_CROSS_CONNECT=true              # Allow orphan-to-orphan connections
+      - ORPHAN_CONNECTION_THRESHOLD=0.3 # Vector similarity pre-filter threshold
+      - ORPHAN_CONFIDENCE_THRESHOLD=0.7 # LLM confidence required for connection
+      - ORPHAN_CROSS_CONNECT=true # Allow orphan-to-orphan connections
 
       # S3/RustFS Configuration - Document staging and archival
       - S3_ENDPOINT_URL=http://rustfs:9000
@@ -156,13 +161,13 @@ services:
       - -m
       - lightrag.api.run_with_gunicorn
       - --workers
-      - "8"
+      - '8'
       - --llm-binding
       - openai
       - --embedding-binding
       - openai
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9621/health || exit 1"]
+      test: ['CMD-SHELL', 'curl -f http://localhost:9621/health || exit 1']
       interval: 10s
       timeout: 5s
       retries: 10

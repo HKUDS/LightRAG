@@ -1,3 +1,8 @@
+import { ZapIcon } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import { getAuthStatus, loginToServer } from '@/api/lightrag'
 import AppSettings from '@/components/AppSettings'
 import Button from '@/components/ui/Button'
@@ -5,11 +10,6 @@ import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
-import { ZapIcon } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useNavigate } from 'react-router-dom'
-import { toast } from 'sonner'
 
 const LoginPage = () => {
   const navigate = useNavigate()

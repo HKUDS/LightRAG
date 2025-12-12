@@ -1,3 +1,18 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  ChevronRightIcon,
+  DownloadIcon,
+  EyeIcon,
+  FileIcon,
+  FolderIcon,
+  HomeIcon,
+  RefreshCwIcon,
+  Trash2Icon,
+  UploadIcon,
+} from 'lucide-react'
+import { useCallback, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import type { S3ObjectInfo } from '@/api/lightrag'
 import { s3Delete, s3Download, s3List, s3Upload } from '@/api/lightrag'
 import FileViewer from '@/components/storage/FileViewer'
@@ -21,21 +36,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/Table'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  ChevronRightIcon,
-  DownloadIcon,
-  EyeIcon,
-  FileIcon,
-  FolderIcon,
-  HomeIcon,
-  RefreshCwIcon,
-  Trash2Icon,
-  UploadIcon,
-} from 'lucide-react'
-import { useCallback, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
 // Format bytes to human readable size
 function formatBytes(bytes: number): string {
@@ -43,7 +43,7 @@ function formatBytes(bytes: number): string {
   const k = 1024
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+  return `${parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`
 }
 
 // Format ISO date to localized string
@@ -71,7 +71,7 @@ function parseBreadcrumbs(prefix: string): { name: string; path: string }[] {
   const parts = prefix.split('/').filter(Boolean)
   let currentPath = ''
   for (const part of parts) {
-    currentPath += part + '/'
+    currentPath += `${part}/`
     segments.push({ name: part, path: currentPath })
   }
   return segments
@@ -135,15 +135,22 @@ export default function S3Browser() {
   }, [])
 
   // Handle download click
-  const handleDownload = useCallback(async (key: string) => {
-    try {
-      const response = await s3Download(key)
-      // Open presigned URL in new tab
-      window.open(response.url, '_blank')
-    } catch (err) {
-      toast.error(t('storagePanel.downloadFailed', { error: err instanceof Error ? err.message : 'Unknown error' }))
-    }
-  }, [t])
+  const handleDownload = useCallback(
+    async (key: string) => {
+      try {
+        const response = await s3Download(key)
+        // Open presigned URL in new tab
+        window.open(response.url, '_blank')
+      } catch (err) {
+        toast.error(
+          t('storagePanel.downloadFailed', {
+            error: err instanceof Error ? err.message : 'Unknown error',
+          })
+        )
+      }
+    },
+    [t]
+  )
 
   // Handle file upload
   const handleUpload = useCallback(() => {
@@ -266,7 +273,9 @@ export default function S3Browser() {
                   <TableHead className="w-[50%]">{t('storagePanel.table.name')}</TableHead>
                   <TableHead className="w-[15%]">{t('storagePanel.table.size')}</TableHead>
                   <TableHead className="w-[20%]">{t('storagePanel.table.modified')}</TableHead>
-                  <TableHead className="w-[15%] text-right">{t('storagePanel.table.actions')}</TableHead>
+                  <TableHead className="w-[15%] text-right">
+                    {t('storagePanel.table.actions')}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -354,12 +363,7 @@ export default function S3Browser() {
       </Card>
 
       {/* Hidden file input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        className="hidden"
-        onChange={handleFileChange}
-      />
+      <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
 
       {/* Delete confirmation dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && cancelDelete()}>
@@ -373,9 +377,7 @@ export default function S3Browser() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={cancelDelete}>
-              {t('common.cancel')}
-            </AlertDialogCancel>
+            <AlertDialogCancel onClick={cancelDelete}>{t('common.cancel')}</AlertDialogCancel>
             <AlertDialogAction
               onClick={confirmDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"

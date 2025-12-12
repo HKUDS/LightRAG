@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { type PipelineStatusResponse, cancelPipeline, getPipelineStatus } from '@/api/lightrag'
+import { cancelPipeline, getPipelineStatus, type PipelineStatusResponse } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
@@ -12,8 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/Dialog'
-import { errorMessage } from '@/lib/utils'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 type DialogPosition = 'left' | 'center' | 'right'
 
@@ -47,7 +46,7 @@ export default function PipelineStatusDialog({ open, onOpenChange }: PipelineSta
     if (!container || isUserScrolled) return
 
     container.scrollTop = container.scrollHeight
-  }, [status?.history_messages, isUserScrolled])
+  }, [isUserScrolled])
 
   const handleScroll = () => {
     const container = historyRef.current
@@ -249,7 +248,10 @@ export default function PipelineStatusDialog({ open, onOpenChange }: PipelineSta
             >
               {status?.history_messages?.length
                 ? status.history_messages.map((msg, idx) => (
-                    <div key={idx} className="whitespace-pre-wrap break-all">
+                    <div
+                      key={`msg-${idx}-${msg.slice(0, 32)}`}
+                      className="whitespace-pre-wrap break-all"
+                    >
                       {msg}
                     </div>
                   ))

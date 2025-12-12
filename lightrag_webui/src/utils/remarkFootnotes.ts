@@ -1,4 +1,4 @@
-import type { Root, Text } from 'mdast'
+import type { Html, Parent, Root, RootContent, Text } from 'mdast'
 import type { Plugin } from 'unified'
 import { visit } from 'unist-util-visit'
 
@@ -6,25 +6,26 @@ import { visit } from 'unist-util-visit'
 export const remarkFootnotes: Plugin<[], Root> = () => {
   return (tree: Root) => {
     // Find footnote references and replace them with inline citations
-    visit(tree, 'text', (node: Text, index, parent) => {
+    visit(tree, 'text', (node: Text, index, parent: Parent | undefined) => {
       if (!parent || typeof index !== 'number') return
 
       const text = node.value
       const footnoteRegex = /\[\^([^\]]+)\]/g
-      let match
-      const replacements: any[] = []
+      let match: RegExpExecArray | null = footnoteRegex.exec(text)
+      const replacements: RootContent[] = []
       let lastIndex = 0
 
-      while ((match = footnoteRegex.exec(text)) !== null) {
+      while (match !== null) {
         const [fullMatch, id] = match
-        const startIndex = match.index!
+        const startIndex = match.index
 
         // Add text before footnote
         if (startIndex > lastIndex) {
-          replacements.push({
+          const textNode: Text = {
             type: 'text',
             value: text.slice(lastIndex, startIndex),
-          })
+          }
+          replacements.push(textNode)
         }
 
         // Check if there's another footnote immediately following this one
@@ -36,22 +37,25 @@ export const remarkFootnotes: Plugin<[], Root> = () => {
         const footnoteHtml = `<sup><a href="#footnote-${id}" class="footnote-ref">${id}</a></sup>`
 
         // Add spacing if there's a consecutive footnote
-        const htmlWithSpacing = hasConsecutiveFootnote ? footnoteHtml + '&nbsp;' : footnoteHtml
+        const htmlWithSpacing = hasConsecutiveFootnote ? `${footnoteHtml}&nbsp;` : footnoteHtml
 
-        replacements.push({
+        const htmlNode: Html = {
           type: 'html',
           value: htmlWithSpacing,
-        })
+        }
+        replacements.push(htmlNode)
 
         lastIndex = startIndex + fullMatch.length
+        match = footnoteRegex.exec(text)
       }
 
       // Add remaining text
       if (lastIndex < text.length) {
-        replacements.push({
+        const textNode: Text = {
           type: 'text',
           value: text.slice(lastIndex),
-        })
+        }
+        replacements.push(textNode)
       }
 
       // Replace the text node if we found footnotes

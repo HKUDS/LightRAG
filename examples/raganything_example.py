@@ -13,12 +13,7 @@ import asyncio
 import logging
 import logging.config
 import os
-
-# Add project root directory to Python path
-import sys
 from pathlib import Path
-
-sys.path.append(str(Path(__file__).parent.parent))
 
 from raganything import RAGAnything, RAGAnythingConfig
 
@@ -29,11 +24,11 @@ from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 def configure_logging():
     """Configure logging for the application"""
     # Get log directory path from environment variable or use current directory
-    log_dir = os.getenv('LOG_DIR', os.getcwd())
-    log_file_path = os.path.abspath(os.path.join(log_dir, 'raganything_example.log'))
+    log_dir = Path(os.getenv('LOG_DIR', os.getcwd()))
+    log_file_path = log_dir / 'raganything_example.log'
 
-    print(f'\nRAGAnything example log file: {log_file_path}\n')
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    logger.info('RAGAnything example log file: %s', log_file_path)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv('LOG_MAX_BYTES', 10485760))  # Default 10MB

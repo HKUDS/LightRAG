@@ -1,10 +1,11 @@
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+import type { PropertyValue as PropertyValueType } from '@/api/lightrag'
 import { checkEntityNameExists, updateEntity, updateRelation } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
 import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 import MergeDialog from './MergeDialog'
 import PropertyEditDialog from './PropertyEditDialog'
 import { EditIcon, PropertyName, PropertyValue } from './PropertyRowComponents'
@@ -14,7 +15,7 @@ import { EditIcon, PropertyName, PropertyValue } from './PropertyRowComponents'
  */
 interface EditablePropertyRowProps {
   name: string // Property name to display and edit
-  value: any // Initial value of the property
+  value: PropertyValueType // Initial value of the property
   onClick?: () => void // Optional click handler for the property value
   nodeId?: string // ID of the node (for node type)
   entityId?: string // ID of the entity (for node type)
@@ -23,7 +24,7 @@ interface EditablePropertyRowProps {
   entityType?: 'node' | 'edge' // Type of graph entity
   sourceId?: string // Source node ID (for edge type)
   targetId?: string // Target node ID (for edge type)
-  onValueChange?: (newValue: any) => void // Optional callback when value changes
+  onValueChange?: (newValue: PropertyValueType) => void // Optional callback when value changes
   isEditable?: boolean // Whether this property can be edited
   tooltip?: string // Optional tooltip to display on hover
 }

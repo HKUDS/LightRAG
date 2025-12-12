@@ -1,9 +1,9 @@
-import Button from '@/components/ui/Button'
-import { controlButtonVariant } from '@/lib/constants'
-import { useSettingsStore } from '@/stores/settings'
 import { BookOpenIcon } from 'lucide-react'
 import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import Button from '@/components/ui/Button'
+import { controlButtonVariant } from '@/lib/constants'
+import { useSettingsStore } from '@/stores/settings'
 
 /**
  * Component that toggles legend visibility.

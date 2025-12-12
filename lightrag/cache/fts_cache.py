@@ -232,10 +232,7 @@ def get_fts_cache_stats() -> dict[str, Any]:
     current_time = time.time()
 
     # Count valid (non-expired) entries
-    valid_entries = sum(
-        1 for _, (_, ts) in _fts_cache.items()
-        if (current_time - ts) < FTS_CACHE_TTL
-    )
+    valid_entries = sum(1 for _, (_, ts) in _fts_cache.items() if (current_time - ts) < FTS_CACHE_TTL)
 
     return {
         'enabled': FTS_CACHE_ENABLED,

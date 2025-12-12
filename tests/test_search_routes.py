@@ -31,10 +31,11 @@ mock_auth_module.auth_handler = MagicMock()
 sys.modules['lightrag.api.auth'] = mock_auth_module
 
 # Now import FastAPI components (after mocking)
+from typing import Annotated, Any
+
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel, Field
-from typing import Annotated, Any, ClassVar
 
 # Import the components we need from search_routes without triggering full init
 # We'll recreate the essential parts for testing

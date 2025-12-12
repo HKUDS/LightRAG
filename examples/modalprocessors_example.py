@@ -21,25 +21,26 @@ WORKING_DIR = './rag_storage'
 
 
 def get_llm_model_func(api_key: str, base_url: str | None = None):
-    return lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
-        'gpt-4o-mini',
-        prompt,
-        system_prompt=system_prompt,
-        history_messages=history_messages,
-        api_key=api_key,
-        base_url=base_url,
-        **kwargs,
-    )
+    def llm_fn(prompt, system_prompt=None, history_messages=None, **kwargs):
+        history_messages = history_messages or []
+        return openai_complete_if_cache(
+            'gpt-4o-mini',
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=api_key,
+            base_url=base_url,
+            **kwargs,
+        )
+
+    return llm_fn
 
 
 def get_vision_model_func(api_key: str, base_url: str | None = None):
-    return (
-        lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: openai_complete_if_cache(
-            'gpt-4o',
-            '',
-            system_prompt=None,
-            history_messages=[],
-            messages=[
+    def vision_fn(prompt, system_prompt=None, history_messages=None, image_data=None, **kwargs):
+        history_messages = history_messages or []
+        if image_data:
+            messages = [
                 {'role': 'system', 'content': system_prompt} if system_prompt else None,
                 {
                     'role': 'user',
@@ -53,13 +54,20 @@ def get_vision_model_func(api_key: str, base_url: str | None = None):
                 }
                 if image_data
                 else {'role': 'user', 'content': prompt},
-            ],
-            api_key=api_key,
-            base_url=base_url,
-            **kwargs,
-        )
-        if image_data
-        else openai_complete_if_cache(
+            ]
+            messages = [m for m in messages if m]
+            return openai_complete_if_cache(
+                'gpt-4o',
+                '',
+                system_prompt=None,
+                history_messages=[],
+                messages=messages,
+                api_key=api_key,
+                base_url=base_url,
+                **kwargs,
+            )
+
+        return openai_complete_if_cache(
             'gpt-4o-mini',
             prompt,
             system_prompt=system_prompt,
@@ -68,7 +76,8 @@ def get_vision_model_func(api_key: str, base_url: str | None = None):
             base_url=base_url,
             **kwargs,
         )
-    )
+
+    return vision_fn
 
 
 async def process_image_example(lightrag: LightRAG, vision_model_func):

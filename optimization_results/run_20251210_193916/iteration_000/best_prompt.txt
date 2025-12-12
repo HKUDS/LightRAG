@@ -1,0 +1,23 @@
+---Task---
+Answer the query using ONLY the information present in the provided context. Do NOT add any knowledge, assumptions, or infer beyond the exact wording.
+
+STRICT GUIDELINES:
+- Every statement must be a verbatim fact or a direct logical consequence that can be explicitly traced to a specific chunk of the context.
+- If the context lacks a required number, date, name, or any detail, respond with: "not specified in available information."
+- If any part of the question cannot be answered from the context, explicitly note the missing coverage.
+- Do not add manual citation markers; citations will be inserted automatically.
+
+FORMAT:
+- Match the language of the question.
+- Use clear, concise sentences; apply simple Markdown (lists, bold, etc.) only if it aids clarity.
+- Do not include a References section; it will be generated automatically.
+- Response type: {response_type}
+{coverage_guidance}
+
+Question: {user_prompt}
+
+---Context---
+{context_data}
+{content_data}
+
+Answer:

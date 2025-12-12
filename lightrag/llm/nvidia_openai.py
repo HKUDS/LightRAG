@@ -1,12 +1,12 @@
+import base64
 import os
+from typing import Literal
 
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed('openai'):
     pm.install('openai')
-
-from typing import Literal
 
 import numpy as np
 from openai import (
@@ -46,11 +46,24 @@ async def nvidia_openai_embed(
     if api_key:
         os.environ['OPENAI_API_KEY'] = api_key
 
-    openai_async_client = AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+    openai_async_client = AsyncOpenAI(base_url=base_url)
     response = await openai_async_client.embeddings.create(
         model=model,
         input=texts,
         encoding_format=encode,
         extra_body={'input_type': input_type, 'truncate': trunc},
     )
-    return np.array([dp.embedding for dp in response.data])
+    embeddings = []
+    for dp in response.data:
+        emb = dp.embedding
+        if encode == 'base64':
+            if isinstance(emb, str):
+                emb_bytes = base64.b64decode(emb)
+                emb_arr = np.frombuffer(emb_bytes, dtype=np.float32)
+            else:
+                emb_arr = np.array(emb, dtype=np.float32)
+        else:
+            emb_arr = np.array(emb, dtype=np.float32)
+        embeddings.append(emb_arr)
+
+    return np.vstack(embeddings) if embeddings else np.empty((0, 0), dtype=np.float32)

@@ -89,12 +89,18 @@ async def lollms_model_if_cache(
 
             async def inner():
                 async with session.post(f'{base_url}/lollms_generate', json=request_data) as response:
+                    if response.status < 200 or response.status >= 300:
+                        body = await response.text()
+                        raise RuntimeError(f'lollms_generate failed: {response.status} {body}')
                     async for line in response.content:
                         yield line.decode().strip()
 
             return inner()
         else:
             async with session.post(f'{base_url}/lollms_generate', json=request_data) as response:
+                if response.status < 200 or response.status >= 300:
+                    body = await response.text()
+                    raise RuntimeError(f'lollms_generate failed: {response.status} {body}')
                 return await response.text()
 
 
@@ -154,9 +160,13 @@ async def lollms_embed(texts: list[str], embed_model=None, base_url='http://loca
         else {'Content-Type': 'application/json'}
     )
     async with aiohttp.ClientSession(headers=headers) as session:
+
         async def fetch_embedding(text: str):
             request_data = {'text': text}
             async with session.post(f'{base_url}/lollms_embed', json=request_data) as response:
+                if response.status < 200 or response.status >= 300:
+                    body = await response.text()
+                    raise RuntimeError(f'lollms_embed failed: {response.status} {body}')
                 result = await response.json()
                 if 'vector' not in result:
                     raise ValueError(f'Unexpected embedding response format: {result}')

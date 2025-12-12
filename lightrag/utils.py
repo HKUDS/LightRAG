@@ -1251,6 +1251,60 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
+def reciprocal_rank_fusion(
+    result_lists: list[list[dict]],
+    id_key: str = 'id',
+    k: int = 60,
+) -> list[dict]:
+    """Combine multiple ranked result lists using Reciprocal Rank Fusion (RRF).
+
+    RRF is a simple but effective method for combining ranked lists from different
+    retrieval methods (e.g., BM25 + vector search). Each document gets a score of
+    1/(k + rank) from each list, and scores are summed.
+
+    Reference: Cormack et al., "Reciprocal Rank Fusion outperforms Condorcet and
+    individual Rank Learning Methods" (SIGIR 2009)
+
+    Args:
+        result_lists: List of ranked result lists. Each result should be a dict
+                     with at least an 'id' key (or custom id_key).
+        id_key: Key to use for identifying unique items (default: 'id')
+        k: Ranking constant (default: 60). Higher k = more weight to lower ranks.
+
+    Returns:
+        Merged and re-ranked list of results with 'rrf_score' added to each item.
+    """
+    if not result_lists:
+        return []
+
+    # Calculate RRF scores for each unique item
+    scores: dict[str, float] = {}
+    items: dict[str, dict] = {}
+
+    for results in result_lists:
+        for rank, item in enumerate(results):
+            item_id = item.get(id_key)
+            if item_id is None:
+                continue
+            # RRF formula: 1 / (k + rank + 1), rank is 0-indexed so we add 1
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+            # Keep the first occurrence of each item
+            if item_id not in items:
+                items[item_id] = item
+
+    # Sort by RRF score descending
+    sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+
+    # Build result list with RRF scores
+    result = []
+    for item_id in sorted_ids:
+        item = items[item_id].copy()
+        item['rrf_score'] = scores[item_id]
+        result.append(item)
+
+    return result
+
+
 async def handle_cache(
     hashing_kv,
     args_hash,
@@ -2460,7 +2514,7 @@ async def apply_rerank_if_enabled(
                     scores = [d.get('rerank_score', 0) for d in reranked_docs]
                     logger.info(
                         f'Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks '
-                        f'(scores: min={min(scores):.3f}, max={max(scores):.3f}, avg={sum(scores)/len(scores):.3f})'
+                        f'(scores: min={min(scores):.3f}, max={max(scores):.3f}, avg={sum(scores) / len(scores):.3f})'
                     )
                 else:
                     logger.info(
@@ -2520,14 +2574,18 @@ async def process_chunks_unified(
 
     # 2. Filter by minimum rerank score if reranking is enabled
     if query_param.enable_rerank and unique_chunks:
-        min_rerank_score = global_config.get('min_rerank_score', 0.5)
-        if min_rerank_score > 0.0:
+        # ms-marco-MiniLM-L-6-v2 produces scores in -11 to +10 range (logits)
+        # Score of 0 is the decision boundary, but real RAG data is noisy.
+        # Default None = no filtering (use reranker for ordering only, no cutoff)
+        min_rerank_score = global_config.get('min_rerank_score', None)
+        if min_rerank_score is not None and min_rerank_score > -100:
             original_count = len(unique_chunks)
 
             # Filter chunks with score below threshold
             filtered_chunks = []
             for chunk in unique_chunks:
-                rerank_score = chunk.get('rerank_score', 1.0)  # Default to 1.0 if no score
+                # Default to high score if not reranked (keeps unreranked chunks)
+                rerank_score = chunk.get('rerank_score', 100.0)
                 if rerank_score >= min_rerank_score:
                     filtered_chunks.append(chunk)
 
@@ -3063,8 +3121,6 @@ def _extract_document_title(file_path: str) -> str:
         parts = file_path.split('/')
         return parts[-1] if parts else ''
     # Handle regular file paths
-    import os
-
     return os.path.basename(file_path)
 
 
@@ -3158,12 +3214,14 @@ def generate_reference_list_from_chunks(
     reference_list = []
     for i, file_path in enumerate(unique_file_paths):
         metadata = file_path_metadata.get(file_path, {})
-        reference_list.append({
-            'reference_id': str(i + 1),
-            'file_path': file_path,
-            'document_title': _extract_document_title(file_path),
-            's3_key': metadata.get('s3_key'),
-            'excerpt': metadata.get('first_excerpt', ''),
-        })
+        reference_list.append(
+            {
+                'reference_id': str(i + 1),
+                'file_path': file_path,
+                'document_title': _extract_document_title(file_path),
+                's3_key': metadata.get('s3_key'),
+                'excerpt': metadata.get('first_excerpt', ''),
+            }
+        )
 
     return reference_list, updated_chunks

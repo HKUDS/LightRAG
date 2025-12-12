@@ -118,9 +118,7 @@ class QueryParam:
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
     chunk_top_k: int = int(os.getenv('CHUNK_TOP_K', str(DEFAULT_CHUNK_TOP_K)))
-    """Number of text chunks to retrieve initially from vector search and keep after reranking.
-    If None, defaults to top_k value.
-    """
+    """Number of text chunks to retrieve."""
 
     max_entity_tokens: int = int(os.getenv('MAX_ENTITY_TOKENS', str(DEFAULT_MAX_ENTITY_TOKENS)))
     """Maximum number of tokens allocated for entity context in unified token control system."""

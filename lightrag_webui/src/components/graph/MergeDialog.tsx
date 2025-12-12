@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
@@ -8,7 +9,6 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 import { useSettingsStore } from '@/stores/settings'
-import { useTranslation } from 'react-i18next'
 
 interface MergeDialogProps {
   mergeDialogOpen: boolean

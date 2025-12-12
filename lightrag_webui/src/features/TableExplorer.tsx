@@ -1,3 +1,8 @@
+import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, RefreshCwIcon } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { toast } from 'sonner'
 import { getTableData, getTableList, getTableSchema } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -16,16 +21,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/Select'
-import { useQuery } from '@tanstack/react-query'
-import type { ColumnDef } from '@tanstack/react-table'
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, RefreshCwIcon } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
-import { toast } from 'sonner'
+
+// Generic row type for database table data
+type TableRowData = Record<string, string | number | boolean | null | object>
 
 const HIDDEN_COLUMNS = ['meta']
 
+// Cell value type
+type CellValue = string | number | boolean | null | object
+
 // Truncate long values for display
-function truncateValue(value: any, maxLength = 50): string {
+function truncateValue(value: CellValue, maxLength = 50): string {
   if (value === null || value === undefined) return ''
 
   let strValue: string
@@ -36,11 +42,11 @@ function truncateValue(value: any, maxLength = 50): string {
   }
 
   if (strValue.length <= maxLength) return strValue
-  return strValue.slice(0, maxLength) + '...'
+  return `${strValue.slice(0, maxLength)}...`
 }
 
 // Format value for display in modal
-function formatValue(value: any): string {
+function formatValue(value: CellValue): string {
   if (value === null) return 'null'
   if (value === undefined) return 'undefined'
 
@@ -56,7 +62,7 @@ function formatValue(value: any): string {
 }
 
 // Check if value is JSON-like (object or array)
-function isJsonLike(value: any): boolean {
+function isJsonLike(value: CellValue): boolean {
   return typeof value === 'object' && value !== null
 }
 
@@ -117,7 +123,7 @@ function RowDetailModal({
   open,
   onOpenChange,
 }: {
-  row: Record<string, any> | null
+  row: TableRowData | null
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
@@ -172,7 +178,7 @@ function RowDetailModal({
 export default function TableExplorer() {
   const [selectedTable, setSelectedTable] = useState<string>('')
   const [page, setPage] = useState(1)
-  const [selectedRow, setSelectedRow] = useState<Record<string, any> | null>(null)
+  const [selectedRow, setSelectedRow] = useState<TableRowData | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const pageSize = 20
 
@@ -212,19 +218,21 @@ export default function TableExplorer() {
   })
 
   // Handle row click
-  const handleRowClick = useCallback((row: Record<string, any>) => {
+  const handleRowClick = useCallback((row: TableRowData) => {
     setSelectedRow(row)
     setModalOpen(true)
   }, [])
 
   // Generate columns dynamically from data
-  const columns = useMemo<ColumnDef<any>[]>(() => {
-    const cols: ColumnDef<any>[] = []
+  const columns = useMemo(() => {
+    const cols: ColumnDef<TableRowData>[] = []
     if (tableData?.data && tableData.data.length > 0) {
       const allKeys = new Set<string>()
-      tableData.data.forEach((row: any) => {
-        Object.keys(row).forEach((key) => allKeys.add(key))
-      })
+      for (const row of tableData.data) {
+        for (const key of Object.keys(row)) {
+          allKeys.add(key)
+        }
+      }
 
       Array.from(allKeys)
         .sort()
@@ -238,7 +246,7 @@ export default function TableExplorer() {
               </div>
             ),
             cell: ({ row }) => {
-              const value = row.getValue(key)
+              const value = row.getValue(key) as CellValue
               const displayValue = truncateValue(value, 50)
               const isLong =
                 typeof value === 'object' || (typeof value === 'string' && value.length > 50)
@@ -256,7 +264,7 @@ export default function TableExplorer() {
         })
     }
     return cols
-  }, [tableData?.data])
+  }, [tableData])
 
   const totalPages = tableData?.total_pages || 0
 

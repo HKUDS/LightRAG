@@ -1,0 +1,64 @@
+{
+  "test_cases": [
+    {
+      "question": "What were the key lessons learned from the Isatuximab monoclonal antibody drug development program in April 2020?",
+      "ground_truth": "The Isatuximab lessons learned document from April 2020 covered critical insights from developing this monoclonal antibody therapy, including manufacturing challenges, analytical method development, regulatory submission strategies, and CMC-related issues encountered during clinical development phases.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What CMC dossier lessons were learned from the PKU IND submission in 2023?",
+      "ground_truth": "The PKU IND CMC Dossier lessons learned from 2023 highlighted key insights regarding regulatory documentation preparation, CMC data package organization, interactions with health authorities, and best practices for IND submissions for rare disease treatments like phenylketonuria.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What do patients really want according to the 2022 CMC Cross Sharing presentation, and how should this influence pharmaceutical development?",
+      "ground_truth": "The 2022 CMC Cross Sharing presentation on patient needs emphasized that patients prioritize drug accessibility, consistent quality, reliable supply, convenient dosage forms, and transparent communication about drug development timelines. This should influence CMC strategies to focus on robust manufacturing processes, supply chain resilience, and patient-centric formulation development.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What are the critical interdependencies between Clinical Development and CMC teams based on the 2023 partnership presentation?",
+      "ground_truth": "The 2023 Clinical Development and CMC Interdependency & Partnership presentation outlined critical touchpoints including clinical trial material supply planning, formulation selection based on clinical feedback, analytical method readiness for clinical sample analysis, scaling up manufacturing to support phase transitions, and coordinated regulatory submission strategies.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What were the main challenges and lessons learned from the Fitusiran development program as discussed in the 2024 PMG Green Light Presentation and escalation meeting?",
+      "ground_truth": "The Fitusiran program lessons from 2024 covered manufacturing scale-up challenges for this RNAi therapeutic, stability considerations for oligonucleotide drugs, analytical method validation complexities, risk mitigation strategies for supply chain issues, and cross-functional collaboration needed to address program escalations and achieve development milestones.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "How does the Japanese iCMC Operations Managers Handbook describe the operational framework for CMC activities in Japan?",
+      "ground_truth": "The Japanese iCMC Operations Managers Handbook provides guidance on managing CMC operations in Japan, including regulatory requirements specific to PMDA submissions, local manufacturing and quality standards, coordination with Japanese health authorities, documentation practices, and operational procedures tailored to the Japanese pharmaceutical regulatory environment.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What comparability considerations were addressed for Olipudase in the NPP submission in 2019?",
+      "ground_truth": "The 2019 Olipudase comparability assessment for NPP covered analytical comparability studies to demonstrate product consistency across manufacturing changes, evaluation of critical quality attributes, biological activity assays, stability data comparisons, and regulatory strategies for demonstrating comparability to support the named patient program.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What were the key lessons learned from the SAR439589 SERD development program?",
+      "ground_truth": "The SAR439589 SERD (Selective Estrogen Receptor Degrader) lessons learned covered formulation challenges for this oncology candidate, analytical method development for degrader molecules, manufacturing process optimization, CMC regulatory submission strategies, and cross-functional insights from developing novel endocrine therapy mechanisms.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What risk management strategies were discussed in the 2017 Risk Review CIR for CMC development programs?",
+      "ground_truth": "The 2017 Risk Review CIR outlined systematic risk assessment methodologies for CMC programs, including identification of critical quality attributes, failure mode and effects analysis (FMEA) for manufacturing processes, supply chain risk mitigation strategies, contingency planning for manufacturing deviations, and quality risk management principles aligned with ICH Q9 guidelines.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What were the main themes from the SARP lessons learned at the 2020 CMC cross-sharing session?",
+      "ground_truth": "The 2020 SARP (presumably a specific program) lessons learned at CMC cross-sharing covered program-specific insights including manufacturing readiness, analytical control strategies, regulatory submission experiences, cross-functional collaboration best practices, and knowledge transfer mechanisms to improve future CMC development programs across the organization.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "According to the 2023 Product Usage Awareness presentation, what gaps exist in R&D understanding of product usage in clinical practice?",
+      "ground_truth": "The 2023 Product Usage Awareness presentation highlighted that R&D teams often have limited visibility into real-world product handling by patients and healthcare providers, storage conditions in clinical settings, administration challenges, compliance factors, and post-market quality feedback. Bridging this gap requires better integration of commercial insights into CMC development strategies.",
+      "project": "pharma_evaluation"
+    },
+    {
+      "question": "What biopharmacy considerations were discussed in the February 2022 CMC Cross Sharing session?",
+      "ground_truth": "The February 2022 Biopharmacy CMC Cross Sharing session addressed critical factors at the interface of formulation and pharmacology, including bioavailability optimization, drug absorption mechanisms, formulation effects on PK/PD profiles, food effect considerations, dissolution method development predictive of in vivo performance, and IVIVC (in vitro-in vivo correlation) strategies for regulatory submissions.",
+      "project": "pharma_evaluation"
+    }
+  ]
+}

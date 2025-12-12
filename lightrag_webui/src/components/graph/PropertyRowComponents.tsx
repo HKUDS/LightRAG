@@ -1,6 +1,7 @@
-import Text from '@/components/ui/Text'
 import { PencilIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import type { PropertyValue as PropertyValueType } from '@/api/lightrag'
+import Text from '@/components/ui/Text'
 
 interface PropertyNameProps {
   name: string
@@ -36,20 +37,25 @@ export const EditIcon = ({ onClick }: EditIconProps) => (
 )
 
 interface PropertyValueProps {
-  value: any
+  value: PropertyValueType
   onClick?: () => void
   tooltip?: string
 }
 
-export const PropertyValue = ({ value, onClick, tooltip }: PropertyValueProps) => (
-  <div className="flex items-center gap-1 overflow-hidden">
-    <Text
-      className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis whitespace-nowrap"
-      tooltipClassName="max-w-80 -translate-x-15"
-      text={value}
-      tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
-      side="left"
-      onClick={onClick}
-    />
-  </div>
-)
+export const PropertyValue = ({ value, onClick, tooltip }: PropertyValueProps) => {
+  // Convert PropertyValue to display string
+  const displayValue = typeof value === 'string' ? value : JSON.stringify(value)
+
+  return (
+    <div className="flex items-center gap-1 overflow-hidden">
+      <Text
+        className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis whitespace-nowrap"
+        tooltipClassName="max-w-80 -translate-x-15"
+        text={displayValue}
+        tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
+        side="left"
+        onClick={onClick}
+      />
+    </div>
+  )
+}

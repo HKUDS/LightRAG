@@ -11,7 +11,7 @@ authors = [
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
@@ -23,11 +23,12 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
+    "dspy>=3.0.4",
     "flashrank>=0.2.10",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
-    "numpy>=1.24.0,<2.0.0",
+    "numpy>=2.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
@@ -54,7 +55,7 @@ api = [
     "aiohttp",
     "configparser",
     "json_repair",
-    "numpy>=1.24.0,<2.0.0",
+    "numpy>=2.0.0",
     "openai>=2.0.0,<3.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
@@ -183,4 +184,4 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"

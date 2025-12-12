@@ -1,5 +1,5 @@
+import { createContext, useEffect, useMemo } from 'react'
 import { type Theme, useSettingsStore } from '@/stores/settings'
-import { createContext, useEffect } from 'react'
 
 type ThemeProviderProps = {
   children: React.ReactNode
@@ -7,11 +7,13 @@ type ThemeProviderProps = {
 
 type ThemeProviderState = {
   theme: Theme
+  resolvedTheme: 'light' | 'dark'
   setTheme: (theme: Theme) => void
 }
 
 const initialState: ThemeProviderState = {
   theme: 'system',
+  resolvedTheme: 'light',
   setTheme: () => null,
 }
 
@@ -23,6 +25,14 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
 export default function ThemeProvider({ children, ...props }: ThemeProviderProps) {
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
+
+  // Compute resolved theme (what's actually applied)
+  const resolvedTheme = useMemo((): 'light' | 'dark' => {
+    if (theme === 'system') {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    }
+    return theme
+  }, [theme])
 
   useEffect(() => {
     const root = window.document.documentElement
@@ -46,6 +56,7 @@ export default function ThemeProvider({ children, ...props }: ThemeProviderProps
 
   const value = {
     theme,
+    resolvedTheme,
     setTheme,
   }
 

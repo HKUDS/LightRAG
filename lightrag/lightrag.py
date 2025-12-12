@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 import configparser
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from functools import partial
 import inspect
 import json
 import os
 import time
 import traceback
+import warnings
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from functools import partial
 from typing import (
     Any,
     Literal,
     cast,
     final,
 )
-import warnings
 
 from dotenv import load_dotenv
 
@@ -1705,13 +1705,13 @@ class LightRAG:
 
                             # Build chunks dictionary
                             chunks: dict[str, Any] = {
-                                compute_mdhash_id(dp['content'], prefix='chunk-'): {
+                                compute_mdhash_id(dp['content'], prefix='chunk-'): {  # type: ignore[index]
                                     **dp,
                                     'full_doc_id': doc_id,
                                     'file_path': file_path,  # Add file path to each chunk
                                     'llm_cache_list': [],  # Initialize empty LLM cache list for each chunk
                                 }
-                                for dp in chunking_result
+                                for dp in chunking_result  # type: ignore[union-attr]
                             }
 
                             if not chunks:
@@ -2665,7 +2665,10 @@ class LightRAG:
             return raw_data
 
         except Exception as e:
+            import traceback
+
             logger.error(f'Query failed: {e}')
+            logger.error(f'Query traceback: {traceback.format_exc()}')
             # Return error response
             return {
                 'status': 'failure',
@@ -3108,7 +3111,7 @@ class LightRAG:
                     if not src or not tgt or 'source_id' not in edge_data:
                         continue
 
-                    edge_tuple = tuple(sorted((src, tgt)))
+                    edge_tuple: tuple[str, str] = tuple(sorted((src, tgt)))  # type: ignore[assignment]
                     if edge_tuple in relationships_to_delete or edge_tuple in relationships_to_rebuild:
                         continue
 
@@ -3251,7 +3254,7 @@ class LightRAG:
                         if edges:
                             for src, tgt in edges:
                                 # Normalize edge representation (sorted for consistency)
-                                edge_tuple = tuple(sorted((src, tgt)))
+                                edge_tuple: tuple[str, str] = tuple(sorted((src, tgt)))  # type: ignore[assignment]
                                 edges_to_delete.add(edge_tuple)
 
                                 if src in entities_to_delete and tgt in entities_to_delete:
@@ -3405,7 +3408,7 @@ class LightRAG:
                     if original_exception is None:
                         raise RuntimeError(
                             f'Deletion completed but failed to persist changes: {persistence_error}'
-                        )
+                        ) from persistence_error
                     # If there was an original exception, log the persistence error but don't override the original error
                     # The original error result was already returned in the except block
             else:
@@ -3421,13 +3424,15 @@ class LightRAG:
                     pipeline_status['history_messages'].append(completion_msg)
 
         # Success path if no exceptions were raised
-        return DeletionResult(
+        result = DeletionResult(
             status='success',
             doc_id=doc_id,
             message=log_message,
             status_code=200,
             file_path=file_path,
         )
+        return result
+
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
 
@@ -3814,7 +3819,7 @@ class LightRAG:
         allow_cross_connect = cross_connect if cross_connect is not None else self.orphan_cross_connect
         target_max_degree = max_degree if max_degree is not None else self.orphan_connection_max_degree
 
-        result = {
+        result: dict[str, Any] = {
             'orphans_found': 0,
             'connections_made': 0,
             'connections': [],
@@ -4071,7 +4076,7 @@ class LightRAG:
             # Use del list[:] pattern (same as document pipeline) to preserve Manager.list()
             del orphan_status['history_messages'][:]
 
-        result = {
+        result: dict[str, Any] = {
             'orphans_found': 0,
             'connections_made': 0,
             'connections': [],

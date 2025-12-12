@@ -2,8 +2,9 @@
 Unit tests for metrics collection infrastructure.
 """
 
-import pytest
 import time
+
+import pytest
 
 from lightrag.metrics import (
     MetricsCollector,
@@ -111,7 +112,7 @@ class TestPercentileCalculation:
     def test_p99_high(self):
         """P99 returns high value."""
         collector = MetricsCollector()
-        values = list(range(1, 101))  # 1-100
+        values: list[float] = [float(x) for x in range(1, 101)]  # 1.0-100.0
         p99 = collector._get_percentile(values, 99)
         assert p99 >= 99.0
 

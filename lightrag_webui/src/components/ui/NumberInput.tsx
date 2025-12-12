@@ -1,9 +1,9 @@
-import Button from '@/components/ui/Button'
-import Input from '@/components/ui/Input'
-import { cn } from '@/lib/utils'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { forwardRef, useCallback, useEffect, useState } from 'react'
 import { NumericFormat, type NumericFormatProps } from 'react-number-format'
+import Button from '@/components/ui/Button'
+import Input from '@/components/ui/Input'
+import { cn } from '@/lib/utils'
 
 export interface NumberInputProps extends Omit<NumericFormatProps, 'value' | 'onValueChange'> {
   stepper?: number
@@ -70,12 +70,13 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
 
     const handleBlur = () => {
       if (value !== undefined) {
+        const inputRef = ref as React.RefObject<HTMLInputElement>
         if (value < min) {
           setValue(min)
-          ;(ref as React.RefObject<HTMLInputElement>).current!.value = String(min)
+          if (inputRef.current) inputRef.current.value = String(min)
         } else if (value > max) {
           setValue(max)
-          ;(ref as React.RefObject<HTMLInputElement>).current!.value = String(max)
+          if (inputRef.current) inputRef.current.value = String(max)
         }
       }
     }

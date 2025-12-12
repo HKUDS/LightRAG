@@ -1,17 +1,17 @@
 import colorsys
 import os
 import tkinter as tk
-from tkinter import filedialog
 import traceback
+from tkinter import filedialog
 from typing import cast
 
 import community
 import glm
-from imgui_bundle import hello_imgui, imgui, immapp
 import moderngl
 import networkx as nx
-from networkx.classes.reportviews import DegreeView
 import numpy as np
+from imgui_bundle import hello_imgui, imgui, immapp
+from networkx.classes.reportviews import DegreeView
 
 CUSTOM_FONT = 'font.ttf'
 

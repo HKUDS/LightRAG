@@ -1,5 +1,5 @@
-import tailwindcssAnimate from 'tailwindcss-animate'
 import typography from '@tailwindcss/typography'
+import tailwindcssAnimate from 'tailwindcss-animate'
 
 /** @type {import('tailwindcss').Config} */
 export default {
@@ -230,7 +230,7 @@ export default {
             'blockquote code': {
               color: 'inherit',
             },
-            'thead': {
+            thead: {
               color: 'var(--tw-prose-headings)',
               fontWeight: '600',
               borderBottomWidth: '1px',

@@ -1,23 +1,20 @@
-import { getAuthStatus } from '@/api/lightrag'
-import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
-import ApiKeyAlert from '@/components/ApiKeyAlert'
-import ThemeProvider from '@/components/ThemeProvider'
-import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
-import SiteHeader from '@/features/SiteHeader'
-import { SiteInfo, webuiPrefix } from '@/lib/constants'
-import { useSettingsStore } from '@/stores/settings'
-import { useAuthStore, useBackendState } from '@/stores/state'
 import { ZapIcon } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-
+import { getAuthStatus, InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
+import ApiKeyAlert from '@/components/ApiKeyAlert'
+import ThemeProvider from '@/components/ThemeProvider'
+import { Tabs, TabsContent } from '@/components/ui/Tabs'
+import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import ApiSite from '@/features/ApiSite'
 import DocumentManager from '@/features/DocumentManager'
 import GraphViewer from '@/features/GraphViewer'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import S3Browser from '@/features/S3Browser'
+import SiteHeader from '@/features/SiteHeader'
 import TableExplorer from '@/features/TableExplorer'
-
-import { Tabs, TabsContent } from '@/components/ui/Tabs'
+import { SiteInfo, webuiPrefix } from '@/lib/constants'
+import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore, useBackendState } from '@/stores/state'
 
 function App() {
   const message = useBackendState.use.message()
@@ -62,9 +59,13 @@ function App() {
       try {
         // Only perform health check if component is still mounted
         if (isMountedRef.current) {
-          const status = await useBackendState.getState().check()
-          if (status && 'status' in status && status.status === 'healthy' && status.configuration) {
-            useSettingsStore.getState().setStorageConfig(status.configuration)
+          const result = await useBackendState.getState().check()
+          // check() returns boolean, health status is in useBackendState.getState().status
+          if (result) {
+            const healthStatus = useBackendState.getState().status
+            if (healthStatus?.configuration) {
+              useSettingsStore.getState().setStorageConfig(healthStatus.configuration)
+            }
           }
         }
       } catch (error) {
@@ -163,7 +164,18 @@ function App() {
   }, []) // Empty dependency array ensures it only runs once on mount
 
   const handleTabChange = useCallback(
-    (tab: string) => useSettingsStore.getState().setCurrentTab(tab as any),
+    (tab: string) =>
+      useSettingsStore
+        .getState()
+        .setCurrentTab(
+          tab as
+            | 'documents'
+            | 'knowledge-graph'
+            | 'retrieval'
+            | 'api'
+            | 'table-explorer'
+            | 'storage'
+        ),
     []
   )
 

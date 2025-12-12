@@ -9,7 +9,7 @@ import argparse
 import json
 from argparse import ArgumentParser, Namespace
 from dataclasses import asdict, dataclass, field
-from typing import Any, ClassVar, get_args, get_origin
+from typing import Any, ClassVar, cast, get_args, get_origin
 
 from lightrag.constants import DEFAULT_TEMPERATURE
 from lightrag.utils import get_env_value
@@ -222,15 +222,14 @@ class BindingOptions:
                 yield argdef
         else:
             # Fallback to old method for non-dataclass classes
+            all_vars = cast(dict[str, Any], cls._all_class_vars(cls))
             class_vars = {
-                key: value
-                for key, value in cls._all_class_vars(cls).items()
-                if not callable(value) and not key.startswith('_')
+                key: value for key, value in all_vars.items() if not callable(value) and not key.startswith('_')
             }
 
             # Get type hints to properly detect List[str] types
             type_hints = {}
-            for base in cls.__mro__:
+            for base in cast(tuple[type, ...], cls.__mro__):
                 if hasattr(base, '__annotations__'):
                     type_hints.update(base.__annotations__)
 

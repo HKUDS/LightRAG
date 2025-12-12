@@ -2,18 +2,15 @@
 Unit tests for Full-Text Search caching.
 """
 
-import asyncio
 import pytest
-import time
 
 from lightrag.cache.fts_cache import (
-    get_cached_fts_results,
-    store_fts_results,
-    invalidate_fts_cache_for_workspace,
-    get_fts_cache_stats,
-    _fts_cache,
     _compute_cache_key,
-    FTS_CACHE_TTL,
+    _fts_cache,
+    get_cached_fts_results,
+    get_fts_cache_stats,
+    invalidate_fts_cache_for_workspace,
+    store_fts_results,
 )
 
 

@@ -10,17 +10,15 @@ import { useLayoutForce, useWorkerLayoutForce } from '@react-sigma/layout-force'
 import { useLayoutForceAtlas2, useWorkerLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
 import { useLayoutNoverlap, useWorkerLayoutNoverlap } from '@react-sigma/layout-noverlap'
 import { useLayoutRandom } from '@react-sigma/layout-random'
+import { GripIcon, PauseIcon, PlayIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { animateNodes } from 'sigma/utils'
-
 import Button from '@/components/ui/Button'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/Command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
-
-import { GripIcon, PauseIcon, PlayIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 type LayoutName =
   | 'Circular'
@@ -303,9 +301,9 @@ const LayoutsControl = () => {
   return (
     <div>
       <div>
-        {layouts[layout] && 'worker' in layouts[layout] && (
+        {layouts[layout] && 'worker' in layouts[layout] && layouts[layout].worker && (
           <WorkerLayoutControl
-            layout={layouts[layout].worker!}
+            layout={layouts[layout].worker}
             mainLayout={layouts[layout].layout}
           />
         )}

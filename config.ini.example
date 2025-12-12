@@ -9,6 +9,7 @@ max_connections = 12
 vector_index_type = HNSW        # HNSW, IVFFLAT or VCHORDRQ
 hnsw_m = 16
 hnsw_ef = 64
+hnsw_ef_search = 200
 ivfflat_lists = 100
 vchordrq_build_options =
 vchordrq_probes =

@@ -1,4 +1,3 @@
-import { cn } from '@/lib/utils'
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -7,6 +6,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { cn } from '@/lib/utils'
 import Button from './Button'
 import Input from './Input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './Select'
@@ -58,7 +58,7 @@ export default function PaginationControls({
   // Handle page input submit
   const handlePageInputSubmit = useCallback(() => {
     const pageNum = Number.parseInt(inputPage, 10)
-    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+    if (!Number.isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
       onPageChange(pageNum)
     } else {
       // Reset to current page if invalid
@@ -80,7 +80,7 @@ export default function PaginationControls({
   const handlePageSizeChange = useCallback(
     (value: string) => {
       const newPageSize = Number.parseInt(value, 10)
-      if (!isNaN(newPageSize)) {
+      if (!Number.isNaN(newPageSize)) {
         onPageSizeChange(newPageSize)
       }
     },

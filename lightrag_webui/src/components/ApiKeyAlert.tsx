@@ -1,3 +1,5 @@
+import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import {
   AlertDialog,
@@ -10,8 +12,6 @@ import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
-import { useCallback, useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 
 interface ApiKeyAlertProps {
   open: boolean
@@ -26,7 +26,7 @@ const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps
 
   useEffect(() => {
     setTempApiKey(apiKey || '')
-  }, [apiKey, opened])
+  }, [apiKey])
 
   useEffect(() => {
     if (message) {
@@ -41,12 +41,9 @@ const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps
     setOpened(false)
   }, [tempApiKey, setOpened])
 
-  const handleTempApiKeyChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setTempApiKey(e.target.value)
-    },
-    [setTempApiKey]
-  )
+  const handleTempApiKeyChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setTempApiKey(e.target.value)
+  }, [])
 
   return (
     <AlertDialog open={opened} onOpenChange={setOpened}>

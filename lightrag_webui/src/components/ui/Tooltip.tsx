@@ -1,6 +1,6 @@
-import { cn } from '@/lib/utils'
 import * as TooltipPrimitive from '@radix-ui/react-tooltip'
 import * as React from 'react'
+import { cn } from '@/lib/utils'
 
 const TooltipProvider = TooltipPrimitive.Provider
 
@@ -26,7 +26,7 @@ const TooltipContent = React.forwardRef<
     if (contentRef.current) {
       contentRef.current.scrollTop = 0
     }
-  }, [children])
+  }, [])
 
   return (
     <TooltipPrimitive.Content

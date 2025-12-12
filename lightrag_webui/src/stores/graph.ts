@@ -1,15 +1,17 @@
-import { createSelectors } from '@/lib/utils'
-import { DEFAULT_NODE_COLOR, resolveNodeColor } from '@/utils/graphColor'
 import type { DirectedGraph } from 'graphology'
 import type MiniSearch from 'minisearch'
+import type { Sigma } from 'sigma'
 import { create } from 'zustand'
+import type { PropertyValue } from '@/api/lightrag'
+import { createSelectors } from '@/lib/utils'
+import { DEFAULT_NODE_COLOR, resolveNodeColor } from '@/utils/graphColor'
 
 export type RawNodeType = {
   // for NetworkX: id is identical to properties['entity_id']
   // for Neo4j: id is unique identifier for each node
   id: string
   labels: string[]
-  properties: Record<string, any>
+  properties: Record<string, PropertyValue>
 
   size: number
   x: number
@@ -26,7 +28,7 @@ export type RawEdgeType = {
   source: string
   target: string
   type?: string
-  properties: Record<string, any>
+  properties: Record<string, PropertyValue>
   // dynamicId: key for sigmaGraph
   dynamicId: string
 }
@@ -83,7 +85,7 @@ interface GraphState {
 
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
-  sigmaInstance: any | null
+  sigmaInstance: Sigma | null
 
   searchEngine: MiniSearch | null
 
@@ -98,7 +100,7 @@ interface GraphState {
   graphDataFetchAttempted: boolean
   labelsFetchAttempted: boolean
 
-  setSigmaInstance: (instance: any) => void
+  setSigmaInstance: (instance: Sigma | null) => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
   setSelectedEdge: (edgeId: string | null) => void
@@ -219,7 +221,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 
-  setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
+  setSigmaInstance: (instance: Sigma | null) => set({ sigmaInstance: instance }),
 
   setTypeColorMap: (typeColorMap: Map<string, string>) => set({ typeColorMap }),
 

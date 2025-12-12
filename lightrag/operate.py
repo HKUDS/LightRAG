@@ -36,6 +36,7 @@ from lightrag.constants import (
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_RETRIEVAL_MULTIPLIER,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_SUMMARY_LANGUAGE,
     GRAPH_FIELD_SEP,
@@ -97,7 +98,18 @@ REDIS_URI = os.getenv('REDIS_URI', 'redis://localhost:6379')
 # Local in-memory cache with LRU eviction
 # Structure: {query_hash: (embedding, timestamp)}
 _query_embedding_cache: dict[str, tuple[list[float], float]] = {}
-_query_embedding_cache_lock = asyncio.Lock()
+_query_embedding_cache_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_query_embedding_cache_lock() -> asyncio.Lock:
+    """Return an event-loop-local lock for the embedding cache."""
+    loop = asyncio.get_running_loop()
+    lock = _query_embedding_cache_locks.get(id(loop))
+    if lock is None:
+        lock = asyncio.Lock()
+        _query_embedding_cache_locks[id(loop)] = lock
+    return lock
+
 
 # Global Redis client (lazy initialized)
 _redis_client = None
@@ -167,7 +179,7 @@ async def get_cached_query_embedding(query: str, embedding_func) -> list[float] 
         embedding_result = embedding[0]  # Extract first from batch
 
         # Manage local cache size - LRU eviction of oldest entries
-        async with _query_embedding_cache_lock:
+        async with _get_query_embedding_cache_lock():
             if len(_query_embedding_cache) >= QUERY_EMBEDDING_CACHE_MAX_SIZE:
                 # Remove oldest 10% of entries
                 sorted_entries = sorted(_query_embedding_cache.items(), key=lambda x: x[1][1])
@@ -1136,40 +1148,93 @@ async def _process_extraction_result(
     if completion_delimiter not in result:
         logger.warning(f'{chunk_key}: Complete delimiter can not be found in extraction result')
 
-    # Split LLL output result to records by "\n"
+    # Split LLM output result to records by "\n" or other common separators
+    # Some models use <|#|> between records instead of newlines
     records = split_string_by_multi_markers(
         result,
         ['\n', completion_delimiter, completion_delimiter.lower()],
     )
 
+    # Additional split: handle models that output records separated by tuple_delimiter + "entity" or "relation"
+    # e.g., "entity<|#|>A<|#|>type<|#|>desc<|#|>entity<|#|>B<|#|>type<|#|>desc"
+    expanded_records = []
+    for record in records:
+        record = record.strip()
+        if not record:
+            continue
+        # Split by patterns that indicate a new entity/relation record starting
+        # Pattern: <|#|>entity<|#|> or <|#|>relation<|#|>
+        sub_records = split_string_by_multi_markers(
+            record,
+            [
+                f'{tuple_delimiter}entity{tuple_delimiter}',
+                f'{tuple_delimiter}relation{tuple_delimiter}',
+                f'{tuple_delimiter}relationship{tuple_delimiter}',
+            ],
+        )
+        for i, sub in enumerate(sub_records):
+            sub = sub.strip()
+            if not sub:
+                continue
+            # First sub-record: check if it already starts with entity/relation
+            if i == 0:
+                if sub.lower().startswith(('entity', 'relation')):
+                    expanded_records.append(sub)
+                else:
+                    # Might be partial, try to recover by checking content
+                    # If it looks like entity fields (has enough delimiters), prefix with 'entity'
+                    if sub.count(tuple_delimiter) >= 2:
+                        expanded_records.append(f'entity{tuple_delimiter}{sub}')
+                    else:
+                        expanded_records.append(sub)
+            else:
+                # Subsequent sub-records lost their prefix during split, restore it
+                # Determine if it's entity or relation based on field count
+                # entity: name, type, desc (3 fields after split = 2 delimiters)
+                # relation: source, target, keywords, desc (4 fields = 3 delimiters)
+                delimiter_count = sub.count(tuple_delimiter)
+                if delimiter_count >= 3:
+                    expanded_records.append(f'relation{tuple_delimiter}{sub}')
+                else:
+                    expanded_records.append(f'entity{tuple_delimiter}{sub}')
+
+    records = expanded_records if expanded_records else records
+
     # Fix LLM output format error which use tuple_delimiter to seperate record instead of "\n"
     fixed_records = []
     for record in records:
         record = record.strip()
-        if record is None:
+        if not record:
             continue
+        # If record already starts with entity/relation, keep it as-is
+        if record.lower().startswith(('entity', 'relation')):
+            fixed_records.append(record)
+            continue
+        # Otherwise try to recover malformed records
         entity_records = split_string_by_multi_markers(record, [f'{tuple_delimiter}entity{tuple_delimiter}'])
         for entity_record in entity_records:
             if not entity_record.startswith('entity') and not entity_record.startswith('relation'):
                 entity_record = f'entity<|{entity_record}'
-            entity_relation_records = split_string_by_multi_markers(
-                # treat "relationship" and "relation" interchangeable
-                entity_record,
-                [
-                    f'{tuple_delimiter}relationship{tuple_delimiter}',
-                    f'{tuple_delimiter}relation{tuple_delimiter}',
-                ],
-            )
-            for entity_relation_record in entity_relation_records:
-                if not entity_relation_record.startswith('entity') and not entity_relation_record.startswith(
-                    'relation'
-                ):
-                    entity_relation_record = f'relation{tuple_delimiter}{entity_relation_record}'
-                fixed_records = [*fixed_records, entity_relation_record]
+                entity_relation_records = split_string_by_multi_markers(
+                    # treat "relationship" and "relation" interchangeable
+                    entity_record,
+                    [
+                        f'{tuple_delimiter}relationship{tuple_delimiter}',
+                        f'{tuple_delimiter}relation{tuple_delimiter}',
+                    ],
+                )
+                for entity_relation_record in entity_relation_records:
+                    if not entity_relation_record.startswith('entity') and not entity_relation_record.startswith(
+                        'relation'
+                    ):
+                        entity_relation_record = f'relation{tuple_delimiter}{entity_relation_record}'
+                    fixed_records.append(entity_relation_record)
+            else:
+                fixed_records.append(entity_record)
 
     if len(fixed_records) != len(records):
-        logger.warning(
-            f'{chunk_key}: LLM output format error; find LLM use {tuple_delimiter} as record seperators instead new-line'
+        logger.debug(
+            f'{chunk_key}: Recovered {len(fixed_records)} records from {len(records)} raw records'
         )
 
     for record in fixed_records:
@@ -1728,10 +1793,8 @@ async def _rebuild_single_relationship(
     status_message = f'Rebuild `{src}`~`{tgt}` from {len(chunk_ids)} chunks'
     if truncation_info:
         status_message += f' ({truncation_info})'
-    # Add truncation info from apply_source_ids_limit if truncation occurred
-    if len(limited_chunk_ids) < len(normalized_chunk_ids):
-        truncation_info = f' ({limit_method}:{len(limited_chunk_ids)}/{len(normalized_chunk_ids)})'
-        status_message += truncation_info
+    elif len(limited_chunk_ids) < len(normalized_chunk_ids):
+        status_message += f' ({limit_method}:{len(limited_chunk_ids)}/{len(normalized_chunk_ids)})'
 
     logger.info(status_message)
 
@@ -3838,6 +3901,7 @@ async def _get_vector_context(
     chunks_vdb: BaseVectorStorage,
     query_param: QueryParam,
     query_embedding: list[float] | None = None,
+    entity_keywords: list[str] | None = None,
 ) -> list[dict]:
     """
     Retrieve text chunks from the vector database without reranking or truncation.
@@ -3845,26 +3909,64 @@ async def _get_vector_context(
     This function performs vector search to find relevant text chunks for a query.
     Reranking and truncation will be handled later in the unified processing.
 
+    When reranking is enabled, retrieves more candidates (controlled by RETRIEVAL_MULTIPLIER)
+    to allow the reranker to surface hidden relevant chunks from beyond the initial top-k.
+
     Args:
         query: The query string to search for
         chunks_vdb: Vector database containing document chunks
         query_param: Query parameters including chunk_top_k and ids
         query_embedding: Optional pre-computed query embedding to avoid redundant embedding calls
+        entity_keywords: Optional list of entity names from query for entity-aware boosting
 
     Returns:
         List of text chunks with metadata
     """
     try:
-        # Use chunk_top_k if specified, otherwise fall back to top_k
-        search_top_k = query_param.chunk_top_k or query_param.top_k
+        base_top_k = query_param.chunk_top_k or query_param.top_k
         cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
-        results = await chunks_vdb.query(query, top_k=search_top_k, query_embedding=query_embedding)
+        # Two-stage retrieval: when reranking is enabled, retrieve more candidates
+        # so the reranker can surface hidden relevant chunks from beyond base_top_k
+        if query_param.enable_rerank:
+            search_top_k = base_top_k * DEFAULT_RETRIEVAL_MULTIPLIER
+            logger.debug(
+                f'Two-stage retrieval: {search_top_k} candidates (base={base_top_k}, x{DEFAULT_RETRIEVAL_MULTIPLIER})'
+            )
+        else:
+            search_top_k = base_top_k
+
+        # Three-stage retrieval:
+        # Stage 1: BM25+vector fusion (if available)
+        # Stage 1.5: Entity-aware boosting (if entity_keywords provided)
+        # Stage 2: Reranking (happens later in the pipeline)
+
+        if hasattr(chunks_vdb, 'hybrid_search_with_entity_boost') and entity_keywords:
+            # Use entity-boosted hybrid search when entity keywords are available
+            results = await chunks_vdb.hybrid_search_with_entity_boost(
+                query,
+                top_k=search_top_k,
+                entity_keywords=entity_keywords,
+                query_embedding=query_embedding,
+            )
+            search_method = 'hybrid+entity_boost'
+        elif hasattr(chunks_vdb, 'hybrid_search'):
+            results = await chunks_vdb.hybrid_search(
+                query, top_k=search_top_k, query_embedding=query_embedding
+            )
+            search_method = 'hybrid (BM25+vector)'
+        else:
+            results = await chunks_vdb.query(
+                query, top_k=search_top_k, query_embedding=query_embedding
+            )
+            search_method = 'vector'
+
         if not results:
             logger.info(f'Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})')
             return []
 
         valid_chunks = []
+        boosted_count = 0
         for result in results:
             if 'content' in result:
                 chunk_with_metadata = {
@@ -3874,9 +3976,17 @@ async def _get_vector_context(
                     'source_type': 'vector',  # Mark the source type
                     'chunk_id': result.get('id'),  # Add chunk_id for deduplication
                 }
+                if result.get('entity_boosted'):
+                    chunk_with_metadata['entity_boosted'] = True
+                    boosted_count += 1
                 valid_chunks.append(chunk_with_metadata)
 
-        logger.info(f'Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})')
+        boost_info = f', {boosted_count} entity-boosted' if boosted_count > 0 else ''
+        two_stage_info = f' [two-stage: {search_top_k}→{base_top_k}]' if query_param.enable_rerank else ''
+        logger.info(
+            f'Vector retrieval: {len(valid_chunks)} chunks via {search_method} '
+            f'(top_k:{search_top_k}{boost_info}{two_stage_info})'
+        )
         return valid_chunks
 
     except Exception as e:
@@ -3959,15 +4069,20 @@ async def _perform_kg_search(
         # Get vector chunks for mix mode
         if query_param.mode == 'mix' and chunks_vdb:
             logger.info(f'[MIX DEBUG] Starting vector search for query: {query[:60]}...')
+            # Parse ll_keywords into list for entity-aware boosting
+            entity_keywords_list = [kw.strip() for kw in ll_keywords.split(',') if kw.strip()] if ll_keywords else None
             vector_chunks = await _get_vector_context(
                 query,
                 chunks_vdb,
                 query_param,
                 query_embedding,
+                entity_keywords=entity_keywords_list,
             )
             logger.info(f'[MIX DEBUG] Vector search returned {len(vector_chunks)} chunks')
             if not vector_chunks:
-                logger.warning(f'[MIX DEBUG] ⚠️ NO VECTOR CHUNKS! chunk_top_k={query_param.chunk_top_k}, top_k={query_param.top_k}')
+                logger.warning(
+                    f'[MIX DEBUG] ⚠️ NO VECTOR CHUNKS! chunk_top_k={query_param.chunk_top_k}, top_k={query_param.top_k}'
+                )
             # Track vector chunks with source metadata
             for i, chunk in enumerate(vector_chunks):
                 chunk_id = chunk.get('chunk_id') or chunk.get('id')
@@ -4106,8 +4221,12 @@ def _check_topic_connectivity(
 
     # Debug: Log document distribution
     if file_to_entities:
-        doc_summary = ', '.join(f'"{fp}": {len(ents)}' for fp, ents in sorted(file_to_entities.items(), key=lambda x: -len(x[1]))[:5])
-        logger.info(f'Topic connectivity: Document distribution (top 5): [{doc_summary}] total_entities={len(entity_names)}')
+        doc_summary = ', '.join(
+            f'"{fp}": {len(ents)}' for fp, ents in sorted(file_to_entities.items(), key=lambda x: -len(x[1]))[:5]
+        )
+        logger.info(
+            f'Topic connectivity: Document distribution (top 5): [{doc_summary}] total_entities={len(entity_names)}'
+        )
     else:
         logger.info(f'Topic connectivity: No file_path data available for {len(entity_names)} entities')
 
@@ -4564,6 +4683,7 @@ async def _build_context_str(
         context_data='',  # Empty for overhead calculation
         response_type=response_type,
         user_prompt=user_prompt,
+        coverage_guidance='',  # Empty for overhead calculation
     )
     sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
 
@@ -5382,11 +5502,19 @@ async def naive_query(
     # Use the provided system prompt or default
     sys_prompt_template = system_prompt if system_prompt else PROMPTS['naive_rag_response']
 
+    # Detect sparse context for coverage guidance (adapted from KG mode)
+    chunk_count = len(chunks) if chunks else 0
+    is_sparse = chunk_count < 5  # Slightly higher threshold for naive mode
+    coverage_guidance = (
+        PROMPTS['coverage_guidance_limited'] if is_sparse else PROMPTS['coverage_guidance_good']
+    )
+
     # Create a preliminary system prompt with empty content_data to calculate overhead
     pre_sys_prompt = sys_prompt_template.format(
         response_type=response_type,
         user_prompt=user_prompt,
         content_data='',  # Empty for overhead calculation
+        coverage_guidance=coverage_guidance,
     )
 
     # Calculate available tokens for chunks
@@ -5463,6 +5591,7 @@ async def naive_query(
         response_type=query_param.response_type,
         user_prompt=user_prompt,
         content_data=context_content,
+        coverage_guidance=coverage_guidance,
     )
 
     user_query = query

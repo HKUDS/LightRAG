@@ -1,16 +1,14 @@
 import asyncio
 import logging
-import multiprocessing as mp
-import multiprocessing.synchronize  # Explicit import for typing
 import os
 import sys
 import time
-import threading
+from collections.abc import Mapping, MutableMapping
 from contextvars import ContextVar
 from multiprocessing import Manager
 from multiprocessing.managers import DictProxy, SyncManager
 from multiprocessing.synchronize import Lock as ProcessLock
-from typing import Any, Generic, Mapping, MutableMapping, Optional, TypeVar, cast
+from typing import Any, Generic, Optional, TypeVar, cast
 
 from lightrag.exceptions import PipelineNotInitializedError
 
@@ -594,11 +592,9 @@ class KeyedUnifiedLock:
         # 3. fetch the shared raw lock
         raw_lock = _get_or_create_shared_raw_mp_lock(namespace, key)
         is_multiprocess = raw_lock is not None
-        if not is_multiprocess:
-            raw_lock = async_lock
 
         # 4. build a *fresh* UnifiedLock with the chosen logging flag
-        if is_multiprocess:
+        if is_multiprocess and raw_lock is not None:
             return UnifiedLock(
                 lock=raw_lock,
                 is_async=False,  # manager.Lock is synchronous
@@ -608,7 +604,7 @@ class KeyedUnifiedLock:
             )
         else:
             return UnifiedLock(
-                lock=raw_lock,
+                lock=async_lock,
                 is_async=True,
                 name=combined_key,
                 enable_logging=enable_logging,

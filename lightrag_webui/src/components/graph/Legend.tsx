@@ -1,8 +1,8 @@
+import type React from 'react'
+import { useTranslation } from 'react-i18next'
 import { Card } from '@/components/ui/Card'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { useGraphStore } from '@/stores/graph'
-import type React from 'react'
-import { useTranslation } from 'react-i18next'
 
 interface LegendProps {
   className?: string

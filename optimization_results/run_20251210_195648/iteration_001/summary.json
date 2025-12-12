@@ -1,0 +1,34 @@
+{
+  "iteration": 1,
+  "timestamp": "2025-12-10T20:07:34.866066",
+  "best_score": 0.831272470422976,
+  "variants": [
+    {
+      "variant_name": "baseline",
+      "source": "baseline",
+      "faithfulness": 0.9871794871794872,
+      "relevance": 0.5915555273031531,
+      "ragas_score": 0.8289299032289535,
+      "total_latency_ms": 32942.73299979977,
+      "query_count": 3
+    },
+    {
+      "variant_name": "llm_mutation",
+      "source": "llm_mutation",
+      "faithfulness": 1.0,
+      "relevance": 0.38231813833458217,
+      "ragas_score": 0.7529272553338329,
+      "total_latency_ms": 33619.1771668382,
+      "query_count": 3
+    },
+    {
+      "variant_name": "aggressive_mutation",
+      "source": "llm_mutation",
+      "faithfulness": 1.0,
+      "relevance": 0.5781811760574401,
+      "ragas_score": 0.831272470422976,
+      "total_latency_ms": 11504.546957905404,
+      "query_count": 3
+    }
+  ]
+}

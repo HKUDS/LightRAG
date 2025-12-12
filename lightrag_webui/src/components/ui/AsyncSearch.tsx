@@ -1,7 +1,5 @@
-import { useDebounce } from '@/hooks/useDebounce'
 import { Loader2 } from 'lucide-react'
-import React, { useState, useEffect, useCallback, useRef } from 'react'
-
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Command,
   CommandEmpty,
@@ -10,6 +8,7 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/Command'
+import { useDebounce } from '@/hooks/useDebounce'
 import { cn } from '@/lib/utils'
 
 export interface Option {
@@ -172,6 +171,7 @@ export function AsyncSearch<T>({
       ref={containerRef}
       className={cn(disabled && 'cursor-not-allowed opacity-50', className)}
       onMouseDown={handleMouseDown}
+      aria-hidden="true"
     >
       <Command shouldFilter={false} className="bg-transparent">
         <div>
@@ -201,9 +201,8 @@ export function AsyncSearch<T>({
             (notFound || <CommandEmpty>{noResultsMessage || 'No results found.'}</CommandEmpty>)}
           <CommandGroup>
             {options.map((option, idx) => (
-              <React.Fragment key={getOptionValue(option) + `-fragment-${idx}`}>
+              <React.Fragment key={`${getOptionValue(option)}-fragment-${idx}`}>
                 <CommandItem
-                  key={getOptionValue(option) + `${idx}`}
                   value={getOptionValue(option)}
                   onSelect={handleSelect}
                   onMouseMove={() => onFocus(getOptionValue(option))}
@@ -212,7 +211,10 @@ export function AsyncSearch<T>({
                   {renderOption(option)}
                 </CommandItem>
                 {idx !== options.length - 1 && (
-                  <div key={`divider-${idx}`} className="bg-foreground/10 h-[1px]" />
+                  <hr
+                    key={`divider-${getOptionValue(option)}`}
+                    className="bg-foreground/10 h-[1px] border-0"
+                  />
                 )}
               </React.Fragment>
             ))}

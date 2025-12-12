@@ -14,9 +14,9 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import {
-  type OrphanConnectionStatus,
   cancelOrphanConnection,
   getOrphanConnectionStatus,
+  type OrphanConnectionStatus,
   startOrphanConnection,
 } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
@@ -35,8 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/Select'
-import { errorMessage } from '@/lib/utils'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 type DialogPosition = 'left' | 'center' | 'right'
 
@@ -209,9 +208,9 @@ export default function OrphanConnectionDialog({
 
           {/* Max Degree Selector */}
           <div className="flex items-center gap-3">
-            <label className="text-sm font-medium whitespace-nowrap">
+            <span className="text-sm font-medium whitespace-nowrap">
               {t('graphPanel.orphanConnection.targetDegree')}:
-            </label>
+            </span>
             <Select
               value={maxDegree.toString()}
               onValueChange={(value) => setMaxDegree(Number.parseInt(value, 10))}
@@ -318,7 +317,7 @@ export default function OrphanConnectionDialog({
                   >
                     {status.history_messages.map((msg, idx) => (
                       <div
-                        key={idx}
+                        key={`msg-${idx}-${msg.slice(0, 32)}`}
                         className={cn(
                           'py-0.5',
                           msg.includes('Error') && 'text-red-600 dark:text-red-400',

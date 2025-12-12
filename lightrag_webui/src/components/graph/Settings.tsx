@@ -1,17 +1,15 @@
+import { SettingsIcon, Shuffle, Undo2 } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import Button from '@/components/ui/Button'
 import Checkbox from '@/components/ui/Checkbox'
 import Input from '@/components/ui/Input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Separator from '@/components/ui/Separator'
-import { useCallback, useEffect, useState } from 'react'
-
 import useRandomGraph from '@/hooks/useRandomGraph'
 import { controlButtonVariant } from '@/lib/constants'
 import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
-
-import { SettingsIcon, Shuffle, Undo2 } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 /**
  * Component that displays a checkbox with a label.
@@ -75,8 +73,8 @@ const LabeledNumberInput = ({
         setCurrentValue(null)
         return
       }
-      const newValue = Number.parseInt(text)
-      if (!isNaN(newValue) && newValue !== currentValue) {
+      const newValue = Number.parseInt(text, 10)
+      if (!Number.isNaN(newValue) && newValue !== currentValue) {
         if (min !== undefined && newValue < min) {
           return
         }
@@ -263,211 +261,209 @@ export default function Settings() {
   const saveSettings = () => setOpened(false)
 
   return (
-    <>
-      <Popover open={opened} onOpenChange={setOpened}>
-        <PopoverTrigger asChild>
-          <Button
-            variant={controlButtonVariant}
-            tooltip={t('graphPanel.sideBar.settings.settings')}
-            size="icon"
-          >
-            <SettingsIcon />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          side="right"
-          align="end"
-          sideOffset={8}
-          collisionPadding={5}
-          className="p-2 max-w-[200px]"
-          onCloseAutoFocus={(e) => e.preventDefault()}
+    <Popover open={opened} onOpenChange={setOpened}>
+      <PopoverTrigger asChild>
+        <Button
+          variant={controlButtonVariant}
+          tooltip={t('graphPanel.sideBar.settings.settings')}
+          size="icon"
         >
+          <SettingsIcon />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="right"
+        align="end"
+        sideOffset={8}
+        collisionPadding={5}
+        className="p-2 max-w-[200px]"
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
+        <div className="flex flex-col gap-2">
+          <LabeledCheckBox
+            checked={enableHealthCheck}
+            onCheckedChange={setEnableHealthCheck}
+            label={t('graphPanel.sideBar.settings.healthCheck')}
+          />
+
+          <Separator />
+
+          <LabeledCheckBox
+            checked={showPropertyPanel}
+            onCheckedChange={setShowPropertyPanel}
+            label={t('graphPanel.sideBar.settings.showPropertyPanel')}
+          />
+          <LabeledCheckBox
+            checked={showNodeSearchBar}
+            onCheckedChange={setShowNodeSearchBar}
+            label={t('graphPanel.sideBar.settings.showSearchBar')}
+          />
+
+          <Separator />
+
+          <LabeledCheckBox
+            checked={showNodeLabel}
+            onCheckedChange={setShowNodeLabel}
+            label={t('graphPanel.sideBar.settings.showNodeLabel')}
+          />
+          <LabeledCheckBox
+            checked={enableNodeDrag}
+            onCheckedChange={setEnableNodeDrag}
+            label={t('graphPanel.sideBar.settings.nodeDraggable')}
+          />
+
+          <Separator />
+
+          <LabeledCheckBox
+            checked={showEdgeLabel}
+            onCheckedChange={setShowEdgeLabel}
+            label={t('graphPanel.sideBar.settings.showEdgeLabel')}
+          />
+          <LabeledCheckBox
+            checked={enableHideUnselectedEdges}
+            onCheckedChange={setEnableHideUnselectedEdges}
+            label={t('graphPanel.sideBar.settings.hideUnselectedEdges')}
+          />
+          <LabeledCheckBox
+            checked={enableEdgeEvents}
+            onCheckedChange={setEnableEdgeEvents}
+            label={t('graphPanel.sideBar.settings.edgeEvents')}
+          />
+
           <div className="flex flex-col gap-2">
-            <LabeledCheckBox
-              checked={enableHealthCheck}
-              onCheckedChange={setEnableHealthCheck}
-              label={t('graphPanel.sideBar.settings.healthCheck')}
-            />
-
-            <Separator />
-
-            <LabeledCheckBox
-              checked={showPropertyPanel}
-              onCheckedChange={setShowPropertyPanel}
-              label={t('graphPanel.sideBar.settings.showPropertyPanel')}
-            />
-            <LabeledCheckBox
-              checked={showNodeSearchBar}
-              onCheckedChange={setShowNodeSearchBar}
-              label={t('graphPanel.sideBar.settings.showSearchBar')}
-            />
-
-            <Separator />
-
-            <LabeledCheckBox
-              checked={showNodeLabel}
-              onCheckedChange={setShowNodeLabel}
-              label={t('graphPanel.sideBar.settings.showNodeLabel')}
-            />
-            <LabeledCheckBox
-              checked={enableNodeDrag}
-              onCheckedChange={setEnableNodeDrag}
-              label={t('graphPanel.sideBar.settings.nodeDraggable')}
-            />
-
-            <Separator />
-
-            <LabeledCheckBox
-              checked={showEdgeLabel}
-              onCheckedChange={setShowEdgeLabel}
-              label={t('graphPanel.sideBar.settings.showEdgeLabel')}
-            />
-            <LabeledCheckBox
-              checked={enableHideUnselectedEdges}
-              onCheckedChange={setEnableHideUnselectedEdges}
-              label={t('graphPanel.sideBar.settings.hideUnselectedEdges')}
-            />
-            <LabeledCheckBox
-              checked={enableEdgeEvents}
-              onCheckedChange={setEnableEdgeEvents}
-              label={t('graphPanel.sideBar.settings.edgeEvents')}
-            />
-
-            <div className="flex flex-col gap-2">
-              <label
-                htmlFor="edge-size-min"
-                className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-              >
-                {t('graphPanel.sideBar.settings.edgeSizeRange')}
-              </label>
-              <div className="flex items-center gap-2">
+            <label
+              htmlFor="edge-size-min"
+              className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+            >
+              {t('graphPanel.sideBar.settings.edgeSizeRange')}
+            </label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="edge-size-min"
+                type="number"
+                value={minEdgeSize}
+                onChange={(e) => {
+                  const newValue = Number(e.target.value)
+                  if (!Number.isNaN(newValue) && newValue >= 1 && newValue <= maxEdgeSize) {
+                    useSettingsStore.setState({ minEdgeSize: newValue })
+                  }
+                }}
+                className="h-6 w-16 min-w-0 pr-1"
+                min={1}
+                max={Math.min(maxEdgeSize, 10)}
+              />
+              <span>-</span>
+              <div className="flex items-center gap-1">
                 <Input
-                  id="edge-size-min"
+                  id="edge-size-max"
                   type="number"
-                  value={minEdgeSize}
+                  value={maxEdgeSize}
                   onChange={(e) => {
                     const newValue = Number(e.target.value)
-                    if (!isNaN(newValue) && newValue >= 1 && newValue <= maxEdgeSize) {
-                      useSettingsStore.setState({ minEdgeSize: newValue })
+                    if (
+                      !Number.isNaN(newValue) &&
+                      newValue >= minEdgeSize &&
+                      newValue >= 1 &&
+                      newValue <= 10
+                    ) {
+                      useSettingsStore.setState({ maxEdgeSize: newValue })
                     }
                   }}
                   className="h-6 w-16 min-w-0 pr-1"
-                  min={1}
-                  max={Math.min(maxEdgeSize, 10)}
+                  min={minEdgeSize}
+                  max={10}
                 />
-                <span>-</span>
-                <div className="flex items-center gap-1">
-                  <Input
-                    id="edge-size-max"
-                    type="number"
-                    value={maxEdgeSize}
-                    onChange={(e) => {
-                      const newValue = Number(e.target.value)
-                      if (
-                        !isNaN(newValue) &&
-                        newValue >= minEdgeSize &&
-                        newValue >= 1 &&
-                        newValue <= 10
-                      ) {
-                        useSettingsStore.setState({ maxEdgeSize: newValue })
-                      }
-                    }}
-                    className="h-6 w-16 min-w-0 pr-1"
-                    min={minEdgeSize}
-                    max={10}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 flex-shrink-0 hover:bg-muted text-muted-foreground hover:text-foreground"
-                    onClick={() => useSettingsStore.setState({ minEdgeSize: 1, maxEdgeSize: 5 })}
-                    type="button"
-                    title={t('graphPanel.sideBar.settings.resetToDefault')}
-                  >
-                    <Undo2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 flex-shrink-0 hover:bg-muted text-muted-foreground hover:text-foreground"
+                  onClick={() => useSettingsStore.setState({ minEdgeSize: 1, maxEdgeSize: 5 })}
+                  type="button"
+                  title={t('graphPanel.sideBar.settings.resetToDefault')}
+                >
+                  <Undo2 className="h-3.5 w-3.5" />
+                </Button>
               </div>
             </div>
-
-            <Separator />
-            <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.maxQueryDepth')}
-              min={1}
-              value={graphQueryMaxDepth}
-              defaultValue={3}
-              onEditFinished={setGraphQueryMaxDepth}
-            />
-            <LabeledNumberInput
-              label={`${t('graphPanel.sideBar.settings.maxNodes')} (≤ ${backendMaxGraphNodes || 1000})`}
-              min={1}
-              max={backendMaxGraphNodes || 1000}
-              value={graphMaxNodes}
-              defaultValue={backendMaxGraphNodes || 1000}
-              onEditFinished={setGraphMaxNodes}
-            />
-            <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.maxLayoutIterations')}
-              min={1}
-              max={30}
-              value={graphLayoutMaxIterations}
-              defaultValue={15}
-              onEditFinished={setGraphLayoutMaxIterations}
-            />
-
-            <Separator />
-
-            <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.minDegree')}
-              min={0}
-              max={5}
-              value={graphMinDegree}
-              defaultValue={0}
-              onEditFinished={setGraphMinDegree}
-            />
-            <LabeledCheckBox
-              checked={graphIncludeOrphans}
-              onCheckedChange={setGraphIncludeOrphans}
-              label={t('graphPanel.sideBar.settings.includeOrphans')}
-            />
-            <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.expandDepth')}
-              min={1}
-              max={5}
-              value={graphExpandDepth}
-              defaultValue={1}
-              onEditFinished={setGraphExpandDepth}
-            />
-
-            {/* Development/Testing Section - Only visible in development mode */}
-            {import.meta.env.DEV && (
-              <>
-                <Separator />
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm leading-none font-medium text-muted-foreground">
-                    Dev Options
-                  </label>
-                  <Button
-                    onClick={handleGenerateRandomGraph}
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2"
-                  >
-                    <Shuffle className="h-3.5 w-3.5" />
-                    Gen Random Graph
-                  </Button>
-                </div>
-
-                <Separator />
-              </>
-            )}
-            <Button onClick={saveSettings} variant="outline" size="sm" className="ml-auto px-4">
-              {t('graphPanel.sideBar.settings.save')}
-            </Button>
           </div>
-        </PopoverContent>
-      </Popover>
-    </>
+
+          <Separator />
+          <LabeledNumberInput
+            label={t('graphPanel.sideBar.settings.maxQueryDepth')}
+            min={1}
+            value={graphQueryMaxDepth}
+            defaultValue={3}
+            onEditFinished={setGraphQueryMaxDepth}
+          />
+          <LabeledNumberInput
+            label={`${t('graphPanel.sideBar.settings.maxNodes')} (≤ ${backendMaxGraphNodes || 1000})`}
+            min={1}
+            max={backendMaxGraphNodes || 1000}
+            value={graphMaxNodes}
+            defaultValue={backendMaxGraphNodes || 1000}
+            onEditFinished={setGraphMaxNodes}
+          />
+          <LabeledNumberInput
+            label={t('graphPanel.sideBar.settings.maxLayoutIterations')}
+            min={1}
+            max={30}
+            value={graphLayoutMaxIterations}
+            defaultValue={15}
+            onEditFinished={setGraphLayoutMaxIterations}
+          />
+
+          <Separator />
+
+          <LabeledNumberInput
+            label={t('graphPanel.sideBar.settings.minDegree')}
+            min={0}
+            max={5}
+            value={graphMinDegree}
+            defaultValue={0}
+            onEditFinished={setGraphMinDegree}
+          />
+          <LabeledCheckBox
+            checked={graphIncludeOrphans}
+            onCheckedChange={setGraphIncludeOrphans}
+            label={t('graphPanel.sideBar.settings.includeOrphans')}
+          />
+          <LabeledNumberInput
+            label={t('graphPanel.sideBar.settings.expandDepth')}
+            min={1}
+            max={5}
+            value={graphExpandDepth}
+            defaultValue={1}
+            onEditFinished={setGraphExpandDepth}
+          />
+
+          {/* Development/Testing Section - Only visible in development mode */}
+          {import.meta.env.DEV && (
+            <>
+              <Separator />
+
+              <div className="flex flex-col gap-2">
+                <span className="text-sm leading-none font-medium text-muted-foreground">
+                  Dev Options
+                </span>
+                <Button
+                  onClick={handleGenerateRandomGraph}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <Shuffle className="h-3.5 w-3.5" />
+                  Gen Random Graph
+                </Button>
+              </div>
+
+              <Separator />
+            </>
+          )}
+          <Button onClick={saveSettings} variant="outline" size="sm" className="ml-auto px-4">
+            {t('graphPanel.sideBar.settings.save')}
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

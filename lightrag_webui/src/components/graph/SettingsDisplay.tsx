@@ -1,5 +1,5 @@
-import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
+import { useSettingsStore } from '@/stores/settings'
 
 /**
  * Component that displays current values of important graph settings

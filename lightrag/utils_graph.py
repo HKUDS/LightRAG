@@ -773,7 +773,7 @@ async def aedit_relation(
                 relation_chunks_storage=relation_chunks_storage,
             )
 
-            logger.info(f"Relation Edit: `{source_entity}`~`{target_entity}` successfully updated")
+            logger.info(f'Relation Edit: `{source_entity}`~`{target_entity}` successfully updated')
             return await get_relation_info(
                 chunk_entity_relation_graph,
                 relationships_vdb,
@@ -1503,11 +1503,18 @@ def _merge_attributes(
             merged_data[key] = ','.join(sorted(unique_items))
         elif strategy == 'max':
             # For numeric fields like weight
-            try:
-                merged_data[key] = max(float(v) for v in values if v is not None)
-            except (ValueError, TypeError):
-                # Fallback to first value if conversion fails
-                merged_data[key] = values[0]
+            numeric_values: list[float] = []
+            for v in values:
+                if v is None:
+                    continue
+                try:
+                    numeric_values.append(float(v))
+                except (ValueError, TypeError):
+                    continue
+            if numeric_values:
+                merged_data[key] = max(numeric_values)
+            else:
+                merged_data[key] = values[0] if values else None
         else:
             # Default strategy: keep first value
             merged_data[key] = values[0]

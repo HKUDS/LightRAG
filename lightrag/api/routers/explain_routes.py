@@ -49,9 +49,7 @@ class ExplainRequest(BaseModel):
     """Request model for query explain endpoint."""
 
     query: str = Field(min_length=1, description='The query to explain')
-    mode: Literal['local', 'global', 'hybrid', 'naive', 'mix'] = Field(
-        default='mix', description='Query mode'
-    )
+    mode: Literal['local', 'global', 'hybrid', 'naive', 'mix'] = Field(default='mix', description='Query mode')
     top_k: int | None = Field(default=None, ge=1, description='Number of top items')
     chunk_top_k: int | None = Field(default=None, ge=1, description='Number of chunks')
     only_need_context: bool = Field(
@@ -68,9 +66,7 @@ class ExplainResponse(BaseModel):
     timing: TimingBreakdown = Field(description='Timing breakdown')
     retrieval: RetrievalStats = Field(description='Retrieval statistics')
     tokens: TokenStats = Field(description='Token statistics')
-    context_preview: str | None = Field(
-        default=None, description='Preview of retrieved context (first 500 chars)'
-    )
+    context_preview: str | None = Field(default=None, description='Preview of retrieved context (first 500 chars)')
     success: bool = Field(description='Whether query returned results')
 
     class Config:
@@ -223,7 +219,7 @@ def create_explain_routes(rag, api_key: str | None = None) -> APIRouter:
                     connectivity_passed=False,
                 ),
                 tokens=TokenStats(context_tokens=0),
-                context_preview=f'Error: {str(e)}',
+                context_preview=f'Error: {e!s}',
                 success=False,
             )
 

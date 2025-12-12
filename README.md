@@ -60,7 +60,7 @@ uv pip install "lightrag-hku[api]"
 
 **Option B: Install from Source (Recommended for this Fork)**
 ```bash
-git clone https://github.com/YourUsername/LightRAG.git
+git clone https://github.com/YOUR_GITHUB_USERNAME/LightRAG.git
 cd LightRAG
 uv sync --extra api
 source .venv/bin/activate
@@ -123,14 +123,14 @@ if __name__ == "__main__":
 ## 📦 Features & Architecture
 
 ### Storage Backends
-LightRAG now targets a single, production-grade stack: PostgreSQL with pgvector and AGE-compatible graph support. Object storage remains pluggable (S3 or local).
+Recommended production stack: PostgreSQL + pgvector + AGE-compatible graph, with S3 (or local) object storage. Other supported backends remain available where implemented (e.g., JsonKVStorage/RedisKVStorage, Neo4j/Mongo/Qdrant variants in the codebase); check `env.example` for the current list and maturity notes.
 
-| Type | Implementations |
-|------|-----------------|
-| **KV Storage** | PGKVStorage |
+| Type | Implementations (this fork) |
+|------|-----------------------------|
+| **KV Storage** | PGKVStorage (recommended); JsonKVStorage / RedisKVStorage (legacy/optional) |
 | **Vector Storage** | PGVectorStorage (pgvector) |
 | **Graph Storage** | PGGraphStorage (AGE/PG) |
-| **Object Storage** | **S3Storage (New)**, LocalFileStorage |
+| **Object Storage** | S3Storage, LocalFileStorage |
 
 ### Specialized API Routes
 This fork exposes additional endpoints:

@@ -1,6 +1,6 @@
-import { useSettingsStore } from '@/stores/settings'
 import type React from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import { useSettingsStore } from '@/stores/settings'
 import { TabVisibilityContext } from './context'
 import type { TabVisibilityContextType } from './types'
 
@@ -13,8 +13,9 @@ interface TabVisibilityProviderProps {
  * Manages the visibility state of tabs throughout the application
  */
 export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ children }) => {
-  // Get current tab from settings store
+  // Subscribe to current tab to trigger re-render when tab changes
   const currentTab = useSettingsStore.use.currentTab()
+  void currentTab
 
   // Initialize visibility state with all tabs visible
   const [visibleTabs, setVisibleTabs] = useState<Record<string, boolean>>(() => ({
@@ -33,7 +34,7 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
       retrieval: true,
       api: true,
     }))
-  }, [currentTab])
+  }, [])
 
   // Create the context value with memoization to prevent unnecessary re-renders
   const contextValue = useMemo<TabVisibilityContextType>(

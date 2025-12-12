@@ -1,6 +1,6 @@
+import { FilesIcon } from 'lucide-react'
 import { Card, CardDescription, CardTitle } from '@/components/ui/Card'
 import { cn } from '@/lib/utils'
-import { FilesIcon } from 'lucide-react'
 
 interface EmptyCardProps extends React.ComponentPropsWithoutRef<typeof Card> {
   title: string

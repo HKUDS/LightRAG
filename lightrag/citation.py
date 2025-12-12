@@ -5,6 +5,7 @@ This module provides post-processing capabilities to extract citations from LLM 
 by matching response sentences to source chunks using embedding similarity.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -167,7 +168,13 @@ class CitationExtractor:
             ref_id = self.path_to_ref.get(file_path, '')
 
             if ref_id:
-                chunk_id = chunk.get('id') or chunk.get('chunk_id') or chunk.get('content', '')[:100]
+                chunk_id = chunk.get('id') or chunk.get('chunk_id')
+                if not chunk_id:
+                    content = chunk.get('content', '')
+                    if content:
+                        chunk_id = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                    else:
+                        chunk_id = f'empty-{hashlib.sha256(str(chunk).encode("utf-8")).hexdigest()}'
                 self.chunk_to_ref[chunk_id] = ref_id
 
                 if ref_id not in self.ref_to_chunks:
@@ -419,7 +426,13 @@ class CitationExtractor:
         """
         footnotes = []
 
-        for ref in sorted(references, key=lambda r: int(r.reference_id or '0')):
+        def _safe_int(ref_id: str | None) -> int:
+            try:
+                return int(ref_id) if ref_id is not None else 0
+            except (TypeError, ValueError):
+                return 0
+
+        for ref in sorted(references, key=lambda r: _safe_int(r.reference_id)):
             parts = [f'[{ref.reference_id}] "{ref.document_title}"']
 
             if ref.section_title:

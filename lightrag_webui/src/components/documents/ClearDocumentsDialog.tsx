@@ -1,3 +1,7 @@
+import { AlertTriangleIcon, EraserIcon, Loader2Icon } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { clearCache, clearDocuments } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import Checkbox from '@/components/ui/Checkbox'
@@ -12,11 +16,6 @@ import {
 } from '@/components/ui/Dialog'
 import Input from '@/components/ui/Input'
 import { errorMessage } from '@/lib/utils'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
-
-import { AlertTriangleIcon, EraserIcon, Loader2Icon } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 // Simple Label component
 const Label = ({
@@ -125,15 +124,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
       }
       setIsClearing(false)
     }
-  }, [
-    isConfirmEnabled,
-    isClearing,
-    clearCacheOption,
-    setOpen,
-    t,
-    onDocumentsCleared,
-    CLEAR_TIMEOUT,
-  ])
+  }, [isConfirmEnabled, isClearing, clearCacheOption, t, onDocumentsCleared])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

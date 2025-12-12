@@ -1,3 +1,5 @@
+import { BrainIcon, LogOutIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import AppSettings from '@/components/AppSettings'
 import StatusIndicator from '@/components/status/StatusIndicator'
 import Button from '@/components/ui/Button'
@@ -8,8 +10,6 @@ import { cn } from '@/lib/utils'
 import { navigationService } from '@/services/navigation'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
-import { BrainIcon, LogOutIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 interface NavigationTabProps {
   value: string

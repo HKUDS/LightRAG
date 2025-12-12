@@ -1,8 +1,8 @@
-import type { Message, QueryRequest } from '@/api/lightrag'
-import { defaultQueryLabel } from '@/lib/constants'
-import { createSelectors } from '@/lib/utils'
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
+import type { LightragConfiguration, Message, QueryRequest } from '@/api/lightrag'
+import { defaultQueryLabel } from '@/lib/constants'
+import { createSelectors } from '@/lib/utils'
 
 const DEV_STORAGE_CONFIG = import.meta.env.DEV
   ? {
@@ -85,8 +85,9 @@ interface SettingsState {
   setApiKey: (key: string | null) => void
 
   // Storage configuration (for conditional UI)
-  storageConfig: Record<string, string> | null
-  setStorageConfig: (config: Record<string, string>) => void
+  // Partial because DEV_STORAGE_CONFIG only includes storage-related fields
+  storageConfig: Partial<LightragConfiguration> | null
+  setStorageConfig: (config: Partial<LightragConfiguration>) => void
 
   // App settings
   theme: Theme
@@ -249,7 +250,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setApiKey: (apiKey: string | null) => set({ apiKey }),
 
-      setStorageConfig: (config: Record<string, string>) => set({ storageConfig: config }),
+      setStorageConfig: (config: Partial<LightragConfiguration>) => set({ storageConfig: config }),
 
       setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
 
@@ -306,7 +307,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
       version: 24,
-      migrate: (state: any, version: number) => {
+      migrate: (persistedState: unknown, version: number) => {
+        // Cast to the expected state type for migration operations
+        const state = persistedState as Partial<SettingsState> & Record<string, unknown>
         if (version < 2) {
           state.showEdgeLabel = false
         }
@@ -324,20 +327,17 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.currentTab = 'documents'
         }
         if (version < 6) {
+          // Legacy migration - these properties will be overwritten in version < 15
+          // Using type assertion for deprecated properties that existed in older versions
           state.querySettings = {
             mode: 'global',
             response_type: 'Multiple Paragraphs',
             top_k: 10,
-            max_token_for_text_unit: 4000,
-            max_token_for_global_context: 4000,
-            max_token_for_local_context: 4000,
             only_need_context: false,
             only_need_prompt: false,
             stream: true,
             history_turns: 0,
-            hl_keywords: [],
-            ll_keywords: [],
-          }
+          } as Omit<QueryRequest, 'query'>
           state.retrievalHistory = []
         }
         if (version < 7) {

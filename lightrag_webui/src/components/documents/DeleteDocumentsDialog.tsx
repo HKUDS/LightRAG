@@ -1,3 +1,7 @@
+import { AlertTriangleIcon, TrashIcon } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { deleteDocuments } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import {
@@ -11,11 +15,6 @@ import {
 } from '@/components/ui/Dialog'
 import Input from '@/components/ui/Input'
 import { errorMessage } from '@/lib/utils'
-import { useCallback, useEffect, useState } from 'react'
-import { toast } from 'sonner'
-
-import { AlertTriangleIcon, TrashIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 // Simple Label component
 const Label = ({
@@ -95,7 +94,7 @@ export default function DeleteDocumentsDialog({
     } finally {
       setIsDeleting(false)
     }
-  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, setOpen, t, onDocumentsDeleted])
+  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, t, onDocumentsDeleted])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

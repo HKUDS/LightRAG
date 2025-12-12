@@ -56,7 +56,6 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
 )
 from lightrag.entity_resolution import EntityResolutionConfig
-from lightrag.kg.postgres_impl import PGKVStorage
 from lightrag.kg.shared_storage import (
     # set_default_workspace,
     cleanup_keyed_lock,
@@ -370,7 +369,7 @@ def create_app(args):
 
             if 'LIGHTRAG_GUNICORN_MODE' not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
-                logger.debug('Unvicorn Mode: finalizing shared storage...')
+                logger.debug('Uvicorn Mode: finalizing shared storage...')
                 finalize_share_data()
             else:
                 # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
@@ -438,7 +437,7 @@ def create_app(args):
 
     # Add CORS middleware
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore[arg-type]  # starlette stub issue
         allow_origins=get_cors_origins(),
         allow_credentials=True,
         allow_methods=['*'],
@@ -482,7 +481,7 @@ def create_app(args):
             history_messages=None,
             keyword_extraction=False,
             **kwargs,
-        ) -> str:
+        ) -> str | AsyncIterator[str]:
             from lightrag.llm.openai import openai_complete_if_cache
 
             keyword_extraction = kwargs.pop('keyword_extraction', None)
@@ -517,7 +516,7 @@ def create_app(args):
             history_messages=None,
             keyword_extraction=False,
             **kwargs,
-        ) -> str:
+        ) -> str | AsyncIterator[str]:
             from lightrag.llm.azure_openai import azure_openai_complete_if_cache
 
             keyword_extraction = kwargs.pop('keyword_extraction', None)
@@ -1165,7 +1164,7 @@ def create_app(args):
             graph_health = await rag.chunk_entity_relation_graph.health_check()
 
             # Cleanup expired keyed locks and get status
-            keyed_lock_info = cleanup_keyed_lock()
+            keyed_lock_info = await cleanup_keyed_lock()
 
             return {
                 'status': 'healthy',
@@ -1286,9 +1285,9 @@ def configure_logging():
 
     # Reset any existing handlers to ensure clean configuration
     for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error', 'lightrag']:
-        logger = logging.getLogger(logger_name)
-        logger.handlers = []
-        logger.filters = []
+        target_logger = logging.getLogger(logger_name)
+        target_logger.handlers = []
+        target_logger.filters = []
 
     # Get log directory path from environment variable
     log_dir = os.getenv('LOG_DIR', os.getcwd())

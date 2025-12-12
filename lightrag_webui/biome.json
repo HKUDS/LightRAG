@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.3/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
   "formatter": {
     "indentStyle": "space",
     "indentWidth": 2,
@@ -14,15 +14,36 @@
       "arrowParentheses": "always"
     }
   },
-  "organizeImports": {
-    "enabled": true
+  "css": {
+    "parser": {
+      "cssModules": true
+    },
+    "linter": {
+      "enabled": false
+    },
+    "formatter": {
+      "enabled": false
+    }
   },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
   "linter": {
     "rules": {
-      "recommended": true
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noImplicitAnyLet": "warn",
+        "noAssignInExpressions": "warn"
+      },
+      "style": {
+        "noNonNullAssertion": "warn",
+        "useTemplate": "warn"
+      },
+      "correctness": {
+        "useExhaustiveDependencies": "warn"
+      }
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", "build", "coverage"]
+    "includes": ["**", "!**/node_modules", "!**/dist", "!**/build", "!**/coverage", "!**/*.css"]
   }
 }

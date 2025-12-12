@@ -1,3 +1,6 @@
+import { RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getPopularLabels, searchLabels } from '@/api/lightrag'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import Button from '@/components/ui/Button'
@@ -11,16 +14,13 @@ import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
 import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
-import { RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
   const dropdownRefreshTrigger = useSettingsStore.use.searchLabelDropdownRefreshTrigger()
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const [_refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
 
   // Pipeline state monitoring
@@ -64,7 +64,7 @@ const GraphLabels = () => {
   // Force AsyncSelect to re-render when label changes externally (e.g., from entity rename/merge)
   useEffect(() => {
     setSelectKey((prev) => prev + 1)
-  }, [label])
+  }, [])
 
   // Force AsyncSelect to re-render when dropdown refresh is triggered (e.g., after entity rename)
   useEffect(() => {
@@ -147,7 +147,7 @@ const GraphLabels = () => {
       return finalResults
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refreshTrigger] // Intentionally added to trigger re-creation when data changes
+    [] // Intentionally added to trigger re-creation when data changes
   )
 
   const handleRefresh = useCallback(async () => {

@@ -5,7 +5,6 @@ avoiding the moto/aiobotocore async incompatibility issue.
 """
 
 from contextlib import asynccontextmanager
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -58,10 +57,7 @@ def create_mock_s3_client():
         content_type = kwargs.get('ContentType', 'application/octet-stream')
 
         # Read body if it's a file-like object
-        if hasattr(body, 'read'):
-            content = body.read()
-        else:
-            content = body
+        content = body.read() if hasattr(body, 'read') else body
 
         mock_client._objects[key] = {
             'Body': content,
@@ -77,10 +73,8 @@ def create_mock_s3_client():
         key = kwargs['Key']
         if key not in mock_client._objects:
             from botocore.exceptions import ClientError
-            raise ClientError(
-                {'Error': {'Code': 'NoSuchKey', 'Message': 'Not found'}},
-                'GetObject'
-            )
+
+            raise ClientError({'Error': {'Code': 'NoSuchKey', 'Message': 'Not found'}}, 'GetObject')
 
         obj = mock_client._objects[key]
         body_mock = MagicMock()
@@ -99,10 +93,8 @@ def create_mock_s3_client():
         key = kwargs['Key']
         if key not in mock_client._objects:
             from botocore.exceptions import ClientError
-            raise ClientError(
-                {'Error': {'Code': '404', 'Message': 'Not found'}},
-                'HeadObject'
-            )
+
+            raise ClientError({'Error': {'Code': '404', 'Message': 'Not found'}}, 'HeadObject')
         return {'ContentLength': len(mock_client._objects[key]['Body'])}
 
     mock_client.head_object = AsyncMock(side_effect=mock_head_object)
@@ -126,10 +118,8 @@ def create_mock_s3_client():
 
         if source_key not in mock_client._objects:
             from botocore.exceptions import ClientError
-            raise ClientError(
-                {'Error': {'Code': 'NoSuchKey', 'Message': 'Not found'}},
-                'CopyObject'
-            )
+
+            raise ClientError({'Error': {'Code': 'NoSuchKey', 'Message': 'Not found'}}, 'CopyObject')
 
         mock_client._objects[dest_key] = mock_client._objects[source_key].copy()
         return {}
@@ -143,11 +133,13 @@ def create_mock_s3_client():
 
         for key, obj in mock_client._objects.items():
             if key.startswith(prefix):
-                contents.append({
-                    'Key': key,
-                    'Size': len(obj['Body']),
-                    'LastModified': '2024-01-01T00:00:00Z',
-                })
+                contents.append(
+                    {
+                        'Key': key,
+                        'Size': len(obj['Body']),
+                        'LastModified': '2024-01-01T00:00:00Z',
+                    }
+                )
 
         return {'Contents': contents} if contents else {}
 
@@ -176,14 +168,17 @@ def create_mock_s3_client():
 
             self._done = True
             from datetime import datetime
+
             contents = []
             for key, obj in self._objects.items():
                 if key.startswith(self._prefix):
-                    contents.append({
-                        'Key': key,
-                        'Size': len(obj['Body']),
-                        'LastModified': datetime(2024, 1, 1),
-                    })
+                    contents.append(
+                        {
+                            'Key': key,
+                            'Size': len(obj['Body']),
+                            'LastModified': datetime(2024, 1, 1),
+                        }
+                    )
             return {'Contents': contents} if contents else {}
 
     def mock_get_paginator(operation_name):
@@ -347,7 +342,7 @@ class TestS3ClientOperations:
         """Test uploading string content (should be encoded to bytes)."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -361,7 +356,7 @@ class TestS3ClientOperations:
             )
 
             # Verify we can retrieve it
-            content, metadata = await client.get_object(s3_key)
+            content, _metadata = await client.get_object(s3_key)
             assert content == b'String content'
 
             await client.finalize()
@@ -371,7 +366,7 @@ class TestS3ClientOperations:
         """Test retrieving uploaded object."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -401,7 +396,7 @@ class TestS3ClientOperations:
         """Test moving object from staging to archive."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -436,7 +431,7 @@ class TestS3ClientOperations:
         """Test deleting an object."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -465,7 +460,7 @@ class TestS3ClientOperations:
         """Test listing objects in staging."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -492,7 +487,7 @@ class TestS3ClientOperations:
         """Test object_exists returns True for existing object."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -514,7 +509,7 @@ class TestS3ClientOperations:
         """Test object_exists returns False for non-existing object."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -529,7 +524,7 @@ class TestS3ClientOperations:
         """Test generating presigned URL."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)
@@ -555,7 +550,7 @@ class TestS3ClientOperations:
         """Test uploading with custom metadata."""
         from lightrag.storage.s3_client import S3Client, S3ClientManager
 
-        mock_session, mock_client = mock_s3_session
+        mock_session, _mock_client = mock_s3_session
 
         with patch.object(S3ClientManager, 'get_session', return_value=mock_session):
             client = S3Client(config=s3_config)

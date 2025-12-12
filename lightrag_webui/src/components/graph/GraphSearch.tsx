@@ -1,6 +1,3 @@
-import { AsyncSearch } from '@/components/ui/AsyncSearch'
-import { searchResultLimit } from '@/lib/constants'
-import { useGraphStore } from '@/stores/graph'
 import {
   EdgeById,
   type GraphSearchContextProviderProps,
@@ -9,6 +6,9 @@ import {
 import MiniSearch from 'minisearch'
 import { type FC, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AsyncSearch } from '@/components/ui/AsyncSearch'
+import { searchResultLimit } from '@/lib/constants'
+import { useGraphStore } from '@/stores/graph'
 
 // Message item identifier for search results
 export const messageId = '__message_item'

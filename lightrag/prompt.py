@@ -160,27 +160,30 @@ PROMPTS['fail_response'] = "Sorry, I'm not able to provide an answer to that que
 
 # Default RAG response prompt - cite-ready (no LLM-generated citations)
 # Citations are added by post-processing. This gives cleaner, more accurate results.
-PROMPTS[
-    'rag_response'
-] = """You're helping someone understand a topic. Write naturally, like explaining to a curious friend.
-
-COMPREHENSIVENESS:
-- Cover ALL major aspects and methodologies mentioned in the context
-- If the context mentions specific frameworks, tools, or processes, include them
-- Don't leave out key technical terms or acronyms - explain what they mean
-{coverage_guidance}
-STYLE RULES:
-- Flowing paragraphs, NOT bullets or numbered lists
-- Connect sentences with transitions (however, this means, for example)
-- Vary sentence length - mix short and long
-
-Answer using ONLY the context below. Do NOT include [1], [2] citations - they're added automatically.
-
-{user_prompt}
-
-Context:
+# Optimized via DSPy/RAGAS testing - qtype variant achieved 0.887 relevance, 0.996 faithfulness
+PROMPTS['rag_response'] = """Context:
 {context_data}
-"""
+
+STRICT GROUNDING RULES (MUST FOLLOW):
+- ONLY state information that appears EXPLICITLY in the Context above
+- NEVER add specific numbers, percentages, dates, or quantities unless they appear VERBATIM in the Context
+- NEVER reference documents, meetings, or sources not mentioned in the Context
+- NEVER elaborate, interpret, or infer beyond what the text actually says
+- If information is missing, state: "not specified in the available context"
+- Each sentence must be directly traceable to a specific passage in the Context
+
+{coverage_guidance}
+
+Format Guidelines:
+- Use the exact terminology from the question in your response
+- The first sentence must directly answer the question
+- Response type: {response_type}
+- If enumerated items are requested, present as (1), (2), (3)...
+- Do not include citation markers; they will be added automatically
+
+Question: {user_prompt}
+
+Answer:"""
 
 # Coverage guidance templates (injected based on context sparsity detection)
 PROMPTS['coverage_guidance_limited'] = """
@@ -201,22 +204,30 @@ STRICT GROUNDING:
 """
 
 # Default naive RAG response prompt - cite-ready (no LLM-generated citations)
+# Enhanced with strict grounding rules to prevent hallucination
 PROMPTS['naive_rag_response'] = """---Task---
-Answer the query using ONLY the provided context.
+Answer the query using ONLY information present in the provided context. Do NOT add any external knowledge, assumptions, or inference beyond the exact wording.
 
-Rules:
-- NO citation markers ([1], [2]) - added automatically
-- NO References section - added automatically
-- Each factual claim as distinct, traceable sentence
-- If not in context, say so clearly
-- Match query language; use Markdown formatting
+STRICT GUIDELINES
+- Every sentence must be a verbatim fact or a direct logical consequence that can be explicitly traced to a specific chunk of the context.
+- If the context lacks a required number, date, name, or any detail, respond with: "not specified in available information."
+- If any part of the question cannot be answered from the context, explicitly note the missing coverage.
+- Use the same terminology and phrasing found in the question whenever possible; mirror the question’s key nouns and verbs.
+- When the answer contains multiple items, present them as a concise list.
+
+FORMAT
+- Match the language of the question.
+- Write clear, concise sentences; use simple Markdown (lists, bold) only if it aids clarity.
+- Do not include a References section; it will be generated automatically.
 - Response type: {response_type}
+{coverage_guidance}
 
-{user_prompt}
+Question: {user_prompt}
 
 ---Context---
 {content_data}
-"""
+
+Answer:"""
 
 PROMPTS['kg_query_context'] = """
 ## Entity Summaries (use for definitions and general facts)

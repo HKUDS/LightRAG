@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 
 import pipmaster as pm
@@ -33,27 +35,20 @@ from lightrag.utils import (
 )
 
 
-def configure_llama_index(settings: LlamaIndexSettings = None, **kwargs):
+def configure_llama_index(**kwargs) -> None:
     """
-    Configure LlamaIndex settings.
+    Configure LlamaIndex global settings.
 
     Args:
-        settings: LlamaIndex Settings instance. If None, uses default settings.
-        **kwargs: Additional settings to override/configure
+        **kwargs: Settings to configure on the global Settings singleton.
+            Common settings: llm, embed_model, chunk_size, chunk_overlap
     """
-    if settings is None:
-        settings = LlamaIndexSettings()
-
-    # Update settings with any provided kwargs
+    # LlamaIndexSettings is a singleton - configure it directly
     for key, value in kwargs.items():
-        if hasattr(settings, key):
-            setattr(settings, key, value)
+        if hasattr(LlamaIndexSettings, key):
+            setattr(LlamaIndexSettings, key, value)
         else:
             logger.warning(f'Unknown LlamaIndex setting: {key}')
-
-    # Set as global settings
-    LlamaIndexSettings.set_global(settings)
-    return settings
 
 
 def format_chat_messages(messages):
@@ -121,7 +116,7 @@ async def llama_index_complete_if_cache(
 
         # In newer versions, the response is in message.content
         content = response.message.content
-        return content
+        return content or ''
 
     except Exception as e:
         logger.error(f'Error in llama_index_complete_if_cache: {e!s}')
@@ -134,7 +129,6 @@ async def llama_index_complete(
     history_messages=None,
     enable_cot: bool = False,
     keyword_extraction=False,
-    settings: LlamaIndexSettings = None,
     **kwargs,
 ) -> str:
     """
@@ -171,8 +165,7 @@ async def llama_index_complete(
 )
 async def llama_index_embed(
     texts: list[str],
-    embed_model: BaseEmbedding = None,
-    settings: LlamaIndexSettings = None,
+    embed_model: BaseEmbedding | None = None,
     **kwargs,
 ) -> np.ndarray:
     """
@@ -181,12 +174,8 @@ async def llama_index_embed(
     Args:
         texts: List of texts to embed
         embed_model: LlamaIndex embedding model
-        settings: Optional LlamaIndex settings
         **kwargs: Additional arguments
     """
-    if settings:
-        configure_llama_index(settings)
-
     if embed_model is None:
         raise ValueError('embed_model must be provided')
 

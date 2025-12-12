@@ -12,7 +12,6 @@ from lightrag.utils import (
     generate_reference_list_from_chunks,
 )
 
-
 # ============================================================================
 # Tests for _extract_document_title()
 # ============================================================================
@@ -213,7 +212,7 @@ class TestGenerateReferenceListFromChunks:
             {'file_path': '/path/doc2.pdf', 'content': 'Content 2'},
             {'file_path': '/path/doc1.pdf', 'content': 'Content 1 more'},
         ]
-        ref_list, updated_chunks = generate_reference_list_from_chunks(chunks)
+        ref_list, _updated_chunks = generate_reference_list_from_chunks(chunks)
 
         assert len(ref_list) == 2
         # doc1 appears twice, so should be reference_id '1' (higher frequency)
@@ -267,7 +266,7 @@ class TestGenerateReferenceListFromChunks:
             {'file_path': '', 'content': 'No path'},
             {'content': 'Missing path key'},
         ]
-        ref_list, updated_chunks = generate_reference_list_from_chunks(chunks)
+        ref_list, _updated_chunks = generate_reference_list_from_chunks(chunks)
 
         assert len(ref_list) == 1
         assert ref_list[0]['file_path'] == '/path/doc.pdf'

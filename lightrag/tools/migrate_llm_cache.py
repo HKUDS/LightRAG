@@ -20,7 +20,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from dotenv import load_dotenv
 
@@ -164,7 +164,7 @@ class MigrationTool:
         missing_vars = [var for var in required_vars if var not in os.environ]
 
         if missing_vars:
-            print(f'⚠️  Warning: Missing environment variables: {', '.join(missing_vars)}')
+            print(f'⚠️  Warning: Missing environment variables: {", ".join(missing_vars)}')
 
             # Check if config.ini has configuration
             has_config = self.check_config_ini_for_storage(storage_name)
@@ -243,7 +243,7 @@ class MigrationTool:
             namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
             workspace=workspace,
             global_config=global_config,
-            embedding_func=None,
+            embedding_func=cast(Any, None),
         )
 
         # Initialize the storage (may raise exception if connection fails)
@@ -532,7 +532,7 @@ class MigrationTool:
             if choice in available_types:
                 break
 
-            print(f'✗ Invalid choice. Please enter one of: {', '.join(available_types.keys())}')
+            print(f'✗ Invalid choice. Please enter one of: {", ".join(available_types.keys())}')
 
         storage_name = available_types[choice]
 
@@ -805,10 +805,10 @@ class MigrationTool:
 
             print('\nFirst 5 errors:')
             for i, error in enumerate(stats.errors[:5], 1):
-                print(f'\n  {i}. Batch {error['batch']}')
-                print(f'     Type: {error['error_type']}')
-                print(f'     Message: {error['error_msg']}')
-                print(f'     Records lost: {error['records_lost']:,}')
+                print(f'\n  {i}. Batch {error["batch"]}')
+                print(f'     Type: {error["error_type"]}')
+                print(f'     Message: {error["error_msg"]}')
+                print(f'     Records lost: {error["records_lost"]:,}')
 
             if len(stats.errors) > 5:
                 print(f'\n  ... and {len(stats.errors) - 5} more errors')

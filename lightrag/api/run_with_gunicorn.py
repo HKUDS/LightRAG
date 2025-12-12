@@ -215,6 +215,9 @@ def main():
                 )
 
             # Set configuration options from the module
+            if self.cfg is None:
+                raise RuntimeError('Gunicorn config not initialized')
+
             for key in dir(gunicorn_config):
                 if key in valid_options:
                     value = getattr(gunicorn_config, key)

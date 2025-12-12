@@ -1,12 +1,10 @@
 import logging
 import os
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pipmaster as pm  # Pipmaster for dynamic library install
-
-from lightrag.utils import VERBOSE_DEBUG, verbose_debug
 
 # Install Anthropic SDK if not present
 if not pm.is_installed('anthropic'):
@@ -15,7 +13,7 @@ if not pm.is_installed('anthropic'):
 # Add Voyage AI import
 if not pm.is_installed('voyageai'):
     pm.install('voyageai')
-import voyageai
+
 from anthropic import (
     APIConnectionError,
     APITimeoutError,
@@ -28,11 +26,14 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from voyageai.client import Client as VoyageClient
 
 from lightrag.api import __api_version__
 from lightrag.utils import (
+    VERBOSE_DEBUG,
     logger,
     safe_unicode_decode,
+    verbose_debug,
 )
 
 
@@ -43,11 +44,21 @@ class InvalidResponseError(Exception):
     pass
 
 
+_RETRYABLE_EXCEPTIONS = cast(
+    tuple[type[BaseException], ...],
+    (RateLimitError, APIConnectionError, APITimeoutError, InvalidResponseError),
+)
+_RETRYABLE_EMBED_EXCEPTIONS = cast(
+    tuple[type[BaseException], ...],
+    (RateLimitError, APIConnectionError, APITimeoutError),
+)
+
+
 # Core Anthropic completion function with retry
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError, InvalidResponseError)),
+    retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
 )
 async def anthropic_complete_if_cache(
     model: str,
@@ -79,10 +90,11 @@ async def anthropic_complete_if_cache(
     kwargs.pop('keyword_extraction', None)
     timeout = kwargs.pop('timeout', None)
 
+    anthropic_cls = cast(Any, AsyncAnthropic)
     anthropic_async_client = (
-        AsyncAnthropic(default_headers=default_headers, api_key=api_key, timeout=timeout)
+        anthropic_cls(default_headers=default_headers, api_key=api_key, timeout=timeout)
         if base_url is None
-        else AsyncAnthropic(
+        else anthropic_cls(
             base_url=base_url,
             default_headers=default_headers,
             api_key=api_key,
@@ -104,14 +116,15 @@ async def anthropic_complete_if_cache(
 
     try:
         response = await anthropic_async_client.messages.create(model=model, messages=messages, stream=True, **kwargs)
+    except APITimeoutError as e:
+        # Must catch before APIConnectionError (APITimeoutError is a subclass)
+        logger.error(f'Anthropic API Timeout Error: {e}')
+        raise
     except APIConnectionError as e:
         logger.error(f'Anthropic API Connection Error: {e}')
         raise
     except RateLimitError as e:
         logger.error(f'Anthropic API Rate Limit Error: {e}')
-        raise
-    except APITimeoutError as e:
-        logger.error(f'Anthropic API Timeout Error: {e}')
         raise
     except Exception as e:
         logger.error(f'Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}')
@@ -218,7 +231,7 @@ async def claude_3_haiku_complete(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
+    retry=retry_if_exception_type(_RETRYABLE_EMBED_EXCEPTIONS),
 )
 async def anthropic_embed(
     texts: list[str],
@@ -246,7 +259,7 @@ async def anthropic_embed(
 
     try:
         # Initialize Voyage AI client
-        voyage_client = voyageai.Client(api_key=api_key)
+        voyage_client = VoyageClient(api_key=api_key)
 
         # Get embeddings
         result = voyage_client.embed(

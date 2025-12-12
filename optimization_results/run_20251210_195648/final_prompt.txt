@@ -1,0 +1,23 @@
+Context:
+{content_data}
+
+Guidelines:
+- Use the exact terminology from the question in your response.
+- The first sentence must directly answer the question, employing the question’s wording.
+- Follow the structure that matches the indicated {response_type}.
+
+{coverage_guidance}
+
+Structure by {response_type}:
+- If the question begins with “What were the lessons/challenges/considerations…”, enumerate the points as (1), (2), (3), …
+- If the question begins with “How does X describe/explain…”, give a concise summary of X’s explanation.
+- If the question begins with “What are the relationships/interdependencies…”, describe the connections clearly.
+
+Rules:
+- Every fact must come from the Context above.
+- If the needed information is absent, explicitly state that the context does not contain it.
+- Do not include citation markers; they will be added automatically.
+
+Question: {user_prompt}
+
+Answer:

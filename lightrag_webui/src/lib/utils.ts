@@ -15,8 +15,8 @@ export function randomColor() {
   return code
 }
 
-export function errorMessage(error: any) {
-  return error instanceof Error ? error.message : `${error}`
+export function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -25,14 +25,14 @@ export function errorMessage(error: any) {
  * @param delay The delay in milliseconds
  * @returns A throttled version of the function
  */
-export function throttle<T extends (...args: any[]) => any>(
+export function throttle<T extends (...args: never[]) => unknown>(
   fn: T,
   delay: number
 ): (...args: Parameters<T>) => void {
   let lastCall = 0
   let timeoutId: ReturnType<typeof setTimeout> | null = null
 
-  return function (this: any, ...args: Parameters<T>) {
+  return function (this: unknown, ...args: Parameters<T>) {
     const now = Date.now()
     const remaining = delay - (now - lastCall)
 
@@ -60,10 +60,13 @@ type WithSelectors<S> = S extends { getState: () => infer T }
   : never
 
 export const createSelectors = <S extends UseBoundStore<StoreApi<object>>>(_store: S) => {
+  type State = ReturnType<S['getState']>
   const store = _store as WithSelectors<typeof _store>
-  store.use = {}
+  store.use = {} as { [K in keyof State]: () => State[K] }
   for (const k of Object.keys(store.getState())) {
-    ;(store.use as any)[k] = () => store((s) => s[k as keyof typeof s])
+    const key = k as keyof State & string
+    ;(store.use as Record<string, () => unknown>)[key] = () =>
+      store((s) => (s as Record<string, unknown>)[key])
   }
 
   return store

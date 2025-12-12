@@ -1,9 +1,9 @@
-import Button from '@/components/ui/Button'
-import { cn } from '@/lib/utils'
-import { useSettingsStore } from '@/stores/settings'
 import { MoonIcon, SunIcon } from 'lucide-react'
 import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import Button from '@/components/ui/Button'
+import { cn } from '@/lib/utils'
+import { useSettingsStore } from '@/stores/settings'
 
 interface AppSettingsProps {
   className?: string

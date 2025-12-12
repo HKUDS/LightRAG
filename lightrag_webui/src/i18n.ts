@@ -1,6 +1,6 @@
-import { useSettingsStore } from '@/stores/settings'
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
+import { useSettingsStore } from '@/stores/settings'
 
 import ar from './locales/ar.json'
 import en from './locales/en.json'

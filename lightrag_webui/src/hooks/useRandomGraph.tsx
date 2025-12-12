@@ -1,12 +1,12 @@
-import * as Constants from '@/lib/constants'
-import { randomColor } from '@/lib/utils'
-import { useGraphStore } from '@/stores/graph'
-import { Faker, en, faker as fak } from '@faker-js/faker'
+import { en, Faker, faker as fak } from '@faker-js/faker'
 import type Graph from 'graphology'
 import { UndirectedGraph } from 'graphology'
 import erdosRenyi from 'graphology-generators/random/erdos-renyi'
 import { useCallback, useEffect, useState } from 'react'
 import seedrandom from 'seedrandom'
+import * as Constants from '@/lib/constants'
+import { randomColor } from '@/lib/utils'
+import { useGraphStore } from '@/stores/graph'
 
 export type NodeType = {
   x: number

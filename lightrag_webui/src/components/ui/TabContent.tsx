@@ -1,6 +1,6 @@
-import { useTabVisibility } from '@/contexts/useTabVisibility'
 import type React from 'react'
 import { useEffect } from 'react'
+import { useTabVisibility } from '@/contexts/useTabVisibility'
 
 interface TabContentProps {
   tabId: string

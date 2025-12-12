@@ -1,21 +1,18 @@
-import type { CitationsMetadata, Message } from '@/api/lightrag'
-import useTheme from '@/hooks/useTheme'
-import { cn } from '@/lib/utils'
-import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-
-import { remarkFootnotes } from '@/utils/remarkFootnotes'
+import { BrainIcon, ChevronDownIcon, LoaderIcon } from 'lucide-react'
 import mermaid from 'mermaid'
-import ReactMarkdown from 'react-markdown'
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 import rehypeRaw from 'rehype-raw'
 import rehypeReact from 'rehype-react'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism'
-
-import { BrainIcon, ChevronDownIcon, LoaderIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
+import type { CitationsMetadata, Message } from '@/api/lightrag'
+import useTheme from '@/hooks/useTheme'
+import { cn } from '@/lib/utils'
+import { remarkFootnotes } from '@/utils/remarkFootnotes'
 import { CitationMarker } from './CitationMarker'
 
 // KaTeX configuration options interface
@@ -26,6 +23,19 @@ interface KaTeXOptions {
   strict?: boolean
   trust?: boolean
   errorCallback?: (error: string, latex: string) => void
+}
+
+// Type for rehype-katex plugin - use unified Plugin type for dynamic import compatibility
+// The actual type from rehype-katex is complex and varies by version
+type RehypeKatexPlugin = import('unified').Plugin
+
+// Props interface for code components in ReactMarkdown
+// Using ExtraProps pattern from react-markdown for compatibility
+interface CodeComponentProps {
+  inline?: boolean
+  className?: string
+  children?: ReactNode
+  node?: unknown
 }
 
 export type MessageWithError = Message & {
@@ -65,10 +75,10 @@ function TextWithCitations({
   const citationPattern = /\[(\d+(?:,\d+)*)\]/g
   const parts: ReactNode[] = []
   let lastIndex = 0
-  let match: RegExpExecArray | null
+  let match: RegExpExecArray | null = citationPattern.exec(text)
   let keyIndex = 0
 
-  while ((match = citationPattern.exec(text)) !== null) {
+  while (match !== null) {
     // Add text before the citation
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index))
@@ -94,6 +104,7 @@ function TextWithCitations({
     )
 
     lastIndex = match.index + match[0].length
+    match = citationPattern.exec(text)
   }
 
   // Add remaining text
@@ -119,7 +130,7 @@ export const ChatMessage = ({
 }) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
-  const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
+  const [katexPlugin, setKatexPlugin] = useState<RehypeKatexPlugin | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
   // Directly use props passed from the parent.
@@ -131,7 +142,7 @@ export const ChatMessage = ({
       // When thinking starts, always reset to collapsed state
       setIsThinkingExpanded(false)
     }
-  }, [isThinking, message.id])
+  }, [isThinking])
 
   // The content to display is now non-ambiguous.
   const finalThinkingContent = thinkingContent
@@ -164,8 +175,8 @@ export const ChatMessage = ({
   const citationsMetadata = message.citationsMetadata
 
   const mainMarkdownComponents = useMemo(
-    () => ({
-      code: (props: any) => {
+    (): Components => ({
+      code: (props: CodeComponentProps) => {
         const { inline, className, children, ...restProps } = props
         const match = /language-(\w+)/.exec(className || '')
         const language = match ? match[1] : undefined
@@ -195,7 +206,7 @@ export const ChatMessage = ({
             className={className}
             {...restProps}
             renderAsDiagram={message.mermaidRendered ?? false}
-            messageRole={message.role}
+            messageRole={message.role === 'system' ? undefined : message.role}
           >
             {children}
           </CodeHighlight>
@@ -231,12 +242,12 @@ export const ChatMessage = ({
   )
 
   const thinkingMarkdownComponents = useMemo(
-    () => ({
-      code: (props: any) => (
+    (): Components => ({
+      code: (props: CodeComponentProps) => (
         <CodeHighlight
           {...props}
           renderAsDiagram={message.mermaidRendered ?? false}
-          messageRole={message.role}
+          messageRole={message.role === 'system' ? undefined : message.role}
         />
       ),
     }),
@@ -275,9 +286,7 @@ export const ChatMessage = ({
           >
             {isThinking ? (
               <>
-                {isTabActive && (
-                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
-                )}
+                {isTabActive && <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />}
                 <span>{t('retrievePanel.chatMessage.thinking')}</span>
               </>
             ) : (
@@ -336,8 +345,8 @@ export const ChatMessage = ({
                                 console.warn('KaTeX error in thinking:', error, latex)
                               }
                             },
-                          },
-                        ] as any,
+                          } satisfies KaTeXOptions,
+                        ] as [RehypeKatexPlugin, KaTeXOptions],
                       ]
                     : []),
                   rehypeReact,
@@ -353,15 +362,16 @@ export const ChatMessage = ({
       )}
       {/* Main content display */}
       {finalDisplayContent && (
-        <div className="relative">
+        <div
+          className={`relative prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
+            message.role === 'user' ? 'text-primary-foreground' : 'text-foreground'
+          } ${
+            message.role === 'user'
+              ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
+              : '[&_.footnotes]:border-border [&_a[href^="#fn"]]:text-primary [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
+          }`}
+        >
           <ReactMarkdown
-            className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
-              message.role === 'user' ? 'text-primary-foreground' : 'text-foreground'
-            } ${
-              message.role === 'user'
-                ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
-                : '[&_.footnotes]:border-border [&_a[href^="#fn"]]:text-primary [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
-            }`}
             remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
             rehypePlugins={[
               rehypeRaw,
@@ -387,8 +397,8 @@ export const ChatMessage = ({
                             )
                           }
                         },
-                      },
-                    ] as any,
+                      } satisfies KaTeXOptions,
+                    ] as [RehypeKatexPlugin, KaTeXOptions],
                   ]
                 : []),
               rehypeReact,

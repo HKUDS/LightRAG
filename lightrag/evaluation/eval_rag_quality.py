@@ -48,7 +48,7 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv
@@ -300,7 +300,7 @@ class RAGEvaluator:
         if not self.test_dataset_path.exists():
             raise FileNotFoundError(f'Test dataset not found: {self.test_dataset_path}')
 
-        with open(self.test_dataset_path) as f:
+        with open(self.test_dataset_path, encoding='utf-8') as f:
             data = json.load(f)
 
         return data.get('test_cases', [])
@@ -921,7 +921,7 @@ class RAGEvaluator:
 
         # Save JSON results
         json_path = self.results_dir / f'results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-        with open(json_path, 'w') as f:
+        with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2)
 
         # Export to CSV
@@ -993,12 +993,19 @@ def generate_mode_comparison(
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     comparison_path = results_dir / f'mode_comparison_{timestamp}.csv'
 
+    if not all_results:
+        empty_path = results_dir / 'mode_comparison_empty.csv'
+        with open(empty_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['question', 'best_mode', 'best_ragas', *QUERY_MODES])
+        return empty_path
+
     # Get the test questions from the first mode's results
     first_mode = next(iter(all_results.keys()))
-    questions = [r['question'] for r in all_results[first_mode]['results']]
+    questions = [r['question'] for r in all_results[first_mode].get('results', [])]
     num_questions = len(questions)
 
-    with open(comparison_path, 'w', newline='') as f:
+    with open(comparison_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         # Header: question, best_mode, best_ragas, then each mode's score
         header = ['question', 'best_mode', 'best_ragas', *QUERY_MODES]
@@ -1009,7 +1016,7 @@ def generate_mode_comparison(
             question = questions[q_idx][:50] + '...'  # Truncate for readability
             scores = {}
             for mode in QUERY_MODES:
-                if mode in all_results:
+                if mode in all_results and q_idx < len(all_results[mode].get('results', [])):
                     result = all_results[mode]['results'][q_idx]
                     scores[mode] = result.get('ragas_score', 0)
                 else:

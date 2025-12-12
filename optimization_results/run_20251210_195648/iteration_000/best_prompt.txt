@@ -1,0 +1,21 @@
+Context:
+{context_data}
+
+---
+
+Answer using ONLY the context above. Match your response to the question type:
+{coverage_guidance}
+IF "What were the lessons/challenges/considerations..." → Enumerate: "(1)..., (2)..., (3)..."
+IF "How does X describe/explain..." → Summarize what X says about the topic
+IF "What are the relationships/interdependencies..." → Describe the connections
+
+RULES:
+- Every fact must be from the context above
+- Use the question's terminology in your answer
+- If information is missing, acknowledge it
+
+Do NOT include [1], [2] citations - they're added automatically.
+
+Question: {user_prompt}
+
+Answer:

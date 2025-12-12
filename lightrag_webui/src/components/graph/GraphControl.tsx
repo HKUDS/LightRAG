@@ -1,14 +1,14 @@
 import { useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
-import type { AbstractGraph } from 'graphology-types'
 import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
+import type { AbstractGraph } from 'graphology-types'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Sigma } from 'sigma'
 
 import type { EdgeType, NodeType } from '@/hooks/useLightragGraph'
 import useTheme from '@/hooks/useTheme'
 import * as Constants from '@/lib/constants'
-
-import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import { useSettingsStore } from '@/stores/settings'
 
 const isButtonPressed = (ev: MouseEvent | TouchEvent) => {
   if (ev.type.startsWith('mouse')) {
@@ -41,8 +41,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const sigmaGraph = useGraphStore.use.sigmaGraph()
 
   // Track system theme changes when theme is set to 'system'
-  const [systemThemeIsDark, setSystemThemeIsDark] = useState(() =>
-    window.matchMedia('(prefers-color-scheme: dark)').matches
+  const [_systemThemeIsDark, setSystemThemeIsDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches
   )
 
   useEffect(() => {
@@ -83,7 +83,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         ? Constants.edgeColorHighlightedDarkTheme
         : Constants.edgeColorHighlightedLightTheme,
     }
-  }, [theme, systemThemeIsDark])
+  }, [theme])
 
   // Update refs when selection changes, then trigger sigma refresh (not reducer recreation)
   useEffect(() => {
@@ -132,7 +132,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
           sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>)
           console.log('Binding graph to sigma instance')
         } else {
-          ;(sigma as any).graph = sigmaGraph
+          // Type assertion for backward compatibility with older sigma versions
+          ;(sigma as unknown as { graph: typeof sigmaGraph }).graph = sigmaGraph
           console.warn('Sigma missing setGraph function, set graph property directly')
         }
       } catch (error) {
@@ -142,7 +143,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       assignLayout()
       console.log('Initial layout applied to graph')
     }
-  }, [sigma, sigmaGraph, assignLayout, maxIterations])
+  }, [sigma, sigmaGraph, assignLayout])
 
   /**
    * Ensure the sigma instance is set in the store
@@ -152,7 +153,9 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       const currentInstance = useGraphStore.getState().sigmaInstance
       if (!currentInstance) {
         console.log('Setting sigma instance from GraphControl')
-        useGraphStore.getState().setSigmaInstance(sigma)
+        // Cast to generic Sigma type for store compatibility
+        // The specific NodeType/EdgeType typing is preserved in the component context
+        useGraphStore.getState().setSigmaInstance(sigma as unknown as Sigma)
       }
     }
   }, [sigma])
@@ -164,10 +167,17 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const { setFocusedNode, setSelectedNode, setFocusedEdge, setSelectedEdge, clearSelection } =
       useGraphStore.getState()
 
-    type NodeEvent = { node: string; event: { original: MouseEvent | TouchEvent } }
-    type EdgeEvent = { edge: string; event: { original: MouseEvent | TouchEvent } }
+    interface NodeEvent {
+      node: string
+      event: { original: MouseEvent | TouchEvent }
+    }
+    interface EdgeEvent {
+      edge: string
+      event: { original: MouseEvent | TouchEvent }
+    }
+    type EventHandler = ((e: NodeEvent) => void) | ((e: EdgeEvent) => void) | (() => void)
 
-    const events: Record<string, any> = {
+    const events: Record<string, EventHandler> = {
       enterNode: (event: NodeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           const graph = sigma.getGraph()
@@ -208,7 +218,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       }
     }
 
-    registerEvents(events)
+    registerEvents(events as Parameters<typeof registerEvents>[0])
 
     return () => {
       try {
@@ -243,8 +253,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         graph.forEachEdge((edge) => {
           const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
           if (typeof weight === 'number') {
-            const scaledSize =
-              minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+            const scaledSize = minEdgeSize + sizeScale * ((weight - minWeight) / weightRange) ** 0.5
             graph.setEdgeAttribute(edge, 'size', scaledSize)
           }
         })

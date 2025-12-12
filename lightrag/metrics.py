@@ -62,9 +62,7 @@ class MetricsCollector:
     """
 
     # Circular buffer for recent queries
-    query_history: deque[QueryMetric] = field(
-        default_factory=lambda: deque(maxlen=METRICS_HISTORY_SIZE)
-    )
+    query_history: deque[QueryMetric] = field(default_factory=lambda: deque(maxlen=METRICS_HISTORY_SIZE))
 
     # Counters (monotonically increasing, never reset)
     total_queries: int = 0
@@ -170,9 +168,7 @@ class MetricsCollector:
 
         # Calculate cache hit rate
         total_llm_ops = self.total_llm_calls + self.total_llm_cache_hits
-        cache_hit_rate = (
-            self.total_llm_cache_hits / total_llm_ops if total_llm_ops > 0 else 0.0
-        )
+        cache_hit_rate = self.total_llm_cache_hits / total_llm_ops if total_llm_ops > 0 else 0.0
 
         # Mode distribution in window
         mode_counts: dict[str, int] = {}

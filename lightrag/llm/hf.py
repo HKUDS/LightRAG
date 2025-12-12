@@ -70,11 +70,11 @@ async def hf_model_if_cache(
     messages.append({'role': 'user', 'content': prompt})
     kwargs.pop('hashing_kv', None)
     input_prompt = ''
+    ori_message = copy.deepcopy(messages)
     try:
         input_prompt = hf_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     except Exception:
         try:
-            ori_message = copy.deepcopy(messages)
             if messages[0]['role'] == 'system':
                 messages[1]['content'] = '<system>' + messages[0]['content'] + '</system>\n' + messages[1]['content']
                 messages = messages[1:]

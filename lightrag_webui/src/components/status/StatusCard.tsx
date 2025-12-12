@@ -1,5 +1,5 @@
-import type { LightragStatus } from '@/api/lightrag'
 import { useTranslation } from 'react-i18next'
+import type { LightragStatus } from '@/api/lightrag'
 
 const StatusCard = ({ status }: { status: LightragStatus | null }) => {
   const { t } = useTranslation()

@@ -42,27 +42,36 @@ DEFAULT_ENTITY_TYPES = [
 GRAPH_FIELD_SEP = '<SEP>'
 
 # Query and retrieval configuration defaults
-DEFAULT_TOP_K = 40
-DEFAULT_CHUNK_TOP_K = 20
+DEFAULT_TOP_K = 60
+DEFAULT_CHUNK_TOP_K = 40  # Increased from 30 to improve context recall
 # Token limits increased for modern 128K+ context models (GPT-4o-mini, Claude, etc.)
 # Top-k already limits count; these are safety ceilings, not aggressive truncation targets
 DEFAULT_MAX_ENTITY_TOKENS = 16000
 DEFAULT_MAX_RELATION_TOKENS = 16000
 DEFAULT_MAX_TOTAL_TOKENS = 60000
-DEFAULT_COSINE_THRESHOLD = 0.35
-DEFAULT_RELATED_CHUNK_NUMBER = 12
+DEFAULT_COSINE_THRESHOLD = 0.30  # Lowered from 0.35 to retrieve more related content
+DEFAULT_RELATED_CHUNK_NUMBER = 16  # Increased from 12 to improve context recall
 DEFAULT_KG_CHUNK_PICK_METHOD = 'VECTOR'
 
 # TODO: Deprated. All conversation_history messages is send to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults
-# Local reranking is enabled by default using mixedbread-ai/mxbai-rerank-xsmall-v1
+# Local reranking uses mxbai-rerank-xsmall-v1 by default (see rerank.py)
 DEFAULT_ENABLE_RERANK = True
-# Minimum rerank score to keep a result - filters out clearly irrelevant chunks
-# Note: mxbai-rerank-xsmall-v1 produces scores in 0.01-0.15 range for domain content
-# Set to 0.0 to disable filtering (keep all reranked results, just reorder them)
-DEFAULT_MIN_RERANK_SCORE = 0.0
+# Minimum rerank score threshold - set to None to disable filtering
+# Testing shows reranking works best for ordering only, without score cutoffs
+# (filtering hurts recall on domain-specific content)
+DEFAULT_MIN_RERANK_SCORE = None
+
+# Two-stage retrieval configuration
+# When reranking is enabled, retrieve more candidates than chunk_top_k to surface
+# hidden relevant chunks. The reranker then selects the best chunk_top_k results.
+# Example: chunk_top_k=40, multiplier=2 → retrieve 80 → rerank → return top 40
+# Note: Higher multipliers (2-3x) help when recall is low but can hurt precision
+# if the reranker isn't accurate enough. Set to 1 to disable two-stage retrieval.
+# Testing shows 1x (disabled) works best when baseline recall is already high (>95%).
+DEFAULT_RETRIEVAL_MULTIPLIER = 1  # 1 = disabled, 2-3 = enabled
 
 # Default source ids limit in meta data for entity and relation
 DEFAULT_MAX_SOURCE_IDS_PER_ENTITY = 300
@@ -84,7 +93,8 @@ DEFAULT_MAX_FILE_PATHS = 100
 DEFAULT_FILE_PATH_MORE_PLACEHOLDER = 'truncated'
 
 # Default temperature for LLM (lower = more deterministic, less hallucination risk)
-DEFAULT_TEMPERATURE = 0.3
+# Using 0.1 for evaluation stability; production may use 0.3-0.7 for more varied responses
+DEFAULT_TEMPERATURE = 0.1
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations

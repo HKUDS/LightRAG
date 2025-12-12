@@ -1,4 +1,22 @@
+import {
+  DownloadIcon,
+  FileCodeIcon,
+  FileIcon,
+  FileTextIcon,
+  GripVerticalIcon,
+  ImageIcon,
+  Loader2Icon,
+} from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import ReactMarkdown from 'react-markdown'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism'
+import rehypeRaw from 'rehype-raw'
+import remarkGfm from 'remark-gfm'
 import { s3Download } from '@/api/lightrag'
+import Button from '@/components/ui/Button'
+import { ScrollArea } from '@/components/ui/ScrollArea'
 import {
   Sheet,
   SheetContent,
@@ -8,24 +26,6 @@ import {
 } from '@/components/ui/Sheet'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
-import {
-  DownloadIcon,
-  FileIcon,
-  FileTextIcon,
-  ImageIcon,
-  Loader2Icon,
-  FileCodeIcon,
-  GripVerticalIcon,
-} from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import ReactMarkdown from 'react-markdown'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism'
-import remarkGfm from 'remark-gfm'
-import rehypeRaw from 'rehype-raw'
-import Button from '@/components/ui/Button'
-import { ScrollArea } from '@/components/ui/ScrollArea'
 import PDFViewer from './PDFViewer'
 
 interface FileViewerProps {
@@ -165,7 +165,7 @@ function formatBytes(bytes: number): string {
   const k = 1024
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+  return `${parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`
 }
 
 export default function FileViewer({
@@ -186,21 +186,31 @@ export default function FileViewer({
 
   // Resizable width state
   const [width, setWidth] = useState(() => {
-    const saved = localStorage.getItem(VIEWER_WIDTH_KEY)
-    return saved ? parseInt(saved, 10) : DEFAULT_WIDTH
+    const saved = typeof window !== 'undefined' ? localStorage.getItem(VIEWER_WIDTH_KEY) : null
+    const parsed = saved ? parseInt(saved, 10) : NaN
+    return Number.isFinite(parsed) && parsed >= MIN_WIDTH && parsed <= MAX_WIDTH
+      ? parsed
+      : DEFAULT_WIDTH
   })
   const [isResizing, setIsResizing] = useState(false)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const widthRef = useRef(width)
+  useEffect(() => {
+    widthRef.current = width
+  }, [width])
 
   const fileType = getFileType(fileName)
   const language = getLanguage(fileName)
 
   // Handle resize start
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setIsResizing(true)
-    resizeRef.current = { startX: e.clientX, startWidth: width }
-  }, [width])
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      setIsResizing(true)
+      resizeRef.current = { startX: e.clientX, startWidth: width }
+    },
+    [width]
+  )
 
   // Handle resize move
   useEffect(() => {
@@ -209,13 +219,16 @@ export default function FileViewer({
     const handleMouseMove = (e: MouseEvent) => {
       if (!resizeRef.current) return
       const delta = resizeRef.current.startX - e.clientX
-      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeRef.current.startWidth + delta))
+      const newWidth = Math.min(
+        MAX_WIDTH,
+        Math.max(MIN_WIDTH, resizeRef.current.startWidth + delta)
+      )
       setWidth(newWidth)
     }
 
     const handleMouseUp = () => {
       setIsResizing(false)
-      localStorage.setItem(VIEWER_WIDTH_KEY, String(width))
+      localStorage.setItem(VIEWER_WIDTH_KEY, String(widthRef.current))
     }
 
     document.addEventListener('mousemove', handleMouseMove)
@@ -229,7 +242,7 @@ export default function FileViewer({
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
-  }, [isResizing, width])
+  }, [isResizing])
 
   // Fetch file content when opened
   useEffect(() => {
@@ -239,6 +252,8 @@ export default function FileViewer({
       setError(null)
       return
     }
+
+    const controller = new AbortController()
 
     const fetchContent = async () => {
       setLoading(true)
@@ -255,7 +270,7 @@ export default function FileViewer({
           setImageUrl(presignedUrl)
         } else if (fileType !== 'unknown') {
           // Fetch text content
-          const textResponse = await fetch(presignedUrl)
+          const textResponse = await fetch(presignedUrl, { signal: controller.signal })
           if (!textResponse.ok) {
             throw new Error(`Failed to fetch: ${textResponse.statusText}`)
           }
@@ -266,24 +281,32 @@ export default function FileViewer({
           setImageUrl(presignedUrl)
         }
       } catch (err) {
+        if (controller.signal.aborted) return
         setError(err instanceof Error ? err.message : 'Failed to load file')
       } finally {
-        setLoading(false)
+        if (!controller.signal.aborted) {
+          setLoading(false)
+        }
       }
     }
 
     fetchContent()
+    return () => controller.abort()
   }, [open, fileKey, fileType])
 
   const handleDownload = useCallback(async () => {
     if (!fileKey) return
     try {
       const response = await s3Download(fileKey)
-      window.open(response.url, '_blank')
-    } catch {
-      // Error handled silently
+      const newWindow = window.open(response.url, '_blank', 'noopener,noreferrer')
+      if (newWindow) {
+        newWindow.opener = null
+      }
+    } catch (err) {
+      console.error('Download failed', err)
+      alert(t('storagePanel.actions.downloadFailed') ?? 'Download failed')
     }
-  }, [fileKey])
+  }, [fileKey, t])
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -294,6 +317,7 @@ export default function FileViewer({
       >
         {/* Resize handle */}
         <div
+          aria-hidden="true"
           className={cn(
             'absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 transition-colors z-50 group',
             isResizing && 'bg-primary/50'

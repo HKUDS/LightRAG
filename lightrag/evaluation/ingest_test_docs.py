@@ -88,7 +88,6 @@ async def ingest_documents(
 
         last_status = ''
         processed_count = 0
-        len(texts)
         initial_check = True
 
         while True:
@@ -99,7 +98,6 @@ async def ingest_documents(
             processing = len(statuses.get('processing', []))
             pending = len(statuses.get('pending', []))
             processed = len(statuses.get('processed', []))
-            processing + pending + processed
 
             current_status = f'Pending: {pending}, Processing: {processing}, Processed: {processed}'
             if current_status != last_status:

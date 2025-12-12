@@ -4,8 +4,8 @@ This module tests the S3 document staging endpoints using httpx AsyncClient
 and FastAPI's TestClient pattern with mocked S3Client and LightRAG.
 """
 
+import contextlib
 import sys
-from io import BytesIO
 from typing import Annotated, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -32,7 +32,7 @@ sys.modules['lightrag.api.auth'] = mock_auth_module
 # Now import FastAPI components
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from httpx import ASGITransport, AsyncClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 # Recreate models for testing (to avoid import chain issues)
@@ -267,10 +267,8 @@ def create_test_upload_routes(
 
             archive_key = None
             if request.archive_after_processing:
-                try:
+                with contextlib.suppress(Exception):
                     archive_key = await s3_client.move_to_archive(s3_key)
-                except Exception:
-                    pass  # Don't fail if archive fails
 
             return ProcessS3Response(
                 status='processing_complete',

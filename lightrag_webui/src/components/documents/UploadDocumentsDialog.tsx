@@ -1,3 +1,8 @@
+import { UploadIcon } from 'lucide-react'
+import { useCallback, useState } from 'react'
+import type { FileRejection } from 'react-dropzone'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { uploadDocument } from '@/api/lightrag'
 import Button from '@/components/ui/Button'
 import {
@@ -10,12 +15,6 @@ import {
 } from '@/components/ui/Dialog'
 import FileUploader from '@/components/ui/FileUploader'
 import { errorMessage } from '@/lib/utils'
-import { useCallback, useState } from 'react'
-import type { FileRejection } from 'react-dropzone'
-import { toast } from 'sonner'
-
-import { UploadIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 interface UploadDocumentsDialogProps {
   onDocumentsUploaded?: () => Promise<void>
@@ -55,7 +54,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         }))
       })
     },
-    [setProgresses, setFileErrors, t]
+    [t]
   )
 
   const handleDocumentsUpload = useCallback(
@@ -186,7 +185,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
+    [t, onDocumentsUploaded]
   )
 
   return (

@@ -1,7 +1,7 @@
-import { useTabVisibility } from '@/contexts/useTabVisibility'
-import { backendBaseUrl } from '@/lib/constants'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useTabVisibility } from '@/contexts/useTabVisibility'
+import { backendBaseUrl } from '@/lib/constants'
 
 export default function ApiSite() {
   const { t } = useTranslation()
@@ -21,7 +21,8 @@ export default function ApiSite() {
     <div className={`size-full ${isApiTabVisible ? '' : 'hidden'}`}>
       {iframeLoaded ? (
         <iframe
-          src={backendBaseUrl + '/docs'}
+          src={`${backendBaseUrl}/docs`}
+          title="LightRAG API Documentation"
           className="size-full w-full h-full"
           style={{ width: '100%', height: '100%', border: 'none' }}
           // Use key to ensure iframe doesn't reload

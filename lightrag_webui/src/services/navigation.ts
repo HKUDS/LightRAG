@@ -1,7 +1,7 @@
+import type { NavigateFunction } from 'react-router-dom'
 import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore, useBackendState } from '@/stores/state'
-import type { NavigateFunction } from 'react-router-dom'
 
 class NavigationService {
   private navigate: NavigateFunction | null = null

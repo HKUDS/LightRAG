@@ -1,7 +1,5 @@
-import { useDebounce } from '@/hooks/useDebounce'
 import { Check, ChevronsUpDown, Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-
 import Button from '@/components/ui/Button'
 import {
   Command,
@@ -12,6 +10,7 @@ import {
   CommandList,
 } from '@/components/ui/Command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
+import { useDebounce } from '@/hooks/useDebounce'
 import { cn } from '@/lib/utils'
 
 export interface Option {
@@ -186,7 +185,7 @@ export function AsyncSelect<T>({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetcher, debouncedSearchTerm, mounted, preload, filterFn])
+  }, [fetcher, debouncedSearchTerm, mounted, preload, filterFn, originalOptions])
 
   const handleSelect = useCallback(
     (currentValue: string) => {

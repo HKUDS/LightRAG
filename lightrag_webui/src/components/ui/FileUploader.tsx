@@ -2,17 +2,16 @@
  * @see https://github.com/sadmann7/file-uploader
  */
 
+import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import { FileText, Upload, X } from 'lucide-react'
 import * as React from 'react'
 import Dropzone, { type DropzoneProps, type FileRejection } from 'react-dropzone'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-
 import Button from '@/components/ui/Button'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { supportedFileTypes } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import { useControllableState } from '@radix-ui/react-use-controllable-state'
 
 interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
   /**
@@ -122,7 +121,7 @@ function formatBytes(
   const accurateSizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB']
   if (bytes === 0) return '0 Byte'
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(decimals)} ${
+  return `${(bytes / 1024 ** i).toFixed(decimals)} ${
     sizeType === 'accurate' ? (accurateSizes[i] ?? 'Bytes') : (sizes[i] ?? 'Bytes')
   }`
 }
@@ -148,6 +147,7 @@ function FileUploader(props: FileUploaderProps) {
 
   const [files, setFiles] = useControllableState({
     prop: valueProp,
+    defaultProp: [],
     onChange: onValueChange,
   })
 
@@ -255,7 +255,7 @@ function FileUploader(props: FileUploaderProps) {
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [files])
 
   const isDisabled = disabled || (files?.length ?? 0) >= maxFileCount
 
@@ -366,7 +366,7 @@ function FileUploader(props: FileUploaderProps) {
           <div className="flex max-h-48 flex-col gap-4">
             {files?.map((file, index) => (
               <FileCard
-                key={index}
+                key={`${file.name}-${file.size}-${index}`}
                 file={file}
                 onRemove={() => onRemove(index)}
                 progress={progresses?.[file.name]}

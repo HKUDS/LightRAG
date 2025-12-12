@@ -1,7 +1,7 @@
-import { type LightragStatus, checkHealth } from '@/api/lightrag'
+import { create } from 'zustand'
+import { checkHealth, type LightragStatus } from '@/api/lightrag'
 import { healthCheckInterval } from '@/lib/constants'
 import { createSelectors } from '@/lib/utils'
-import { create } from 'zustand'
 import { useSettingsStore } from './settings'
 
 interface BackendState {
@@ -79,7 +79,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
       // Extract and store backend max graph nodes limit
       if (health.configuration?.max_graph_nodes) {
         const maxNodes = Number.parseInt(health.configuration.max_graph_nodes, 10)
-        if (!isNaN(maxNodes) && maxNodes > 0) {
+        if (!Number.isNaN(maxNodes) && maxNodes > 0) {
           const currentBackendMaxNodes = useSettingsStore.getState().backendMaxGraphNodes
 
           // Only update if the backend limit has actually changed
