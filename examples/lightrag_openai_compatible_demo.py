@@ -4,8 +4,7 @@ import inspect
 import logging
 import logging.config
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import openai_complete_if_cache
-from lightrag.llm.ollama import ollama_embed
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 
 from dotenv import load_dotenv
@@ -109,14 +108,25 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
         embedding_func=EmbeddingFunc(
-            embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
-            max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
-            func=lambda texts: ollama_embed(
+            embedding_dim=int(os.getenv("EMBEDDING_DIM", "3072")),
+            max_token_size=int(
+                os.getenv("EMBEDDING_TOKEN_LIMIT", os.getenv("MAX_EMBED_TOKENS", "8192"))
+            ),
+            func=lambda texts: openai_embed.func(
                 texts,
-                embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
-                host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
+                model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"),
+                base_url=os.getenv("EMBEDDING_BINDING_HOST"),
+                api_key=os.getenv("EMBEDDING_BINDING_API_KEY")
+                or os.getenv("OPENAI_API_KEY"),
+                embedding_dim=(
+                    int(os.getenv("EMBEDDING_DIM"))
+                    if os.getenv("EMBEDDING_SEND_DIM", "false").lower() == "true"
+                    else None
+                ),
             ),
         ),
+        chunk_token_size=120,
+        chunk_overlap_token_size=30
     )
 
     await rag.initialize_storages()  # Auto-initializes pipeline_status
@@ -155,15 +165,36 @@ async def main():
         print(f"Test dict: {test_text}")
         print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
-        with open("./book.txt", "r", encoding="utf-8") as f:
-            await rag.ainsert(f.read())
+        # with open("./book.txt", "r", encoding="utf-8") as f:
+        #     await rag.ainsert(f.read())
 
+        text = """
+"Stuart Rosenberg (August 11, 1927 – March 15, 2007) was an American film and television director whose motion pictures include \"Cool Hand Luke\" (1967), \"Voyage of the Damned\" (1976), \"The Amityville Horror\" (1979), and \"The Pope of Greenwich Village\" (1984).",
+"He was noted for his work with actor Paul Newman."
+"Méditerranée is a 1963 French experimental film directed by Jean-Daniel Pollet with assistance from Volker Schlöndorff.",
+"It was written by Philippe Sollers and produced by Barbet Schroeder, with music by Antione Duhamel.",
+"The 45 minute film is cited as one of Pollet's most influential films, which according to Jonathan Rosenbaum directly influenced Jean-Luc Goddard's \"Contempt\", released later the same year.",
+"Footage for the film was shot around the Mediterranean, including at a Greek temple, a Sicilian garden, the sea, and also features a fisherman, a bullfighter, and a girl on an operating table."
+"Move is a 1970 American comedy film starring Elliott Gould, Paula Prentiss and Geneviève Waïte, and directed by Stuart Rosenberg.",
+"The screenplay was written by Joel Lieber and Stanley Hart, adapted from a novel by Lieber."
+"Ian Barry is an Australian director of film and TV."
+"Peter Levin is an American director of film, television and theatre."
+"Brian Johnson( born 1939 or 1940) is a British designer and director of film and television special effects."
+"Rachel Feldman( born August 22, 1954) is an American director of film and television and screenwriter of television films."
+"Hanro Smitsman, born in 1967 in Breda( Netherlands), is a writer and director of film and television."
+"Jean-Daniel Pollet (1936–2004) was a French film director and screenwriter who was most active in the 1960s and 1970s.",
+"He was associated with two approaches to filmmaking: comedies which blended burlesque and melancholic elements, and poetic films based on texts by writers such as the French poet Francis Ponge."
+"Howard Winchel Koch( April 11, 1916 – February 16, 2001) was an American producer and director of film and television."
+}"""
+        await rag.ainsert(text)
+        query = """Are director of film Move (1970 Film) and director of film Méditerranée (1963 Film) from the same country?
+"""
         # Perform naive search
         print("\n=====================")
         print("Query mode: naive")
         print("=====================")
         resp = await rag.aquery(
-            "What are the top themes in this story?",
+            query,
             param=QueryParam(mode="naive", stream=True),
         )
         if inspect.isasyncgen(resp):
@@ -176,7 +207,7 @@ async def main():
         print("Query mode: local")
         print("=====================")
         resp = await rag.aquery(
-            "What are the top themes in this story?",
+            query,
             param=QueryParam(mode="local", stream=True),
         )
         if inspect.isasyncgen(resp):
@@ -189,7 +220,7 @@ async def main():
         print("Query mode: global")
         print("=====================")
         resp = await rag.aquery(
-            "What are the top themes in this story?",
+            query,
             param=QueryParam(mode="global", stream=True),
         )
         if inspect.isasyncgen(resp):
@@ -197,18 +228,19 @@ async def main():
         else:
             print(resp)
 
-        # Perform hybrid search
+        #Perform hybrid search
         print("\n=====================")
         print("Query mode: hybrid")
         print("=====================")
         resp = await rag.aquery(
-            "What are the top themes in this story?",
+            query,
             param=QueryParam(mode="hybrid", stream=True),
         )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
         else:
             print(resp)
+
 
     except Exception as e:
         print(f"An error occurred: {e}")
