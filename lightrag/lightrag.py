@@ -1650,8 +1650,11 @@ class LightRAG:
                         "latest_message": "",
                     }
                 )
-                # Cleaning history_messages without breaking it as a shared list object
-                del pipeline_status["history_messages"][:]
+                #Fix: Check if key exists before deleting to prevent KeyError
+                if "history_messages" in pipeline_status:
+                    del pipeline_status["history_messages"][:]
+                else:
+                    pipeline_status["history_messages"] = []
             else:
                 # Another process is busy, just set request flag and return
                 pipeline_status["request_pending"] = True
