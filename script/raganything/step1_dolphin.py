@@ -4,12 +4,14 @@ import json
 import glob
 import time
 import math
+import gc
 import io
-import psutil
+import re
+import numpy as np
 import torch
-import pymupdf  # 🔥 取代 pdf2image (官方 Dolphin 使用這個)
+import pymupdf  # 無需 Poppler
 from PIL import Image
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
 from loguru import logger
 
@@ -17,199 +19,347 @@ from loguru import logger
 # 🔥 [使用者設定區]
 # ==========================================
 
-# 1. 路徑設定
 INPUT_DIR = "./data/input/__enqueued__"
 OUTPUT_DIR_BASE = "./data/input/step1_output"
-
-# 2. 模型設定
 MODEL_ID = "ByteDance/Dolphin-v2"
 
-# 3. 畫質設定 (PyMuPDF Zoom Factor)
-# 標準 PDF 是 72 DPI。設定 zoom=4.16 大約等於 300 DPI (高品質印刷標準)
-# 這樣能確保小字體也能被精確識別
-PDF_ZOOM = 300 / 72  # ~4.166
+# 渲染 PDF 的畫質 (300 DPI 為佳，保證小字清晰)
+RENDER_DPI = 300 
 
-# 4. Token 限制 (保護 RAM)
-# 25000 tokens ≈ 490萬像素。
-# 配合 CPU 模式，這個設定能吃下 A4 全頁高畫質細節。
-MAX_VISUAL_TOKENS = 25000 
-
-# 每幾頁存檔一次
+# 存檔頻率 (每幾頁存一次)
 SAVE_INTERVAL = 1
 
 # ==========================================
+# 🛠️ 核心工具函式 (Dolphin 官方邏輯)
+# ==========================================
 
-# 設定 Logging
-LOG_DIR = "./logs"
-if not os.path.exists(LOG_DIR): os.makedirs(LOG_DIR)
-log_file = os.path.join(LOG_DIR, f"step1_dolphin_official_{time.strftime('%Y%m%d_%H%M%S')}.log")
-
-logger.remove()
-logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>", level="INFO")
-logger.add(log_file, rotation="10 MB", level="DEBUG", encoding="utf-8")
-logger.info(f"📝 Log 檔案已建立: {log_file}")
-
-# === 輔助函式 ===
-
-def get_ram_usage():
-    """取得目前系統 RAM 使用量 (GB)"""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / (1024 ** 3)
-
-def resize_to_token_limit(image, max_tokens=25000):
-    """
-    智慧縮圖：防止超大圖片導致推理過慢
-    """
-    w, h = image.size
-    total_pixels = w * h
-    current_tokens = total_pixels / 196  # Qwen2.5-VL patch size 14x14
+def smart_resize(height, width, factor=28, min_pixels=784, max_pixels=2560000):
+    """Dolphin 官方的圖片縮放邏輯 (用於坐標換算)"""
+    if max(height, width) / min(height, width) > 200:
+        resize_factor = max(height, width) // min_pixels
+        if resize_factor > 1:
+            height = height // resize_factor
+            width = width // resize_factor
+            return height, width
+            
+    h_bar = round(height / factor) * factor
+    w_bar = round(width / factor) * factor
     
-    if current_tokens > max_tokens:
-        scale = math.sqrt(max_tokens / current_tokens)
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        logger.info(f"📉 [Resize] 圖片過大: {w}x{h} -> {new_w}x{new_h} (Tokens: {int(current_tokens)} -> ~{max_tokens})")
-        return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        h_bar = math.floor(height / beta / factor) * factor
+        w_bar = math.floor(width / beta / factor) * factor
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+        
+    return h_bar, w_bar
+
+def resize_img(image, max_size=1600, min_size=28):
+    """Dolphin 預處理縮放 (用於推論輸入)"""
+    width, height = image.size
+    if max(width, height) < max_size and min(width, height) >= 28:
+        return image
     
+    if max(width, height) > max_size:
+        if width > height:
+            new_width = max_size
+            new_height = int(height * (max_size / width))
+        else:
+            new_height = max_size
+            new_width = int(width * (max_size / height))
+        image = image.resize((new_width, new_height))
+        width, height = image.size
+    
+    if min(width, height) < 28:
+        if width < height:
+            new_width = min_size
+            new_height = int(height * (min_size / width))
+        else:
+            new_height = min_size
+            new_width = int(width * (min_size / height))
+        image = image.resize((new_width, new_height))
+
     return image
 
-def load_model():
-    """
-    載入模型 (CPU High-Quality Mode)
-    """
-    logger.info("="*60)
-    logger.info(f"📥 正在載入模型: {MODEL_ID} (CPU + PyMuPDF)...")
-    logger.info("⚠️ 注意：CPU 推理速度較慢，請耐心等待。")
+def process_coordinates(coords, pil_image):
+    """將模型輸出的歸一化坐標轉回原圖坐標"""
+    original_w, original_h = pil_image.size
+    resized_pil = resize_img(pil_image)
+    resized_image = np.array(resized_pil)
+    resized_h, resized_w = resized_image.shape[:2]
+    resized_h, resized_w = smart_resize(resized_h, resized_w, factor=28, min_pixels=784, max_pixels=2560000)
+
+    w_ratio, h_ratio = original_w / resized_w, original_h / resized_h
+    x1 = int(coords[0] * w_ratio)
+    y1 = int(coords[1] * h_ratio)
+    x2 = int(coords[2] * w_ratio)
+    y2 = int(coords[3] * h_ratio)
+
+    x1 = max(0, min(x1, original_w - 1))
+    y1 = max(0, min(y1, original_h - 1))
+    x2 = max(x1 + 1, min(x2, original_w))
+    y2 = max(y1 + 1, min(y2, original_h))
+    return x1, y1, x2, y2
+
+def extract_labels_from_string(text):
+    """從輸出字串提取標籤"""
+    all_matches = re.findall(r'\[([^\]]+)\]', text)
+    labels = []
+    for match in all_matches:
+        if not re.match(r'^\d+,\d+,\d+,\d+$', match):
+            labels.append(match)
+    return labels
+
+def parse_layout_string(bbox_str):
+    """解析模型輸出的 Layout 字串"""
+    parsed_results = []
+    if not bbox_str: return []
     
+    segments = bbox_str.split('[PAIR_SEP]')
+    new_segments = []
+    for seg in segments:
+        new_segments.extend(seg.split('[RELATION_SEP]'))
+    segments = new_segments
+    
+    for segment in segments:
+        segment = segment.strip()
+        if not segment: continue
+        
+        coord_pattern = r'\[(\d*\.?\d+),(\d*\.?\d+),(\d*\.?\d+),(\d*\.?\d+)\]'
+        coord_match = re.search(coord_pattern, segment)
+        label_matches = extract_labels_from_string(segment)
+        
+        if coord_match and label_matches:
+            coords = [float(coord_match.group(i)) for i in range(1, 5)]
+            label = label_matches[0].strip()
+            parsed_results.append((coords, label, label_matches[1:]))
+            
+    return parsed_results
+
+# ==========================================
+# ⚙️ 核心處理邏輯
+# ==========================================
+
+# Setup Logging
+logger.remove()
+logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>", level="INFO")
+
+def load_model():
+    logger.info("="*60)
+    
+    # 1. 自動偵測裝置
+    if torch.cuda.is_available():
+        device = "cuda"
+        logger.info(f"📥 正在載入模型: {MODEL_ID} (GPU 4-bit Mode)...")
+    else:
+        device = "cpu"
+        logger.info(f"📥 正在載入模型: {MODEL_ID} (CPU High-Quality Mode)...")
+        logger.warning("⚠️ 注意：CPU 模式推論速度較慢，且需要約 12GB+ RAM。")
+
     try:
         processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
-        # 使用 float32 確保 CPU 上的最佳相容性與畫質
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch.float32, 
-            device_map="cpu",          
-            trust_remote_code=True
-        )
-        logger.success(f"✅ 模型載入完成！目前 RAM 使用: {get_ram_usage():.2f} GB")
+        
+        if device == "cuda":
+            # === GPU 模式：使用 4-bit 量化省顯存 ===
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                MODEL_ID,
+                quantization_config=quantization_config,
+                device_map="auto",
+                trust_remote_code=True
+            )
+        else:
+            # === CPU 模式：使用 Float32 確保相容性 ===
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                MODEL_ID,
+                torch_dtype=torch.float32, 
+                device_map="cpu",
+                trust_remote_code=True
+            )
+
+        logger.success(f"✅ 模型載入完成！(Device: {model.device})")
         return model, processor
+
     except Exception as e:
         logger.critical(f"❌ 模型載入失敗: {e}")
         sys.exit(1)
+
+def run_inference(model, processor, image, prompt):
+    """通用的推論函式 (自動處理 Device)"""
+    # 預處理圖片
+    image = resize_img(image)
+    
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": prompt}
+        ]
+    }]
+    
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    image_inputs, video_inputs = process_vision_info(messages)
+    
+    inputs = processor(
+        text=[text], 
+        images=image_inputs, 
+        videos=video_inputs, 
+        padding=True, 
+        return_tensors="pt"
+    ).to(model.device)
+
+    with torch.no_grad():
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=2048,
+            do_sample=False
+        )
+    
+    gen_ids_trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
+    output_text = processor.batch_decode(gen_ids_trimmed, skip_special_tokens=True)[0]
+    
+    # Clean memory
+    del inputs, generated_ids
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    return output_text
 
 def process_single_file(input_path, output_base, model, processor):
     filename = os.path.basename(input_path)
     file_stem = os.path.splitext(filename)[0]
     
-    # 建立輸出目錄
+    # 建立目錄
     current_out_dir = os.path.join(output_base, file_stem)
     if not os.path.exists(current_out_dir): os.makedirs(current_out_dir)
     final_json = os.path.join(current_out_dir, "intermediate_result.json")
+    
+    # 分別存放 crop 出來的圖片
     images_dir = os.path.join(current_out_dir, "images")
     if not os.path.exists(images_dir): os.makedirs(images_dir)
 
     logger.info("-" * 40)
-    logger.info(f"🚀 [Start] 處理檔案: {filename}")
+    logger.info(f"🚀 處理檔案: {filename}")
     
-    start_time = time.time()
-
-    # === 🔥 [核心修改] 使用 PyMuPDF 讀取 PDF ===
     try:
         doc = pymupdf.open(input_path)
         total_pages = len(doc)
-        logger.info(f"📄 PDF 總頁數: {total_pages} (Engine: PyMuPDF)")
     except Exception as e:
-        logger.error(f"❌ 無法讀取 PDF: {e}")
-        return False
+        logger.error(f"❌ 無法開啟 PDF: {e}")
+        return
 
-    parsed_results = []
-    
-    # 逐頁處理
+    parsed_data = []
+
     for i in range(total_pages):
-        # 注意: PyMuPDF 頁碼從 0 開始
-        page_start = time.time()
-        logger.info(f"   🔄 正在處理 Page {i+1}/{total_pages} ...")
-
-        try:
-            # 1. 渲染頁面 (Render Page)
-            page = doc[i]
-            # 設定縮放矩陣 (控制 DPI)
-            mat = pymupdf.Matrix(PDF_ZOOM, PDF_ZOOM)
-            pix = page.get_pixmap(matrix=mat, alpha=False) # alpha=False 移除透明通道，轉為 RGB
-            
-            # 2. 轉換為 PIL Image
-            # 方法參考官方 utils.py: 使用 tobytes("png") 再用 PIL 開啟，最穩健
-            img_data = pix.tobytes("png")
-            image = Image.open(io.BytesIO(img_data))
-            
-            # 儲存原圖備份
-            img_filename = f"page_{i}.jpg"
-            image.save(os.path.join(images_dir, img_filename))
-
-            # 3. 智慧縮放 (Token Limit)
-            image = resize_to_token_limit(image, max_tokens=MAX_VISUAL_TOKENS)
-
-            # 4. 建構 Prompt
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": "Read the text in the image word by word and transcribe it into Markdown format. Represent tables using Markdown syntax."}
-                ]
-            }]
-
-            # 5. 推理 (Inference)
-            text_inputs = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            image_inputs, video_inputs = process_vision_info(messages)
-            
-            inputs = processor(
-                text=[text_inputs], 
-                images=image_inputs, 
-                videos=video_inputs, 
-                padding=True, 
-                return_tensors="pt"
-            ).to("cpu")
-
-            with torch.no_grad():
-                generated_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=4096, 
-                    do_sample=False
-                )
-
-            gen_ids_trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
-            md_text = processor.batch_decode(gen_ids_trimmed, skip_special_tokens=True)[0]
-
-            # 6. 儲存結果
-            parsed_results.append({
-                "type": "text",
-                "text": md_text,
-                "page_idx": i,
-                "img_path": f"images/{img_filename}",
-                "bbox": [0, 0, image.width, image.height]
-            })
-
-            dur = time.time() - page_start
-            logger.info(f"     ✅ 完成 (耗時: {dur:.2f}s) | RAM: {get_ram_usage():.2f} GB")
-
-            # 定期寫入硬碟
-            if (i + 1) % SAVE_INTERVAL == 0 or (i + 1) == total_pages:
-                with open(final_json, "w", encoding="utf-8") as f:
-                    json.dump(parsed_results, f, ensure_ascii=False, indent=2)
-
-        except Exception as e:
-            logger.exception(f"❌ Page {i+1} 發生錯誤: {e}")
+        logger.info(f"   📄 Page {i+1}/{total_pages} 分析 Layout 中...")
         
-        finally:
-            # 清理記憶體
-            if 'inputs' in locals(): del inputs
-            if 'generated_ids' in locals(): del generated_ids
-            if 'image' in locals(): del image
-            if 'pix' in locals(): del pix  # 清理 PyMuPDF 物件
-            import gc; gc.collect()
+        # 1. Render Page (High Res)
+        try:
+            page = doc[i]
+            pix = page.get_pixmap(dpi=RENDER_DPI)
+            img_data = pix.tobytes("png")
+            pil_image = Image.open(io.BytesIO(img_data)).convert("RGB")
+        except Exception as e:
+            logger.error(f"❌ Page {i+1} 渲染失敗: {e}")
+            continue
 
-    logger.success(f"🎉 檔案處理完成！總耗時: {time.time() - start_time:.2f}s")
-    doc.close()
-    return True
+        # 2. Stage 1: Layout Parsing
+        try:
+            layout_text = run_inference(model, processor, pil_image, "Parse the reading order of this document.")
+            layout_items = parse_layout_string(layout_text)
+            
+            # 如果 Layout 解析失敗或回傳空，退回到 "distorted_page" (整頁當一個 Text 處理)
+            if not layout_items:
+                logger.warning(f"      ⚠️ 無法解析 Layout，退回整頁 OCR 模式")
+                layout_items = [([0,0,0,0], 'distorted_page', [])] # 假 Layout
+        except Exception as e:
+            logger.error(f"❌ Layout 推理錯誤: {e}")
+            continue
+
+        logger.info(f"      🔍 偵測到 {len(layout_items)} 個元素，開始提取...")
+        
+        page_reading_order = 0
+        
+        # 3. Stage 2: Element Extraction & Routing
+        for bbox, label, tags in layout_items:
+            # 處理坐標
+            if label == 'distorted_page':
+                x1, y1, x2, y2 = 0, 0, pil_image.width, pil_image.height
+                pil_crop = pil_image
+            else:
+                x1, y1, x2, y2 = process_coordinates(bbox, pil_image)
+                # 安全邊界檢查
+                if x2 <= x1 or y2 <= y1: continue
+                pil_crop = pil_image.crop((x1, y1, x2, y2))
+            
+            # 忽略過小的碎片
+            if pil_crop.width < 10 or pil_crop.height < 10: continue
+            
+            element_data = {
+                "page_idx": i,
+                "bbox": [x1, y1, x2, y2],
+                "reading_order": page_reading_order,
+                "label": label
+            }
+            
+            # === 🔥 關鍵路由 (Routing Logic) ===
+            
+            # Case A: 圖片 (Image/Figure) -> 只存圖，不 OCR
+            if label == "fig":
+                img_filename = f"p{i+1}_{page_reading_order:03d}_fig.jpg"
+                save_path = os.path.join(images_dir, img_filename)
+                pil_crop.save(save_path)
+                
+                element_data["type"] = "image"
+                element_data["content"] = f"![Figure]({img_filename})" # Markdown 格式
+                element_data["img_path"] = f"images/{img_filename}"
+                logger.debug(f"         🖼️ 圖片 (Saved): {img_filename}")
+
+            # Case B: 表格 (Table) -> 使用表格專用 Prompt
+            elif label == "tab":
+                element_data["type"] = "table"
+                md_table = run_inference(model, processor, pil_crop, "Parse the table in the image.")
+                element_data["content"] = md_table
+                logger.debug(f"         📊 表格 (Parsed)")
+                
+                # 順便存個表格截圖備份
+                tab_filename = f"p{i+1}_{page_reading_order:03d}_tab.jpg"
+                pil_crop.save(os.path.join(images_dir, tab_filename))
+                element_data["img_path"] = f"images/{tab_filename}"
+
+            # Case C: 文字/標題 (Text/Title) -> 使用文字 Prompt
+            else:
+                # 包含: text, section_header, title, list, code 等
+                element_data["type"] = "text"
+                ocr_text = run_inference(model, processor, pil_crop, "Read text in the image.")
+                element_data["content"] = ocr_text
+                # 文字通常不存圖，省空間
+                element_data["img_path"] = ""
+
+            parsed_data.append(element_data)
+            page_reading_order += 1
+            
+        # 釋放記憶體
+        del pil_image
+        gc.collect()
+
+        # Incremental Save
+        if (i + 1) % SAVE_INTERVAL == 0:
+            with open(final_json, "w", encoding="utf-8") as f:
+                json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+
+    # Final Save
+    with open(final_json, "w", encoding="utf-8") as f:
+        json.dump(parsed_data, f, ensure_ascii=False, indent=2)
+    
+    logger.success(f"🎉 檔案 {filename} 完成！")
 
 def main():
     if not os.path.exists(INPUT_DIR):
@@ -218,25 +368,24 @@ def main():
     if not os.path.exists(OUTPUT_DIR_BASE):
         os.makedirs(OUTPUT_DIR_BASE)
 
-    # 載入模型
+    # 檢查 PyMuPDF
+    try:
+        import pymupdf
+    except ImportError:
+        logger.error("❌ 缺少 PyMuPDF！請執行: `uv pip install pymupdf`")
+        return
+
     model, processor = load_model()
 
-    # 掃描檔案
     all_files = glob.glob(os.path.join(INPUT_DIR, "*"))
     files = [f for f in all_files if os.path.isfile(f) and not os.path.basename(f).startswith(".")]
     
-    logger.info(f"📦 發現 {len(files)} 個檔案，準備開始...")
+    logger.info(f"📦 發現 {len(files)} 個檔案...")
 
-    for idx, file_path in enumerate(files):
-        logger.info(f"\n[{idx+1}/{len(files)}] ----------------------------------------")
-        
+    for file_path in files:
         if not file_path.lower().endswith(".pdf"):
-            logger.warning(f"⏭️ 跳過非 PDF 檔案: {file_path}")
             continue
-            
         process_single_file(file_path, OUTPUT_DIR_BASE, model, processor)
-
-    logger.success("\n🏁 所有任務執行完畢！")
 
 if __name__ == "__main__":
     main()
