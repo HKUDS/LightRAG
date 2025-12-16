@@ -1,0 +1,118 @@
+.TH PDFTOHTML 1
+.\" NAME should be all caps, SECTION should be 1-8, maybe w/ subsection
+.\" other parms are allowed: see man(7), man(1)
+.SH NAME
+pdftohtml \- program to convert PDF files into HTML, XML and PNG images
+.SH SYNOPSIS
+.B pdftohtml
+.I "[options] <PDF-file> [<HTML-file> <XML-file>]"
+.SH "DESCRIPTION"
+This manual page documents briefly the
+.BR pdftohtml 
+command.
+This manual page was written for the Debian GNU/Linux distribution
+because the original program does not have a manual page.
+.PP
+.B pdftohtml
+is a program that converts PDF documents into HTML. It generates its output in
+the current working directory.  If
+.I PDF-file
+is \'-', it reads the PDF file from stdin.
+.SH OPTIONS
+A summary of options are included below.
+.TP
+.B \-h, \-help
+Show summary of options.
+.TP
+.B \-f <int>
+first page to print
+.TP
+.B \-l <int>
+last page to print
+.TP
+.B \-q
+do not print any messages or errors
+.TP
+.B \-v
+print copyright and version info
+.TP
+.B \-p
+exchange .pdf links with .html
+.TP
+.B \-c
+generate complex output
+.TP
+.B \-s
+generate single HTML that includes all pages
+.TP
+.B \-dataurls
+use data URLs instead of external images in HTML. No available in all platforms
+.TP
+.B \-i
+ignore images
+.TP
+.B \-noframes
+generate no frames. Not supported in complex output mode.
+.TP
+.B \-stdout
+use standard output
+.TP 
+.B \-zoom <fp>
+zoom the PDF document (default 1.5) (1 means 72 DPI)
+.TP
+.B \-xml
+output for XML post-processing
+.TP
+.B \-noroundcoord
+do not round coordinates (with XML output only)
+.TP
+.B \-enc <string>
+output text encoding name
+.TP
+.B \-opw <string>
+owner password (for encrypted files)
+.TP
+.B \-upw <string>
+user password (for encrypted files)
+.TP
+.B \-hidden
+force hidden text extraction
+.TP
+.B \-fmt
+image file format for Splash output (png or jpg).
+If complex is selected, but \-fmt is not specified,
+\-fmt png will be assumed
+.TP
+.B \-nomerge
+do not merge paragraphs
+.TP
+.B \-nodrm
+override document DRM settings
+.TP
+.B \-wbt <fp>
+adjust the word break threshold percent. Default is 10.
+Word break occurs when distance between two adjacent characters is
+greater than this percent of character height.
+.TP
+.B \-fontfullname
+outputs the font name without any substitutions.
+
+.SH AUTHOR
+
+Pdftohtml was developed by Gueorgui Ovtcharov and Rainer Dorsch. It is
+based and benefits a lot from Derek Noonburg's xpdf package.
+
+This manual page was written by Søren Boll Overgaard <boll@debian.org>,
+for the Debian GNU/Linux system (but may be used by others).
+.SH "SEE ALSO"
+.BR pdfdetach (1),
+.BR pdffonts (1),
+.BR pdfimages (1),
+.BR pdfinfo (1),
+.BR pdftocairo (1),
+.BR pdftoppm (1),
+.BR pdftops (1),
+.BR pdftotext (1)
+.BR pdfseparate (1),
+.BR pdfsig (1),
+.BR pdfunite (1)

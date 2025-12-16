@@ -1,0 +1,269 @@
+%!PS-Adobe-3.0 Resource-CMap
+%%DocumentNeededResources: ProcSet (CIDInit)
+%%IncludeResource: ProcSet (CIDInit)
+%%BeginResource: CMap (Adobe-Japan1-H-Mac)
+%%Title: (Adobe-Japan1-H-Mac Adobe Japan1 2)
+%%Version: 4.007
+%%Copyright: -----------------------------------------------------------
+%%Copyright: Copyright 1990-2019 Adobe. All rights reserved.
+%%Copyright:
+%%Copyright: Redistribution and use in source and binary forms, with or
+%%Copyright: without modification, are permitted provided that the
+%%Copyright: following conditions are met:
+%%Copyright:
+%%Copyright: Redistributions of source code must retain the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer.
+%%Copyright:
+%%Copyright: Redistributions in binary form must reproduce the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer in the documentation and/or other materials
+%%Copyright: provided with the distribution. 
+%%Copyright:
+%%Copyright: Neither the name of Adobe nor the names of its contributors
+%%Copyright: may be used to endorse or promote products derived from
+%%Copyright: this software without specific prior written permission.
+%%Copyright:
+%%Copyright: THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+%%Copyright: CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+%%Copyright: INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+%%Copyright: MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+%%Copyright: DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+%%Copyright: CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+%%Copyright: SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+%%Copyright: NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+%%Copyright: LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+%%Copyright: HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+%%Copyright: CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+%%Copyright: OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+%%Copyright: SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+%%Copyright: -----------------------------------------------------------
+%%EndComments
+
+/CIDInit /ProcSet findresource begin
+
+12 dict begin
+
+begincmap
+
+/CIDSystemInfo 3 dict dup begin
+/Registry (Adobe) def
+/Ordering (Adobe_Japan1_H_Mac) def
+/Supplement 2 def
+end def
+
+/CMapName /Adobe-Japan1-H-Mac def
+
+/CMapVersion 4.007 def
+/CMapType 2 def
+
+/WMode 0 def
+
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+
+2 usefont
+
+%Map CID 0 to full width space glyph.
+%All other glyphs map to the same CID.
+2 begincidrange
+<0000> <FFFF> 0
+<0000> <0000> 633
+endcidrange
+
+1 usefont % Prop Roman
+1 beginbfrange
+<0001> <005f> <20> % proportional yen to prop backslash
+endbfrange
+
+0 usefont % System font
+100 beginbfrange
+<0061> <0061> <80>
+<007c> <007c> <ff>
+<0098> <0098> <fd>
+<00e4> <00e4> <fe>
+<0146> <0185> <a0>
+<0279> <02b7> <8140>
+<02b8> <02e4> <8180>
+<02e5> <02ec> <81b8>
+<02ed> <02f3> <81c8>
+<02f4> <02ff> <81da>
+<0300> <0302> <81e6>
+<0303> <030a> <81f0>
+<030b> <030b> <81fc>
+<030c> <0315> <824f>
+<0316> <032f> <8260>
+<0330> <0349> <8281>
+<034a> <039c> <829f>
+<039d> <03db> <8340>
+<03dc> <03f2> <8380>
+<03f3> <03ff> <839f>
+<0400> <040a> <83ac>
+<040b> <0422> <83bf>
+<0423> <0443> <8440>
+<0444> <0452> <8470>
+<0453> <0464> <8480>
+<0465> <04c2> <889f>
+<04c3> <04ff> <8940>
+<0500> <0501> <897d>
+<0502> <057e> <8980>
+<057f> <05bd> <8a40>
+<05be> <05ff> <8a80>
+<0600> <063a> <8ac2>
+<063b> <0679> <8b40>
+<067a> <06f6> <8b80>
+<06f7> <06ff> <8c40>
+<0700> <0735> <8c49>
+<0736> <07b2> <8c80>
+<07b3> <07f1> <8d40>
+<07f2> <07ff> <8d80>
+<0800> <086e> <8d8e>
+<086f> <08ad> <8e40>
+<08ae> <08ff> <8e80>
+<0900> <092a> <8ed2>
+<092b> <0969> <8f40>
+<096a> <09e6> <8f80>
+<09e7> <09ff> <9040>
+<0a00> <0a25> <9059>
+<0a26> <0aa2> <9080>
+<0aa3> <0ae1> <9140>
+<0ae2> <0aff> <9180>
+<0b00> <0b5e> <919e>
+<0b5f> <0b9d> <9240>
+<0b9e> <0bff> <9280>
+<0c00> <0c1a> <92e2>
+<0c1b> <0c59> <9340>
+<0c5a> <0cd6> <9380>
+<0cd7> <0cff> <9440>
+<0d00> <0d15> <9469>
+<0d16> <0d92> <9480>
+<0d93> <0dd1> <9540>
+<0dd2> <0dff> <9580>
+<0e00> <0e4e> <95ae>
+<0e4f> <0e8d> <9640>
+<0e8e> <0eff> <9680>
+<0f00> <0f0a> <96f2>
+<0f0b> <0f49> <9740>
+<0f4a> <0fc6> <9780>
+<0fc7> <0ff9> <9840>
+<0ffa> <0fff> <989f>
+<1000> <1057> <98a5>
+<1058> <1096> <9940>
+<1097> <10ff> <9980>
+<1100> <1113> <99e9>
+<1114> <1152> <9a40>
+<1153> <11cf> <9a80>
+<11d0> <11ff> <9b40>
+<1200> <120e> <9b70>
+<120f> <128b> <9b80>
+<128c> <12ca> <9c40>
+<12cb> <12ff> <9c80>
+<1300> <1347> <9cb5>
+<1348> <1386> <9d40>
+<1387> <13ff> <9d80>
+<1400> <1403> <9df9>
+<1404> <1442> <9e40>
+<1443> <14bf> <9e80>
+<14c0> <14fe> <9f40>
+<14ff> <14ff> <9f80>
+<1500> <157b> <9f81>
+<157c> <15ba> <e040>
+<15bb> <15ff> <e080>
+<1600> <1637> <e0c5>
+<1638> <1676> <e140>
+<1677> <16f3> <e180>
+<16f4> <16ff> <e240>
+<1700> <1732> <e24c>
+<1733> <17af> <e280>
+<17b0> <17ee> <e340>
+<17ef> <17ff> <e380>
+<1800> <186b> <e391>
+endbfrange
+78 beginbfrange
+<186c> <18aa> <e440>
+<18ab> <18ff> <e480>
+<1900> <1927> <e4d5>
+<1928> <1966> <e540>
+<1967> <19e3> <e580>
+<19e4> <19ff> <e640>
+<1a00> <1a22> <e65c>
+<1a23> <1a9f> <e680>
+<1aa0> <1ade> <e740>
+<1adf> <1aff> <e780>
+<1b00> <1b5b> <e7a1>
+<1b5c> <1b9a> <e840>
+<1b9b> <1bff> <e880>
+<1c00> <1c17> <e8e5>
+<1c18> <1c56> <e940>
+<1c57> <1cd3> <e980>
+<1cd4> <1cff> <ea40>
+<1d00> <1d12> <ea6c>
+<1d13> <1d35> <ea80>
+<1d37> <1d37> <849f>
+<1d38> <1d38> <84aa>
+<1d39> <1d39> <84a0>
+<1d3a> <1d3a> <84ab>
+<1d43> <1d43> <84a1>
+<1d46> <1d46> <84ac>
+<1d47> <1d47> <84a2>
+<1d4a> <1d4a> <84ad>
+<1d4b> <1d4b> <84a4>
+<1d4e> <1d4e> <84af>
+<1d4f> <1d4f> <84a3>
+<1d52> <1d52> <84ae>
+<1d53> <1d53> <84a5>
+<1d54> <1d54> <84ba>
+<1d57> <1d57> <84b5>
+<1d5a> <1d5a> <84b0>
+<1d5b> <1d5b> <84a7>
+<1d5c> <1d5c> <84bc>
+<1d5f> <1d5f> <84b7>
+<1d62> <1d62> <84b2>
+<1d63> <1d63> <84a6>
+<1d66> <1d66> <84b6>
+<1d67> <1d67> <84bb>
+<1d6a> <1d6a> <84b1>
+<1d6b> <1d6b> <84a8>
+<1d6e> <1d6e> <84b8>
+<1d6f> <1d6f> <84bd>
+<1d72> <1d72> <84b3>
+<1d73> <1d73> <84a9>
+<1d76> <1d76> <84b9>
+<1d79> <1d79> <84be>
+<1d82> <1d82> <84b4>
+<1ecf> <1ed0> <eb41>
+<1ed1> <1ed2> <eb50>
+<1ed3> <1ed5> <eb5b>
+<1ed6> <1eda> <eb60>
+<1edb> <1eec> <eb69>
+<1eed> <1eed> <eb81>
+<1eee> <1eee> <ec9f>
+<1eef> <1eef> <eca1>
+<1ef0> <1ef0> <eca3>
+<1ef1> <1ef1> <eca5>
+<1ef2> <1ef2> <eca7>
+<1ef3> <1ef3> <ecc1>
+<1ef4> <1ef4> <ece1>
+<1ef5> <1ef5> <ece3>
+<1ef6> <1ef6> <ece5>
+<1ef7> <1ef7> <ecec>
+<1ef8> <1ef8> <ed40>
+<1ef9> <1ef9> <ed42>
+<1efa> <1efa> <ed44>
+<1efb> <1efb> <ed46>
+<1efc> <1efc> <ed48>
+<1efd> <1efd> <ed62>
+<1efe> <1efe> <ed83>
+<1eff> <1eff> <ed85>
+<1f00> <1f00> <ed87>
+<1f01> <1f01> <ed8e>
+<1f02> <1f03> <ed95>
+endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+
+%%EndResource
+%%EOF

@@ -1,0 +1,90 @@
+%!PS-Adobe-3.0 Resource-CMap
+%%DocumentNeededResources: ProcSet (CIDInit)
+%%DocumentNeededResources: CMap (90pv-RKSJ-UCS2C)
+%%IncludeResource: ProcSet (CIDInit)
+%%IncludeResource: CMap (90pv-RKSJ-UCS2C)
+%%BeginResource: CMap (90pv-RKSJ-UCS2)
+%%Title: (90pv-RKSJ-UCS2)
+%%Version: 4.006
+%%Copyright: -----------------------------------------------------------
+%%Copyright: Copyright 1990-2019 Adobe. All rights reserved.
+%%Copyright:
+%%Copyright: Redistribution and use in source and binary forms, with or
+%%Copyright: without modification, are permitted provided that the
+%%Copyright: following conditions are met:
+%%Copyright:
+%%Copyright: Redistributions of source code must retain the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer.
+%%Copyright:
+%%Copyright: Redistributions in binary form must reproduce the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer in the documentation and/or other materials
+%%Copyright: provided with the distribution. 
+%%Copyright:
+%%Copyright: Neither the name of Adobe nor the names of its contributors
+%%Copyright: may be used to endorse or promote products derived from
+%%Copyright: this software without specific prior written permission.
+%%Copyright:
+%%Copyright: THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+%%Copyright: CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+%%Copyright: INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+%%Copyright: MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+%%Copyright: DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+%%Copyright: CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+%%Copyright: SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+%%Copyright: NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+%%Copyright: LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+%%Copyright: HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+%%Copyright: CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+%%Copyright: OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+%%Copyright: SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+%%Copyright: -----------------------------------------------------------
+%%EndComments
+
+/CIDInit /ProcSet findresource begin
+
+12 dict begin
+
+begincmap
+
+/90pv-RKSJ-UCS2C usecmap
+
+/CIDSystemInfo 3 dict dup begin
+  /Registry (Adobe) def
+  /Ordering (90pv_RKSJ_UCS2) def
+  /Supplement 2 def
+end def
+
+/CMapName /90pv-RKSJ-UCS2 def
+/CMapVersion 4.006 def
+/CMapType 1 def
+/WMode 0 def
+
+18 beginbfrange
+<8591>	<8591>	<f8600030002e>
+<85ab>	<85ab>	<f8620058004900490049>
+<85ac>	<85ac>	<f861005800490056>
+<85ad>	<85ad>	<f86000580056>
+<85bf>	<85bf>	<f8620078006900690069>
+<85c0>	<85c0>	<f861007800690076>
+<85c1>	<85c1>	<f86000780076>
+<865d>	<865d>	<f86000540042>
+<869e>	<869e>	<f861004600410058>
+<86d4>	<86d4>	<21e6f87a>
+<86d5>	<86d5>	<21e7f87a>
+<86d6>	<86d6>	<21e9f87a>
+<86ce>	<86ce>	<f86021932191>
+<8791>	<8791>	<592720dd>
+<8792>	<8792>	<5c0f20dd>
+<879d>	<879d>	<63a720dd>
+<87fb>	<87fb>	<f862670996504f1a793e>
+<87fc>	<87fc>	<f8628ca156e36cd54eba>
+endbfrange
+
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+%%EndResource
+%%EOF

@@ -17,8 +17,8 @@ MODEL_NAME = "thudm/glm-4.1v-9b-thinking"
 # 🔥 [新增] 黑名單：填入不想處理的檔案名稱 (資料夾名稱/file_stem)
 # 例如: ["SFC", "Another_Doc", "Old_Report"]
 SKIP_FILES = [
-    "SFC", 
-    "Example_Doc_To_Skip"
+    # "SFC", 
+    # "Example_Doc_To_Skip"
 ]
 
 # 設定 Log 目錄

@@ -1,0 +1,230 @@
+.\" Copyright 2005-2011 Glyph & Cog, LLC
+.TH pdftoppm 1 "15 August 2011"
+.SH NAME
+pdftoppm \- Portable Document Format (PDF) to Portable Pixmap (PPM)
+converter (version 3.03)
+.SH SYNOPSIS
+.B pdftoppm
+[options]
+.I PDF-file PPM-root
+.SH DESCRIPTION
+.B Pdftoppm
+converts Portable Document Format (PDF) files to color image files in
+Portable Pixmap (PPM) format, grayscale image files in Portable
+Graymap (PGM) format, or monochrome image files in Portable Bitmap
+(PBM) format.
+.PP
+Pdftoppm reads the PDF file,
+.IR PDF-file ,
+and writes one PPM file for each page,
+.IR PPM-root - number .ppm,
+where
+.I number
+is the page number.  If
+.I PDF-file
+is \'-', it reads the PDF file from stdin.
+.SH OPTIONS
+.TP
+.BI \-f " number"
+Specifies the first page to convert.
+.TP
+.BI \-l " number"
+Specifies the last page to convert.
+.TP
+.B \-o
+Generates only the odd numbered pages.
+.TP
+.B \-e
+Generates only the even numbered pages.
+.TP
+.BI \-singlefile
+Writes only the first page and does not add digits.
+.TP
+.BI \-r " number"
+Specifies the X and Y resolution, in DPI.  The default is 150 DPI.
+.TP
+.BI \-rx " number"
+Specifies the X resolution, in DPI.  The default is 150 DPI.
+.TP
+.BI \-ry " number"
+Specifies the Y resolution, in DPI.  The default is 150 DPI.
+.TP
+.BI \-scale-to " number"
+Scales the long side of each page (width for landscape pages, height
+for portrait pages) to fit in scale-to pixels. The size of the short
+side will be determined by the aspect ratio of the page.
+.TP
+.BI \-scale-to-x " number"
+Scales each page horizontally to fit in scale-to-x pixels. If
+scale-to-y is set to -1, the vertical size will determined by the
+aspect ratio of the page.
+.TP
+.BI \-scale-to-y " number"
+Scales each page vertically to fit in scale-to-y pixels. If scale-to-x
+is set to -1, the horizontal size will determined by the aspect ratio
+of the page.
+.TP
+.B \-scale-dimension-before-rotation
+Swaps horizontal and vertical size for a rotated (landscape) pdf before scaling instead of after.
+.TP
+.BI \-x " number"
+Specifies the x-coordinate of the crop area top left corner
+.TP
+.BI \-y " number"
+Specifies the y-coordinate of the crop area top left corner
+.TP
+.BI \-W " number"
+Specifies the width of crop area in pixels (default is 0)
+.TP
+.BI \-H " number"
+Specifies the height of crop area in pixels (default is 0)
+.TP
+.BI \-sz " number"
+Specifies the size of crop square in pixels (sets W and H)
+.TP
+.B \-cropbox
+Uses the crop box rather than media box when generating the files
+.TP
+.B \-hide-annotations
+Do not show annotations
+.TP
+.B \-mono
+Generate a monochrome PBM file (instead of a color PPM file).
+.TP
+.B \-gray
+Generate a grayscale PGM file (instead of a color PPM file).
+.TP
+.BI \-displayprofile " displayprofilefile"
+If poppler is compiled with colour management support, this option sets the display profile
+to the ICC profile stored in displayprofilefile.
+.TP
+.BI \-defaultgrayprofile " defaultgrayprofilefile"
+If poppler is compiled with colour management support, this option sets the DefaultGray color space
+to the ICC profile stored in defaultgrayprofilefile.
+.TP
+.BI \-defaultrgbprofile " defaultrgbprofilefile"
+If poppler is compiled with colour management support, this option sets the DefaultRGB color space
+to the ICC profile stored in defaultrgbprofilefile.
+.TP
+.BI \-defaultcmykprofile " defaultcmykprofilefile"
+If poppler is compiled with colour management support, this option sets the DefaultCMYK color space
+to the ICC profile stored in defaultcmykprofilefile.
+.TP
+.B \-png
+Generates a PNG file instead a PPM file.
+.TP
+.B \-jpeg
+Generates a JPEG file instead a PPM file.
+.TP
+.BI \-jpegopt " jpeg-options"
+When used with \-jpeg, takes a list of options to control the jpeg compression. See
+.B JPEG OPTIONS
+for the available options.
+.TP
+.B \-tiff
+Generates a TIFF file instead a PPM file.
+.TP
+.BI \-tiffcompression " none | packbits | jpeg | lzw | deflate"
+Specifies the TIFF compression type.  This defaults to "none".
+.TP
+.BI \-freetype " yes | no"
+Enable or disable FreeType (a TrueType / Type 1 font rasterizer).
+This defaults to "yes".
+.TP
+.BI \-thinlinemode " none | solid | shape"
+Specifies the thin line mode. This defaults to "none".
+.TP
+"solid": 
+adjust lines with a width less than one pixel to pixel boundary 
+and paint it with a width of one pixel.
+.TP
+"shape": 
+adjust lines with a width less than one pixel to pixel boundary 
+and paint it with a width of one pixel but with a shape in proportion
+to its width.
+.TP
+.BI \-aa " yes | no"
+Enable or disable font anti-aliasing.  This defaults to "yes".
+.TP
+.BI \-aaVector " yes | no"
+Enable or disable vector anti-aliasing.  This defaults to "yes".
+.TP
+.BI \-opw " password"
+Specify the owner password for the PDF file.  Providing this will
+bypass all security restrictions.
+.TP
+.BI \-upw " password"
+Specify the user password for the PDF file.
+.TP
+.B \-q
+Don't print any messages or errors.
+.TP
+.B \-progress
+Print progress info as each page is generated.  Three space-separated
+fields are printed to STDERR: the number of the current page, the number
+of the last page that will be generated, and the path to the file
+written to.
+.TP
+.BI \-sep " char"
+Specify single character separator between name and page number, default - .
+.TP
+.B \-forcenum
+Force page number even if there is only one page.
+.TP
+.B \-v
+Print copyright and version information.
+.TP
+.B \-h
+Print usage information.
+.RB ( \-help
+and
+.B \-\-help
+are equivalent.)
+.SH EXIT CODES
+The Xpdf tools use the following exit codes:
+.TP
+0
+No error.
+.TP
+1
+Error opening a PDF file.
+.TP
+2
+Error opening an output file.
+.TP
+3
+Error related to PDF permissions.
+.TP
+99
+Other error.
+.SH JPEG OPTIONS
+When JPEG output is specified, the \-jpegopt option can be used to control the JPEG compression parameters.
+It takes a string of the form "<opt>=<val>[,<opt>=<val>]". Currently the available options are:
+.TP
+.BI quality
+Selects the JPEG quality value. The value must be an integer between 0 and 100.
+.TP
+.BI progressive
+Select progressive JPEG output. The possible values are "y", "n",
+indicating progressive (yes) or non-progressive (no), respectively.
+.TP
+.BI optimize
+Sets whether to compute optimal Huffman coding tables for the JPEG output, which
+will create smaller files but make an extra pass over the data. The value must
+be "y" or "n", with "y" performing optimization, otherwise the default Huffman
+tables are used.
+.SH AUTHOR
+The pdftoppm software and documentation are copyright 1996-2011 Glyph
+& Cog, LLC.
+.SH "SEE ALSO"
+.BR pdfdetach (1),
+.BR pdffonts (1),
+.BR pdfimages (1),
+.BR pdfinfo (1),
+.BR pdftocairo (1),
+.BR pdftohtml (1),
+.BR pdftops (1),
+.BR pdftotext (1)
+.BR pdfseparate (1),
+.BR pdfsig (1),
+.BR pdfunite (1)

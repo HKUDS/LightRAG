@@ -1,0 +1,160 @@
+%!PS-Adobe-3.0 Resource-CMap
+%%DocumentNeededResources: ProcSet (CIDInit)
+%%IncludeResource: ProcSet (CIDInit)
+%%BeginResource: CMap (Hojo-EUC-H)
+%%Title: (Hojo-EUC-H Adobe Japan2 0)
+%%Version: 9.006
+%%Copyright: -----------------------------------------------------------
+%%Copyright: Copyright 1990-2019 Adobe. All rights reserved.
+%%Copyright:
+%%Copyright: Redistribution and use in source and binary forms, with or
+%%Copyright: without modification, are permitted provided that the
+%%Copyright: following conditions are met:
+%%Copyright:
+%%Copyright: Redistributions of source code must retain the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer.
+%%Copyright:
+%%Copyright: Redistributions in binary form must reproduce the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer in the documentation and/or other materials
+%%Copyright: provided with the distribution. 
+%%Copyright:
+%%Copyright: Neither the name of Adobe nor the names of its contributors
+%%Copyright: may be used to endorse or promote products derived from
+%%Copyright: this software without specific prior written permission.
+%%Copyright:
+%%Copyright: THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+%%Copyright: CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+%%Copyright: INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+%%Copyright: MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+%%Copyright: DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+%%Copyright: CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+%%Copyright: SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+%%Copyright: NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+%%Copyright: LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+%%Copyright: HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+%%Copyright: CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+%%Copyright: OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+%%Copyright: SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+%%Copyright: -----------------------------------------------------------
+%%EndComments
+
+/CIDInit /ProcSet findresource begin
+
+12 dict begin
+
+begincmap
+
+/CIDSystemInfo 3 dict dup begin
+  /Registry (Adobe) def
+  /Ordering (Japan2) def
+  /Supplement 0 def
+end def
+
+/CMapName /Hojo-EUC-H def
+/CMapVersion 9.006 def
+/CMapType 1 def
+
+/UIDOffset 0 def
+/XUID [1 10 25420] def
+
+/WMode 0 def
+
+1 begincodespacerange
+  <8FA1A1> <8FFEFE>
+endcodespacerange
+
+84 begincidrange
+<8fa2af> <8fa2b9>    1
+<8fa2c2> <8fa2c4>   12
+<8fa2eb> <8fa2f1>   15
+<8fa6e1> <8fa6e5>   22
+<8fa6e7> <8fa6e7>   27
+<8fa6e9> <8fa6ea>   28
+<8fa6ec> <8fa6ec>   30
+<8fa6f1> <8fa6fc>   31
+<8fa7c2> <8fa7ce>   43
+<8fa7f2> <8fa7fe>   56
+<8fa9a1> <8fa9a2>   69
+<8fa9a4> <8fa9a4>   71
+<8fa9a6> <8fa9a6>   72
+<8fa9a8> <8fa9a9>   73
+<8fa9ab> <8fa9ad>   75
+<8fa9af> <8fa9b0>   78
+<8fa9c1> <8fa9d0>   80
+<8faaa1> <8faab8>   96
+<8faaba> <8faaf7>  120
+<8faba1> <8fabbb>  182
+<8fabbd> <8fabc3>  209
+<8fabc5> <8fabf7>  216
+<8fb0a1> <8fb0fe>  267
+<8fb1a1> <8fb1fe>  361
+<8fb2a1> <8fb2fe>  455
+<8fb3a1> <8fb3fe>  549
+<8fb4a1> <8fb4fe>  643
+<8fb5a1> <8fb5fe>  737
+<8fb6a1> <8fb6fe>  831
+<8fb7a1> <8fb7fe>  925
+<8fb8a1> <8fb8fe> 1019
+<8fb9a1> <8fb9fe> 1113
+<8fbaa1> <8fbafe> 1207
+<8fbba1> <8fbbfe> 1301
+<8fbca1> <8fbcfe> 1395
+<8fbda1> <8fbdfe> 1489
+<8fbea1> <8fbefe> 1583
+<8fbfa1> <8fbffe> 1677
+<8fc0a1> <8fc0fe> 1771
+<8fc1a1> <8fc1fe> 1865
+<8fc2a1> <8fc2fe> 1959
+<8fc3a1> <8fc3fe> 2053
+<8fc4a1> <8fc4fe> 2147
+<8fc5a1> <8fc5fe> 2241
+<8fc6a1> <8fc6fe> 2335
+<8fc7a1> <8fc7fe> 2429
+<8fc8a1> <8fc8fe> 2523
+<8fc9a1> <8fc9fe> 2617
+<8fcaa1> <8fcafe> 2711
+<8fcba1> <8fcbfe> 2805
+<8fcca1> <8fccfe> 2899
+<8fcda1> <8fcdfe> 2993
+<8fcea1> <8fcefe> 3087
+<8fcfa1> <8fcffe> 3181
+<8fd0a1> <8fd0fe> 3275
+<8fd1a1> <8fd1fe> 3369
+<8fd2a1> <8fd2fe> 3463
+<8fd3a1> <8fd3fe> 3557
+<8fd4a1> <8fd4fe> 3651
+<8fd5a1> <8fd5fe> 3745
+<8fd6a1> <8fd6fe> 3839
+<8fd7a1> <8fd7fe> 3933
+<8fd8a1> <8fd8fe> 4027
+<8fd9a1> <8fd9fe> 4121
+<8fdaa1> <8fdafe> 4215
+<8fdba1> <8fdbfe> 4309
+<8fdca1> <8fdcfe> 4403
+<8fdda1> <8fddfe> 4497
+<8fdea1> <8fdefe> 4591
+<8fdfa1> <8fdffe> 4685
+<8fe0a1> <8fe0fe> 4779
+<8fe1a1> <8fe1fe> 4873
+<8fe2a1> <8fe2fe> 4967
+<8fe3a1> <8fe3fe> 5061
+<8fe4a1> <8fe4fe> 5155
+<8fe5a1> <8fe5fe> 5249
+<8fe6a1> <8fe6fe> 5343
+<8fe7a1> <8fe7fe> 5437
+<8fe8a1> <8fe8fe> 5531
+<8fe9a1> <8fe9fe> 5625
+<8feaa1> <8feafe> 5719
+<8feba1> <8febfe> 5813
+<8feca1> <8fecfe> 5907
+<8feda1> <8fede3> 6001
+endcidrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+
+%%EndResource
+%%EOF

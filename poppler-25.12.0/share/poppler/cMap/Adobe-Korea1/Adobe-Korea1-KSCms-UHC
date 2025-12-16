@@ -1,0 +1,743 @@
+%!PS-Adobe-3.0 Resource-CMap
+%%DocumentNeededResources: ProcSet (CIDInit)
+%%IncludeResource: ProcSet (CIDInit)
+%%BeginResource: CMap (Adobe-Korea1-KSCms-UHC)
+%%Title: (Adobe-Korea1-KSCms-UHC Adobe KSCms-UHC 1)
+%%Version: 4.006
+%%Copyright: -----------------------------------------------------------
+%%Copyright: Copyright 1990-2019 Adobe. All rights reserved.
+%%Copyright:
+%%Copyright: Redistribution and use in source and binary forms, with or
+%%Copyright: without modification, are permitted provided that the
+%%Copyright: following conditions are met:
+%%Copyright:
+%%Copyright: Redistributions of source code must retain the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer.
+%%Copyright:
+%%Copyright: Redistributions in binary form must reproduce the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer in the documentation and/or other materials
+%%Copyright: provided with the distribution. 
+%%Copyright:
+%%Copyright: Neither the name of Adobe nor the names of its contributors
+%%Copyright: may be used to endorse or promote products derived from
+%%Copyright: this software without specific prior written permission.
+%%Copyright:
+%%Copyright: THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+%%Copyright: CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+%%Copyright: INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+%%Copyright: MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+%%Copyright: DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+%%Copyright: CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+%%Copyright: SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+%%Copyright: NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+%%Copyright: LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+%%Copyright: HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+%%Copyright: CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+%%Copyright: OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+%%Copyright: SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+%%Copyright: -----------------------------------------------------------
+%%EndComments
+
+/CIDInit /ProcSet findresource begin
+
+12 dict begin
+
+begincmap
+
+/CIDSystemInfo 3 dict dup begin
+/Registry (Adobe) def
+/Ordering (Adobe_Korea1_KSCms_UHC) def
+/Supplement 1 def
+end def
+
+/CMapName /Adobe-Korea1-KSCms-UHC def
+
+/CMapVersion 4.006 def
+/CMapType 1 def
+
+/XUID [1 10 25335 1212] def
+
+/WMode 0 def
+
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+
+1 beginbfrange
+<0000> <0000> <20>
+endbfrange
+100 beginbfrange
+<0001> <005F>	<20>
+<0065> <00C2>	<A1A1>
+<00C3> <00FF>	<A2A1>
+<0100> <0107>	<A2DE>
+<0108> <0165>	<A3A1>
+<0166> <0198>	<A4A1>
+<0199> <01C2>	<A4D5>
+<01C3> <01CC>	<A5A1>
+<01CD> <01D6>	<A5B0>
+<01D7> <01EE>	<A5C1>
+<01EF> <01FF>	<A5E1>
+<0200> <0206>	<A5F2>
+<0207> <024A>	<A6A1>
+<024B> <0299>	<A7A1>
+<029A> <029D>	<A8A1>
+<029E> <029E>	<A8A6>
+<029F> <02A6>	<A8A8>
+<02A7> <02F4>	<A8B1>
+<02F5> <02FF>	<A9A1>
+<0300> <0352>	<A9AC>
+<0353> <03A5>	<AAA1>
+<03A6> <03FB>	<ABA1>
+<03FC> <03FF>	<ACA1>
+<0400> <041C>	<ACA5>
+<041D> <043D>	<ACD1>
+<043E> <049B>	<B0A1>
+<049C> <04F9>	<B1A1>
+<04FA> <04FF>	<B2A1>
+<0500> <0557>	<B2A7>
+<0558> <05B5>	<B3A1>
+<05B6> <05FF>	<B4A1>
+<0600> <0613>	<B4EB>
+<0614> <0671>	<B5A1>
+<0672> <06CF>	<B6A1>
+<06D0> <06FF>	<B7A1>
+<0700> <072D>	<B7D1>
+<072E> <078B>	<B8A1>
+<078C> <07E9>	<B9A1>
+<07EA> <07FF>	<BAA1>
+<0800> <0847>	<BAB7>
+<0848> <08A5>	<BBA1>
+<08A6> <08FF>	<BCA1>
+<0900> <0903>	<BCFB>
+<0904> <0961>	<BDA1>
+<0962> <09BF>	<BEA1>
+<09C0> <09FF>	<BFA1>
+<0A00> <0A1D>	<BFE1>
+<0A1E> <0A7B>	<C0A1>
+<0A7C> <0AD9>	<C1A1>
+<0ADA> <0AFF>	<C2A1>
+<0B00> <0B37>	<C2C7>
+<0B38> <0B95>	<C3A1>
+<0B96> <0BF3>	<C4A1>
+<0BF4> <0BFF>	<C5A1>
+<0C00> <0C51>	<C5AD>
+<0C52> <0CAF>	<C6A1>
+<0CB0> <0CFF>	<C7A1>
+<0D00> <0D0D>	<C7F1>
+<0D0E> <0D6B>	<C8A1>
+<0D6C> <0DC9>	<CAA1>
+<0DCA> <0DF8>	<CBA1>
+<0DF9> <0DFD>	<CBD1>
+<0DFE> <0DFF>	<CBD7>
+<0E00> <0E0D>	<CBD9>
+<0E0E> <0E24>	<CBE8>
+<0E25> <0E5D>	<CCA1>
+<0E5E> <0E5E>	<CBD6>
+<0E5F> <0E82>	<CCDB>
+<0E83> <0EB0>	<CDA1>
+<0EB1> <0EC8>	<CDD0>
+<0EC9> <0EDE>	<CDE9>
+<0EDF> <0EEA>	<CEA1>
+<0EEB> <0EFF>	<CEAE>
+<0F00> <0F3B>	<CEC3>
+<0F3C> <0F95>	<CFA1>
+<0F96> <0F98>	<CFFC>
+<0F99> <0F99>	<D0A1>
+<0F9A> <0FAE>	<D0A3>
+<0FAF> <0FC5>	<D0B9>
+<0FC6> <0FD1>	<D0D1>
+<0FD2> <0FF2>	<D0DE>
+<0FF3> <0FFF>	<D1A1>
+<1000> <1013>	<D1AE>
+<1014> <1014>	<CBD0>
+<1015> <1022>	<D1C3>
+<1023> <1023>	<D0DD>
+<1024> <1025>	<D1D2>
+<1026> <1027>	<D1D6>
+<1028> <1029>	<D1D9>
+<102A> <102A>	<D1E1>
+<102B> <102B>	<D1E7>
+<102C> <102C>	<D1EC>
+<102D> <102D>	<D1EE>
+<102E> <102E>	<D1F1>
+<102F> <1031>	<D1F3>
+<1032> <1034>	<D1F7>
+<1035> <1035>	<D1FB>
+<1036> <1036>	<D2A1>
+<1037> <1039>	<D2A4>
+<103A> <103A>	<D2AC>
+endbfrange
+100 beginbfrange
+<103B> <103B>	<D2AE>
+<103C> <103C>	<D1D5>
+<103D> <103E>	<D2B0>
+<103F> <1049>	<D2B3>
+<104A> <104C>	<D2BF>
+<104D> <104D>	<D2C5>
+<104E> <104E>	<D2CC>
+<104F> <104F>	<D2D8>
+<1050> <1052>	<D2DB>
+<1053> <1053>	<D2E0>
+<1054> <1054>	<D2E3>
+<1055> <1058>	<D2EC>
+<1059> <1059>	<D2F6>
+<105A> <105F>	<D2F9>
+<1060> <10BD>	<D3A1>
+<10BE> <10FF>	<D4A1>
+<1100> <1102>	<D4E3>
+<1103> <1115>	<D4E7>
+<1116> <1116>	<D1D4>
+<1117> <1117>	<D1D8>
+<1118> <111D>	<D1DB>
+<111E> <1120>	<D1E3>
+<1121> <1121>	<D5A9>
+<1122> <1122>	<D1E6>
+<1123> <1126>	<D1E8>
+<1127> <1127>	<D1ED>
+<1128> <1129>	<D5B2>
+<112A> <112B>	<D1EF>
+<112C> <112C>	<D1F2>
+<112D> <112E>	<D5B7>
+<112F> <112F>	<D1F6>
+<1130> <1132>	<D5BA>
+<1133> <1133>	<D1FA>
+<1134> <1135>	<D5BE>
+<1136> <1137>	<D1FC>
+<1138> <1138>	<D5C2>
+<1139> <1139>	<D1FE>
+<113A> <113B>	<D2A2>
+<113C> <113F>	<D2A7>
+<1140> <1142>	<D5CA>
+<1143> <1143>	<D2AB>
+<1144> <1144>	<D2AD>
+<1145> <1147>	<D5CF>
+<1148> <1148>	<D2B2>
+<1149> <1174>	<D5D3>
+<1175> <118B>	<D6A1>
+<118C> <119E>	<D6B9>
+<119F> <119F>	<D2BE>
+<11A0> <11A0>	<D6CE>
+<11A1> <11A2>	<D2C2>
+<11A3> <11A4>	<D6D1>
+<11A5> <11A5>	<D2C4>
+<11A6> <11AA>	<D2C6>
+<11AB> <11AB>	<D6D9>
+<11AC> <11AC>	<D2CB>
+<11AD> <11AE>	<D2CD>
+<11AF> <11AF>	<D6DD>
+<11B0> <11B5>	<D2CF>
+<11B6> <11B6>	<D6E4>
+<11B7> <11B9>	<D2D5>
+<11BA> <11BC>	<D6E8>
+<11BD> <11BE>	<D2D9>
+<11BF> <11C0>	<D6ED>
+<11C1> <11C2>	<D2DE>
+<11C3> <11C3>	<D2E1>
+<11C4> <11C5>	<D6F2>
+<11C6> <11C6>	<D2E2>
+<11C7> <11D0>	<D6F5>
+<11D1> <11D3>	<D7A1>
+<11D4> <11D4>	<D2E4>
+<11D5> <11D5>	<D7A5>
+<11D6> <11D9>	<D2E5>
+<11DA> <11DA>	<D7AA>
+<11DB> <11DC>	<D2E9>
+<11DD> <11DF>	<D7AD>
+<11E0> <11E0>	<D2EB>
+<11E1> <11FA>	<D7B1>
+<11FB> <11FB>	<D7CC>
+<11FC> <11FF>	<D2F0>
+<1200> <1200>	<D7D1>
+<1201> <1202>	<D2F4>
+<1203> <1204>	<D2F7>
+<1205> <1212>	<D7D6>
+<1213> <122C>	<D7E5>
+<122D> <128A>	<D8A1>
+<128B> <12E8>	<D9A1>
+<12E9> <12FF>	<DAA1>
+<1300> <1346>	<DAB8>
+<1347> <136A>	<DBA1>
+<136B> <1388>	<DBC6>
+<1389> <13A2>	<DBE5>
+<13A3> <13A6>	<DCA1>
+<13A7> <13FF>	<DCA6>
+<1400> <1403>	<DDA1>
+<1404> <141E>	<DDA6>
+<141F> <141F>	<DBC5>
+<1420> <1432>	<DDC2>
+<1433> <1450>	<DDD6>
+<1451> <145A>	<DDF5>
+<145B> <14B5>	<DEA1>
+endbfrange
+100 beginbfrange
+<14B6> <14B6>	<DEFD>
+<14B7> <14C8>	<DFA1>
+<14C9> <14F5>	<DFB4>
+<14F6> <14F6>	<DFE2>
+<14F7> <14F7>	<DEFE>
+<14F8> <14FB>	<DFE4>
+<14FC> <14FF>	<DFE9>
+<1500> <1511>	<DFED>
+<1512> <1561>	<E0A1>
+<1562> <156C>	<E0F2>
+<156D> <156D>	<DFE8>
+<156E> <156E>	<E0FE>
+<156F> <157A>	<E1A1>
+<157B> <15AF>	<E1AE>
+<15B0> <15B0>	<D7CB>
+<15B1> <15B9>	<E1E4>
+<15BA> <15CA>	<E1EE>
+<15CB> <15CF>	<E2A1>
+<15D0> <15D0>	<DEFC>
+<15D1> <15FF>	<E2A7>
+<1600> <1628>	<E2D6>
+<1629> <167C>	<E3A1>
+<167D> <1685>	<E3F6>
+<1686> <168C>	<E4A2>
+<168D> <16A7>	<E4AA>
+<16A8> <16A8>	<D1E2>
+<16A9> <16E1>	<E4C6>
+<16E2> <16EE>	<E5A1>
+<16EF> <16F0>	<E5AF>
+<16F1> <16F1>	<E5B3>
+<16F2> <16F2>	<E5AE>
+<16F3> <16F6>	<E5B5>
+<16F7> <16F7>	<E5BA>
+<16F8> <16FE>	<E5BD>
+<16FF> <16FF>	<E5C5>
+<1700> <1707>	<E5C6>
+<1708> <1708>	<E5CF>
+<1709> <1709>	<E5D1>
+<170A> <170C>	<E5D3>
+<170D> <172F>	<E5D7>
+<1730> <1730>	<E5FD>
+<1731> <1732>	<E6A2>
+<1733> <1734>	<E6A5>
+<1735> <1739>	<E6A8>
+<173A> <173A>	<E6AE>
+<173B> <173B>	<E6B2>
+<173C> <173E>	<E6B4>
+<173F> <1741>	<E6B9>
+<1742> <1748>	<E6BD>
+<1749> <1749>	<E6C5>
+<174A> <174B>	<E6C8>
+<174C> <1752>	<E6CB>
+<1753> <1755>	<E6D3>
+<1756> <1757>	<E6D7>
+<1758> <1759>	<E6DA>
+<175A> <175B>	<E6DD>
+<175C> <175C>	<E6E0>
+<175D> <175E>	<E6E2>
+<175F> <175F>	<E6E7>
+<1760> <1760>	<E6E9>
+<1761> <1762>	<E6ED>
+<1763> <1763>	<E6F0>
+<1764> <1765>	<E6F3>
+<1766> <1766>	<E6F8>
+<1767> <176B>	<E6FA>
+<176C> <176F>	<E7A2>
+<1770> <1770>	<E7A7>
+<1771> <1771>	<E0F1>
+<1772> <1772>	<E7AB>
+<1773> <1774>	<E7AE>
+<1775> <1782>	<E7B1>
+<1783> <1783>	<E7C0>
+<1784> <1787>	<E7C2>
+<1788> <178A>	<E7C8>
+<178B> <178B>	<E7CC>
+<178C> <178C>	<E7CE>
+<178D> <178E>	<E7D1>
+<178F> <1799>	<E7D4>
+<179A> <179D>	<E7E0>
+<179E> <179E>	<E7E5>
+<179F> <17AE>	<E7E7>
+<17AF> <17B5>	<E7F8>
+<17B6> <17FB>	<E8A1>
+<17FC> <17FF>	<E8E9>
+<1800> <1802>	<E8ED>
+<1803> <1807>	<E8F2>
+<1808> <1808>	<E8F8>
+<1809> <1809>	<E8FA>
+<180A> <180B>	<E8FC>
+<180C> <1811>	<E9A1>
+<1812> <1815>	<E9A8>
+<1816> <1834>	<E9AD>
+<1835> <185E>	<E9CD>
+<185F> <1865>	<E9F8>
+<1866> <1885>	<EAA1>
+<1886> <18A8>	<EAC2>
+<18A9> <18B6>	<EAE6>
+<18B7> <18B8>	<EAF5>
+<18B9> <18BC>	<EAF8>
+<18BD> <18BD>	<EAFD>
+endbfrange
+100 beginbfrange
+<18BE> <18C0>	<EBA1>
+<18C1> <18C2>	<EBA5>
+<18C3> <18C3>	<EBA8>
+<18C4> <18D2>	<EBAB>
+<18D3> <18D3>	<EBBC>
+<18D4> <18D6>	<EBBE>
+<18D7> <18D9>	<EBC3>
+<18DA> <18DD>	<EBC8>
+<18DE> <18DF>	<EBCD>
+<18E0> <18E4>	<EBD3>
+<18E5> <18FF>	<EBD9>
+<1900> <190A>	<EBF4>
+<190B> <190F>	<ECA1>
+<1910> <1911>	<ECA8>
+<1912> <1915>	<ECAB>
+<1916> <1917>	<ECB3>
+<1918> <1918>	<D7E4>
+<1919> <1919>	<ECB7>
+<191A> <191A>	<ECB9>
+<191B> <191F>	<ECBB>
+<1920> <1922>	<ECC2>
+<1923> <1924>	<ECC7>
+<1925> <192E>	<ECCB>
+<192F> <192F>	<E6EC>
+<1930> <1935>	<ECD7>
+<1936> <1937>	<ECDF>
+<1938> <1939>	<ECE2>
+<193A> <193B>	<ECE5>
+<193C> <1949>	<ECE9>
+<194A> <194A>	<ECF9>
+<194B> <194E>	<ECFB>
+<194F> <1998>	<EDA4>
+<1999> <19A8>	<EDEF>
+<19A9> <19E2>	<EEA1>
+<19E3> <19FF>	<EEDC>
+<1A00> <1A05>	<EEF9>
+<1A06> <1A63>	<EFA1>
+<1A64> <1AC1>	<F0A1>
+<1AC2> <1AFF>	<F1A1>
+<1B00> <1B1F>	<F1DF>
+<1B20> <1B3B>	<F2A1>
+<1B3C> <1B60>	<F2BE>
+<1B61> <1B61>	<E3F5>
+<1B62> <1B77>	<F2E4>
+<1B78> <1B7B>	<F2FB>
+<1B7C> <1B8B>	<F3A1>
+<1B8C> <1B8C>	<F3B2>
+<1B8D> <1B8D>	<CBE7>
+<1B8E> <1BAA>	<F3B4>
+<1BAB> <1BAB>	<DFB3>
+<1BAC> <1BD8>	<F3D2>
+<1BD9> <1BDE>	<F4A1>
+<1BDF> <1BFF>	<F4A8>
+<1C00> <1C24>	<F4C9>
+<1C25> <1C34>	<F4EF>
+<1C35> <1C92>	<F5A1>
+<1C93> <1CC9>	<F6A1>
+<1CCA> <1CCA>	<E4A1>
+<1CCB> <1CE5>	<F6D9>
+<1CE6> <1CE6>	<F6F5>
+<1CE7> <1CEE>	<F6F7>
+<1CEF> <1CFF>	<F7A1>
+<1D00> <1D05>	<F7B2>
+<1D06> <1D14>	<F7B9>
+<1D15> <1D1E>	<F7C9>
+<1D1F> <1D49>	<F7D4>
+<1D4A> <1D5D>	<F8A1>
+<1D5E> <1D5E>	<DCA5>
+<1D5F> <1D83>	<F8B6>
+<1D84> <1D93>	<F8DC>
+<1D94> <1D94>	<F8DB>
+<1D95> <1D97>	<F8ED>
+<1D98> <1DA5>	<F8F1>
+<1DA6> <1DB6>	<F9A1>
+<1DB7> <1DB7>	<DDF4>
+<1DB8> <1DFF>	<F9B3>
+<1E00> <1E03>	<F9FB>
+<1E04> <1E1C>	<FAA3>
+<1E1D> <1E1D>	<FAA1>
+<1E1E> <1E46>	<FABD>
+<1E47> <1E5E>	<FAE7>
+<1E5F> <1E66>	<FBA1>
+<1E67> <1E67>	<E7C1>
+<1E68> <1EBC>	<FBAA>
+<1EBD> <1EC4>	<FCA1>
+<1EC5> <1EDB>	<FCAA>
+<1EDC> <1EDC>	<CDE8>
+<1EDD> <1EFF>	<FCC2>
+<1F00> <1F19>	<FCE5>
+<1F1A> <1F33>	<FDA1>
+<1F34> <1F34>	<E9F7>
+<1F35> <1F77>	<FDBC>
+<1F78> <1F79>	<A1A2>
+<1F7A> <1F7A>	<A1A5>
+<1F7B> <1F7D>	<A1A9>
+<1F7E> <1F7E>	<A1AD>
+<1F7F> <1F8A>	<A1B2>
+<1F8B> <1F8B>	<A1EB>
+<1F8C> <1F8C>	<A3A1>
+<1F8D> <1F8E>	<A3A8>
+endbfrange
+100 beginbfrange
+<1F8F> <1F8F>	<A3AC>
+<1F90> <1F90>	<A3AE>
+<1F91> <1F96>	<A3BA>
+<1F97> <1F97>	<A3DB>
+<1F98> <1F98>	<A3DD>
+<1F99> <1F99>	<A3DF>
+<1F9A> <1F9D>	<A3FB>
+<1F9E> <1FFC>	<20>
+<2080> <2080>	<A1A6>
+<2475> <248E>	<8141>
+<248F> <24A8>	<8161>
+<24A9> <24FF>	<8181>
+<2500> <2526>	<81D8>
+<2527> <2540>	<8241>
+<2541> <255A>	<8261>
+<255B> <25D8>	<8281>
+<25D9> <25F2>	<8341>
+<25F3> <25FF>	<8361>
+<2600> <260C>	<836E>
+<260D> <268A>	<8381>
+<268B> <26A4>	<8441>
+<26A5> <26BE>	<8461>
+<26BF> <26FF>	<8481>
+<2700> <273C>	<84C2>
+<273D> <2756>	<8541>
+<2757> <2770>	<8561>
+<2771> <27EE>	<8581>
+<27EF> <27FF>	<8641>
+<2800> <2808>	<8652>
+<2809> <2822>	<8661>
+<2823> <28A0>	<8681>
+<28A1> <28BA>	<8741>
+<28BB> <28D4>	<8761>
+<28D5> <28FF>	<8781>
+<2900> <2952>	<87AC>
+<2953> <296C>	<8841>
+<296D> <2986>	<8861>
+<2987> <29FF>	<8881>
+<2A00> <2A04>	<88FA>
+<2A05> <2A1E>	<8941>
+<2A1F> <2A38>	<8961>
+<2A39> <2AB6>	<8981>
+<2AB7> <2AD0>	<8A41>
+<2AD1> <2AEA>	<8A61>
+<2AEB> <2AFF>	<8A81>
+<2B00> <2B68>	<8A96>
+<2B69> <2B82>	<8B41>
+<2B83> <2B9C>	<8B61>
+<2B9D> <2BFF>	<8B81>
+<2C00> <2C1A>	<8BE4>
+<2C1B> <2C34>	<8C41>
+<2C35> <2C4E>	<8C61>
+<2C4F> <2CCC>	<8C81>
+<2CCD> <2CE6>	<8D41>
+<2CE7> <2CFF>	<8D61>
+<2D00> <2D00>	<8D7A>
+<2D01> <2D7E>	<8D81>
+<2D7F> <2D98>	<8E41>
+<2D99> <2DB2>	<8E61>
+<2DB3> <2DFF>	<8E81>
+<2E00> <2E30>	<8ECE>
+<2E31> <2E4A>	<8F41>
+<2E4B> <2E64>	<8F61>
+<2E65> <2EE2>	<8F81>
+<2EE3> <2EFC>	<9041>
+<2EFD> <2EFF>	<9061>
+<2F00> <2F16>	<9064>
+<2F17> <2F94>	<9081>
+<2F95> <2FAE>	<9141>
+<2FAF> <2FC8>	<9161>
+<2FC9> <2FFF>	<9181>
+<3000> <3046>	<91B8>
+<3047> <3060>	<9241>
+<3061> <307A>	<9261>
+<307B> <30F8>	<9281>
+<30F9> <30FF>	<9341>
+<3100> <3112>	<9348>
+<3113> <312C>	<9361>
+<312D> <31AA>	<9381>
+<31AB> <31C4>	<9441>
+<31C5> <31DE>	<9461>
+<31DF> <31FF>	<9481>
+<3200> <325C>	<94A2>
+<325D> <3276>	<9541>
+<3277> <3290>	<9561>
+<3291> <32FF>	<9581>
+<3300> <330E>	<95F0>
+<330F> <3328>	<9641>
+<3329> <3342>	<9661>
+<3343> <33C0>	<9681>
+<33C1> <33DA>	<9741>
+<33DB> <33F4>	<9761>
+<33F5> <33FF>	<9781>
+<3400> <3472>	<978C>
+<3473> <348C>	<9841>
+<348D> <34A6>	<9861>
+<34A7> <34FF>	<9881>
+<3500> <3524>	<98DA>
+<3525> <353E>	<9941>
+<353F> <3558>	<9961>
+endbfrange
+100 beginbfrange
+<3559> <35D6>	<9981>
+<35D7> <35F0>	<9A41>
+<35F1> <35FF>	<9A61>
+<3600> <360A>	<9A70>
+<360B> <3688>	<9A81>
+<3689> <36A2>	<9B41>
+<36A3> <36BC>	<9B61>
+<36BD> <36FF>	<9B81>
+<3700> <373A>	<9BC4>
+<373B> <3754>	<9C41>
+<3755> <376E>	<9C61>
+<376F> <37EC>	<9C81>
+<37ED> <37FF>	<9D41>
+<3800> <3806>	<9D54>
+<3807> <3820>	<9D61>
+<3821> <389E>	<9D81>
+<389F> <38B8>	<9E41>
+<38B9> <38D2>	<9E61>
+<38D3> <38FF>	<9E81>
+<3900> <3950>	<9EAE>
+<3951> <396A>	<9F41>
+<396B> <3984>	<9F61>
+<3985> <39FF>	<9F81>
+<3A00> <3A02>	<9FFC>
+<3A03> <3A1C>	<A041>
+<3A1D> <3A36>	<A061>
+<3A37> <3AB4>	<A081>
+<3AB5> <3ACE>	<A141>
+<3ACF> <3AE8>	<A161>
+<3AE9> <3AFF>	<A181>
+<3B00> <3B08>	<A198>
+<3B09> <3B22>	<A241>
+<3B23> <3B3C>	<A261>
+<3B3D> <3B5C>	<A281>
+<3B5D> <3B76>	<A341>
+<3B77> <3B90>	<A361>
+<3B91> <3BB0>	<A381>
+<3BB1> <3BCA>	<A441>
+<3BCB> <3BE4>	<A461>
+<3BE5> <3BFF>	<A481>
+<3C00> <3C04>	<A49C>
+<3C05> <3C1E>	<A541>
+<3C1F> <3C38>	<A561>
+<3C39> <3C58>	<A581>
+<3C59> <3C72>	<A641>
+<3C73> <3C8C>	<A661>
+<3C8D> <3CAC>	<A681>
+<3CAD> <3CC6>	<A741>
+<3CC7> <3CE0>	<A761>
+<3CE1> <3CFF>	<A781>
+<3D00> <3D00>	<A7A0>
+<3D01> <3D1A>	<A841>
+<3D1B> <3D34>	<A861>
+<3D35> <3D54>	<A881>
+<3D55> <3D6E>	<A941>
+<3D6F> <3D88>	<A961>
+<3D89> <3DA8>	<A981>
+<3DA9> <3DC2>	<AA41>
+<3DC3> <3DDC>	<AA61>
+<3DDD> <3DFC>	<AA81>
+<3DFD> <3DFF>	<AB41>
+<3E00> <3E16>	<AB44>
+<3E17> <3E30>	<AB61>
+<3E31> <3E50>	<AB81>
+<3E51> <3E6A>	<AC41>
+<3E6B> <3E84>	<AC61>
+<3E85> <3EA4>	<AC81>
+<3EA5> <3EBE>	<AD41>
+<3EBF> <3ED8>	<AD61>
+<3ED9> <3EF8>	<AD81>
+<3EF9> <3EFF>	<AE41>
+<3F00> <3F12>	<AE48>
+<3F13> <3F2C>	<AE61>
+<3F2D> <3F4C>	<AE81>
+<3F4D> <3F66>	<AF41>
+<3F67> <3F80>	<AF61>
+<3F81> <3FA0>	<AF81>
+<3FA1> <3FBA>	<B041>
+<3FBB> <3FD4>	<B061>
+<3FD5> <3FF4>	<B081>
+<3FF5> <3FFF>	<B141>
+<4000> <400E>	<B14C>
+<400F> <4028>	<B161>
+<4029> <4048>	<B181>
+<4049> <4062>	<B241>
+<4063> <407C>	<B261>
+<407D> <409C>	<B281>
+<409D> <40B6>	<B341>
+<40B7> <40D0>	<B361>
+<40D1> <40F0>	<B381>
+<40F1> <40FF>	<B441>
+<4100> <410A>	<B450>
+<410B> <4124>	<B461>
+<4125> <4144>	<B481>
+<4145> <415E>	<B541>
+<415F> <4178>	<B561>
+<4179> <4198>	<B581>
+<4199> <41B2>	<B641>
+<41B3> <41CC>	<B661>
+<41CD> <41EC>	<B681>
+endbfrange
+51 beginbfrange
+<41ED> <41FF>	<B741>
+<4200> <4206>	<B754>
+<4207> <4220>	<B761>
+<4221> <4240>	<B781>
+<4241> <425A>	<B841>
+<425B> <4274>	<B861>
+<4275> <4294>	<B881>
+<4295> <42AE>	<B941>
+<42AF> <42C8>	<B961>
+<42C9> <42E8>	<B981>
+<42E9> <42FF>	<BA41>
+<4300> <4302>	<BA58>
+<4303> <431C>	<BA61>
+<431D> <433C>	<BA81>
+<433D> <4356>	<BB41>
+<4357> <4370>	<BB61>
+<4371> <4390>	<BB81>
+<4391> <43AA>	<BC41>
+<43AB> <43C4>	<BC61>
+<43C5> <43E4>	<BC81>
+<43E5> <43FE>	<BD41>
+<43FF> <43FF>	<BD61>
+<4400> <4418>	<BD62>
+<4419> <4438>	<BD81>
+<4439> <4452>	<BE41>
+<4453> <446C>	<BE61>
+<446D> <448C>	<BE81>
+<448D> <44A6>	<BF41>
+<44A7> <44C0>	<BF61>
+<44C1> <44E0>	<BF81>
+<44E1> <44FA>	<C041>
+<44FB> <44FF>	<C061>
+<4500> <4514>	<C066>
+<4515> <4534>	<C081>
+<4535> <454E>	<C141>
+<454F> <4568>	<C161>
+<4569> <4588>	<C181>
+<4589> <45A2>	<C241>
+<45A3> <45BC>	<C261>
+<45BD> <45DC>	<C281>
+<45DD> <45F6>	<C341>
+<45F7> <45FF>	<C361>
+<4600> <4610>	<C36A>
+<4611> <4630>	<C381>
+<4631> <464A>	<C441>
+<464B> <4664>	<C461>
+<4665> <4684>	<C481>
+<4685> <469E>	<C541>
+<469F> <46B8>	<C561>
+<46B9> <46D8>	<C581>
+<46D9> <46EA>	<C641>
+endbfrange
+
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+
+%%EndResource
+%%EOF

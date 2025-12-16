@@ -1,0 +1,405 @@
+%!PS-Adobe-3.0 Resource-CMap
+%%DocumentNeededResources: ProcSet (CIDInit)
+%%IncludeResource: ProcSet (CIDInit)
+%%BeginResource: CMap (Adobe-Japan1-90pv-RKSJ)
+%%Title: (Adobe-Japan1-90pv Adobe Japan1 2)
+%%Version: 4.006
+%%Copyright: -----------------------------------------------------------
+%%Copyright: Copyright 1990-2019 Adobe. All rights reserved.
+%%Copyright:
+%%Copyright: Redistribution and use in source and binary forms, with or
+%%Copyright: without modification, are permitted provided that the
+%%Copyright: following conditions are met:
+%%Copyright:
+%%Copyright: Redistributions of source code must retain the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer.
+%%Copyright:
+%%Copyright: Redistributions in binary form must reproduce the above
+%%Copyright: copyright notice, this list of conditions and the following
+%%Copyright: disclaimer in the documentation and/or other materials
+%%Copyright: provided with the distribution. 
+%%Copyright:
+%%Copyright: Neither the name of Adobe nor the names of its contributors
+%%Copyright: may be used to endorse or promote products derived from
+%%Copyright: this software without specific prior written permission.
+%%Copyright:
+%%Copyright: THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+%%Copyright: CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+%%Copyright: INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+%%Copyright: MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+%%Copyright: DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+%%Copyright: CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+%%Copyright: SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+%%Copyright: NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+%%Copyright: LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+%%Copyright: HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+%%Copyright: CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+%%Copyright: OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+%%Copyright: SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+%%Copyright: -----------------------------------------------------------
+%%EndComments
+
+/CIDInit /ProcSet findresource begin
+
+12 dict begin
+
+begincmap
+
+/CIDSystemInfo 3 dict dup begin
+/Registry (Adobe) def
+/Ordering (Adobe_Japan1_90pv_RKSJ) def
+/Supplement 2 def
+end def
+
+/CMapName /Adobe-Japan1-90pv-RKSJ def
+
+/CMapVersion 4.006 def
+/CMapType 1 def
+
+/XUID [1 10 25335 1212] def
+
+/WMode 0 def
+
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+
+% Halfwidth Roman
+2 beginbfrange
+<00e7> <00ff> <20>
+<0100> <0145> <39>
+endbfrange
+
+% Max CID: 8358 0x20a6
+% Range Count: 315 
+100 beginbfrange
+<0000> <0000> <20>
+<0001> <005f> <20>
+<0061> <0061> <80>
+<007c> <007c> <ff>
+<0098> <0098> <fd>
+<00e4> <00e4> <fe>
+<0146> <0185> <a0>
+<0279> <02b7> <8140>
+<02b8> <02e4> <8180>
+<02e5> <02ec> <81b8>
+<02ed> <02f3> <81c8>
+<02f4> <02ff> <81da>
+<0300> <0302> <81e6>
+<0303> <030a> <81f0>
+<030b> <030b> <81fc>
+<030c> <0315> <824f>
+<0316> <032f> <8260>
+<0330> <0349> <8281>
+<034a> <039c> <829f>
+<039d> <03db> <8340>
+<03dc> <03f2> <8380>
+<03f3> <03ff> <839f>
+<0400> <040a> <83ac>
+<040b> <0422> <83bf>
+<0423> <0443> <8440>
+<0444> <0452> <8470>
+<0453> <0464> <8480>
+<0465> <04c2> <889f>
+<04c3> <04ff> <8940>
+<0500> <0501> <897d>
+<0502> <057e> <8980>
+<057f> <05bd> <8a40>
+<05be> <05ff> <8a80>
+<0600> <063a> <8ac2>
+<063b> <0679> <8b40>
+<067a> <06f6> <8b80>
+<06f7> <06ff> <8c40>
+<0700> <0735> <8c49>
+<0736> <07b2> <8c80>
+<07b3> <07f1> <8d40>
+<07f2> <07ff> <8d80>
+<0800> <086e> <8d8e>
+<086f> <08ad> <8e40>
+<08ae> <08ff> <8e80>
+<0900> <092a> <8ed2>
+<092b> <0969> <8f40>
+<096a> <09e6> <8f80>
+<09e7> <09ff> <9040>
+<0a00> <0a25> <9059>
+<0a26> <0aa2> <9080>
+<0aa3> <0ae1> <9140>
+<0ae2> <0aff> <9180>
+<0b00> <0b5e> <919e>
+<0b5f> <0b9d> <9240>
+<0b9e> <0bff> <9280>
+<0c00> <0c1a> <92e2>
+<0c1b> <0c59> <9340>
+<0c5a> <0cd6> <9380>
+<0cd7> <0cff> <9440>
+<0d00> <0d15> <9469>
+<0d16> <0d92> <9480>
+<0d93> <0dd1> <9540>
+<0dd2> <0dff> <9580>
+<0e00> <0e4e> <95ae>
+<0e4f> <0e8d> <9640>
+<0e8e> <0eff> <9680>
+<0f00> <0f0a> <96f2>
+<0f0b> <0f49> <9740>
+<0f4a> <0fc6> <9780>
+<0fc7> <0ff9> <9840>
+<0ffa> <0fff> <989f>
+<1000> <1057> <98a5>
+<1058> <1096> <9940>
+<1097> <10ff> <9980>
+<1100> <1113> <99e9>
+<1114> <1152> <9a40>
+<1153> <11cf> <9a80>
+<11d0> <11ff> <9b40>
+<1200> <120e> <9b70>
+<120f> <128b> <9b80>
+<128c> <12ca> <9c40>
+<12cb> <12ff> <9c80>
+<1300> <1347> <9cb5>
+<1348> <1386> <9d40>
+<1387> <13ff> <9d80>
+<1400> <1403> <9df9>
+<1404> <1442> <9e40>
+<1443> <14bf> <9e80>
+<14c0> <14fe> <9f40>
+<14ff> <14ff> <9f80>
+<1500> <157b> <9f81>
+<157c> <15ba> <e040>
+<15bb> <15ff> <e080>
+<1600> <1637> <e0c5>
+<1638> <1676> <e140>
+<1677> <16f3> <e180>
+<16f4> <16ff> <e240>
+<1700> <1732> <e24c>
+<1733> <17af> <e280>
+<17b0> <17ee> <e340>
+endbfrange
+100 beginbfrange
+<17ef> <17ff> <e380>
+<1800> <186b> <e391>
+<186c> <18aa> <e440>
+<18ab> <18ff> <e480>
+<1900> <1927> <e4d5>
+<1928> <1966> <e540>
+<1967> <19e3> <e580>
+<19e4> <19ff> <e640>
+<1a00> <1a22> <e65c>
+<1a23> <1a9f> <e680>
+<1aa0> <1ade> <e740>
+<1adf> <1aff> <e780>
+<1b00> <1b5b> <e7a1>
+<1b5c> <1b9a> <e840>
+<1b9b> <1bff> <e880>
+<1c00> <1c17> <e8e5>
+<1c18> <1c56> <e940>
+<1c57> <1cd3> <e980>
+<1cd4> <1cff> <ea40>
+<1d00> <1d12> <ea6c>
+<1d13> <1d35> <ea80>
+<1d37> <1d37> <849f>
+<1d38> <1d38> <84aa>
+<1d39> <1d39> <84a0>
+<1d3a> <1d3a> <84ab>
+<1d43> <1d43> <84a1>
+<1d46> <1d46> <84ac>
+<1d47> <1d47> <84a2>
+<1d4a> <1d4a> <84ad>
+<1d4b> <1d4b> <84a4>
+<1d4e> <1d4e> <84af>
+<1d4f> <1d4f> <84a3>
+<1d52> <1d52> <84ae>
+<1d53> <1d53> <84a5>
+<1d54> <1d54> <84ba>
+<1d57> <1d57> <84b5>
+<1d5a> <1d5a> <84b0>
+<1d5b> <1d5b> <84a7>
+<1d5c> <1d5c> <84bc>
+<1d5f> <1d5f> <84b7>
+<1d62> <1d62> <84b2>
+<1d63> <1d63> <84a6>
+<1d66> <1d66> <84b6>
+<1d67> <1d67> <84bb>
+<1d6a> <1d6a> <84b1>
+<1d6b> <1d6b> <84a8>
+<1d6e> <1d6e> <84b8>
+<1d6f> <1d6f> <84bd>
+<1d72> <1d72> <84b3>
+<1d73> <1d73> <84a9>
+<1d76> <1d76> <84b9>
+<1d79> <1d79> <84be>
+<1d82> <1d82> <84b4>
+<1d83> <1d96> <8540>
+<1d97> <1da0> <859f>
+<1da1> <1da1> <879f>
+<1da2> <1da2> <87a2>
+<1da4> <1da4> <87a1>
+<1da6> <1da6> <87ab>
+<1da8> <1da8> <87a8>
+<1da9> <1da9> <87ac>
+<1dab> <1dab> <87b0>
+<1dac> <1dac> <87b3>
+<1dae> <1dae> <87b5>
+<1daf> <1daf> <87ad>
+<1db1> <1db1> <8640>
+<1db2> <1db2> <8642>
+<1db3> <1db3> <8648>
+<1db4> <1db4> <864a>
+<1db5> <1db6> <864c>
+<1db7> <1db7> <8646>
+<1db8> <1db9> <8854>
+<1dba> <1dbc> <869b>
+<1dbd> <1dc1> <8793>
+<1dc2> <1dc2> <874d>
+<1dc3> <1dc3> <8750>
+<1dc4> <1dc4> <874b>
+<1dc5> <1dc7> <87e5>
+<1dc8> <1dc8> <8840>
+<1dcd> <1dce> <8841>
+<1ecf> <1ed0> <8141>
+<1ed1> <1ed2> <8150>
+<1ed3> <1ed5> <815b>
+<1ed6> <1eda> <8160>
+<1edb> <1eec> <8169>
+<1eed> <1eed> <8181>
+<1eee> <1eee> <829f>
+<1eef> <1eef> <82a1>
+<1ef0> <1ef0> <82a3>
+<1ef1> <1ef1> <82a5>
+<1ef2> <1ef2> <82a7>
+<1ef3> <1ef3> <82c1>
+<1ef4> <1ef4> <82e1>
+<1ef5> <1ef5> <82e3>
+<1ef6> <1ef6> <82e5>
+<1ef7> <1ef7> <82ec>
+<1ef8> <1ef8> <8340>
+<1ef9> <1ef9> <8342>
+<1efa> <1efa> <8344>
+<1efb> <1efb> <8346>
+endbfrange
+100 beginbfrange
+<1efc> <1efc> <8348>
+<1efd> <1efd> <8362>
+<1efe> <1efe> <8383>
+<1eff> <1eff> <8385>
+<1f00> <1f00> <8387>
+<1f01> <1f01> <838e>
+<1f02> <1f03> <8395>
+<1f04> <1f04> <879f>
+<1f05> <1f05> <87a2>
+<1f07> <1f07> <87a1>
+<1f09> <1f09> <87ab>
+<1f0b> <1f0b> <87a8>
+<1f0c> <1f0c> <87ac>
+<1f0e> <1f0e> <87b0>
+<1f0f> <1f0f> <87b3>
+<1f11> <1f11> <87b5>
+<1f12> <1f12> <87ad>
+<1f16> <1f16> <8868>
+<1f4b> <1f4b> <86d2>
+<1f4c> <1f4c> <86d1>
+<1f4d> <1f4d> <86d0>
+<1f4e> <1f4e> <86cf>
+<1f50> <1f51> <86a0>
+<1f52> <1f52> <869f>
+<1f53> <1f53> <86a2>
+<1f54> <1f54> <8643>
+<1f55> <1f55> <8649>
+<1f56> <1f56> <8644>
+<1f57> <1f57> <8647>
+<1f58> <1f5e> <864f>
+<1f5f> <1f61> <865a>
+<1f62> <1f63> <8658>
+<1f64> <1f64> <8657>
+<1f65> <1f65> <864e>
+<1f66> <1f66> <87a0>
+<1f67> <1f67> <87a3>
+<1f68> <1f69> <87a9>
+<1f6a> <1f6a> <87a7>
+<1f6b> <1f6b> <87b2>
+<1f6c> <1f6c> <87af>
+<1f6d> <1f6d> <87b1>
+<1f6e> <1f6e> <87ae>
+<1f6f> <1f6f> <87b4>
+<1f70> <1f70> <87bd>
+<1f71> <1f72> <87c0>
+<1f73> <1f74> <87be>
+<1f76> <1f76> <87fa>
+<1f78> <1f78> <86b4>
+<1f7a> <1f7a> <86b3>
+<1f7d> <1f86> <8591>
+<1f87> <1f9a> <855e>
+<1f9c> <1fa5> <85b3>
+<1fb0> <1fc9> <85db>
+<1fca> <1fca> <874a>
+<1fcb> <1fcc> <8756>
+<1fcd> <1fcd> <874f>
+<1fce> <1fce> <8758>
+<1fcf> <1fcf> <8753>
+<1fd0> <1fd0> <8755>
+<1fd1> <1fd1> <8749>
+<1fd2> <1fd2> <874e>
+<1fd3> <1fd3> <8752>
+<1fd4> <1fd4> <8754>
+<1fd5> <1fd5> <8751>
+<1fd6> <1fd6> <8747>
+<1fd7> <1fd7> <874c>
+<1fda> <1fda> <8798>
+<1fde> <1fde> <879b>
+<1fe5> <1fe5> <8799>
+<1ff7> <1ff7> <87a4>
+<1ffa> <1ffa> <8641>
+<1fff> <1fff> <879c>
+<2005> <200b> <8740>
+<200c> <200c> <8748>
+<200e> <2011> <86d3>
+<2013> <2013> <86a3>
+<2014> <2014> <86a5>
+<2015> <2015> <86a4>
+<2016> <2016> <86a6>
+<201b> <201e> <86c7>
+<201f> <201f> <879e>
+<2021> <2022> <85a9>
+<205c> <205d> <eaa3>
+<205e> <2060> <857c>
+<2061> <2066> <8580>
+<2067> <2069> <85ab>
+<206a> <206e> <85bd>
+<206f> <206f> <8645>
+<2070> <2070> <864b>
+<2071> <2071> <8656>
+<2072> <2072> <865d>
+<2073> <2073> <869e>
+<2074> <2074> <86b5>
+<2075> <2078> <86cb>
+<2079> <207c> <886a>
+<207d> <207e> <8791>
+<207f> <207f> <879a>
+<2080> <2080> <879d>
+<2081> <2082> <87fb>
+<2083> <2083> <87e8>
+endbfrange
+15 beginbfrange
+<2084> <2086> <87fa>
+<2087> <2088> <87a5>
+<2089> <2089> <87a0>
+<208a> <208a> <87a3>
+<208d> <208e> <87a4>
+<2091> <2092> <87a6>
+<2093> <2094> <87a9>
+<2097> <2098> <87ae>
+<209b> <209c> <87b1>
+<209d> <209d> <87b4>
+<209e> <209e> <87bd>
+<20a1> <20a1> <87be>
+<20a4> <20a4> <87bf>
+<20a5> <20a5> <87c1>
+<20a6> <20a6> <87c0>
+endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+
+%%EndResource
+%%EOF
