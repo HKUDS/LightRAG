@@ -74,3 +74,5 @@ download_models_hf.py
 memory-bank
 .claude/CLAUDE.md
 .claude/
+
+poppler-25.12.0/

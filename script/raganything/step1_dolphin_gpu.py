@@ -18,7 +18,7 @@ from loguru import logger
 
 # 1. Poppler 路徑 (Windows 必填)
 # 如果你已經加到系統環境變數，可以設為 None
-POPPLER_BIN_PATH = r"C:\Users\sammi_hung\LightRAG\poppler-25.12.0\Library\bin"
+POPPLER_BIN_PATH = r"C:\Users\sherm\LightRAG\poppler-25.12.0\Library\bin"
 
 # 2. 輸入/輸出路徑
 INPUT_DIR = "./data/input/__enqueued__"

@@ -13,8 +13,8 @@ from qwen_vl_utils import process_vision_info
 from loguru import logger
 
 # === 設定 ===
-INPUT_DIR = "/content/LightRAG/data/input/__enqueued__"
-OUTPUT_DIR_BASE = "/content/LightRAG/data/input/step1_output"
+INPUT_DIR = "./data/input/__enqueued__"
+OUTPUT_DIR_BASE = "./data/input/step1_output"
 MODEL_ID = "ByteDance/Dolphin-v2"
 
 # === 🔥 關鍵設定：Token 限制 ===
