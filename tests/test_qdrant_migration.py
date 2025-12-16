@@ -60,9 +60,6 @@ async def test_qdrant_collection_naming(mock_qdrant_client, mock_embedding_func)
     assert expected_suffix in storage.final_namespace
     assert storage.final_namespace == f"lightrag_vdb_chunks_{expected_suffix}"
 
-    # Verify legacy namespace (should not include workspace, just the base collection name)
-    assert storage.legacy_namespace == "lightrag_vdb_chunks"
-
 
 @pytest.mark.asyncio
 async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func):
@@ -79,17 +76,19 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
         workspace="test_ws",
     )
 
+    # Legacy collection name (without model suffix)
+    legacy_collection = "lightrag_vdb_chunks"
+
     # Setup mocks for migration scenario
-    # 1. New collection does not exist
+    # 1. New collection does not exist, only legacy exists
     mock_qdrant_client.collection_exists.side_effect = (
-        lambda name: name == storage.legacy_namespace
+        lambda name: name == legacy_collection
     )
 
     # 2. Legacy collection exists and has data
     mock_qdrant_client.count.return_value.count = 100
 
     # 3. Mock scroll for data migration
-
     mock_point = MagicMock()
     mock_point.id = "old_id"
     mock_point.vector = [0.1] * 768
@@ -104,7 +103,7 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
     # Verify migration steps
     # 1. Legacy count checked
     mock_qdrant_client.count.assert_any_call(
-        collection_name=storage.legacy_namespace, exact=True
+        collection_name=legacy_collection, exact=True
     )
 
     # 2. New collection created
@@ -113,7 +112,7 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
     # 3. Data scrolled from legacy
     assert mock_qdrant_client.scroll.call_count >= 1
     call_args = mock_qdrant_client.scroll.call_args_list[0]
-    assert call_args.kwargs["collection_name"] == storage.legacy_namespace
+    assert call_args.kwargs["collection_name"] == legacy_collection
     assert call_args.kwargs["limit"] == 500
 
     # 4. Data upserted to new
@@ -228,6 +227,7 @@ async def test_scenario_2_legacy_upgrade_migration(
     场景2：从旧版本升级
     已存在lightrag_vdb_chunks（无后缀）
     预期：自动迁移数据到lightrag_vdb_chunks_text_embedding_ada_002_1536d
+    注意：迁移后不再自动删除遗留集合，需要手动删除
     """
     # Use ada-002 model
     ada_func = EmbeddingFunc(
@@ -248,7 +248,8 @@ async def test_scenario_2_legacy_upgrade_migration(
         workspace="test_legacy",
     )
 
-    legacy_collection = storage.legacy_namespace
+    # Legacy collection name (without model suffix)
+    legacy_collection = "lightrag_vdb_chunks"
     new_collection = storage.final_namespace
 
     # Case 4: Only legacy collection exists
@@ -266,7 +267,6 @@ async def test_scenario_2_legacy_upgrade_migration(
     mock_qdrant_client.count.return_value.count = 150
 
     # Mock scroll results (simulate migration in batches)
-
     mock_points = []
     for i in range(10):
         point = MagicMock()
@@ -304,26 +304,11 @@ async def test_scenario_2_legacy_upgrade_migration(
     assert len(upsert_calls) >= 1
     assert upsert_calls[0].kwargs["collection_name"] == new_collection
 
-    # 5. Verify legacy collection was automatically deleted after successful migration
-    # This prevents Case 1 warnings on next startup
-    delete_calls = [
-        call for call in mock_qdrant_client.delete_collection.call_args_list
-    ]
-    assert (
-        len(delete_calls) >= 1
-    ), "Legacy collection should be deleted after successful migration"
-    # Check if legacy_collection was passed to delete_collection
-    deleted_collection = (
-        delete_calls[0][0][0]
-        if delete_calls[0][0]
-        else delete_calls[0].kwargs.get("collection_name")
-    )
-    assert (
-        deleted_collection == legacy_collection
-    ), f"Expected to delete '{legacy_collection}', but deleted '{deleted_collection}'"
+    # Note: Legacy collection is NOT automatically deleted after migration
+    # Manual deletion is required after data migration verification
 
     print(
-        f"✅ Scenario 2: Legacy data migrated from '{legacy_collection}' to '{expected_new_collection}' and legacy collection deleted"
+        f"✅ Scenario 2: Legacy data migrated from '{legacy_collection}' to '{expected_new_collection}'"
     )
 
 
@@ -410,7 +395,8 @@ async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embeddin
         workspace="test_ws",
     )
 
-    legacy_collection = storage.legacy_namespace
+    # Legacy collection name (without model suffix)
+    legacy_collection = "lightrag_vdb_chunks"
     new_collection = storage.final_namespace
 
     # Mock: Both collections exist
@@ -476,7 +462,8 @@ async def test_case1_nonempty_legacy_warning(mock_qdrant_client, mock_embedding_
         workspace="test_ws",
     )
 
-    legacy_collection = storage.legacy_namespace
+    # Legacy collection name (without model suffix)
+    legacy_collection = "lightrag_vdb_chunks"
     new_collection = storage.final_namespace
 
     # Mock: Both collections exist

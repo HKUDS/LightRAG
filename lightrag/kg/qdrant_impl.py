@@ -134,16 +134,27 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         """
         Setup Qdrant collection with migration support from legacy collections.
 
+        Ensure final collection is created with workspace isolation index.
         This method now supports backward compatibility by automatically detecting
         legacy collections created by older versions of LightRAG using multiple
         naming patterns.
+            
+        Behavior:
+            - Case 1: New collection is the same as legacy collection - show debug message and continue
+            - Case 2: Only new collection exists - - show debug message and continue
+            - Case 3: Both new and legacy collections exist with different names - show warning and continue
+            - Case 4: Only legacy exists - migrate data from legacy collection to new collection
+                      Raise QdrantMigrationError if legacy collection has different dimension than new collection
 
         Args:
             client: QdrantClient instance
-            collection_name: Name of the new collection
+            collection_name: Name of the final collection
             namespace: Base namespace (e.g., "chunks", "entities")
             workspace: Workspace identifier for data isolation
             **kwargs: Additional arguments for collection creation (vectors_config, hnsw_config, etc.)
+
+        Raises:
+            QdrantMigrationError: If migration fails or index creation fails
         """
         new_collection_exists = client.collection_exists(collection_name)
 
@@ -151,22 +162,33 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         legacy_collection = (
             _find_legacy_collection(client, namespace, workspace) if namespace else None
         )
-        legacy_exists = legacy_collection is not None
 
-        # Case 1: Both new and legacy collections exist
-        # This can happen if:
-        # 1. Previous migration failed to delete the legacy collection
-        # 2. User manually created both collections
-        # 3. No model suffix (collection_name == legacy_collection)
-        # Strategy: Only delete legacy if it's empty (safe cleanup) and it's not the same as new collection
-        if new_collection_exists and legacy_exists:
-            # CRITICAL: Check if new and legacy are the same collection
-            # This happens when model_suffix is empty (no model_name provided)
-            if collection_name == legacy_collection:
-                logger.debug(
-                    f"Qdrant: Collection '{collection_name}' already exists (no model suffix). Skipping Case 1 cleanup."
-                )
-                return
+        if not new_collection_exists:
+            logger.info(f"Qdrant: Creating new collection '{collection_name}'")
+            client.create_collection(collection_name, **kwargs)
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=WORKSPACE_ID_FIELD,
+                field_schema=models.KeywordIndexParams(
+                    type=models.KeywordIndexType.KEYWORD,
+                    is_tenant=True,
+                ),
+            )
+            logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
+
+        # Case 1: New collection is the same as legacy collection - show debug message and continue
+        if collection_name == legacy_collection:
+            logger.debug("Qdrant: legacy collection '%s' is the same as new collection '%s'.", legacy_collection, collection_name)
+            return
+
+        # Case 2: Only new collection exists - silently return  
+        if new_collection_exists and not legacy_collection:
+            logger.debug("Qdrant: Only new collection '%s' exists. No migration needed.", collection_name)
+            return
+
+        # Case 3: Both new and legacy collections exist with different names - show warning and continue
+        # Only delete legacy if it's empty (safe cleanup) and it's not the same as new collection
+        if new_collection_exists and legacy_collection:
 
             try:
                 # Check if legacy collection is empty
@@ -187,7 +209,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     # Legacy collection still has data - don't risk deleting it
                     logger.warning(
                         f"Qdrant: Legacy collection '{legacy_collection}' still contains {legacy_count} records. "
-                        f"Manual intervention required to verify and delete."
+                        f"Manual deletion is required after data migration verification."
                     )
             except Exception as e:
                 logger.warning(
@@ -196,45 +218,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
             return
 
-        # Case 2: Only new collection exists - Ensure index exists
-        if new_collection_exists:
-            # Check if workspace index exists, create if missing
-            try:
-                collection_info = client.get_collection(collection_name)
-                if WORKSPACE_ID_FIELD not in collection_info.payload_schema:
-                    logger.info(
-                        f"Qdrant: Creating missing workspace index for '{collection_name}'"
-                    )
-                    client.create_payload_index(
-                        collection_name=collection_name,
-                        field_name=WORKSPACE_ID_FIELD,
-                        field_schema=models.KeywordIndexParams(
-                            type=models.KeywordIndexType.KEYWORD,
-                            is_tenant=True,
-                        ),
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Qdrant: Could not verify/create workspace index for '{collection_name}': {e}"
-                )
-            return
-
-        # Case 3: Neither exists - Create new collection
-        if not legacy_exists:
-            logger.info(f"Qdrant: Creating new collection '{collection_name}'")
-            client.create_collection(collection_name, **kwargs)
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name=WORKSPACE_ID_FIELD,
-                field_schema=models.KeywordIndexParams(
-                    type=models.KeywordIndexType.KEYWORD,
-                    is_tenant=True,
-                ),
-            )
-            logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
-            return
-
-        # Case 4: Only legacy exists - Migrate data
+        # Case 4: Only legacy exists - migrate data from legacy collection to new collection
         logger.info(
             f"Qdrant: Migrating data from legacy collection '{legacy_collection}'"
         )
@@ -244,70 +228,35 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             legacy_count = client.count(
                 collection_name=legacy_collection, exact=True
             ).count
+            if legacy_count == 0:
+                logger.info(f"Qdrant: Legacy collection '{legacy_collection}' is empty. No migration needed.")
+                return
+            
             logger.info(f"Qdrant: Found {legacy_count} records in legacy collection")
 
-            if legacy_count == 0:
-                logger.info("Qdrant: Legacy collection is empty, skipping migration")
-                # Create new empty collection
-                client.create_collection(collection_name, **kwargs)
-                client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name=WORKSPACE_ID_FIELD,
-                    field_schema=models.KeywordIndexParams(
-                        type=models.KeywordIndexType.KEYWORD,
-                        is_tenant=True,
-                    ),
-                )
-                return
-
             # Check vector dimension compatibility before migration
-            try:
-                legacy_info = client.get_collection(legacy_collection)
-                legacy_dim = legacy_info.config.params.vectors.size
+            legacy_info = client.get_collection(legacy_collection)
+            legacy_dim = legacy_info.config.params.vectors.size
 
-                # Get expected dimension from kwargs
-                new_dim = (
-                    kwargs.get("vectors_config").size
-                    if "vectors_config" in kwargs
-                    else None
+            # Get expected dimension from kwargs
+            new_dim = (
+                kwargs.get("vectors_config").size
+                if "vectors_config" in kwargs
+                else None
+            )
+
+            if new_dim and legacy_dim != new_dim:
+                logger.error(
+                    f"Qdrant: Dimension mismatch detected! "
+                    f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
+                    f"but new embedding model expects {new_dim}d. "
                 )
 
-                if new_dim and legacy_dim != new_dim:
-                    logger.warning(
-                        f"Qdrant: Dimension mismatch detected! "
-                        f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
-                        f"but new embedding model expects {new_dim}d. "
-                        f"Migration skipped to prevent data loss. "
-                        f"Legacy collection preserved as '{legacy_collection}'. "
-                        f"Creating new empty collection '{collection_name}' for new data."
-                    )
-
-                    # Create new collection but skip migration
-                    client.create_collection(collection_name, **kwargs)
-                    client.create_payload_index(
-                        collection_name=collection_name,
-                        field_name=WORKSPACE_ID_FIELD,
-                        field_schema=models.KeywordIndexParams(
-                            type=models.KeywordIndexType.KEYWORD,
-                            is_tenant=True,
-                        ),
-                    )
-
-                    logger.info(
-                        f"Qdrant: New collection '{collection_name}' created. "
-                        f"To query legacy data, please use a {legacy_dim}d embedding model."
-                    )
-                    return
-
-            except Exception as e:
-                logger.warning(
-                    f"Qdrant: Could not verify legacy collection dimension: {e}. "
-                    f"Proceeding with caution..."
+                raise QdrantMigrationError(
+                    f"Qdrant: Dimension mismatch! "
+                    f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
+                    f"but new embedding model expects {new_dim}d. "
                 )
-
-            # Create new collection first
-            logger.info(f"Qdrant: Creating new collection '{collection_name}'")
-            client.create_collection(collection_name, **kwargs)
 
             # Batch migration (500 records per batch)
             migrated_count = 0
@@ -376,46 +325,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 raise QdrantMigrationError(error_msg)
 
             logger.info(
-                f"Qdrant: Migration completed successfully: {migrated_count} records migrated"
-            )
-
-            # Create payload index after successful migration
-            logger.info("Qdrant: Creating workspace payload index...")
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name=WORKSPACE_ID_FIELD,
-                field_schema=models.KeywordIndexParams(
-                    type=models.KeywordIndexType.KEYWORD,
-                    is_tenant=True,
-                ),
-            )
-            logger.info(
                 f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
             )
-
-            # Delete legacy collection after successful migration
-            # Data has been verified to match, so legacy collection is no longer needed
-            # and keeping it would cause Case 1 warnings on next startup
-            try:
-                logger.info(
-                    f"Qdrant: Deleting legacy collection '{legacy_collection}'..."
-                )
-                client.delete_collection(collection_name=legacy_collection)
-                logger.info(
-                    f"Qdrant: Legacy collection '{legacy_collection}' deleted successfully"
-                )
-            except Exception as delete_error:
-                # If deletion fails, user will see Case 1 warning on next startup
-                logger.warning(
-                    f"Qdrant: Failed to delete legacy collection '{legacy_collection}': {delete_error}. "
-                    "You may need to delete it manually."
-                )
+            logger.info(
+                "Qdrant: Manual deletion is required after data migration verification."
+            )
 
         except QdrantMigrationError:
             # Re-raise migration errors without wrapping
             raise
         except Exception as e:
-            error_msg = f"Qdrant: Migration failed with error: {e}"
+            error_msg = f"Qdrant: Collection initialization failed with error: {e}"
             logger.error(error_msg)
             raise QdrantMigrationError(error_msg) from e
 
@@ -442,11 +362,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # Generate model suffix
         model_suffix = self._generate_collection_suffix()
 
-        # Legacy collection name (without model suffix, for migration)
-        # This matches the old naming scheme before model isolation was implemented
-        # Example: "lightrag_vdb_chunks" (without model suffix)
-        self.legacy_namespace = f"lightrag_vdb_{self.namespace}"
-
         # New naming scheme with model isolation
         # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
         # Ensure model_suffix is not empty before appending
@@ -454,18 +369,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
         else:
             # Fallback: use legacy namespace if model_suffix is unavailable
-            self.final_namespace = self.legacy_namespace
+            self.final_namespace = f"lightrag_vdb_{self.namespace}"
             logger.warning(
-                f"Model suffix unavailable, using legacy collection name '{self.legacy_namespace}'. "
-                f"Ensure embedding_func has model_name for proper model isolation."
+                "Missing collection suffix. Ensure embedding_func has model_name for proper model isolation."
             )
 
-        logger.info(
-            f"Qdrant collection naming: "
-            f"new='{self.final_namespace}', "
-            f"legacy='{self.legacy_namespace}', "
-            f"model_suffix='{model_suffix}'"
-        )
+        logger.info(f"Qdrant collection name: {self.final_namespace}")
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -479,12 +388,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._initialized = False
-
-    def _get_legacy_collection_name(self) -> str:
-        return self.legacy_namespace
-
-    def _get_new_collection_name(self) -> str:
-        return self.final_namespace
 
     async def initialize(self):
         """Initialize Qdrant collection"""
@@ -525,8 +428,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     ),
                 )
 
-                # Initialize max batch size from config
-                self._max_batch_size = self.global_config["embedding_batch_num"]
+                # Removed duplicate max batch size initialization
 
                 self._initialized = True
                 logger.info(

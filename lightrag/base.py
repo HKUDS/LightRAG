@@ -220,44 +220,37 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
-    def _generate_collection_suffix(self) -> str:
+    def _generate_collection_suffix(self) -> str | None:
         """Generates collection/table suffix from embedding_func.
 
+        Return suffix if model_name exists in embedding_func, otherwise return None.
+
         Returns:
-            str: Suffix string, e.g. "text_embedding_3_large_3072d"
+            str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
         """
-        # Try to get model identifier from the embedding function
-        # If it's a wrapped function (doesn't have get_model_identifier),
-        # fallback to the original embedding_func from global_config
-        if hasattr(self.embedding_func, "get_model_identifier"):
-            return self.embedding_func.get_model_identifier()
-        elif "embedding_func" in self.global_config:
-            original_embedding_func = self.global_config["embedding_func"]
-            if original_embedding_func is not None and hasattr(
-                original_embedding_func, "get_model_identifier"
-            ):
-                return original_embedding_func.get_model_identifier()
-            else:
-                # Debug: log why we couldn't get model identifier
-                from lightrag.utils import logger
+        import re
 
-                logger.debug(
-                    f"Could not get model_identifier: embedding_func is {type(original_embedding_func)}, has method={hasattr(original_embedding_func, 'get_model_identifier') if original_embedding_func else False}"
-                )
+        # Try to get embedding_func from self or global_config
+        embedding_func = self.embedding_func
+        if embedding_func is None and "embedding_func" in self.global_config:
+            embedding_func = self.global_config["embedding_func"]
 
-        # Fallback: no model identifier available
-        return ""
+        if embedding_func is None:
+            return None
 
-    def _get_legacy_collection_name(self) -> str:
-        """Get legacy collection/table name (without suffix).
+        # Check if model_name exists
+        model_name = getattr(embedding_func, "model_name", None)
+        if not model_name:
+            return None
 
-        Used for data migration detection.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
+        # Get embedding_dim
+        embedding_dim = getattr(embedding_func, "embedding_dim", None)
+        if embedding_dim is None:
+            return None
 
-    def _get_new_collection_name(self) -> str:
-        """Get new collection/table name (with suffix)."""
-        raise NotImplementedError("Subclasses must implement this method")
+        # Generate suffix: clean model name and append dimension
+        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
+        return f"{safe_model_name}_{embedding_dim}d"
 
     @abstractmethod
     async def query(

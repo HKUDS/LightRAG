@@ -1,4 +1,3 @@
-import pytest
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import EmbeddingFunc
 
@@ -6,8 +5,6 @@ from lightrag.utils import EmbeddingFunc
 def test_base_vector_storage_integrity():
     # Just checking if we can import and inspect the class
     assert hasattr(BaseVectorStorage, "_generate_collection_suffix")
-    assert hasattr(BaseVectorStorage, "_get_legacy_collection_name")
-    assert hasattr(BaseVectorStorage, "_get_new_collection_name")
 
     # Verify methods raise NotImplementedError
     class ConcreteStorage(BaseVectorStorage):
@@ -46,10 +43,5 @@ def test_base_vector_storage_integrity():
         namespace="test", workspace="test", global_config={}, embedding_func=func
     )
 
-    assert storage._generate_collection_suffix() == "unknown_128d"
-
-    with pytest.raises(NotImplementedError):
-        storage._get_legacy_collection_name()
-
-    with pytest.raises(NotImplementedError):
-        storage._get_new_collection_name()
+    # When model_name is None, _generate_collection_suffix returns None
+    assert storage._generate_collection_suffix() is None
