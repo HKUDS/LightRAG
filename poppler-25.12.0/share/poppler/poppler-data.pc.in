@@ -1,8 +1,0 @@
-poppler_datadir=@pkgdatadir@
-
-Name: poppler-data
-Description: Encoding files for use with poppler
-Version: @VERSION@
-
-Cflags: -DPOPPLER_DATADIR=@pkgdatadir@
-
