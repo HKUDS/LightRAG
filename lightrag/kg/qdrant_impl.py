@@ -10,7 +10,7 @@ import numpy as np
 import pipmaster as pm
 
 from ..base import BaseVectorStorage
-from ..exceptions import QdrantMigrationError
+from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock
 from ..utils import compute_mdhash_id, logger
 
@@ -138,13 +138,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         This method now supports backward compatibility by automatically detecting
         legacy collections created by older versions of LightRAG using multiple
         naming patterns.
-            
+
         Behavior:
             - Case 1: New collection is the same as legacy collection - show debug message and continue
             - Case 2: Only new collection exists - - show debug message and continue
             - Case 3: Both new and legacy collections exist with different names - show warning and continue
             - Case 4: Only legacy exists - migrate data from legacy collection to new collection
-                      Raise QdrantMigrationError if legacy collection has different dimension than new collection
+                      Raise DataMigrationError if legacy collection has different dimension than new collection
 
         Args:
             client: QdrantClient instance
@@ -154,7 +154,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             **kwargs: Additional arguments for collection creation (vectors_config, hnsw_config, etc.)
 
         Raises:
-            QdrantMigrationError: If migration fails or index creation fails
+            DataMigrationError: If migration fails or index creation fails
         """
         new_collection_exists = client.collection_exists(collection_name)
 
@@ -178,18 +178,24 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         # Case 1: New collection is the same as legacy collection - show debug message and continue
         if collection_name == legacy_collection:
-            logger.debug("Qdrant: legacy collection '%s' is the same as new collection '%s'.", legacy_collection, collection_name)
+            logger.debug(
+                "Qdrant: legacy collection '%s' is the same as new collection '%s'.",
+                legacy_collection,
+                collection_name,
+            )
             return
 
-        # Case 2: Only new collection exists - silently return  
+        # Case 2: Only new collection exists - silently return
         if new_collection_exists and not legacy_collection:
-            logger.debug("Qdrant: Only new collection '%s' exists. No migration needed.", collection_name)
+            logger.debug(
+                "Qdrant: Only new collection '%s' exists. No migration needed.",
+                collection_name,
+            )
             return
 
         # Case 3: Both new and legacy collections exist with different names - show warning and continue
         # Only delete legacy if it's empty (safe cleanup) and it's not the same as new collection
         if new_collection_exists and legacy_collection:
-
             try:
                 # Check if legacy collection is empty
                 legacy_count = client.count(
@@ -229,9 +235,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 collection_name=legacy_collection, exact=True
             ).count
             if legacy_count == 0:
-                logger.info(f"Qdrant: Legacy collection '{legacy_collection}' is empty. No migration needed.")
+                logger.info(
+                    f"Qdrant: Legacy collection '{legacy_collection}' is empty. No migration needed."
+                )
                 return
-            
+
             logger.info(f"Qdrant: Found {legacy_count} records in legacy collection")
 
             # Check vector dimension compatibility before migration
@@ -252,7 +260,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"but new embedding model expects {new_dim}d. "
                 )
 
-                raise QdrantMigrationError(
+                raise DataMigrationError(
                     f"Qdrant: Dimension mismatch! "
                     f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
                     f"but new embedding model expects {new_dim}d. "
@@ -322,7 +330,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             if new_count != legacy_count:
                 error_msg = f"Qdrant: Migration verification failed, expected {legacy_count} records, got {new_count} in new collection"
                 logger.error(error_msg)
-                raise QdrantMigrationError(error_msg)
+                raise DataMigrationError(error_msg)
 
             logger.info(
                 f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
@@ -331,13 +339,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 "Qdrant: Manual deletion is required after data migration verification."
             )
 
-        except QdrantMigrationError:
+        except DataMigrationError:
             # Re-raise migration errors without wrapping
             raise
         except Exception as e:
             error_msg = f"Qdrant: Collection initialization failed with error: {e}"
             logger.error(error_msg)
-            raise QdrantMigrationError(error_msg) from e
+            raise DataMigrationError(error_msg) from e
 
     def __post_init__(self):
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
