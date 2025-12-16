@@ -24,18 +24,18 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 # Maximum token size sent to LLM for summary
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
+# Business-focused entity types for company/organizational knowledge graphs
 DEFAULT_ENTITY_TYPES = [
-    "Person",
-    "Creature",
-    "Organization",
-    "Location",
-    "Event",
-    "Concept",
-    "Method",
-    "Content",
-    "Data",
-    "Artifact",
-    "NaturalObject",
+    "Company",          # Business entities, organizations, firms
+    "Person",           # Key personnel, leadership, team members
+    "Technology",       # Technologies, platforms, tools, software
+    "Location",         # Cities, countries, addresses, regions
+    "Service",          # Services offered, capabilities, solutions
+    "Product",          # Physical or digital products
+    "Industry",         # Industry sectors, business domains
+    "Partnership",      # Partner companies, collaborators, clients
+    "Certification",    # Certifications, standards, compliance
+    "Project",          # Specific projects, initiatives
 ]
 
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
@@ -82,6 +82,12 @@ DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
 
 # Default temperature for LLM
 DEFAULT_TEMPERATURE = 1.0
+
+# Entity relationship inference configuration
+# Enable/disable co-occurrence-based relationship inference to reduce isolated nodes
+DEFAULT_ENABLE_COOCCURRENCE_INFERENCE = True
+# Minimum number of chunk co-occurrences required to infer a relationship
+DEFAULT_MIN_COOCCURRENCE = 2
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations

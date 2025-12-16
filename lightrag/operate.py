@@ -2468,6 +2468,32 @@ async def merge_nodes_and_edges(
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
 
+    # ===== Co-occurrence Relationship Inference Phase =====
+    # Infer relationships from entity co-occurrence to reduce isolated nodes
+    from .utils_inference import infer_cooccurrence_relationships
+    from .constants import (
+        DEFAULT_ENABLE_COOCCURRENCE_INFERENCE,
+        DEFAULT_MIN_COOCCURRENCE,
+    )
+
+    enable_cooccurrence_inference = global_config.get(
+        "enable_cooccurrence_inference", DEFAULT_ENABLE_COOCCURRENCE_INFERENCE
+    )
+    min_cooccurrence = global_config.get(
+        "min_cooccurrence", DEFAULT_MIN_COOCCURRENCE
+    )
+
+    if enable_cooccurrence_inference:
+        logger.info("Inferring relationships from entity co-occurrence...")
+        all_edges = infer_cooccurrence_relationships(
+            all_nodes,
+            all_edges,
+            min_cooccurrence=min_cooccurrence,
+            enable_inference=True,
+        )
+        # Update counts after inference
+        total_relations_count = len(all_edges)
+
     # Get max async tasks limit from global_config for semaphore control
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
     semaphore = asyncio.Semaphore(graph_max_async)

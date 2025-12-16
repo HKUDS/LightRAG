@@ -295,7 +295,7 @@ A full list of LightRAG init parameters:
 | **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
-| **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
+| **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents (increased to 250 to better preserve entity relationships across chunks and reduce isolated nodes) | `250` |
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
@@ -314,6 +314,10 @@ A full list of LightRAG init parameters:
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
 | **addon_params** | `dict` | Additional parameters, e.g., `{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`: sets example limit, entity/relation extraction output language | language: English` |
+| **enable_entity_similarity_merging** | `bool` | Enable similarity-based entity name merging (e.g., merges "SAP" and "SAP AG" into one entity) | `TRUE` |
+| **entity_similarity_threshold** | `float` | Similarity threshold (0.0-1.0) for merging entity names | `0.85` |
+| **enable_cooccurrence_inference** | `bool` | Enable co-occurrence-based relationship inference to reduce isolated nodes in knowledge graph | `TRUE` |
+| **min_cooccurrence** | `int` | Minimum number of chunk co-occurrences required to infer a relationship | `2` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>

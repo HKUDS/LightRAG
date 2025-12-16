@@ -9,52 +9,121 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Business Knowledge Graph Specialist responsible for extracting business entities and their relationships from company profile data.
+
+---Context---
+You will be analyzing structured company profile information that includes business details, leadership, locations, services, partnerships, and industry focus. Your goal is to extract meaningful business entities and their interconnections to build a knowledge graph.
 
 ---Instructions---
 1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
+    *   **Focus on Business-Relevant Entities:** Extract entities that are business-significant and can form meaningful connections. Focus on:
+        - **Companies:** Main company, partner companies, clients, suppliers
+        - **People:** Leadership (CEOs, managing directors, founders), key team members
+        - **Technologies:** Specific technologies, platforms, tools, or systems mentioned
+        - **Locations:** Headquarters, office locations, operational regions
+        - **Services/Products:** Core services offered or products sold
+        - **Industries:** Industry sectors, business domains, market segments
+        - **Certifications/Standards:** NACE codes, ISO certifications, industry standards
+
+    *   **Entity Naming Rules:**
+        - Use full official names for companies (e.g., "AMR Automation GmbH", not just "AMR")
+        - Use full names for people (e.g., "Ing. Lobato Jimenez Alvaro")
+        - Use standardized technology names (e.g., "SCADA", "PLC Programming")
+        - For locations, use "City, Country" format (e.g., "Gralla, Austria")
+        - Ensure **consistent naming** - use exact same name if entity appears multiple times
+
+    *   **Entity Details:** For each entity, extract:
+        *   `entity_name`: Official, consistent name of the entity
+        *   `entity_type`: One of: {entity_types}. If none apply, use `Other`.
+        *   `entity_description`: Brief description of the entity's role, capabilities, or relevance in the business context
+
+    *   **Output Format - Entities:**
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
 
 2.  **Relationship Extraction & Output:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
+    *   **Focus on Business Relationships:** Only extract relationships that represent real business connections using standardized relationship types.
+
+    *   **Standardized Relationship Keywords:** Use ONE of these standardized relationship types:
+        **Organizational Structure:**
+        - `is_ceo_of` - CEO/Chief Executive Officer relationship
+        - `is_cto_of` - CTO/Chief Technology Officer relationship
+        - `is_cfo_of` - CFO/Chief Financial Officer relationship
+        - `is_founder_of` - Founder relationship
+        - `is_co_founder_of` - Co-founder relationship
+        - `works_for` - Employment relationship
+        - `leads` - Leadership/management relationship
+        - `manages` - Direct management relationship
+
+        **Location & Geography:**
+        - `headquartered_at` - Company headquarters location
+        - `has_office_at` - Office or branch location
+        - `operates_in` - Operational region/area
+        - `located_in` - General location relationship
+
+        **Business Relationships:**
+        - `partners_with` - Business partnership
+        - `is_client_of` - Client relationship
+        - `supplies_to` - Supplier relationship
+        - `acquired_by` / `acquired` - Acquisition relationship
+        - `competes_with` - Competitive relationship
+        - `collaborates_with` - Collaboration relationship
+
+        **Technology & Products:**
+        - `uses` - Uses technology/tool/platform
+        - `develops` - Develops technology/product
+        - `implements` - Implements technology/solution
+        - `specializes_in` - Specialization in technology/domain
+        - `provides` - Provides technology/service/product
+
+        **Industry & Services:**
+        - `serves_industry` - Serves specific industry sector
+        - `offers_service` - Offers specific service
+        - `offers_product` - Offers specific product
+        - `targets_market` - Target market segment
+
+        **Certifications & Standards:**
+        - `certified_in` - Has certification or standard
+        - `complies_with` - Compliance with standard/regulation
+
+    *   **Skip Weak Relationships:** Do NOT extract relationships that are:
+        - Merely mentioned without clear connection
+        - Generic or trivial (e.g., "company uses computers")
+        - Not verifiable from the text
+
+    *   **Relationship Details:**
+        *   `source_entity`: Source entity name (must match an extracted entity exactly)
+        *   `target_entity`: Target entity name (must match an extracted entity exactly)
+        *   `relationship_keywords`: ONE standardized keyword from the list above (e.g., "is_ceo_of", "headquartered_at", "provides")
+        *   `relationship_description`: Clear explanation of the business connection
+
+    *   **Output Format - Relationships:**
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
 
 3.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
-    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
+    *   The `{tuple_delimiter}` serves strictly as a field separator
+    *   Do not include `{tuple_delimiter}` within field content
     *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
 
-4.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
+4.  **Quality Guidelines:**
+    *   **Only extract entities that appear explicitly in the text** - do not infer or assume
+    *   **Only create relationships between entities you extracted** - both source and target must exist
+    *   **Prioritize quality over quantity** - better to have fewer, accurate relationships than many weak ones
+    *   **No self-referential relationships** - a company cannot have a relationship with itself
+    *   Treat relationships as **undirected** unless direction is explicitly stated
 
-5.  **Output Order & Prioritization:**
-    *   Output all extracted entities first, followed by all extracted relationships.
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+5.  **Output Order:**
+    *   Output all entities first
+    *   Then output all relationships
+    *   Prioritize most significant relationships first
 
-6.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
-
-7.  **Language & Proper Nouns:**
+6.  **Language & Style:**
     *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+    *   Third-person perspective only
+    *   No pronouns (avoid "this company", "our", "their")
     *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
-8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
+7.  **Completion Signal:**
+    *   Output `{completion_delimiter}` as the final line after all entities and relationships
 
 ---Examples---
 {examples}
@@ -101,82 +170,66 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 
 PROMPTS["entity_extraction_examples"] = [
     """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
+["Company","Person","Technology","Location","Service","Product","Industry","Partnership","Certification","Project"]
 
 <Input Text>
 ```
-while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
+### Name
+TechFlow Solutions GmbH
 
-Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
+### Summary
+TechFlow Solutions GmbH is a German software company headquartered in Munich, Bavaria. The firm specializes in industrial automation software, IoT platforms, and cloud-based monitoring systems. The company serves the manufacturing and energy sectors across Europe.
 
-The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
+### Leadership
+Dr. Maria Schmidt, CEO and Co-Founder
+Thomas Mueller, CTO and Co-Founder
 
-It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
+### Headquarters
+Leopoldstrasse 45, 80802 Munich, Bavaria, Germany
+
+### Partners
+- SAP AG: Technology partnership for ERP integration
+- Siemens AG: Joint development of IoT solutions
+- BASF SE: Long-term client for manufacturing automation
+
+### Portfolio
+- Industrial IoT Platform: Cloud-based monitoring and analytics
+- SCADA Systems: Process control and automation
+- Predictive Maintenance: AI-driven maintenance solutions
+
+### Industries Served
+Manufacturing, Energy, Process Industries
+
+### Technologies
+IoT, Cloud Computing, Machine Learning, SCADA, OPC UA
 ```
 
 <Output>
-entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
-entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
-entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}equipment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
-relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
-relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
-relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
-relation{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.
-relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.
-{completion_delimiter}
-
-""",
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
-<Input Text>
-```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
-
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
-```
-
-<Output>
-entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.
-entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.
-entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.
-entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets.
-entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
-entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
-entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
-entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
-relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
-relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
-relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
-relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
-{completion_delimiter}
-
-""",
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
-<Input Text>
-```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
-```
-
-<Output>
-entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
-entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
-entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
-entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
-entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
-entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
-relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
+entity{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}company{tuple_delimiter}TechFlow Solutions GmbH is a German software company specializing in industrial automation software, IoT platforms, and cloud-based monitoring systems.
+entity{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}person{tuple_delimiter}Dr. Maria Schmidt is the CEO and Co-Founder of TechFlow Solutions GmbH.
+entity{tuple_delimiter}Thomas Mueller{tuple_delimiter}person{tuple_delimiter}Thomas Mueller is the CTO and Co-Founder of TechFlow Solutions GmbH.
+entity{tuple_delimiter}Munich, Germany{tuple_delimiter}location{tuple_delimiter}Munich, Bavaria, Germany is the headquarters location of TechFlow Solutions GmbH.
+entity{tuple_delimiter}SAP AG{tuple_delimiter}company{tuple_delimiter}SAP AG is a technology partner of TechFlow Solutions GmbH for ERP integration.
+entity{tuple_delimiter}Siemens AG{tuple_delimiter}company{tuple_delimiter}Siemens AG is a partner company collaborating with TechFlow Solutions on IoT solution development.
+entity{tuple_delimiter}BASF SE{tuple_delimiter}company{tuple_delimiter}BASF SE is a long-term client of TechFlow Solutions for manufacturing automation.
+entity{tuple_delimiter}Industrial IoT Platform{tuple_delimiter}product{tuple_delimiter}Industrial IoT Platform is a cloud-based monitoring and analytics solution offered by TechFlow Solutions.
+entity{tuple_delimiter}SCADA Systems{tuple_delimiter}technology{tuple_delimiter}SCADA Systems are process control and automation technologies provided by TechFlow Solutions.
+entity{tuple_delimiter}Predictive Maintenance{tuple_delimiter}service{tuple_delimiter}Predictive Maintenance is an AI-driven maintenance solution service offered by TechFlow Solutions.
+entity{tuple_delimiter}Manufacturing{tuple_delimiter}industry{tuple_delimiter}Manufacturing is a key industry sector served by TechFlow Solutions.
+entity{tuple_delimiter}Energy{tuple_delimiter}industry{tuple_delimiter}Energy is a key industry sector served by TechFlow Solutions.
+relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_ceo_of{tuple_delimiter}Dr. Maria Schmidt is the CEO and Co-Founder of TechFlow Solutions GmbH.
+relation{tuple_delimiter}Thomas Mueller{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_cto_of{tuple_delimiter}Thomas Mueller is the CTO and Co-Founder of TechFlow Solutions GmbH.
+relation{tuple_delimiter}Dr. Maria Schmidt{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_co_founder_of{tuple_delimiter}Dr. Maria Schmidt is a co-founder of TechFlow Solutions GmbH.
+relation{tuple_delimiter}Thomas Mueller{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_co_founder_of{tuple_delimiter}Thomas Mueller is a co-founder of TechFlow Solutions GmbH.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Munich, Germany{tuple_delimiter}headquartered_at{tuple_delimiter}TechFlow Solutions GmbH is headquartered in Munich, Bavaria, Germany.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}SAP AG{tuple_delimiter}partners_with{tuple_delimiter}TechFlow Solutions has a technology partnership with SAP AG for ERP integration.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Siemens AG{tuple_delimiter}collaborates_with{tuple_delimiter}TechFlow Solutions collaborates with Siemens AG on joint development of IoT solutions.
+relation{tuple_delimiter}BASF SE{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}is_client_of{tuple_delimiter}BASF SE is a long-term client of TechFlow Solutions for manufacturing automation solutions.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Industrial IoT Platform{tuple_delimiter}offers_product{tuple_delimiter}TechFlow Solutions offers Industrial IoT Platform as a cloud-based monitoring and analytics solution.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}SCADA Systems{tuple_delimiter}provides{tuple_delimiter}TechFlow Solutions provides SCADA Systems for process control and automation.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Predictive Maintenance{tuple_delimiter}offers_service{tuple_delimiter}TechFlow Solutions offers Predictive Maintenance as an AI-driven service.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Manufacturing{tuple_delimiter}serves_industry{tuple_delimiter}TechFlow Solutions serves the Manufacturing industry sector.
+relation{tuple_delimiter}TechFlow Solutions GmbH{tuple_delimiter}Energy{tuple_delimiter}serves_industry{tuple_delimiter}TechFlow Solutions serves the Energy industry sector.
 {completion_delimiter}
 
 """,
