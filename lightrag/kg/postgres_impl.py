@@ -4157,15 +4157,19 @@ class PGGraphStorage(BaseGraphStorage):
 
             for result in outgoing_results:
                 if result["node_id"] and result["connected_id"]:
-                    edges_norm[result["node_id"]].append(
-                        (result["node_id"], result["connected_id"])
-                    )
+                    normalized_node_id = self._normalize_node_id(result["node_id"])
+                    if normalized_node_id in edges_norm:
+                        edges_norm[normalized_node_id].append(
+                            (result["node_id"], result["connected_id"])
+                        )
 
             for result in incoming_results:
                 if result["node_id"] and result["connected_id"]:
-                    edges_norm[result["node_id"]].append(
-                        (result["connected_id"], result["node_id"])
-                    )
+                    normalized_node_id = self._normalize_node_id(result["node_id"])
+                    if normalized_node_id in edges_norm:
+                        edges_norm[normalized_node_id].append(
+                            (result["connected_id"], result["node_id"])
+                        )
 
         out: dict[str, list[tuple[str, str]]] = {}
         for orig in node_ids:

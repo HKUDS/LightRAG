@@ -320,7 +320,7 @@ async def _summarize_descriptions(
 
     summary_length_recommended = global_config["summary_length_recommended"]
 
-    prompt_template = PROMPTS["summarize_entity_descriptions"]
+    prompt_template = global_config["addon_params"]["summarize_entity_descriptions"]
 
     # Convert descriptions to JSONL format and apply token-based truncation
     tokenizer = global_config["tokenizer"]
@@ -2791,7 +2791,7 @@ async def extract_entities(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
 
-    examples = "\n".join(PROMPTS["entity_extraction_examples"])
+    examples = "\n".join(global_config["addon_params"]["entity_extraction_examples"])
 
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
@@ -2833,14 +2833,14 @@ async def extract_entities(
 
         # Get initial extraction
         # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
+        entity_extraction_system_prompt = global_config["addon_params"][
             "entity_extraction_system_prompt"
         ].format(**context_base)
         # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
+        entity_extraction_user_prompt = global_config["addon_params"]["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
-        entity_continue_extraction_user_prompt = PROMPTS[
+        entity_continue_extraction_user_prompt = global_config["addon_params"][
             "entity_continue_extraction_user_prompt"
         ].format(**{**context_base, "input_text": content})
 
@@ -3267,7 +3267,7 @@ async def extract_keywords_only(
     """
 
     # 1. Build the examples
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    examples = "\n".join(global_config["addon_params"]["keywords_extraction_examples"])
 
     language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
@@ -3293,7 +3293,7 @@ async def extract_keywords_only(
             )
 
     # 3. Build the keyword-extraction prompt
-    kw_prompt = PROMPTS["keywords_extraction"].format(
+    kw_prompt = global_config["addon_params"]["keywords_extraction"].format(
         query=text,
         examples=examples,
         language=language,

@@ -1258,6 +1258,9 @@ async def _merge_entities_impl(
                 if src == entity_name:
                     edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
                     all_relations.append((src, tgt, edge_data))
+                elif tgt == entity_name:
+                    edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
+                    all_relations.append((src, tgt, edge_data))
 
     # 5. Create or update the target entity
     merged_entity_data["entity_id"] = target_entity

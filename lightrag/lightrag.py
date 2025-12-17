@@ -422,6 +422,25 @@ class LightRAG:
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
             "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
+            "entity_extraction_system_prompt": PROMPTS.get(
+                "entity_extraction_system_prompt"
+            ),
+            "entity_extraction_user_prompt": PROMPTS.get(
+                "entity_extraction_user_prompt"
+            ),
+            "entity_continue_extraction_user_prompt": PROMPTS.get(
+                "entity_continue_extraction_user_prompt"
+            ),
+            "entity_extraction_examples": PROMPTS.get("entity_extraction_examples"),
+            "summarize_entity_descriptions": PROMPTS.get(
+                "summarize_entity_descriptions"
+            ),
+            "keywords_extraction": PROMPTS.get(
+                "keywords_extraction"
+            ),
+            "keywords_extraction_examples": PROMPTS.get(
+                "keywords_extraction_examples"
+            ),
         }
     )
 
