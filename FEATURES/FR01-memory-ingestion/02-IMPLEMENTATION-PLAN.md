@@ -539,7 +539,7 @@ volumes:
   - `github.com/kamir/LightRAG/extensions/memory-ingestion`
   - `github.com/kamir/memory-connector`
   - Other?
-- **Your Answer**: _____________________
+- **Your Answer**: github.com/kamir/memory-connector
 
 ### 2. HTTP Framework Choice
 - **Question**: Which HTTP framework should we use for the REST API?
@@ -548,15 +548,14 @@ volumes:
   - **net/http** (standard library, lightweight, more boilerplate)
   - **Fiber** (Express-like, very fast)
   - **Chi** (lightweight router on top of net/http)
-- **Your Answer**: _____________________
-
+- **Your Answer**: Gin
 ### 3. State Backend Priority
 - **Question**: Which state backend should we implement first?
 - **Options**:
   - **JSON** (simpler, good for single instance)
   - **SQLite** (better for production, allows querying)
   - **Both in parallel**
-- **Your Answer**: _____________________
+- **Your Answer**: Both in parallel
 
 ### 4. Logging Format
 - **Question**: What logging format do you prefer?
@@ -564,14 +563,14 @@ volumes:
   - **JSON** (structured, machine-readable, better for log aggregation)
   - **Console** (human-readable, colorized, better for development)
   - **Both** (configurable via config)
-- **Your Answer**: _____________________
+- **Your Answer**: Both (configurable via config)
 
 ### 5. Configuration Hot-Reload
 - **Question**: Should configuration support hot-reload (reload on SIGHUP without restart)?
 - **Options**:
   - **Yes** (more flexible, but more complex)
   - **No** (simpler, require restart for config changes)
-- **Your Answer**: _____________________
+- **Your Answer**: No
 
 ### 6. Metrics/Observability
 - **Question**: Should we include Prometheus metrics from the start?
@@ -579,14 +578,14 @@ volumes:
   - **Yes** (better observability, slightly more code)
   - **No** (defer to Phase 2)
   - **Simple counters only** (minimal overhead)
-- **Your Answer**: _____________________
+- **Your Answer**: Simple counters only  
 
 ### 7. Database for State (if SQLite chosen)
 - **Question**: If using SQLite, should we use CGO or pure Go?
 - **Options**:
   - **mattn/go-sqlite3** (CGO, full SQLite features, complicates cross-compilation)
   - **modernc.org/sqlite** (Pure Go, easier cross-compilation, slightly slower)
-- **Your Answer**: _____________________
+- **Your Answer**: modernc.org/sqlite
 
 ### 8. Concurrent Processing
 - **Question**: How many memories should we process concurrently?
@@ -594,7 +593,7 @@ volumes:
   - **Fixed** (e.g., 10 goroutines)
   - **Configurable** (via config file)
   - **Dynamic** (based on system resources)
-- **Your Answer**: _____________________
+- **Your Answer**: via config file
 
 ### 9. Binary Distribution
 - **Question**: How should we distribute the binary?
@@ -603,7 +602,7 @@ volumes:
   - **Docker only**
   - **Both**
   - **Also create install script** (download latest binary)
-- **Your Answer**: _____________________
+- **Your Answer**: GitHub Releases, Docker, and also create install script
 
 ### 10. Development Environment
 - **Question**: What Go version should we target?
@@ -611,7 +610,7 @@ volumes:
   - **Go 1.21** (stable, widely available)
   - **Go 1.22** (latest stable, better performance)
   - **Go 1.23** (bleeding edge)
-- **Your Answer**: _____________________
+- **Your Answer**: Go 1.21
 
 ### 11. Testing Coverage Target
 - **Question**: What code coverage target should we aim for?
@@ -619,7 +618,7 @@ volumes:
   - **60%** (reasonable)
   - **80%** (comprehensive)
   - **90%+** (very thorough, more effort)
-- **Your Answer**: _____________________
+- **Your Answer**: 90%+
 
 ### 12. Error Handling for Memory API
 - **Question**: If Memory API returns partial results or times out, should we:
@@ -627,7 +626,7 @@ volumes:
   - **Process what we got** (partial sync)
   - **Abort and retry** (all-or-nothing)
   - **Configurable per connector**
-- **Your Answer**: _____________________
+- **Your Answer**: Process what we got and track was was lost and what went wrong, capture the errors like in a DLQ.
 
 ### 13. LightRAG Connection Mode
 - **Question**: Should we implement both API and "Direct" mode from the start?
@@ -635,7 +634,7 @@ volumes:
   - **API mode only** (HTTP to LightRAG, easier)
   - **Both modes** (HTTP + direct library calls, but LightRAG is Python)
 - **Note**: Since LightRAG is Python, "Direct" mode would still be HTTP calls
-- **Your Answer**: _____________________
+- **Your Answer**: API mode only
 
 ### 14. CLI Output Format
 - **Question**: What output format for CLI commands?
@@ -643,7 +642,7 @@ volumes:
   - **Human-readable text** (pretty tables, colors)
   - **JSON** (machine-readable)
   - **Both** (with --json flag)
-- **Your Answer**: _____________________
+- **Your Answer**: Both (with --json flag)
 
 ### 15. Initial Feature Scope
 - **Question**: Should we include any Phase 2 features in initial release?
@@ -652,7 +651,7 @@ volumes:
   - **No, stick to Phase 1** (faster initial delivery)
   - **Yes, include rich transformation** (geocoding, advanced formatting)
   - **Yes, include webhooks** (for notifications)
-- **Your Answer**: _____________________
+- **Your Answer**: No, stick to Phase 1
 
 ---
 
