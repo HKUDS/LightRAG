@@ -1,0 +1,110 @@
+# Memory Connector Configuration File
+
+# HTTP Server Configuration (for Management API)
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+# Memory API Configuration
+memory_api:
+  url: "https://api.example.com"  # Replace with your Memory API URL
+  api_key: ""  # Set via MEMCON_MEMORY_API_API_KEY environment variable for security
+  timeout: 30  # seconds
+  max_retries: 3
+  retry_delay: 2  # seconds
+
+# LightRAG API Configuration
+lightrag:
+  url: "http://localhost:9621"  # LightRAG API endpoint
+  timeout: 60  # seconds
+  max_retries: 3
+  retry_delay: 2  # seconds
+
+# Logging Configuration
+# As per user's answer: both JSON and console formats supported, configurable
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "console"  # json or console
+  output_path: "stdout"  # stdout or file path like ./logs/connector.log
+
+# State Storage Configuration
+# As per user's answer: both JSON and SQLite supported
+storage:
+  type: "json"  # json or sqlite
+  path: "./data"  # directory for JSON files or path to SQLite database
+
+# Connector Configurations
+connectors:
+  # Example connector 1: Hourly sync with interval schedule
+  - id: "connector-1"
+    enabled: true
+    context_id: "user_context_abc123"
+
+    schedule:
+      type: "interval"  # interval, cron, or manual
+      interval_hours: 1  # Pull every hour
+
+    ingestion:
+      query_range: "day"  # week, day, month
+      query_limit: 100  # Max memories to fetch per sync
+      include_audio: false  # Whether to fetch audio data
+      include_images: false  # Whether to fetch image data
+      max_concurrency: 5  # As per user's answer: configurable concurrency
+
+    transform:
+      strategy: "standard"  # standard or rich
+      include_metadata: true
+      enrich_location: false
+
+    metadata:
+      owner: "user@example.com"
+      environment: "production"
+
+  # Example connector 2: Cron-based sync at midnight daily
+  - id: "connector-2"
+    enabled: false
+    context_id: "user_context_xyz789"
+
+    schedule:
+      type: "cron"
+      cron_expr: "0 0 0 * * *"  # Daily at midnight
+
+    ingestion:
+      query_range: "week"
+      query_limit: 200
+      include_audio: true
+      include_images: true
+      max_concurrency: 10
+
+    transform:
+      strategy: "rich"  # Use rich transformation with contextual info
+      include_metadata: true
+      enrich_location: true
+
+    metadata:
+      owner: "team@example.com"
+      environment: "staging"
+
+  # Example connector 3: Manual trigger only
+  - id: "connector-3"
+    enabled: true
+    context_id: "user_context_manual"
+
+    schedule:
+      type: "manual"  # Only triggered via API or CLI
+
+    ingestion:
+      query_range: "month"
+      query_limit: 500
+      include_audio: false
+      include_images: false
+      max_concurrency: 3
+
+    transform:
+      strategy: "standard"
+      include_metadata: true
+      enrich_location: false
+
+    metadata:
+      owner: "admin@example.com"
+      environment: "development"
