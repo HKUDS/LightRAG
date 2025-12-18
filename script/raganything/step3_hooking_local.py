@@ -80,10 +80,15 @@ async def main():
                 host=OLLAMA_HOST
             )
         ),
+        # 🔥🔥🔥 關鍵設定：延長超時時間，避免 Ollama 卡死 🔥🔥🔥
         chunk_token_size=512, 
         chunk_overlap_token_size=50,
-        embedding_func_max_async=4, 
-        max_parallel_insert=2 
+        embedding_func_max_async=2, # 降低併發數 (原本 4，改 2 更穩)
+        max_parallel_insert=1,      # 降低插入併發
+        addon_params={
+            "timeout": 600,             # 設定 10 分鐘超時
+            "insert_batch_size": 5      # 每次只處理 5 個區塊
+        }
     )
 
     logger.info("⚙️ 正在初始化 Storage...")
