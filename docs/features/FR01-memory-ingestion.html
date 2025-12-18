@@ -305,7 +305,7 @@
     </div>
     
 
-        <div class="nav"><h2>📑 Documents in this Feature</h2><ul><li><strong>00-OVERVIEW.md</strong> - FR01: Memory API Ingestion - Overview</li><li><strong>01-ARCHITECTURE.md</strong> - FR01: Memory API Ingestion - Detailed Architecture</li><li><strong>02-IMPLEMENTATION-PLAN.md</strong> - FR01: Memory API Ingestion - Implementation Plan</li><li><strong>03-API-INTEGRATION.md</strong> - FR01: Memory API Ingestion - API Integration Details</li><li><strong>04-CONFIGURATION.md</strong> - FR01: Memory API Ingestion - Configuration & Deployment</li><li><strong>05-FUTURE-ENHANCEMENTS.md</strong> - FR01: Memory API Ingestion - Future Enhancements</li><li><strong>README.md</strong> - FR01: Memory API Ingestion Feature</li></ul></div>
+        <div class="nav"><h2>📑 Documents in this Feature</h2><ul><li><strong>00-OVERVIEW.md</strong> - FR01: Memory API Ingestion - Overview</li><li><strong>01-ARCHITECTURE.md</strong> - FR01: Memory API Ingestion - Detailed Architecture (Go Implementation)</li><li><strong>02-IMPLEMENTATION-PLAN.md</strong> - FR01: Memory API Ingestion - Implementation Plan (Go)</li><li><strong>03-API-INTEGRATION.md</strong> - FR01: Memory API Ingestion - API Integration Details</li><li><strong>04-CONFIGURATION.md</strong> - FR01: Memory API Ingestion - Configuration & Deployment</li><li><strong>05-FUTURE-ENHANCEMENTS.md</strong> - FR01: Memory API Ingestion - Future Enhancements</li><li><strong>README.md</strong> - FR01: Memory API Ingestion Feature</li></ul></div>
 
         <div class="content">
             <h1 id="fr01-memory-api-ingestion-overview">FR01: Memory API Ingestion - Overview</h1>
@@ -378,10 +378,9 @@
 - Proper authentication and workspace support<br />
 - Better for distributed deployments</p>
 <p><strong>B. Direct Library Mode</strong> (For embedded scenarios)<br />
-- Imports LightRAG as Python library<br />
-- Calls <code>rag.ainsert()</code> directly<br />
-- Lower overhead, no network latency<br />
-- Better for single-process deployments</p>
+- Calls LightRAG API directly (no Python library dependency)<br />
+- Lower overhead for co-located deployments<br />
+- Better for single-host deployments</p>
 <h3 id="3-state-management">3. State Management</h3>
 <p><strong>DECISION: JSON-based State Store with SQLite Option</strong></p>
 <ul>
@@ -394,18 +393,18 @@
 <li>Sync statistics and metrics</li>
 </ul>
 <h3 id="4-scheduling">4. Scheduling</h3>
-<p><strong>DECISION: APScheduler with Configurable Triggers</strong></p>
+<p><strong>DECISION: Cron-based Scheduler with Configurable Triggers</strong></p>
 <ul>
-<li>Use <code>APScheduler</code> library for flexible scheduling</li>
+<li>Use <code>robfig/cron</code> (Go library) for flexible scheduling</li>
 <li>Support multiple trigger types:</li>
 <li>Interval: Every N hours/minutes</li>
 <li>Cron: Specific times (e.g., "0 <em>/1 * * </em>" for hourly)</li>
 <li>Manual: On-demand trigger via API</li>
-<li>Background scheduler runs in separate thread</li>
-<li>Graceful shutdown on signals</li>
+<li>Background scheduler runs in separate goroutines</li>
+<li>Graceful shutdown on signals (SIGTERM, SIGINT)</li>
 </ul>
 <h2 id="component-overview">Component Overview</h2>
-<h3 id="1-memory-api-client-memory_api_clientpy">1. Memory API Client (<code>memory_api_client.py</code>)</h3>
+<h3 id="1-memory-api-client-pkgclientmemory_clientgo">1. Memory API Client (<code>pkg/client/memory_client.go</code>)</h3>
 <ul>
 <li>Authenticates with Memory API (API key)</li>
 <li>Fetches memory lists with filtering (context, date range, limit)</li>
@@ -413,7 +412,7 @@
 <li>Downloads associated resources (audio, images) if needed</li>
 <li>Handles pagination and rate limiting</li>
 </ul>
-<h3 id="2-data-transformer-memory_transformerpy">2. Data Transformer (<code>memory_transformer.py</code>)</h3>
+<h3 id="2-data-transformer-pkgtransformertransformergo">2. Data Transformer (<code>pkg/transformer/transformer.go</code>)</h3>
 <ul>
 <li>Converts Memory API schema → LightRAG document format</li>
 <li>Enriches transcript with metadata:</li>
@@ -423,7 +422,7 @@
 <li>Generates structured text for optimal entity extraction</li>
 <li>Handles missing/optional fields gracefully</li>
 </ul>
-<h3 id="3-ingestion-orchestrator-ingestion_orchestratorpy">3. Ingestion Orchestrator (<code>ingestion_orchestrator.py</code>)</h3>
+<h3 id="3-ingestion-orchestrator-pkgorchestratororchestratorgo">3. Ingestion Orchestrator (<code>pkg/orchestrator/orchestrator.go</code>)</h3>
 <ul>
 <li>Coordinates the ingestion pipeline</li>
 <li>Implements ingestion strategies:</li>
@@ -433,32 +432,32 @@
 <li>Handles errors and retries</li>
 <li>Tracks progress and generates reports</li>
 </ul>
-<h3 id="4-state-manager-state_managerpy">4. State Manager (<code>state_manager.py</code>)</h3>
+<h3 id="4-state-manager-pkgstatestatego">4. State Manager (<code>pkg/state/state.go</code>)</h3>
 <ul>
 <li>Persists sync state across runs</li>
 <li>Implements idempotency (no duplicate processing)</li>
 <li>Tracks per-context sync status</li>
 <li>Provides state query APIs</li>
 </ul>
-<h3 id="5-configuration-manager-config_managerpy">5. Configuration Manager (<code>config_manager.py</code>)</h3>
+<h3 id="5-configuration-manager-pkgconfigconfiggo">5. Configuration Manager (<code>pkg/config/config.go</code>)</h3>
 <ul>
 <li>Loads configuration from:</li>
-<li>YAML/JSON config files</li>
+<li>YAML config files</li>
 <li>Environment variables</li>
-<li>CLI arguments</li>
+<li>CLI flags</li>
 <li>Validates configuration</li>
-<li>Supports hot-reload for some settings</li>
+<li>Supports hot-reload for some settings (via SIGHUP)</li>
 </ul>
-<h3 id="6-scheduler-service-scheduler_servicepy">6. Scheduler Service (<code>scheduler_service.py</code>)</h3>
+<h3 id="6-scheduler-service-pkgschedulerschedulergo">6. Scheduler Service (<code>pkg/scheduler/scheduler.go</code>)</h3>
 <ul>
 <li>Manages periodic ingestion jobs</li>
 <li>Supports multiple schedules (different contexts on different cadences)</li>
 <li>Provides job control (pause, resume, trigger now)</li>
 <li>Logs scheduler events</li>
 </ul>
-<h3 id="7-rest-api-interface-connector_apipy">7. REST API Interface (<code>connector_api.py</code>)</h3>
+<h3 id="7-rest-api-interface-pkgapiservergo">7. REST API Interface (<code>pkg/api/server.go</code>)</h3>
 <ul>
-<li>FastAPI-based management API</li>
+<li>Go standard library or Gin-based management API</li>
 <li>Endpoints:</li>
 <li><code>GET /connectors</code> - List configured connectors</li>
 <li><code>POST /connectors</code> - Add new connector</li>
@@ -553,35 +552,46 @@
 </ul>
 <h2 id="technology-stack">Technology Stack</h2>
 <ul>
-<li><strong>Python 3.11+</strong></li>
-<li><strong>FastAPI</strong> - REST API framework</li>
-<li><strong>APScheduler</strong> - Job scheduling</li>
-<li><strong>httpx</strong> - Async HTTP client</li>
-<li><strong>Pydantic</strong> - Data validation</li>
-<li><strong>SQLAlchemy</strong> (optional) - SQLite ORM for state</li>
-<li><strong>PyYAML</strong> - Configuration parsing</li>
+<li><strong>Go 1.21+</strong></li>
+<li><strong>net/http</strong> or <strong>Gin</strong> - REST API framework</li>
+<li><strong>robfig/cron</strong> - Job scheduling</li>
+<li><strong>net/http</strong> - HTTP client</li>
+<li><strong>go-playground/validator</strong> - Data validation</li>
+<li><strong>mattn/go-sqlite3</strong> (optional) - SQLite for state</li>
+<li><strong>gopkg.in/yaml.v3</strong> - YAML configuration parsing</li>
+<li><strong>uber-go/zap</strong> - Structured logging</li>
 </ul>
+<h2 id="project-location">Project Location</h2>
+<p><strong>Installation Path</strong>: <code>EXTENSIONS/memory-ingestion/</code></p>
+<p>This standalone service lives in the EXTENSIONS directory to maintain clean separation from the core LightRAG codebase.</p>
 <h2 id="deployment-modes">Deployment Modes</h2>
-<h3 id="mode-1-standalone-service">Mode 1: Standalone Service</h3>
-<pre class="codehilite"><code class="language-bash">python -m memory_connector serve \
+<h3 id="mode-1-standalone-service-binary">Mode 1: Standalone Service (Binary)</h3>
+<pre class="codehilite"><code class="language-bash">./memory-connector serve \
   --config config.yaml \
   --host 0.0.0.0 \
   --port 9622
 </code></pre>
 
-<h3 id="mode-2-embedded-in-lightrag-api">Mode 2: Embedded in LightRAG API</h3>
-<pre class="codehilite"><code class="language-python"># In lightrag_server.py
-from memory_connector import MemoryConnectorApp
-app.mount(&quot;/memory-connector&quot;, MemoryConnectorApp())
+<h3 id="mode-2-systemd-service">Mode 2: Systemd Service</h3>
+<pre class="codehilite"><code class="language-bash"># Install as system service
+sudo systemctl enable memory-connector
+sudo systemctl start memory-connector
 </code></pre>
 
 <h3 id="mode-3-cli-tool">Mode 3: CLI Tool</h3>
 <pre class="codehilite"><code class="language-bash"># One-time manual sync
-python -m memory_connector sync \
+./memory-connector sync \
   --api-url http://127.0.0.1:8080 \
   --api-key YOUR_KEY \
   --context-id CTX123 \
   --lightrag-workspace memories
+</code></pre>
+
+<h3 id="mode-4-docker-container">Mode 4: Docker Container</h3>
+<pre class="codehilite"><code class="language-bash">docker run -d \
+  -v /path/to/config.yaml:/config/config.yaml \
+  -p 9622:9622 \
+  memory-connector:latest
 </code></pre>
 
 <h2 id="future-extensions-phase-2">Future Extensions (Phase 2)</h2>
@@ -628,20 +638,21 @@ python -m memory_connector sync \
 <li>Plan Phase 2: Memory Manager features</li>
 </ol>
 <hr />
-<h1 id="fr01-memory-api-ingestion-detailed-architecture">FR01: Memory API Ingestion - Detailed Architecture</h1>
+<h1 id="fr01-memory-api-ingestion-detailed-architecture-go-implementation">FR01: Memory API Ingestion - Detailed Architecture (Go Implementation)</h1>
 <h2 id="system-architecture">System Architecture</h2>
 <h3 id="high-level-component-diagram">High-Level Component Diagram</h3>
 <pre class="codehilite"><code>┌─────────────────────────────────────────────────────────────────────┐
 │                     Memory Ingestion Connector                       │
+│                     Location: EXTENSIONS/memory-ingestion/           │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────┐    │
-│  │                    Management API (FastAPI)                 │    │
+│  │                    Management API (net/http or Gin)         │    │
 │  │  /connectors  /status  /history  /trigger  /health         │    │
 │  └───────────────────────────┬────────────────────────────────┘    │
 │                              │                                       │
 │  ┌───────────────────────────▼────────────────────────────────┐    │
 │  │              Ingestion Orchestrator                         │    │
-│  │  - Job coordination                                         │    │
+│  │  - Job coordination (goroutines)                            │    │
 │  │  - Pipeline execution                                       │    │
 │  │  - Error handling &amp; retry                                   │    │
 │  └─────┬──────────────┬───────────────┬───────────────────────┘    │
@@ -650,7 +661,7 @@ python -m memory_connector sync \
 │  │ Scheduler  │  │  State   │  │  Config       │                   │
 │  │ Service    │  │  Manager │  │  Manager      │                   │
 │  │            │  │          │  │               │                   │
-│  │ APScheduler│  │ JSON/DB  │  │  YAML/Env     │                   │
+│  │robfig/cron │  │ JSON/DB  │  │  YAML/Env     │                   │
 │  └─────┬──────┘  └────┬─────┘  └──────┬────────┘                   │
 │        │              │               │                             │
 │  ┌─────▼──────────────▼───────────────▼─────────────────────┐     │
@@ -662,7 +673,7 @@ python -m memory_connector sync \
 │  └────────────────────────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────────────────┘
            │                                              │
-           │ HTTP                                         │ HTTP/Direct
+           │ HTTP                                         │ HTTP
            ▼                                              ▼
    ┌───────────────┐                            ┌──────────────────┐
    │  Memory API   │                            │  LightRAG        │
@@ -670,258 +681,278 @@ python -m memory_connector sync \
    └───────────────┘                            └──────────────────┘
 </code></pre>
 
+<h2 id="project-structure">Project Structure</h2>
+<pre class="codehilite"><code>EXTENSIONS/memory-ingestion/
+├── cmd/
+│   └── memory-connector/
+│       └── main.go                    # Application entry point
+├── pkg/
+│   ├── client/
+│   │   ├── memory_client.go           # Memory API client
+│   │   └── lightrag_client.go         # LightRAG API client
+│   ├── transformer/
+│   │   ├── transformer.go             # Data transformation
+│   │   └── strategies.go              # Transformation strategies
+│   ├── state/
+│   │   ├── state.go                   # State manager interface
+│   │   ├── json_store.go              # JSON-based state storage
+│   │   └── sqlite_store.go            # SQLite-based state storage
+│   ├── scheduler/
+│   │   └── scheduler.go               # Cron-based job scheduler
+│   ├── orchestrator/
+│   │   └── orchestrator.go            # Pipeline orchestrator
+│   ├── config/
+│   │   └── config.go                  # Configuration management
+│   ├── api/
+│   │   ├── server.go                  # HTTP server
+│   │   ├── handlers.go                # HTTP handlers
+│   │   └── middleware.go              # Middleware (auth, logging)
+│   └── models/
+│       ├── memory.go                  # Memory API models
+│       ├── connector.go               # Connector configuration
+│       └── report.go                  # Ingestion report models
+├── internal/
+│   └── logger/
+│       └── logger.go                  # Structured logging setup
+├── configs/
+│   ├── config.yaml                    # Example configuration
+│   └── config.schema.json             # Config JSON schema
+├── deployments/
+│   ├── docker/
+│   │   └── Dockerfile
+│   ├── k8s/
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   └── systemd/
+│       └── memory-connector.service
+├── scripts/
+│   ├── build.sh                       # Build script
+│   └── install.sh                     # Installation script
+├── go.mod
+├── go.sum
+├── Makefile
+└── README.md
+</code></pre>
+
 <h2 id="core-components">Core Components</h2>
 <h3 id="1-memory-api-client">1. Memory API Client</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/memory_api_client.py</code></p>
+<p><strong>File</strong>: <code>pkg/client/memory_client.go</code></p>
 <p><strong>Responsibilities</strong>:<br />
 - Authenticate with Memory API<br />
 - Fetch memory lists with query parameters<br />
-- Handle pagination if API supports it<br />
+- Handle retries and timeouts<br />
 - Rate limiting and backoff<br />
 - Error handling for network issues</p>
-<p><strong>Key Classes</strong>:</p>
-<pre class="codehilite"><code class="language-python">class MemoryAPIClient:
-    &quot;&quot;&quot;Client for interacting with Memory API&quot;&quot;&quot;
+<p><strong>Key Structures &amp; Methods</strong>:</p>
+<pre class="codehilite"><code class="language-go">package client
 
-    def __init__(
-        self,
-        api_url: str,
-        api_key: str,
-        timeout: int = 30,
-        max_retries: int = 3
-    ):
-        &quot;&quot;&quot;Initialize client with connection settings&quot;&quot;&quot;
+import (
+    &quot;context&quot;
+    &quot;net/http&quot;
+    &quot;time&quot;
+)
 
-    async def get_memories(
-        self,
-        ctx_id: str,
-        limit: int = 100,
-        range: str = &quot;week&quot;
-    ) -&gt; MemoryList:
-        &quot;&quot;&quot;Fetch list of memories for a context&quot;&quot;&quot;
+type MemoryClient struct {
+    apiURL     string
+    apiKey     string
+    httpClient *http.Client
+    maxRetries int
+}
 
-    async def get_memory(
-        self,
-        ctx_id: str,
-        memory_id: str
-    ) -&gt; Memory:
-        &quot;&quot;&quot;Fetch single memory item with full details&quot;&quot;&quot;
+type MemoryList struct {
+    Memories []Memory `json:&quot;memories&quot;`
+}
 
-    async def download_audio(
-        self,
-        ctx_id: str,
-        memory_id: str,
-        output_path: Path
-    ) -&gt; bool:
-        &quot;&quot;&quot;Download audio file for a memory&quot;&quot;&quot;
+type Memory struct {
+    ID          string  `json:&quot;id&quot;`
+    Type        string  `json:&quot;type&quot;`
+    Audio       bool    `json:&quot;audio&quot;`
+    Image       bool    `json:&quot;image&quot;`
+    Transcript  string  `json:&quot;transcript&quot;`
+    LocationLat float64 `json:&quot;location_lat&quot;`
+    LocationLon float64 `json:&quot;location_lon&quot;`
+    CreatedAt   string  `json:&quot;created_at&quot;`
+}
 
-    async def download_image(
-        self,
-        ctx_id: str,
-        memory_id: str,
-        output_path: Path
-    ) -&gt; bool:
-        &quot;&quot;&quot;Download image file for a memory&quot;&quot;&quot;
+func NewMemoryClient(apiURL, apiKey string, timeout time.Duration) *MemoryClient {
+    return &amp;MemoryClient{
+        apiURL: apiURL,
+        apiKey: apiKey,
+        httpClient: &amp;http.Client{
+            Timeout: timeout,
+        },
+        maxRetries: 3,
+    }
+}
 
-    async def check_connection(self) -&gt; bool:
-        &quot;&quot;&quot;Test API connectivity and authentication&quot;&quot;&quot;
+func (c *MemoryClient) GetMemories(ctx context.Context, ctxID string, limit int, rangeParam string) (*MemoryList, error) {
+    // Implementation with retry logic
+}
+
+func (c *MemoryClient) DownloadAudio(ctx context.Context, ctxID, memoryID string) ([]byte, error) {
+    // Implementation
+}
+
+func (c *MemoryClient) DownloadImage(ctx context.Context, ctxID, memoryID string) ([]byte, error) {
+    // Implementation
+}
+
+func (c *MemoryClient) CheckConnection(ctx context.Context) error {
+    // Test API connectivity
+}
 </code></pre>
 
 <p><strong>Configuration</strong>:</p>
 <pre class="codehilite"><code class="language-yaml">memory_api:
   url: &quot;http://127.0.0.1:8080&quot;
   api_key: &quot;${MEMORY_API_KEY}&quot;
-  timeout: 30
+  timeout: 30s
   max_retries: 3
-  retry_backoff: 2.0  # Exponential backoff multiplier
+  retry_backoff: 2s
 </code></pre>
 
 <h3 id="2-data-transformer">2. Data Transformer</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/memory_transformer.py</code></p>
+<p><strong>File</strong>: <code>pkg/transformer/transformer.go</code></p>
 <p><strong>Responsibilities</strong>:<br />
 - Convert Memory API schema to LightRAG document format<br />
 - Enrich data with context and metadata<br />
 - Generate structured text for entity extraction<br />
 - Handle missing/optional fields<br />
 - Support multiple transformation strategies</p>
-<p><strong>Key Classes</strong>:</p>
-<pre class="codehilite"><code class="language-python">class TransformationStrategy(ABC):
-    &quot;&quot;&quot;Base class for transformation strategies&quot;&quot;&quot;
+<p><strong>Key Structures &amp; Methods</strong>:</p>
+<pre class="codehilite"><code class="language-go">package transformer
 
-    @abstractmethod
-    def transform(self, memory: Memory) -&gt; str:
-        &quot;&quot;&quot;Transform Memory to LightRAG document text&quot;&quot;&quot;
+import (
+    &quot;fmt&quot;
+    &quot;time&quot;
+    &quot;github.com/your-org/memory-connector/pkg/models&quot;
+)
 
+type Strategy interface {
+    Transform(memory *models.Memory) (string, error)
+}
 
-class StandardTransformationStrategy(TransformationStrategy):
-    &quot;&quot;&quot;Standard transformation: transcript + metadata as structured text&quot;&quot;&quot;
+type StandardStrategy struct{}
 
-    def transform(self, memory: Memory) -&gt; str:
-        &quot;&quot;&quot;
-        Output format:
-        ---
-        Memory Record
-        ID: {id}
-        Type: {type}
-        Recorded: {created_at}
-        Location: ({lat}, {lon})
-        Has Audio: {audio}
-        Has Image: {image}
+func (s *StandardStrategy) Transform(memory *models.Memory) (string, error) {
+    createdAt, _ := time.Parse(time.RFC3339, memory.CreatedAt)
+    dateStr := createdAt.Format(&quot;January 02, 2006 at 03:04 PM UTC&quot;)
 
-        Transcript:
-        {transcript}
-        ---
-        &quot;&quot;&quot;
+    locationStr := &quot;&quot;
+    if memory.LocationLat != 0.0 || memory.LocationLon != 0.0 {
+        locationStr = fmt.Sprintf(&quot;\nLocation: (%.6f, %.6f)&quot;,
+            memory.LocationLat, memory.LocationLon)
+    }
 
+    media := []string{}
+    if memory.Audio {
+        media = append(media, &quot;Audio&quot;)
+    }
+    if memory.Image {
+        media = append(media, &quot;Image&quot;)
+    }
+    mediaStr := &quot;None&quot;
+    if len(media) &gt; 0 {
+        mediaStr = fmt.Sprintf(&quot;%v&quot;, media)
+    }
 
-class RichTransformationStrategy(TransformationStrategy):
-    &quot;&quot;&quot;
-    Rich transformation: includes geocoding, datetime parsing,
-    and additional context
-    &quot;&quot;&quot;
+    transcript := memory.Transcript
+    if transcript == &quot;&quot; {
+        transcript = &quot;[No transcript available]&quot;
+    }
 
-    def __init__(self, geocoding_enabled: bool = False):
-        self.geocoding = geocoding_enabled
+    return fmt.Sprintf(`---
+Memory Record
+ID: %s
+Type: %s
+Recorded: %s%s
+Media Available: %s
 
-    def transform(self, memory: Memory) -&gt; str:
-        &quot;&quot;&quot;
-        Output format includes:
-        - Reverse geocoded location names
-        - Formatted dates (relative and absolute)
-        - Inferred tags/categories
-        - Sentiment analysis (optional)
-        &quot;&quot;&quot;
+Transcript:
+%s
+---`, memory.ID, memory.Type, dateStr, locationStr, mediaStr, transcript), nil
+}
 
+type RichStrategy struct {
+    GeocodingEnabled bool
+}
 
-class MemoryTransformer:
-    &quot;&quot;&quot;Main transformer class&quot;&quot;&quot;
+func (s *RichStrategy) Transform(memory *models.Memory) (string, error) {
+    // Enhanced transformation with geocoding, tagging, etc.
+}
 
-    def __init__(self, strategy: TransformationStrategy):
-        self.strategy = strategy
+type Transformer struct {
+    strategy Strategy
+}
 
-    async def transform_batch(
-        self,
-        memories: List[Memory]
-    ) -&gt; List[TransformedDocument]:
-        &quot;&quot;&quot;Transform multiple memories in parallel&quot;&quot;&quot;
+func New(strategy Strategy) *Transformer {
+    return &amp;Transformer{strategy: strategy}
+}
 
-    def set_strategy(self, strategy: TransformationStrategy):
-        &quot;&quot;&quot;Change transformation strategy at runtime&quot;&quot;&quot;
-</code></pre>
+func (t *Transformer) Transform(memory *models.Memory) (string, error) {
+    return t.strategy.Transform(memory)
+}
 
-<p><strong>Example Transformation</strong>:</p>
-<p>Input (Memory API JSON):</p>
-<pre class="codehilite"><code class="language-json">{
-  &quot;id&quot;: &quot;mem_1234567890&quot;,
-  &quot;type&quot;: &quot;record&quot;,
-  &quot;audio&quot;: true,
-  &quot;image&quot;: false,
-  &quot;transcript&quot;: &quot;Had a great meeting with the team today. We discussed the new product roadmap and agreed on Q1 priorities.&quot;,
-  &quot;location_lat&quot;: 37.7749,
-  &quot;location_lon&quot;: -122.4194,
-  &quot;created_at&quot;: &quot;2025-12-18T14:30:00Z&quot;
+func (t *Transformer) TransformBatch(memories []*models.Memory) ([]string, error) {
+    results := make([]string, 0, len(memories))
+    for _, memory := range memories {
+        doc, err := t.Transform(memory)
+        if err != nil {
+            return nil, err
+        }
+        results = append(results, doc)
+    }
+    return results, nil
 }
 </code></pre>
 
-<p>Output (LightRAG document):</p>
-<pre class="codehilite"><code>---
-Memory Record from December 18, 2025
-ID: mem_1234567890
-Type: Voice Recording
-Location: San Francisco, CA (37.7749, -122.4194)
-Time: 2:30 PM UTC
-Media: Audio available
-
-Transcript:
-Had a great meeting with the team today. We discussed the new product roadmap and agreed on Q1 priorities.
-
-Tags: #meeting #team #product-roadmap #planning
----
-</code></pre>
-
 <h3 id="3-state-manager">3. State Manager</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/state_manager.py</code></p>
+<p><strong>File</strong>: <code>pkg/state/state.go</code></p>
 <p><strong>Responsibilities</strong>:<br />
 - Track ingestion state per connector/context<br />
 - Prevent duplicate processing<br />
 - Store sync history and metrics<br />
 - Support state queries and rollback</p>
-<p><strong>Key Classes</strong>:</p>
-<pre class="codehilite"><code class="language-python">class SyncState(BaseModel):
-    &quot;&quot;&quot;State for a single sync operation&quot;&quot;&quot;
-    connector_id: str
-    context_id: str
-    last_sync_timestamp: datetime
-    last_successful_sync: datetime
-    processed_memory_ids: Set[str]
-    failed_memory_ids: Dict[str, str]  # memory_id -&gt; error_message
-    total_processed: int
-    total_failed: int
-    status: Literal[&quot;idle&quot;, &quot;running&quot;, &quot;completed&quot;, &quot;failed&quot;]
+<p><strong>Key Structures &amp; Methods</strong>:</p>
+<pre class="codehilite"><code class="language-go">package state
 
+import (
+    &quot;context&quot;
+    &quot;time&quot;
+)
 
-class StateManager:
-    &quot;&quot;&quot;Manages ingestion state persistence&quot;&quot;&quot;
+type SyncState struct {
+    ConnectorID         string            `json:&quot;connector_id&quot;`
+    ContextID           string            `json:&quot;context_id&quot;`
+    LastSyncTimestamp   time.Time         `json:&quot;last_sync_timestamp&quot;`
+    LastSuccessfulSync  time.Time         `json:&quot;last_successful_sync&quot;`
+    ProcessedMemoryIDs  map[string]bool   `json:&quot;processed_memory_ids&quot;`
+    FailedMemoryIDs     map[string]string `json:&quot;failed_memory_ids&quot;` // memory_id -&gt; error
+    TotalProcessed      int               `json:&quot;total_processed&quot;`
+    TotalFailed         int               `json:&quot;total_failed&quot;`
+    Status              string            `json:&quot;status&quot;` // idle, running, completed, failed
+}
 
-    def __init__(self, storage_path: Path, backend: str = &quot;json&quot;):
-        &quot;&quot;&quot;
-        Args:
-            storage_path: Path to state file/directory
-            backend: &quot;json&quot; or &quot;sqlite&quot;
-        &quot;&quot;&quot;
+type Manager interface {
+    GetState(ctx context.Context, connectorID, contextID string) (*SyncState, error)
+    UpdateState(ctx context.Context, state *SyncState) error
+    MarkProcessed(ctx context.Context, connectorID, contextID, memoryID string) error
+    MarkFailed(ctx context.Context, connectorID, contextID, memoryID string, errorMsg string) error
+    IsProcessed(ctx context.Context, connectorID, contextID, memoryID string) (bool, error)
+    GetUnprocessedIDs(ctx context.Context, connectorID, contextID string, allIDs []string) ([]string, error)
+    GetSyncHistory(ctx context.Context, connectorID string, limit int) ([]*SyncState, error)
+    ResetState(ctx context.Context, connectorID, contextID string) error
+}
 
-    async def get_state(self, connector_id: str, context_id: str) -&gt; SyncState:
-        &quot;&quot;&quot;Retrieve current state for a connector/context&quot;&quot;&quot;
+// JSONStore implements Manager using JSON files
+type JSONStore struct {
+    filePath string
+}
 
-    async def update_state(self, state: SyncState):
-        &quot;&quot;&quot;Update state atomically&quot;&quot;&quot;
-
-    async def mark_processed(
-        self,
-        connector_id: str,
-        context_id: str,
-        memory_id: str
-    ):
-        &quot;&quot;&quot;Mark a memory as successfully processed&quot;&quot;&quot;
-
-    async def mark_failed(
-        self,
-        connector_id: str,
-        context_id: str,
-        memory_id: str,
-        error: str
-    ):
-        &quot;&quot;&quot;Mark a memory as failed&quot;&quot;&quot;
-
-    async def is_processed(
-        self,
-        connector_id: str,
-        context_id: str,
-        memory_id: str
-    ) -&gt; bool:
-        &quot;&quot;&quot;Check if memory has been processed&quot;&quot;&quot;
-
-    async def get_unprocessed_ids(
-        self,
-        connector_id: str,
-        context_id: str,
-        all_memory_ids: List[str]
-    ) -&gt; List[str]:
-        &quot;&quot;&quot;Filter out already-processed memory IDs&quot;&quot;&quot;
-
-    async def get_sync_history(
-        self,
-        connector_id: str,
-        limit: int = 10
-    ) -&gt; List[SyncState]:
-        &quot;&quot;&quot;Retrieve sync history&quot;&quot;&quot;
-
-    async def reset_state(
-        self,
-        connector_id: str,
-        context_id: str
-    ):
-        &quot;&quot;&quot;Reset state for re-sync&quot;&quot;&quot;
+// SQLiteStore implements Manager using SQLite database
+type SQLiteStore struct {
+    dbPath string
+}
 </code></pre>
 
 <p><strong>State Storage Format (JSON)</strong>:</p>
@@ -930,11 +961,15 @@ class StateManager:
     &quot;memory-connector-1&quot;: {
       &quot;contexts&quot;: {
         &quot;CTX123&quot;: {
+          &quot;connector_id&quot;: &quot;memory-connector-1&quot;,
+          &quot;context_id&quot;: &quot;CTX123&quot;,
           &quot;last_sync_timestamp&quot;: &quot;2025-12-18T15:00:00Z&quot;,
           &quot;last_successful_sync&quot;: &quot;2025-12-18T15:00:00Z&quot;,
-          &quot;processed_memory_ids&quot;: [
-            &quot;mem_001&quot;, &quot;mem_002&quot;, &quot;mem_003&quot;
-          ],
+          &quot;processed_memory_ids&quot;: {
+            &quot;mem_001&quot;: true,
+            &quot;mem_002&quot;: true,
+            &quot;mem_003&quot;: true
+          },
           &quot;failed_memory_ids&quot;: {
             &quot;mem_004&quot;: &quot;Network timeout&quot;
           },
@@ -948,590 +983,350 @@ class StateManager:
 }
 </code></pre>
 
-<h3 id="4-configuration-manager">4. Configuration Manager</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/config_manager.py</code></p>
+<h3 id="4-scheduler-service">4. Scheduler Service</h3>
+<p><strong>File</strong>: <code>pkg/scheduler/scheduler.go</code></p>
 <p><strong>Responsibilities</strong>:<br />
-- Load and validate configuration<br />
-- Support multiple config sources (file, env, CLI)<br />
-- Hot-reload for non-critical settings<br />
-- Schema validation</p>
-<p><strong>Configuration Schema</strong>:</p>
-<pre class="codehilite"><code class="language-yaml"># config.yaml
-
-# LightRAG connection settings
-lightrag:
-  mode: &quot;api&quot;  # &quot;api&quot; or &quot;direct&quot;
-
-  # API mode settings
-  api:
-    url: &quot;http://localhost:9621&quot;
-    api_key: &quot;${LIGHTRAG_API_KEY}&quot;
-    workspace: &quot;memories&quot;
-
-  # Direct mode settings (if mode: &quot;direct&quot;)
-  direct:
-    working_dir: &quot;./lightrag_storage&quot;
-    # LLM/embedding settings inherited from environment
-
-# Memory API settings
-memory_api:
-  url: &quot;http://127.0.0.1:8080&quot;
-  api_key: &quot;${MEMORY_API_KEY}&quot;
-  timeout: 30
-  max_retries: 3
-
-# Connector definitions
-connectors:
-  - id: &quot;personal-memories&quot;
-    enabled: true
-    context_id: &quot;CTX123&quot;
-
-    # Scheduling
-    schedule:
-      type: &quot;interval&quot;  # &quot;interval&quot; or &quot;cron&quot;
-      interval_hours: 1  # for interval type
-      # cron: &quot;0 */1 * * *&quot;  # for cron type
-
-    # Ingestion settings
-    ingestion:
-      query_range: &quot;week&quot;  # how far back to query
-      query_limit: 100     # max items per query
-      batch_size: 10       # memories to process in parallel
-
-    # Transformation settings
-    transformation:
-      strategy: &quot;standard&quot;  # &quot;standard&quot; or &quot;rich&quot;
-      include_audio: false  # download and process audio
-      include_image: false  # download and process images
-      geocoding: false      # reverse geocode locations
-
-    # Retry settings
-    retry:
-      max_attempts: 3
-      backoff_multiplier: 2.0
-      max_backoff_seconds: 60
-
-  - id: &quot;work-memories&quot;
-    enabled: false
-    context_id: &quot;CTX456&quot;
-    schedule:
-      type: &quot;cron&quot;
-      cron: &quot;0 9,17 * * 1-5&quot;  # 9am and 5pm on weekdays
-
-# State management
-state:
-  backend: &quot;json&quot;  # &quot;json&quot; or &quot;sqlite&quot;
-  path: &quot;./memory_sync_state.json&quot;
-  # For SQLite:
-  # path: &quot;./memory_sync_state.db&quot;
-
-# API server (for management interface)
-api:
-  host: &quot;0.0.0.0&quot;
-  port: 9622
-  enable_auth: true
-  api_key: &quot;${CONNECTOR_API_KEY}&quot;
-
-# Logging
-logging:
-  level: &quot;INFO&quot;
-  format: &quot;json&quot;  # &quot;json&quot; or &quot;text&quot;
-  file: &quot;./memory_connector.log&quot;
-</code></pre>
-
-<h3 id="5-scheduler-service">5. Scheduler Service</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/scheduler_service.py</code></p>
-<p><strong>Responsibilities</strong>:<br />
-- Manage periodic ingestion jobs<br />
+- Manage periodic ingestion jobs using robfig/cron<br />
 - Support multiple schedules<br />
 - Job control (pause, resume, trigger)<br />
 - Monitor job health</p>
-<p><strong>Key Classes</strong>:</p>
-<pre class="codehilite"><code class="language-python">from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.cron import CronTrigger
+<p><strong>Key Structures &amp; Methods</strong>:</p>
+<pre class="codehilite"><code class="language-go">package scheduler
 
+import (
+    &quot;context&quot;
+    &quot;github.com/robfig/cron/v3&quot;
+)
 
-class SchedulerService:
-    &quot;&quot;&quot;Manages scheduled ingestion jobs&quot;&quot;&quot;
+type Scheduler struct {
+    cron        *cron.Cron
+    jobs        map[string]cron.EntryID
+    orchestrator Orchestrator
+}
 
-    def __init__(
-        self,
-        orchestrator: IngestionOrchestrator,
-        config_manager: ConfigManager
-    ):
-        self.scheduler = AsyncIOScheduler()
-        self.orchestrator = orchestrator
-        self.config = config_manager
+type JobConfig struct {
+    ConnectorID string
+    Schedule    string // Cron expression or @every interval
+}
 
-    async def start(self):
-        &quot;&quot;&quot;Start scheduler and register jobs&quot;&quot;&quot;
-        for connector_config in self.config.get_connectors():
-            if connector_config.enabled:
-                self.add_job(connector_config)
+func New(orchestrator Orchestrator) *Scheduler {
+    return &amp;Scheduler{
+        cron: cron.New(cron.WithSeconds()),
+        jobs: make(map[string]cron.EntryID),
+        orchestrator: orchestrator,
+    }
+}
 
-        self.scheduler.start()
+func (s *Scheduler) Start(ctx context.Context) error {
+    s.cron.Start()
+    &lt;-ctx.Done()
+    s.cron.Stop()
+    return nil
+}
 
-    async def stop(self):
-        &quot;&quot;&quot;Gracefully stop all jobs&quot;&quot;&quot;
-        self.scheduler.shutdown(wait=True)
+func (s *Scheduler) AddJob(config JobConfig) error {
+    entryID, err := s.cron.AddFunc(config.Schedule, func() {
+        s.runJob(config.ConnectorID)
+    })
+    if err != nil {
+        return err
+    }
+    s.jobs[config.ConnectorID] = entryID
+    return nil
+}
 
-    def add_job(self, connector_config: ConnectorConfig):
-        &quot;&quot;&quot;Add a scheduled job for a connector&quot;&quot;&quot;
-        if connector_config.schedule.type == &quot;interval&quot;:
-            trigger = IntervalTrigger(
-                hours=connector_config.schedule.interval_hours
-            )
-        elif connector_config.schedule.type == &quot;cron&quot;:
-            trigger = CronTrigger.from_crontab(
-                connector_config.schedule.cron
-            )
+func (s *Scheduler) RemoveJob(connectorID string) {
+    if entryID, exists := s.jobs[connectorID]; exists {
+        s.cron.Remove(entryID)
+        delete(s.jobs, connectorID)
+    }
+}
 
-        self.scheduler.add_job(
-            func=self._run_ingestion_job,
-            trigger=trigger,
-            args=[connector_config.id],
-            id=f&quot;connector_{connector_config.id}&quot;,
-            name=f&quot;Ingestion: {connector_config.id}&quot;,
-            replace_existing=True
-        )
+func (s *Scheduler) TriggerNow(connectorID string) error {
+    go s.runJob(connectorID)
+    return nil
+}
 
-    async def _run_ingestion_job(self, connector_id: str):
-        &quot;&quot;&quot;Execute ingestion for a connector&quot;&quot;&quot;
-        try:
-            await self.orchestrator.run_ingestion(connector_id)
-        except Exception as e:
-            logger.error(
-                f&quot;Ingestion job failed for {connector_id}: {e}&quot;
-            )
-
-    def trigger_now(self, connector_id: str):
-        &quot;&quot;&quot;Manually trigger a job immediately&quot;&quot;&quot;
-        self.scheduler.modify_job(
-            f&quot;connector_{connector_id}&quot;,
-            next_run_time=datetime.now()
-        )
-
-    def pause_job(self, connector_id: str):
-        &quot;&quot;&quot;Pause a scheduled job&quot;&quot;&quot;
-        self.scheduler.pause_job(f&quot;connector_{connector_id}&quot;)
-
-    def resume_job(self, connector_id: str):
-        &quot;&quot;&quot;Resume a paused job&quot;&quot;&quot;
-        self.scheduler.resume_job(f&quot;connector_{connector_id}&quot;)
-
-    def get_job_status(self, connector_id: str) -&gt; dict:
-        &quot;&quot;&quot;Get job status and next run time&quot;&quot;&quot;
-        job = self.scheduler.get_job(f&quot;connector_{connector_id}&quot;)
-        if job:
-            return {
-                &quot;id&quot;: job.id,
-                &quot;name&quot;: job.name,
-                &quot;next_run&quot;: job.next_run_time,
-                &quot;paused&quot;: job.next_run_time is None
-            }
-        return None
+func (s *Scheduler) runJob(connectorID string) {
+    ctx := context.Background()
+    _ = s.orchestrator.RunIngestion(ctx, connectorID)
+}
 </code></pre>
 
-<h3 id="6-ingestion-orchestrator">6. Ingestion Orchestrator</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/ingestion_orchestrator.py</code></p>
+<h3 id="5-ingestion-orchestrator">5. Ingestion Orchestrator</h3>
+<p><strong>File</strong>: <code>pkg/orchestrator/orchestrator.go</code></p>
 <p><strong>Responsibilities</strong>:<br />
 - Coordinate the complete ingestion pipeline<br />
 - Implement ingestion strategies (full, incremental, selective)<br />
 - Error handling and retry logic<br />
 - Progress reporting</p>
-<p><strong>Key Classes</strong>:</p>
-<pre class="codehilite"><code class="language-python">class IngestionOrchestrator:
-    &quot;&quot;&quot;Orchestrates the complete ingestion pipeline&quot;&quot;&quot;
+<p><strong>Key Structures &amp; Methods</strong>:</p>
+<pre class="codehilite"><code class="language-go">package orchestrator
 
-    def __init__(
-        self,
-        config_manager: ConfigManager,
-        state_manager: StateManager,
-        memory_client_factory: callable,
-        lightrag_client_factory: callable,
-        transformer_factory: callable
-    ):
-        self.config = config_manager
-        self.state = state_manager
-        self.memory_client_factory = memory_client_factory
-        self.lightrag_client_factory = lightrag_client_factory
-        self.transformer_factory = transformer_factory
+import (
+    &quot;context&quot;
+    &quot;sync&quot;
+    &quot;time&quot;
+)
 
-    async def run_ingestion(
-        self,
-        connector_id: str,
-        strategy: str = &quot;incremental&quot;
-    ) -&gt; IngestionReport:
-        &quot;&quot;&quot;
-        Run ingestion for a connector
+type Orchestrator struct {
+    configMgr     ConfigManager
+    stateMgr      StateManager
+    memoryClient  MemoryClient
+    lightragClient LightRAGClient
+    transformer   Transformer
+    logger        Logger
+}
 
-        Args:
-            connector_id: ID of connector to run
-            strategy: &quot;full&quot;, &quot;incremental&quot;, or &quot;selective&quot;
+type IngestionReport struct {
+    ConnectorID      string    `json:&quot;connector_id&quot;`
+    StartTime        time.Time `json:&quot;start_time&quot;`
+    EndTime          time.Time `json:&quot;end_time&quot;`
+    Status           string    `json:&quot;status&quot;`
+    TotalFetched     int       `json:&quot;total_fetched&quot;`
+    TotalToProcess   int       `json:&quot;total_to_process&quot;`
+    SuccessfulCount  int       `json:&quot;successful_count&quot;`
+    FailedCount      int       `json:&quot;failed_count&quot;`
+    Errors           []string  `json:&quot;errors&quot;`
+    Error            string    `json:&quot;error,omitempty&quot;`
+}
 
-        Returns:
-            IngestionReport with results
-        &quot;&quot;&quot;
+func (o *Orchestrator) RunIngestion(ctx context.Context, connectorID string) (*IngestionReport, error) {
+    // 1. Load connector config
+    // 2. Initialize clients
+    // 3. Get current state
+    // 4. Fetch memories from API
+    // 5. Filter unprocessed
+    // 6. Process in batches (concurrent using goroutines)
+    // 7. Update state
+    // 8. Generate report
+}
 
-        # 1. Load connector config
-        config = self.config.get_connector(connector_id)
+func (o *Orchestrator) processBatch(ctx context.Context, batch []*Memory, config ConnectorConfig) error {
+    var wg sync.WaitGroup
+    errChan := make(chan error, len(batch))
 
-        # 2. Initialize clients
-        memory_client = self.memory_client_factory(config)
-        lightrag_client = self.lightrag_client_factory(config)
-        transformer = self.transformer_factory(config)
-
-        # 3. Get current state
-        state = await self.state.get_state(
-            connector_id,
-            config.context_id
-        )
-
-        # 4. Update state: mark as running
-        state.status = &quot;running&quot;
-        await self.state.update_state(state)
-
-        report = IngestionReport(
-            connector_id=connector_id,
-            start_time=datetime.now(timezone.utc)
-        )
-
-        try:
-            # 5. Fetch memories from API
-            memories = await memory_client.get_memories(
-                ctx_id=config.context_id,
-                limit=config.ingestion.query_limit,
-                range=config.ingestion.query_range
-            )
-
-            # 6. Filter unprocessed
-            all_memory_ids = [m.id for m in memories.memories]
-            unprocessed_ids = await self.state.get_unprocessed_ids(
-                connector_id,
-                config.context_id,
-                all_memory_ids
-            )
-
-            memories_to_process = [
-                m for m in memories.memories if m.id in unprocessed_ids
-            ]
-
-            report.total_fetched = len(memories.memories)
-            report.total_to_process = len(memories_to_process)
-
-            # 7. Process in batches
-            for i in range(0, len(memories_to_process), config.ingestion.batch_size):
-                batch = memories_to_process[i:i + config.ingestion.batch_size]
-
-                await self._process_batch(
-                    batch=batch,
-                    connector_id=connector_id,
-                    context_id=config.context_id,
-                    transformer=transformer,
-                    lightrag_client=lightrag_client,
-                    report=report
-                )
-
-            # 8. Update state: mark as completed
-            state.status = &quot;completed&quot;
-            state.last_successful_sync = datetime.now(timezone.utc)
-            await self.state.update_state(state)
-
-            report.status = &quot;success&quot;
-
-        except Exception as e:
-            # 9. Update state: mark as failed
-            state.status = &quot;failed&quot;
-            await self.state.update_state(state)
-
-            report.status = &quot;failed&quot;
-            report.error = str(e)
-            logger.error(f&quot;Ingestion failed: {e}&quot;, exc_info=True)
-
-        finally:
-            report.end_time = datetime.now(timezone.utc)
-
-        return report
-
-    async def _process_batch(
-        self,
-        batch: List[Memory],
-        connector_id: str,
-        context_id: str,
-        transformer: MemoryTransformer,
-        lightrag_client: LightRAGClient,
-        report: IngestionReport
-    ):
-        &quot;&quot;&quot;Process a batch of memories in parallel&quot;&quot;&quot;
-
-        async def process_single(memory: Memory):
-            try:
-                # Transform
-                document = await transformer.transform(memory)
-
-                # Submit to LightRAG
-                await lightrag_client.insert_document(
-                    text=document,
-                    file_source=f&quot;memory://{context_id}/{memory.id}&quot;
-                )
-
-                # Mark as processed
-                await self.state.mark_processed(
-                    connector_id,
-                    context_id,
-                    memory.id
-                )
-
-                report.successful_count += 1
-
-            except Exception as e:
-                # Mark as failed
-                await self.state.mark_failed(
-                    connector_id,
-                    context_id,
-                    memory.id,
-                    str(e)
-                )
-
-                report.failed_count += 1
-                report.errors.append({
-                    &quot;memory_id&quot;: memory.id,
-                    &quot;error&quot;: str(e)
-                })
-
-        # Process batch concurrently
-        await asyncio.gather(*[process_single(m) for m in batch])
-</code></pre>
-
-<h3 id="7-lightrag-client">7. LightRAG Client</h3>
-<p><strong>File</strong>: <code>lightrag/connectors/lightrag_client.py</code></p>
-<p><strong>Responsibilities</strong>:<br />
-- Abstract LightRAG integration (API or Direct)<br />
-- Handle authentication<br />
-- Submit documents<br />
-- Track status</p>
-<p><strong>Key Classes</strong>:</p>
-<pre class="codehilite"><code class="language-python">class LightRAGClient(ABC):
-    &quot;&quot;&quot;Abstract base for LightRAG integration&quot;&quot;&quot;
-
-    @abstractmethod
-    async def insert_document(
-        self,
-        text: str,
-        file_source: Optional[str] = None
-    ) -&gt; str:
-        &quot;&quot;&quot;Insert document, return document ID&quot;&quot;&quot;
-
-
-class LightRAGAPIClient(LightRAGClient):
-    &quot;&quot;&quot;LightRAG API integration&quot;&quot;&quot;
-
-    def __init__(
-        self,
-        api_url: str,
-        api_key: str,
-        workspace: str = &quot;default&quot;
-    ):
-        self.api_url = api_url
-        self.api_key = api_key
-        self.workspace = workspace
-        self.client = httpx.AsyncClient()
-
-    async def insert_document(
-        self,
-        text: str,
-        file_source: Optional[str] = None
-    ) -&gt; str:
-        response = await self.client.post(
-            f&quot;{self.api_url}/documents/text&quot;,
-            json={
-                &quot;text&quot;: text,
-                &quot;file_source&quot;: file_source or &quot;memory_api&quot;
-            },
-            headers={
-                &quot;X-API-Key&quot;: self.api_key,
-                &quot;LIGHTRAG-WORKSPACE&quot;: self.workspace
+    for _, memory := range batch {
+        wg.Add(1)
+        go func(m *Memory) {
+            defer wg.Done()
+            if err := o.processMemory(ctx, m, config); err != nil {
+                errChan &lt;- err
             }
-        )
-        response.raise_for_status()
-        return response.json()[&quot;doc_id&quot;]
+        }(memory)
+    }
 
+    wg.Wait()
+    close(errChan)
 
-class LightRAGDirectClient(LightRAGClient):
-    &quot;&quot;&quot;Direct LightRAG library integration&quot;&quot;&quot;
+    // Collect errors
+    for err := range errChan {
+        // Handle errors
+    }
 
-    def __init__(
-        self,
-        working_dir: str,
-        **lightrag_kwargs
-    ):
-        from lightrag import LightRAG
-        self.rag = LightRAG(working_dir=working_dir, **lightrag_kwargs)
-
-    async def initialize(self):
-        await self.rag.initialize_storages()
-
-    async def insert_document(
-        self,
-        text: str,
-        file_source: Optional[str] = None
-    ) -&gt; str:
-        doc_id = await self.rag.ainsert(
-            input=text,
-            file_paths=[file_source] if file_source else None
-        )
-        return doc_id
+    return nil
+}
 </code></pre>
 
-<h2 id="file-structure">File Structure</h2>
-<pre class="codehilite"><code>lightrag/
-├── connectors/
-│   ├── __init__.py
-│   ├── memory_api_client.py       # Memory API client
-│   ├── memory_transformer.py      # Data transformation
-│   ├── state_manager.py           # State persistence
-│   ├── config_manager.py          # Configuration
-│   ├── scheduler_service.py       # Job scheduling
-│   ├── ingestion_orchestrator.py  # Pipeline orchestration
-│   ├── lightrag_client.py         # LightRAG integration
-│   ├── connector_api.py           # Management REST API
-│   ├── models.py                  # Pydantic models
-│   └── cli.py                     # CLI interface
-├── api/
-│   └── (existing LightRAG API files)
-└── (existing LightRAG files)
+<h3 id="6-configuration-manager">6. Configuration Manager</h3>
+<p><strong>File</strong>: <code>pkg/config/config.go</code></p>
+<p><strong>Configuration Schema</strong>:</p>
+<pre class="codehilite"><code class="language-go">package config
 
-# Executable entry point
-memory_connector/
-├── __init__.py
-└── __main__.py  # CLI entry point
+type Config struct {
+    LightRAG   LightRAGConfig   `yaml:&quot;lightrag&quot;`
+    MemoryAPI  MemoryAPIConfig  `yaml:&quot;memory_api&quot;`
+    Connectors []ConnectorConfig `yaml:&quot;connectors&quot;`
+    State      StateConfig      `yaml:&quot;state&quot;`
+    API        APIConfig        `yaml:&quot;api&quot;`
+    Logging    LoggingConfig    `yaml:&quot;logging&quot;`
+}
+
+type LightRAGConfig struct {
+    Mode   string         `yaml:&quot;mode&quot;` // &quot;api&quot; or &quot;direct&quot;
+    API    APIConnConfig  `yaml:&quot;api&quot;`
+}
+
+type MemoryAPIConfig struct {
+    URL           string        `yaml:&quot;url&quot;`
+    APIKey        string        `yaml:&quot;api_key&quot;`
+    Timeout       time.Duration `yaml:&quot;timeout&quot;`
+    MaxRetries    int           `yaml:&quot;max_retries&quot;`
+    RetryBackoff  time.Duration `yaml:&quot;retry_backoff&quot;`
+}
+
+type ConnectorConfig struct {
+    ID              string               `yaml:&quot;id&quot;`
+    Enabled         bool                 `yaml:&quot;enabled&quot;`
+    ContextID       string               `yaml:&quot;context_id&quot;`
+    Schedule        ScheduleConfig       `yaml:&quot;schedule&quot;`
+    Ingestion       IngestionConfig      `yaml:&quot;ingestion&quot;`
+    Transformation  TransformationConfig `yaml:&quot;transformation&quot;`
+    Retry           RetryConfig          `yaml:&quot;retry&quot;`
+}
+
+type ScheduleConfig struct {
+    Type          string `yaml:&quot;type&quot;` // &quot;interval&quot; or &quot;cron&quot;
+    IntervalHours int    `yaml:&quot;interval_hours,omitempty&quot;`
+    Cron          string `yaml:&quot;cron,omitempty&quot;`
+}
+
+func Load(path string) (*Config, error) {
+    // Load YAML config with environment variable substitution
+}
+
+func (c *Config) Validate() error {
+    // Validate configuration
+}
 </code></pre>
 
-<h2 id="data-models">Data Models</h2>
-<p><strong>File</strong>: <code>lightrag/connectors/models.py</code></p>
-<pre class="codehilite"><code class="language-python">from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
-from datetime import datetime
+<h3 id="7-rest-api-server">7. REST API Server</h3>
+<p><strong>File</strong>: <code>pkg/api/server.go</code></p>
+<p><strong>Endpoints</strong>:</p>
+<pre class="codehilite"><code class="language-go">package api
 
+import (
+    &quot;net/http&quot;
+    &quot;github.com/gin-gonic/gin&quot; // or use net/http
+)
 
-# Memory API Models (from OpenAPI spec)
-class Memory(BaseModel):
-    id: str
-    type: str = &quot;record&quot;
-    audio: bool
-    image: bool
-    transcript: str = &quot;&quot;
-    location_lat: float = 0.0
-    location_lon: float = 0.0
-    created_at: str
+type Server struct {
+    router      *gin.Engine
+    orchestrator *Orchestrator
+    stateMgr    StateManager
+    configMgr   ConfigManager
+}
 
+func NewServer(orchestrator *Orchestrator, stateMgr StateManager, configMgr ConfigManager) *Server {
+    s := &amp;Server{
+        router: gin.Default(),
+        orchestrator: orchestrator,
+        stateMgr: stateMgr,
+        configMgr: configMgr,
+    }
+    s.setupRoutes()
+    return s
+}
 
-class MemoryList(BaseModel):
-    memories: List[Memory]
+func (s *Server) setupRoutes() {
+    api := s.router.Group(&quot;/api/v1&quot;)
+    {
+        api.GET(&quot;/health&quot;, s.handleHealth)
+        api.GET(&quot;/connectors&quot;, s.handleListConnectors)
+        api.GET(&quot;/connectors/:id/status&quot;, s.handleGetStatus)
+        api.GET(&quot;/connectors/:id/history&quot;, s.handleGetHistory)
+        api.POST(&quot;/connectors/:id/trigger&quot;, s.handleTrigger)
+    }
+}
 
+func (s *Server) handleHealth(c *gin.Context) {
+    c.JSON(http.StatusOK, gin.H{
+        &quot;status&quot;: &quot;healthy&quot;,
+        &quot;version&quot;: &quot;1.0.0&quot;,
+    })
+}
+</code></pre>
 
-# Connector Configuration Models
-class ScheduleConfig(BaseModel):
-    type: Literal[&quot;interval&quot;, &quot;cron&quot;]
-    interval_hours: Optional[int] = None
-    cron: Optional[str] = None
+<h2 id="dependencies-gomod">Dependencies (go.mod)</h2>
+<pre class="codehilite"><code class="language-go">module github.com/your-org/memory-connector
 
+go 1.21
 
-class IngestionConfig(BaseModel):
-    query_range: str = &quot;week&quot;
-    query_limit: int = 100
-    batch_size: int = 10
+require (
+    github.com/gin-gonic/gin v1.10.0
+    github.com/robfig/cron/v3 v3.0.1
+    github.com/mattn/go-sqlite3 v1.14.19
+    github.com/spf13/cobra v1.8.0
+    github.com/spf13/viper v1.18.2
+    go.uber.org/zap v1.26.0
+    gopkg.in/yaml.v3 v3.0.1
+)
+</code></pre>
 
+<h2 id="build-deployment">Build &amp; Deployment</h2>
+<h3 id="makefile">Makefile</h3>
+<pre class="codehilite"><code class="language-makefile">.PHONY: build test clean install
 
-class TransformationConfig(BaseModel):
-    strategy: Literal[&quot;standard&quot;, &quot;rich&quot;] = &quot;standard&quot;
-    include_audio: bool = False
-    include_image: bool = False
-    geocoding: bool = False
+BINARY_NAME=memory-connector
+BUILD_DIR=bin
 
+build:
+    go build -o $(BUILD_DIR)/$(BINARY_NAME) cmd/memory-connector/main.go
 
-class RetryConfig(BaseModel):
-    max_attempts: int = 3
-    backoff_multiplier: float = 2.0
-    max_backoff_seconds: int = 60
+build-linux:
+    GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_NAME)-linux cmd/memory-connector/main.go
 
+test:
+    go test -v ./...
 
-class ConnectorConfig(BaseModel):
-    id: str
-    enabled: bool = True
-    context_id: str
-    schedule: ScheduleConfig
-    ingestion: IngestionConfig
-    transformation: TransformationConfig
-    retry: RetryConfig
+clean:
+    rm -rf $(BUILD_DIR)
 
+install:
+    go install ./cmd/memory-connector
 
-# Ingestion Report Models
-class IngestionReport(BaseModel):
-    connector_id: str
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    status: Literal[&quot;running&quot;, &quot;success&quot;, &quot;failed&quot;] = &quot;running&quot;
-    total_fetched: int = 0
-    total_to_process: int = 0
-    successful_count: int = 0
-    failed_count: int = 0
-    errors: List[dict] = Field(default_factory=list)
-    error: Optional[str] = None
+docker-build:
+    docker build -t memory-connector:latest -f deployments/docker/Dockerfile .
+
+run:
+    go run cmd/memory-connector/main.go serve --config configs/config.yaml
 </code></pre>
 
 <h2 id="next-steps_1">Next Steps</h2>
-<p>See <code>02-IMPLEMENTATION-PLAN.md</code> for the detailed implementation roadmap.</p>
+<p>See <code>02-IMPLEMENTATION-PLAN.md</code> for the detailed implementation roadmap with Go-specific tooling and build instructions.</p>
 <hr />
-<h1 id="fr01-memory-api-ingestion-implementation-plan">FR01: Memory API Ingestion - Implementation Plan</h1>
+<h1 id="fr01-memory-api-ingestion-implementation-plan-go">FR01: Memory API Ingestion - Implementation Plan (Go)</h1>
 <h2 id="implementation-phases">Implementation Phases</h2>
 <h3 id="phase-1-core-foundation-week-1">Phase 1: Core Foundation (Week 1)</h3>
 <p><strong>Goal</strong>: Build the minimum viable connector that can pull memories and insert into LightRAG</p>
 <h4 id="tasks">Tasks:</h4>
 <p><strong>1.1 Project Setup</strong><br />
-- [ ] Create <code>lightrag/connectors/</code> directory structure<br />
-- [ ] Set up <code>memory_connector</code> package for CLI<br />
-- [ ] Create <code>pyproject.toml</code> or update existing with new dependencies<br />
-- [ ] Add dependencies:<br />
-<code>toml
-  [tool.poetry.dependencies]
-  apscheduler = "^3.10.4"
-  httpx = "^0.27.0"
-  pydantic = "^2.5.0"
-  pyyaml = "^6.0.1"
-  python-dateutil = "^2.8.2"</code></p>
+- [ ] Create <code>EXTENSIONS/memory-ingestion/</code> directory structure<br />
+- [ ] Initialize Go module: <code>go mod init github.com/your-org/memory-connector</code><br />
+- [ ] Set up project folders (cmd, pkg, internal, configs, deployments)<br />
+- [ ] Create Makefile with build, test, clean targets<br />
+- [ ] Set up <code>.gitignore</code> for Go projects<br />
+- [ ] Initialize Go dependencies:<br />
+<code>bash
+  go get github.com/gin-gonic/gin
+  go get github.com/robfig/cron/v3
+  go get github.com/spf13/cobra
+  go get github.com/spf13/viper
+  go get go.uber.org/zap
+  go get gopkg.in/yaml.v3</code></p>
 <p><strong>1.2 Data Models</strong><br />
-- [ ] Create <code>lightrag/connectors/models.py</code><br />
-- [ ] Implement Memory API models (Memory, MemoryList)<br />
-- [ ] Implement connector config models<br />
-- [ ] Implement ingestion report models<br />
-- [ ] Add validation logic</p>
+- [ ] Create <code>pkg/models/memory.go</code> - Memory API models<br />
+- [ ] Create <code>pkg/models/connector.go</code> - Connector configuration models<br />
+- [ ] Create <code>pkg/models/report.go</code> - Ingestion report models<br />
+- [ ] Add JSON/YAML struct tags<br />
+- [ ] Add validation tags</p>
 <p><strong>1.3 Memory API Client</strong><br />
-- [ ] Create <code>lightrag/connectors/memory_api_client.py</code><br />
-- [ ] Implement <code>MemoryAPIClient</code> class<br />
+- [ ] Create <code>pkg/client/memory_client.go</code><br />
+- [ ] Implement <code>MemoryClient</code> struct<br />
 - [ ] Add authentication (API key header)<br />
-- [ ] Implement <code>get_memories()</code> method<br />
+- [ ] Implement <code>GetMemories()</code> method with context<br />
 - [ ] Add retry logic with exponential backoff<br />
 - [ ] Add timeout handling<br />
-- [ ] Write unit tests</p>
+- [ ] Write unit tests with httptest</p>
 <p><strong>1.4 Data Transformer</strong><br />
-- [ ] Create <code>lightrag/connectors/memory_transformer.py</code><br />
-- [ ] Implement <code>TransformationStrategy</code> abstract base<br />
-- [ ] Implement <code>StandardTransformationStrategy</code><br />
-- [ ] Implement <code>MemoryTransformer</code> class<br />
+- [ ] Create <code>pkg/transformer/transformer.go</code><br />
+- [ ] Implement <code>Strategy</code> interface<br />
+- [ ] Implement <code>StandardStrategy</code> struct<br />
+- [ ] Implement <code>Transform()</code> method<br />
+- [ ] Add date/time formatting<br />
 - [ ] Add tests for transformation logic</p>
 <p><strong>1.5 LightRAG Client</strong><br />
-- [ ] Create <code>lightrag/connectors/lightrag_client.py</code><br />
-- [ ] Implement <code>LightRAGClient</code> abstract base<br />
-- [ ] Implement <code>LightRAGAPIClient</code> (HTTP mode)<br />
-- [ ] Implement <code>LightRAGDirectClient</code> (library mode)<br />
+- [ ] Create <code>pkg/client/lightrag_client.go</code><br />
+- [ ] Implement <code>LightRAGClient</code> interface<br />
+- [ ] Implement HTTP client for LightRAG API<br />
+- [ ] Add <code>InsertDocument()</code> method<br />
 - [ ] Write integration tests</p>
 <p><strong>1.6 Basic CLI</strong><br />
-- [ ] Create <code>memory_connector/__main__.py</code><br />
+- [ ] Create <code>cmd/memory-connector/main.go</code><br />
+- [ ] Set up Cobra for CLI commands<br />
 - [ ] Implement <code>sync</code> command for one-time sync<br />
-- [ ] Add argument parsing (argparse or typer)<br />
-- [ ] Basic logging setup</p>
+- [ ] Add flag parsing (--config, --connector-id, etc.)<br />
+- [ ] Basic logging setup with zap</p>
 <p><strong>Testing Phase 1</strong>:<br />
 - [ ] Manual test: Pull memories from test API<br />
 - [ ] Manual test: Transform and insert into test LightRAG instance<br />
@@ -1540,362 +1335,399 @@ class IngestionReport(BaseModel):
 <p><strong>Goal</strong>: Add persistence, deduplication, and automated scheduling</p>
 <h4 id="tasks_1">Tasks:</h4>
 <p><strong>2.1 State Manager</strong><br />
-- [ ] Create <code>lightrag/connectors/state_manager.py</code><br />
-- [ ] Implement JSON backend for state storage<br />
-- [ ] Implement <code>SyncState</code> model<br />
+- [ ] Create <code>pkg/state/state.go</code> - State manager interface<br />
+- [ ] Create <code>pkg/state/json_store.go</code> - JSON backend<br />
+- [ ] Implement <code>SyncState</code> struct<br />
 - [ ] Implement state CRUD operations<br />
-- [ ] Add atomic write operations (temp file + rename)<br />
-- [ ] Implement <code>get_unprocessed_ids()</code> filtering<br />
+- [ ] Add atomic file writes (write to temp, then rename)<br />
+- [ ] Implement <code>GetUnprocessedIDs()</code> filtering<br />
 - [ ] Add state history tracking<br />
-- [ ] Write unit tests</p>
+- [ ] Write unit tests with temp files</p>
 <p><strong>2.2 Configuration Manager</strong><br />
-- [ ] Create <code>lightrag/connectors/config_manager.py</code><br />
-- [ ] Implement YAML config loading<br />
-- [ ] Add environment variable substitution<br />
+- [ ] Create <code>pkg/config/config.go</code><br />
+- [ ] Integrate Viper for config loading<br />
+- [ ] Implement YAML config parsing<br />
+- [ ] Add environment variable substitution (os.ExpandEnv)<br />
 - [ ] Implement config validation<br />
 - [ ] Support multiple connector definitions<br />
-- [ ] Add config reload mechanism<br />
+- [ ] Add config reload via SIGHUP signal<br />
 - [ ] Write validation tests</p>
 <p><strong>2.3 Scheduler Service</strong><br />
-- [ ] Create <code>lightrag/connectors/scheduler_service.py</code><br />
-- [ ] Integrate APScheduler<br />
-- [ ] Implement interval trigger support<br />
-- [ ] Implement cron trigger support<br />
-- [ ] Add job control methods (pause, resume, trigger)<br />
-- [ ] Implement graceful shutdown<br />
-- [ ] Add scheduler persistence (SQLite jobstore)<br />
+- [ ] Create <code>pkg/scheduler/scheduler.go</code><br />
+- [ ] Integrate robfig/cron/v3<br />
+- [ ] Implement interval trigger support (@every 1h)<br />
+- [ ] Implement cron trigger support (0 <em>/1 * * </em>)<br />
+- [ ] Add job control methods (AddJob, RemoveJob, TriggerNow)<br />
+- [ ] Implement graceful shutdown with context<br />
+- [ ] Add job persistence (resume after restart)<br />
 - [ ] Write scheduler tests</p>
 <p><strong>2.4 Ingestion Orchestrator</strong><br />
-- [ ] Create <code>lightrag/connectors/ingestion_orchestrator.py</code><br />
+- [ ] Create <code>pkg/orchestrator/orchestrator.go</code><br />
 - [ ] Implement main ingestion pipeline<br />
-- [ ] Add batch processing logic<br />
-- [ ] Implement error handling and retry<br />
+- [ ] Add batch processing logic with goroutines<br />
+- [ ] Implement error handling and retry with backoff<br />
 - [ ] Generate ingestion reports<br />
 - [ ] Add progress callbacks<br />
-- [ ] Implement cancellation support<br />
+- [ ] Implement cancellation via context<br />
 - [ ] Write integration tests</p>
 <p><strong>2.5 Enhanced CLI</strong><br />
-- [ ] Add <code>serve</code> command to run scheduler<br />
+- [ ] Add <code>serve</code> command to run scheduler + API<br />
 - [ ] Add <code>status</code> command to check sync state<br />
 - [ ] Add <code>list</code> command to show connectors<br />
 - [ ] Add <code>trigger</code> command for manual runs<br />
-- [ ] Improve logging (structured logging)</p>
+- [ ] Improve logging (structured JSON logging)</p>
 <p><strong>2.6 Configuration File</strong><br />
-- [ ] Create example <code>config.yaml</code><br />
-- [ ] Add inline documentation<br />
-- [ ] Create config validation script<br />
+- [ ] Create example <code>configs/config.yaml</code><br />
+- [ ] Add inline documentation with comments<br />
+- [ ] Create <code>configs/config.schema.json</code><br />
 - [ ] Write config documentation</p>
 <p><strong>Testing Phase 2</strong>:<br />
 - [ ] Test incremental sync (no duplicate processing)<br />
 - [ ] Test scheduler (interval and cron)<br />
 - [ ] Test state persistence across restarts<br />
-- [ ] Test concurrent processing<br />
+- [ ] Test concurrent processing with goroutines<br />
 - [ ] Load test with 1000+ memory items</p>
 <h3 id="phase-3-management-api-monitoring-week-3">Phase 3: Management API &amp; Monitoring (Week 3)</h3>
 <p><strong>Goal</strong>: Add REST API for connector management and monitoring</p>
 <h4 id="tasks_2">Tasks:</h4>
 <p><strong>3.1 Management API</strong><br />
-- [ ] Create <code>lightrag/connectors/connector_api.py</code><br />
-- [ ] Implement FastAPI application<br />
-- [ ] Add authentication (API key)<br />
+- [ ] Create <code>pkg/api/server.go</code><br />
+- [ ] Set up Gin router (or net/http if preferred)<br />
+- [ ] Implement authentication middleware (API key)<br />
 - [ ] Implement connector CRUD endpoints:<br />
-  - <code>GET /connectors</code> - List all connectors<br />
-  - <code>POST /connectors</code> - Create new connector<br />
-  - <code>GET /connectors/{id}</code> - Get connector details<br />
-  - <code>PUT /connectors/{id}</code> - Update connector<br />
-  - <code>DELETE /connectors/{id}</code> - Delete connector<br />
+  - <code>GET /api/v1/connectors</code> - List all connectors<br />
+  - <code>POST /api/v1/connectors</code> - Create new connector<br />
+  - <code>GET /api/v1/connectors/:id</code> - Get connector details<br />
+  - <code>PUT /api/v1/connectors/:id</code> - Update connector<br />
+  - <code>DELETE /api/v1/connectors/:id</code> - Delete connector<br />
 - [ ] Implement control endpoints:<br />
-  - <code>POST /connectors/{id}/trigger</code> - Manual trigger<br />
-  - <code>POST /connectors/{id}/pause</code> - Pause scheduler<br />
-  - <code>POST /connectors/{id}/resume</code> - Resume scheduler<br />
+  - <code>POST /api/v1/connectors/:id/trigger</code> - Manual trigger<br />
+  - <code>POST /api/v1/connectors/:id/pause</code> - Pause scheduler<br />
+  - <code>POST /api/v1/connectors/:id/resume</code> - Resume scheduler<br />
 - [ ] Implement status endpoints:<br />
-  - <code>GET /connectors/{id}/status</code> - Current status<br />
-  - <code>GET /connectors/{id}/history</code> - Sync history<br />
-  - <code>GET /health</code> - Health check</p>
-<p><strong>3.2 API Models</strong><br />
-- [ ] Add request/response models<br />
-- [ ] Add OpenAPI documentation<br />
-- [ ] Add example requests/responses</p>
-<p><strong>3.3 API Integration with Scheduler</strong><br />
-- [ ] Connect API to SchedulerService<br />
-- [ ] Connect API to StateManager<br />
+  - <code>GET /api/v1/connectors/:id/status</code> - Current status<br />
+  - <code>GET /api/v1/connectors/:id/history</code> - Sync history<br />
+  - <code>GET /api/v1/health</code> - Health check</p>
+<p><strong>3.2 API Handlers</strong><br />
+- [ ] Create <code>pkg/api/handlers.go</code><br />
+- [ ] Implement request/response models<br />
+- [ ] Add request validation<br />
+- [ ] Add error handling middleware<br />
+- [ ] Generate OpenAPI/Swagger docs</p>
+<p><strong>3.3 API Integration</strong><br />
+- [ ] Connect API to Scheduler Service<br />
+- [ ] Connect API to State Manager<br />
 - [ ] Add real-time status updates<br />
-- [ ] Implement WebSocket for progress streaming (optional)</p>
+- [ ] Optional: Add Server-Sent Events for progress streaming</p>
 <p><strong>3.4 Enhanced CLI</strong><br />
 - [ ] Update <code>serve</code> command to start both scheduler and API<br />
 - [ ] Add <code>--api-only</code> flag for API-only mode<br />
 - [ ] Add <code>--scheduler-only</code> flag for scheduler-only mode</p>
 <p><strong>3.5 Monitoring &amp; Logging</strong><br />
-- [ ] Add structured logging (JSON format)<br />
-- [ ] Add metrics collection (counters, timers)<br />
-- [ ] Optional: Add Prometheus exporter<br />
+- [ ] Set up structured logging with zap<br />
+- [ ] Add metrics collection (simple counters)<br />
+- [ ] Optional: Add Prometheus /metrics endpoint<br />
 - [ ] Add health check logic</p>
 <p><strong>Testing Phase 3</strong>:<br />
 - [ ] API endpoint tests (all CRUD operations)<br />
 - [ ] Authentication tests<br />
 - [ ] Integration test: Create connector via API, verify it runs<br />
 - [ ] Load test API with concurrent requests</p>
-<h3 id="phase-4-advanced-features-week-4">Phase 4: Advanced Features (Week 4)</h3>
-<p><strong>Goal</strong>: Add production-ready features and enhancements</p>
+<h3 id="phase-4-production-ready-deployment-week-4">Phase 4: Production Ready &amp; Deployment (Week 4)</h3>
+<p><strong>Goal</strong>: Add production-ready features and deployment artifacts</p>
 <h4 id="tasks_3">Tasks:</h4>
-<p><strong>4.1 Rich Transformation Strategy</strong><br />
-- [ ] Implement <code>RichTransformationStrategy</code><br />
-- [ ] Add geocoding support (optional, using external service)<br />
-- [ ] Add datetime formatting improvements<br />
-- [ ] Add tag extraction from transcripts<br />
-- [ ] Make strategy configurable per connector</p>
-<p><strong>4.2 SQLite State Backend</strong><br />
+<p><strong>4.1 SQLite State Backend</strong><br />
+- [ ] Create <code>pkg/state/sqlite_store.go</code><br />
 - [ ] Implement SQLite backend for StateManager<br />
-- [ ] Add database migrations<br />
+- [ ] Add database schema migrations<br />
 - [ ] Add connection pooling<br />
 - [ ] Performance comparison with JSON backend</p>
-<p><strong>4.3 Error Handling Enhancements</strong><br />
-- [ ] Implement dead letter queue for failed items<br />
-- [ ] Add retry with exponential backoff per item<br />
-- [ ] Add alerting hooks (email, webhook, Slack)<br />
-- [ ] Add error reporting dashboard</p>
-<p><strong>4.4 Security Enhancements</strong><br />
-- [ ] Add secrets encryption at rest<br />
-- [ ] Implement API key rotation<br />
-- [ ] Add audit logging<br />
+<p><strong>4.2 Error Handling Enhancements</strong><br />
+- [ ] Implement retry with exponential backoff per item<br />
+- [ ] Add error categorization (retryable vs permanent)<br />
+- [ ] Add alerting hooks (webhook support)<br />
+- [ ] Add error reporting in status API</p>
+<p><strong>4.3 Security Enhancements</strong><br />
+- [ ] Add API key validation<br />
+- [ ] Implement rate limiting middleware<br />
+- [ ] Add CORS support<br />
 - [ ] Security review and hardening</p>
-<p><strong>4.5 Documentation</strong><br />
+<p><strong>4.4 Build &amp; Deployment Artifacts</strong><br />
+- [ ] Create <code>deployments/docker/Dockerfile</code><br />
+- [ ] Create <code>deployments/docker-compose.yaml</code><br />
+- [ ] Create <code>deployments/systemd/memory-connector.service</code><br />
+- [ ] Create Kubernetes manifests:<br />
+  - <code>deployments/k8s/deployment.yaml</code><br />
+  - <code>deployments/k8s/service.yaml</code><br />
+  - <code>deployments/k8s/configmap.yaml</code><br />
+  - <code>deployments/k8s/secret.yaml</code><br />
+- [ ] Optional: Create Helm chart</p>
+<p><strong>4.5 Build Scripts</strong><br />
+- [ ] Create <code>scripts/build.sh</code> for multi-platform builds<br />
+- [ ] Create <code>scripts/install.sh</code> for installation<br />
+- [ ] Set up cross-compilation (Linux, macOS, Windows)<br />
+- [ ] Add version info (git tag + commit hash)</p>
+<p><strong>4.6 Documentation</strong><br />
+- [ ] Write README.md for EXTENSIONS/memory-ingestion/<br />
 - [ ] User guide (setup, configuration, usage)<br />
 - [ ] API reference (OpenAPI/Swagger)<br />
-- [ ] Architecture documentation<br />
 - [ ] Troubleshooting guide<br />
 - [ ] Performance tuning guide</p>
-<p><strong>4.6 Deployment Artifacts</strong><br />
-- [ ] Create Dockerfile<br />
-- [ ] Create docker-compose.yaml (connector + LightRAG)<br />
-- [ ] Create systemd service file<br />
-- [ ] Create Kubernetes manifests (optional)<br />
-- [ ] Create Helm chart (optional)</p>
 <p><strong>Testing Phase 4</strong>:<br />
 - [ ] End-to-end production scenario test<br />
 - [ ] Security audit<br />
-- [ ] Performance benchmarks<br />
+- [ ] Performance benchmarks (Go benchmarking)<br />
 - [ ] Failover and recovery tests<br />
 - [ ] Documentation review</p>
-<h2 id="implementation-details">Implementation Details</h2>
-<h3 id="priority-1-minimal-working-implementation">Priority 1: Minimal Working Implementation</h3>
-<p>For fastest time-to-value, implement in this order:</p>
+<h2 id="go-specific-implementation-details">Go-Specific Implementation Details</h2>
+<h3 id="project-structure_1">Project Structure</h3>
+<pre class="codehilite"><code>EXTENSIONS/memory-ingestion/
+├── cmd/
+│   └── memory-connector/
+│       └── main.go
+├── pkg/
+│   ├── client/
+│   ├── transformer/
+│   ├── state/
+│   ├── scheduler/
+│   ├── orchestrator/
+│   ├── config/
+│   ├── api/
+│   └── models/
+├── internal/
+│   └── logger/
+├── configs/
+├── deployments/
+├── scripts/
+├── go.mod
+├── go.sum
+├── Makefile
+└── README.md
+</code></pre>
+
+<h3 id="key-go-packages-to-use">Key Go Packages to Use</h3>
 <ol>
-<li><strong>Memory API Client</strong> → Can fetch data</li>
-<li><strong>Standard Transformer</strong> → Can convert data</li>
-<li><strong>LightRAG Direct Client</strong> → Can insert data</li>
-<li><strong>Basic CLI sync command</strong> → Can run manually</li>
+<li><strong>HTTP Client</strong>: <code>net/http</code> (standard library)</li>
+<li><strong>HTTP Server</strong>: <code>github.com/gin-gonic/gin</code> or <code>net/http</code></li>
+<li><strong>Cron Scheduling</strong>: <code>github.com/robfig/cron/v3</code></li>
+<li><strong>CLI</strong>: <code>github.com/spf13/cobra</code></li>
+<li><strong>Configuration</strong>: <code>github.com/spf13/viper</code></li>
+<li><strong>Logging</strong>: <code>go.uber.org/zap</code></li>
+<li><strong>YAML</strong>: <code>gopkg.in/yaml.v3</code></li>
+<li><strong>SQLite</strong>: <code>github.com/mattn/go-sqlite3</code> (CGO)</li>
+<li><strong>Testing</strong>: <code>testing</code> (standard library) + <code>github.com/stretchr/testify</code></li>
 </ol>
-<p><strong>Deliverable</strong>: Manual sync working end-to-end</p>
-<h3 id="priority-2-automation">Priority 2: Automation</h3>
-<ol start="5">
-<li><strong>JSON State Manager</strong> → Tracks processed items</li>
-<li><strong>Config Manager</strong> → Loads YAML config</li>
-<li><strong>Scheduler Service</strong> → Automates periodic sync</li>
-<li><strong>Orchestrator</strong> → Coordinates pipeline</li>
-</ol>
-<p><strong>Deliverable</strong>: Automated hourly sync running</p>
-<h3 id="priority-3-management">Priority 3: Management</h3>
-<ol start="9">
-<li><strong>Management API</strong> → Control via REST API</li>
-<li><strong>Enhanced logging</strong> → Production monitoring</li>
-</ol>
-<p><strong>Deliverable</strong>: Production-ready service</p>
-<h2 id="testing-strategy">Testing Strategy</h2>
-<h3 id="unit-tests">Unit Tests</h3>
+<h3 id="build-commands">Build Commands</h3>
+<pre class="codehilite"><code class="language-makefile"># Makefile
+
+.PHONY: build test clean install
+
+BINARY_NAME=memory-connector
+BUILD_DIR=bin
+VERSION=$(shell git describe --tags --always --dirty)
+LDFLAGS=-ldflags &quot;-X main.Version=$(VERSION)&quot;
+
+build:
+    go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/memory-connector/main.go
+
+build-all:
+    GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/memory-connector/main.go
+    GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/memory-connector/main.go
+    GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/memory-connector/main.go
+    GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/memory-connector/main.go
+
+test:
+    go test -v -race ./...
+
+test-coverage:
+    go test -v -race -coverprofile=coverage.out ./...
+    go tool cover -html=coverage.out
+
+clean:
+    rm -rf $(BUILD_DIR)
+
+install:
+    go install $(LDFLAGS) ./cmd/memory-connector
+
+docker-build:
+    docker build -t memory-connector:$(VERSION) -f deployments/docker/Dockerfile .
+
+run:
+    go run cmd/memory-connector/main.go serve --config configs/config.yaml
+
+lint:
+    golangci-lint run ./...
+</code></pre>
+
+<h3 id="dockerfile">Dockerfile</h3>
+<pre class="codehilite"><code class="language-dockerfile"># deployments/docker/Dockerfile
+
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build binary
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o memory-connector cmd/memory-connector/main.go
+
+# Runtime stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/memory-connector .
+
+# Copy config
+COPY configs/config.yaml /app/config.yaml
+
+# Expose API port
+EXPOSE 9622
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:9622/api/v1/health || exit 1
+
+# Run
+ENTRYPOINT [&quot;./memory-connector&quot;]
+CMD [&quot;serve&quot;, &quot;--config&quot;, &quot;/app/config.yaml&quot;]
+</code></pre>
+
+<h3 id="testing-strategy">Testing Strategy</h3>
+<h4 id="unit-tests">Unit Tests</h4>
+<pre class="codehilite"><code class="language-go">// Example: pkg/transformer/transformer_test.go
+
+package transformer_test
+
+import (
+    &quot;testing&quot;
+    &quot;github.com/stretchr/testify/assert&quot;
+    &quot;github.com/your-org/memory-connector/pkg/models&quot;
+    &quot;github.com/your-org/memory-connector/pkg/transformer&quot;
+)
+
+func TestStandardStrategy_Transform(t *testing.T) {
+    strategy := &amp;transformer.StandardStrategy{}
+
+    memory := &amp;models.Memory{
+        ID: &quot;test123&quot;,
+        Type: &quot;record&quot;,
+        Transcript: &quot;Test transcript&quot;,
+        CreatedAt: &quot;2025-12-18T10:00:00Z&quot;,
+    }
+
+    result, err := strategy.Transform(memory)
+
+    assert.NoError(t, err)
+    assert.Contains(t, result, &quot;test123&quot;)
+    assert.Contains(t, result, &quot;Test transcript&quot;)
+}
+</code></pre>
+
+<h4 id="integration-tests">Integration Tests</h4>
+<pre class="codehilite"><code class="language-go">// Example: pkg/orchestrator/orchestrator_test.go
+
+package orchestrator_test
+
+import (
+    &quot;context&quot;
+    &quot;net/http/httptest&quot;
+    &quot;testing&quot;
+)
+
+func TestOrchestrator_RunIngestion(t *testing.T) {
+    // Set up mock Memory API server
+    mockAPI := httptest.NewServer(...)
+    defer mockAPI.Close()
+
+    // Set up mock LightRAG server
+    mockLightRAG := httptest.NewServer(...)
+    defer mockLightRAG.Close()
+
+    // Create orchestrator with mocks
+    orch := setupOrchestrator(mockAPI.URL, mockLightRAG.URL)
+
+    // Run ingestion
+    report, err := orch.RunIngestion(context.Background(), &quot;test-connector&quot;)
+
+    // Assertions
+    assert.NoError(t, err)
+    assert.Equal(t, &quot;success&quot;, report.Status)
+}
+</code></pre>
+
+<h3 id="deployment-examples">Deployment Examples</h3>
+<h4 id="systemd-service">Systemd Service</h4>
+<pre class="codehilite"><code class="language-ini"># deployments/systemd/memory-connector.service
+
+[Unit]
+Description=Memory Connector Service
+After=network.target
+
+[Service]
+Type=simple
+User=memory-connector
+Group=memory-connector
+WorkingDirectory=/opt/memory-connector
+Environment=&quot;MEMORY_API_KEY=your-key&quot;
+ExecStart=/opt/memory-connector/bin/memory-connector serve --config /etc/memory-connector/config.yaml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+
+<h4 id="docker-compose">Docker Compose</h4>
+<pre class="codehilite"><code class="language-yaml"># deployments/docker-compose.yaml
+
+version: '3.8'
+
+services:
+  memory-connector:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+    ports:
+      - &quot;9622:9622&quot;
+    environment:
+      - MEMORY_API_KEY=${MEMORY_API_KEY}
+      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
+    volumes:
+      - ./configs/config.yaml:/app/config.yaml:ro
+      - connector-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: [&quot;CMD&quot;, &quot;wget&quot;, &quot;--spider&quot;, &quot;http://localhost:9622/api/v1/health&quot;]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  connector-data:
+</code></pre>
+
+<h2 id="performance-targets">Performance Targets</h2>
 <ul>
-<li>Every class has unit tests</li>
-<li>Mock external dependencies (APIs, file I/O)</li>
-<li>Target: 80%+ code coverage</li>
+<li><strong>Throughput</strong>: Process 100 memories in &lt;30 seconds (Go's concurrency advantage)</li>
+<li><strong>Memory Usage</strong>: &lt;200MB for 10,000 items</li>
+<li><strong>Binary Size</strong>: &lt;20MB (static build)</li>
+<li><strong>Startup Time</strong>: &lt;1 second</li>
+<li><strong>API Latency</strong>: &lt;50ms for status endpoints</li>
 </ul>
-<h3 id="integration-tests">Integration Tests</h3>
-<ul>
-<li>Test Memory API client with mock server</li>
-<li>Test LightRAG integration with test instance</li>
-<li>Test complete pipeline with mocked components</li>
-</ul>
-<h3 id="end-to-end-tests">End-to-End Tests</h3>
-<ul>
-<li>Real Memory API (test account)</li>
-<li>Real LightRAG instance (test workspace)</li>
-<li>Full sync cycle</li>
-<li>Verify knowledge graph contents</li>
-</ul>
-<h3 id="performance-tests">Performance Tests</h3>
-<ul>
-<li>Benchmark: 100 memories in &lt;60 seconds</li>
-<li>Benchmark: 1000 memories in &lt;10 minutes</li>
-<li>Memory usage: &lt;500MB for 10,000 items</li>
-<li>Scheduler overhead: &lt;1% CPU when idle</li>
-</ul>
-<h2 id="file-creation-checklist">File Creation Checklist</h2>
-<h3 id="core-implementation-files">Core Implementation Files</h3>
-<pre class="codehilite"><code>✓ Created in architecture planning:
-- FEATURES/FR01-memory-ingestion/00-OVERVIEW.md
-- FEATURES/FR01-memory-ingestion/01-ARCHITECTURE.md
-- FEATURES/FR01-memory-ingestion/02-IMPLEMENTATION-PLAN.md
-
-□ To be created in Phase 1:
-- lightrag/connectors/__init__.py
-- lightrag/connectors/models.py
-- lightrag/connectors/memory_api_client.py
-- lightrag/connectors/memory_transformer.py
-- lightrag/connectors/lightrag_client.py
-- memory_connector/__init__.py
-- memory_connector/__main__.py
-- tests/connectors/test_memory_api_client.py
-- tests/connectors/test_transformer.py
-- tests/connectors/test_lightrag_client.py
-
-□ To be created in Phase 2:
-- lightrag/connectors/state_manager.py
-- lightrag/connectors/config_manager.py
-- lightrag/connectors/scheduler_service.py
-- lightrag/connectors/ingestion_orchestrator.py
-- config.example.yaml
-- tests/connectors/test_state_manager.py
-- tests/connectors/test_orchestrator.py
-
-□ To be created in Phase 3:
-- lightrag/connectors/connector_api.py
-- tests/connectors/test_api.py
-
-□ To be created in Phase 4:
-- Dockerfile
-- docker-compose.yaml
-- docs/memory-connector-guide.md
-- docs/api-reference.md
-</code></pre>
-
-<h2 id="dependencies">Dependencies</h2>
-<h3 id="python-dependencies">Python Dependencies</h3>
-<pre class="codehilite"><code class="language-toml">[tool.poetry.dependencies]
-python = &quot;^3.11&quot;
-
-# Existing LightRAG dependencies
-# ... (all current dependencies)
-
-# New dependencies for Memory Connector
-apscheduler = &quot;^3.10.4&quot;       # Job scheduling
-httpx = &quot;^0.27.0&quot;             # Async HTTP client
-pydantic = &quot;^2.5.0&quot;           # Data validation (already in LightRAG)
-pyyaml = &quot;^6.0.1&quot;             # YAML config parsing
-python-dateutil = &quot;^2.8.2&quot;    # Date parsing/formatting
-
-# Optional dependencies
-sqlalchemy = { version = &quot;^2.0.0&quot;, optional = true }  # SQLite backend
-alembic = { version = &quot;^1.13.0&quot;, optional = true }    # Migrations
-
-[tool.poetry.extras]
-sqlite = [&quot;sqlalchemy&quot;, &quot;alembic&quot;]
-</code></pre>
-
-<h3 id="system-dependencies">System Dependencies</h3>
-<ul>
-<li>Python 3.11+</li>
-<li>LightRAG (latest version)</li>
-<li>Access to Memory API (API key required)</li>
-<li>Network connectivity</li>
-</ul>
-<h2 id="configuration-example">Configuration Example</h2>
-<p>Create <code>config.yaml</code>:</p>
-<pre class="codehilite"><code class="language-yaml"># Memory Connector Configuration
-
-lightrag:
-  mode: &quot;api&quot;
-  api:
-    url: &quot;http://localhost:9621&quot;
-    api_key: &quot;your-lightrag-api-key&quot;
-    workspace: &quot;memories&quot;
-
-memory_api:
-  url: &quot;http://127.0.0.1:8080&quot;
-  api_key: &quot;your-memory-api-key&quot;
-  timeout: 30
-
-connectors:
-  - id: &quot;personal-memories&quot;
-    enabled: true
-    context_id: &quot;CTX123&quot;
-    schedule:
-      type: &quot;interval&quot;
-      interval_hours: 1
-    ingestion:
-      query_range: &quot;week&quot;
-      query_limit: 100
-      batch_size: 10
-    transformation:
-      strategy: &quot;standard&quot;
-    retry:
-      max_attempts: 3
-
-state:
-  backend: &quot;json&quot;
-  path: &quot;./memory_sync_state.json&quot;
-
-api:
-  host: &quot;0.0.0.0&quot;
-  port: 9622
-  enable_auth: true
-  api_key: &quot;your-connector-api-key&quot;
-
-logging:
-  level: &quot;INFO&quot;
-  file: &quot;./memory_connector.log&quot;
-</code></pre>
-
-<h2 id="deployment-steps">Deployment Steps</h2>
-<h3 id="development-deployment">Development Deployment</h3>
-<pre class="codehilite"><code class="language-bash"># 1. Install dependencies
-poetry install --extras sqlite
-
-# 2. Create config file
-cp config.example.yaml config.yaml
-# Edit config.yaml with your settings
-
-# 3. Test one-time sync
-python -m memory_connector sync \
-  --config config.yaml \
-  --connector-id personal-memories
-
-# 4. Start scheduler
-python -m memory_connector serve \
-  --config config.yaml
-</code></pre>
-
-<h3 id="production-deployment-docker">Production Deployment (Docker)</h3>
-<pre class="codehilite"><code class="language-bash"># 1. Build image
-docker build -t memory-connector:latest .
-
-# 2. Run with docker-compose
-docker-compose up -d
-
-# 3. Check logs
-docker-compose logs -f memory-connector
-
-# 4. Check status
-curl http://localhost:9622/health
-</code></pre>
-
-<h3 id="production-deployment-systemd">Production Deployment (systemd)</h3>
-<pre class="codehilite"><code class="language-bash"># 1. Install package
-pip install -e .
-
-# 2. Create systemd service
-sudo cp memory-connector.service /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# 3. Start service
-sudo systemctl start memory-connector
-sudo systemctl enable memory-connector
-
-# 4. Check status
-sudo systemctl status memory-connector
-sudo journalctl -u memory-connector -f
-</code></pre>
-
-<h2 id="metrics-success-criteria">Metrics &amp; Success Criteria</h2>
-<h3 id="functionality-metrics">Functionality Metrics</h3>
+<h2 id="success-metrics_1">Success Metrics</h2>
+<h3 id="functionality">Functionality</h3>
 <ul>
 <li>✅ Successfully connects to Memory API</li>
 <li>✅ Successfully inserts documents into LightRAG</li>
@@ -1903,59 +1735,161 @@ sudo journalctl -u memory-connector -f
 <li>✅ Handles API errors gracefully</li>
 <li>✅ State persists across restarts</li>
 </ul>
-<h3 id="performance-metrics">Performance Metrics</h3>
+<h3 id="performance">Performance</h3>
 <ul>
-<li>⏱️ Process 100 memories in &lt;60 seconds</li>
-<li>⏱️ Memory usage &lt;500MB for 10K items</li>
-<li>⏱️ Scheduler latency &lt;5 seconds</li>
-<li>⏱️ API response time &lt;200ms</li>
+<li>⏱️ Process 100 memories in &lt;30 seconds</li>
+<li>⏱️ Memory usage &lt;200MB</li>
+<li>⏱️ Binary size &lt;20MB</li>
+<li>⏱️ API response time &lt;50ms</li>
 </ul>
-<h3 id="reliability-metrics">Reliability Metrics</h3>
+<h3 id="reliability">Reliability</h3>
 <ul>
 <li>🎯 99.9% uptime for scheduler</li>
 <li>🎯 &lt;0.1% duplicate processing rate</li>
 <li>🎯 100% state recovery after crash</li>
 <li>🎯 Auto-retry on transient failures</li>
 </ul>
-<h3 id="usability-metrics">Usability Metrics</h3>
+<hr />
+<h2 id="clarification-questions">CLARIFICATION QUESTIONS</h2>
+<p><strong>Please review and answer the following questions before we start implementation:</strong></p>
+<h3 id="1-go-module-naming">1. Go Module Naming</h3>
 <ul>
-<li>📖 Complete documentation</li>
-<li>📖 Example configuration</li>
-<li>📖 Troubleshooting guide</li>
-<li>📖 API reference (OpenAPI)</li>
+<li><strong>Question</strong>: What should be the Go module name?</li>
+<li><strong>Options</strong>:</li>
+<li><code>github.com/kamir/LightRAG/extensions/memory-ingestion</code></li>
+<li><code>github.com/kamir/memory-connector</code></li>
+<li>Other?</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
 </ul>
-<h2 id="risk-mitigation">Risk Mitigation</h2>
-<h3 id="risk-memory-api-rate-limiting">Risk: Memory API rate limiting</h3>
-<p><strong>Mitigation</strong>: Add configurable rate limiting, backoff, and pagination support</p>
-<h3 id="risk-lightrag-processing-delays">Risk: LightRAG processing delays</h3>
-<p><strong>Mitigation</strong>: Queue-based ingestion with status tracking; process asynchronously</p>
-<h3 id="risk-state-corruption">Risk: State corruption</h3>
-<p><strong>Mitigation</strong>: Atomic writes, backup strategy, state validation on load</p>
-<h3 id="risk-network-failures">Risk: Network failures</h3>
-<p><strong>Mitigation</strong>: Retry logic, timeout handling, circuit breaker pattern</p>
-<h3 id="risk-large-memory-volumes">Risk: Large memory volumes</h3>
-<p><strong>Mitigation</strong>: Batch processing, incremental sync, configurable limits</p>
-<h2 id="next-steps-after-implementation">Next Steps After Implementation</h2>
-<ol>
-<li>
-<p><strong>Beta Testing</strong><br />
-   - Deploy to test environment<br />
-   - Run for 1 week with real data<br />
-   - Monitor for issues</p>
-</li>
-<li>
-<p><strong>Production Rollout</strong><br />
-   - Deploy to production<br />
-   - Enable for small subset of contexts<br />
-   - Gradual rollout</p>
-</li>
-<li>
-<p><strong>Phase 2: Memory Manager</strong> (See <code>05-FUTURE-ENHANCEMENTS.md</code>)<br />
-   - Bidirectional sync<br />
-   - Export/backup features<br />
-   - Collaborative sharing</p>
-</li>
-</ol>
+<h3 id="2-http-framework-choice">2. HTTP Framework Choice</h3>
+<ul>
+<li><strong>Question</strong>: Which HTTP framework should we use for the REST API?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Gin</strong> (feature-rich, popular, slightly heavier)</li>
+<li><strong>net/http</strong> (standard library, lightweight, more boilerplate)</li>
+<li><strong>Fiber</strong> (Express-like, very fast)</li>
+<li><strong>Chi</strong> (lightweight router on top of net/http)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="3-state-backend-priority">3. State Backend Priority</h3>
+<ul>
+<li><strong>Question</strong>: Which state backend should we implement first?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>JSON</strong> (simpler, good for single instance)</li>
+<li><strong>SQLite</strong> (better for production, allows querying)</li>
+<li><strong>Both in parallel</strong></li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="4-logging-format">4. Logging Format</h3>
+<ul>
+<li><strong>Question</strong>: What logging format do you prefer?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>JSON</strong> (structured, machine-readable, better for log aggregation)</li>
+<li><strong>Console</strong> (human-readable, colorized, better for development)</li>
+<li><strong>Both</strong> (configurable via config)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="5-configuration-hot-reload">5. Configuration Hot-Reload</h3>
+<ul>
+<li><strong>Question</strong>: Should configuration support hot-reload (reload on SIGHUP without restart)?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Yes</strong> (more flexible, but more complex)</li>
+<li><strong>No</strong> (simpler, require restart for config changes)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="6-metricsobservability">6. Metrics/Observability</h3>
+<ul>
+<li><strong>Question</strong>: Should we include Prometheus metrics from the start?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Yes</strong> (better observability, slightly more code)</li>
+<li><strong>No</strong> (defer to Phase 2)</li>
+<li><strong>Simple counters only</strong> (minimal overhead)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="7-database-for-state-if-sqlite-chosen">7. Database for State (if SQLite chosen)</h3>
+<ul>
+<li><strong>Question</strong>: If using SQLite, should we use CGO or pure Go?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>mattn/go-sqlite3</strong> (CGO, full SQLite features, complicates cross-compilation)</li>
+<li><strong>modernc.org/sqlite</strong> (Pure Go, easier cross-compilation, slightly slower)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="8-concurrent-processing">8. Concurrent Processing</h3>
+<ul>
+<li><strong>Question</strong>: How many memories should we process concurrently?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Fixed</strong> (e.g., 10 goroutines)</li>
+<li><strong>Configurable</strong> (via config file)</li>
+<li><strong>Dynamic</strong> (based on system resources)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="9-binary-distribution">9. Binary Distribution</h3>
+<ul>
+<li><strong>Question</strong>: How should we distribute the binary?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>GitHub Releases</strong> (attach binaries to releases)</li>
+<li><strong>Docker only</strong></li>
+<li><strong>Both</strong></li>
+<li><strong>Also create install script</strong> (download latest binary)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="10-development-environment">10. Development Environment</h3>
+<ul>
+<li><strong>Question</strong>: What Go version should we target?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Go 1.21</strong> (stable, widely available)</li>
+<li><strong>Go 1.22</strong> (latest stable, better performance)</li>
+<li><strong>Go 1.23</strong> (bleeding edge)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="11-testing-coverage-target">11. Testing Coverage Target</h3>
+<ul>
+<li><strong>Question</strong>: What code coverage target should we aim for?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>60%</strong> (reasonable)</li>
+<li><strong>80%</strong> (comprehensive)</li>
+<li><strong>90%+</strong> (very thorough, more effort)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="12-error-handling-for-memory-api">12. Error Handling for Memory API</h3>
+<ul>
+<li><strong>Question</strong>: If Memory API returns partial results or times out, should we:</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Process what we got</strong> (partial sync)</li>
+<li><strong>Abort and retry</strong> (all-or-nothing)</li>
+<li><strong>Configurable per connector</strong></li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="13-lightrag-connection-mode">13. LightRAG Connection Mode</h3>
+<ul>
+<li><strong>Question</strong>: Should we implement both API and "Direct" mode from the start?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>API mode only</strong> (HTTP to LightRAG, easier)</li>
+<li><strong>Both modes</strong> (HTTP + direct library calls, but LightRAG is Python)</li>
+<li><strong>Note</strong>: Since LightRAG is Python, "Direct" mode would still be HTTP calls</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="14-cli-output-format">14. CLI Output Format</h3>
+<ul>
+<li><strong>Question</strong>: What output format for CLI commands?</li>
+<li><strong>Options</strong>:</li>
+<li><strong>Human-readable text</strong> (pretty tables, colors)</li>
+<li><strong>JSON</strong> (machine-readable)</li>
+<li><strong>Both</strong> (with --json flag)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<h3 id="15-initial-feature-scope">15. Initial Feature Scope</h3>
+<ul>
+<li><strong>Question</strong>: Should we include any Phase 2 features in initial release?</li>
+<li><strong>Phase 2 features</strong>: Audio/image processing, rich transformation, webhooks</li>
+<li><strong>Options</strong>:</li>
+<li><strong>No, stick to Phase 1</strong> (faster initial delivery)</li>
+<li><strong>Yes, include rich transformation</strong> (geocoding, advanced formatting)</li>
+<li><strong>Yes, include webhooks</strong> (for notifications)</li>
+<li><strong>Your Answer</strong>: <strong><em>_</em></strong><strong><em>_</em></strong><strong><em>_</em></strong></li>
+</ul>
+<hr />
+<p><strong>Instructions</strong>: Please edit this file and fill in your answers. Once complete, let me know and we'll proceed with implementation based on your preferences.</p>
 <hr />
 <h1 id="fr01-memory-api-ingestion-api-integration-details">FR01: Memory API Ingestion - API Integration Details</h1>
 <h2 id="memory-api-integration">Memory API Integration</h2>
@@ -4445,12 +4379,15 @@ async def get_trends(ctx_id: str, range: str = &quot;month&quot;):
 <h2 id="quick-start">🎯 Quick Start</h2>
 <h3 id="what-this-feature-does">What This Feature Does</h3>
 <p>Automatically pulls memory items from your Memory API on a configurable schedule and populates a LightRAG knowledge graph with the content.</p>
+<p><strong>Implementation</strong>: Go-based standalone service in <code>EXTENSIONS/memory-ingestion/</code></p>
 <p><strong>Key Benefits</strong>:<br />
 - ✅ Automated hourly sync (configurable)<br />
 - ✅ Incremental updates (no duplicate processing)<br />
 - ✅ Transcript + metadata → knowledge graph entities<br />
 - ✅ Progress tracking and status monitoring<br />
 - ✅ REST API for management<br />
+- ✅ Fast, compiled Go binary (~20MB)<br />
+- ✅ Low resource usage (&lt;200MB RAM)<br />
 - ✅ Multiple deployment options</p>
 <h3 id="architecture-at-a-glance">Architecture at a Glance</h3>
 <pre class="codehilite"><code>Memory API → Memory Connector → LightRAG Knowledge Graph
@@ -4514,27 +4451,33 @@ async def get_trends(ctx_id: str, range: str = &quot;month&quot;):
 </ol>
 <h2 id="technology-stack_1">🔧 Technology Stack</h2>
 <ul>
-<li><strong>Python 3.11+</strong></li>
-<li><strong>FastAPI</strong> - REST API framework</li>
-<li><strong>APScheduler</strong> - Job scheduling</li>
-<li><strong>httpx</strong> - Async HTTP client</li>
-<li><strong>Pydantic</strong> - Data validation</li>
+<li><strong>Go 1.21+</strong> - Fast, compiled, concurrent</li>
+<li><strong>Gin or net/http</strong> - REST API framework</li>
+<li><strong>robfig/cron</strong> - Job scheduling</li>
+<li><strong>Viper</strong> - Configuration management</li>
+<li><strong>Zap</strong> - Structured logging</li>
 <li><strong>SQLite/JSON</strong> - State storage</li>
-<li><strong>PyYAML</strong> - Config parsing</li>
+<li><strong>Cobra</strong> - CLI framework</li>
 </ul>
 <h2 id="quick-example">🚀 Quick Example</h2>
 <h3 id="one-time-sync-manual">One-Time Sync (Manual)</h3>
-<pre class="codehilite"><code class="language-bash">python -m memory_connector sync \
+<pre class="codehilite"><code class="language-bash">./memory-connector sync \
   --config config.yaml \
   --connector-id personal-memories
 </code></pre>
 
 <h3 id="automated-sync-service">Automated Sync (Service)</h3>
-<pre class="codehilite"><code class="language-bash">python -m memory_connector serve \
+<pre class="codehilite"><code class="language-bash">./memory-connector serve \
   --config config.yaml
 </code></pre>
 
-<h3 id="configuration-example_1">Configuration Example</h3>
+<h3 id="build-from-source">Build from Source</h3>
+<pre class="codehilite"><code class="language-bash">cd EXTENSIONS/memory-ingestion
+make build
+./bin/memory-connector --help
+</code></pre>
+
+<h3 id="configuration-example">Configuration Example</h3>
 <pre class="codehilite"><code class="language-yaml">memory_api:
   url: &quot;http://127.0.0.1:8080&quot;
   api_key: &quot;your-api-key&quot;
@@ -4557,7 +4500,7 @@ lightrag:
     workspace: &quot;memories&quot;
 </code></pre>
 
-<h2 id="success-metrics_1">📊 Success Metrics</h2>
+<h2 id="success-metrics_2">📊 Success Metrics</h2>
 <ul>
 <li>✅ Hourly sync of new memories</li>
 <li>✅ &lt;1% duplicate processing rate</li>
@@ -4619,7 +4562,7 @@ lightrag:
 
         <div class="footer">
             <p>Generated from markdown files in FEATURES/FR01-memory-ingestion/</p>
-            <p>LightRAG Feature Documentation • 2025-12-18 09:57</p>
+            <p>LightRAG Feature Documentation • 2025-12-18 10:38</p>
         </div>
     </div>
 </body>

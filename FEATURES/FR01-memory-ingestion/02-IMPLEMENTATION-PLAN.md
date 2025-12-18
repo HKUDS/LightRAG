@@ -1,4 +1,4 @@
-# FR01: Memory API Ingestion - Implementation Plan
+# FR01: Memory API Ingestion - Implementation Plan (Go)
 
 ## Implementation Phases
 
@@ -9,54 +9,58 @@
 #### Tasks:
 
 **1.1 Project Setup**
-- [ ] Create `lightrag/connectors/` directory structure
-- [ ] Set up `memory_connector` package for CLI
-- [ ] Create `pyproject.toml` or update existing with new dependencies
-- [ ] Add dependencies:
-  ```toml
-  [tool.poetry.dependencies]
-  apscheduler = "^3.10.4"
-  httpx = "^0.27.0"
-  pydantic = "^2.5.0"
-  pyyaml = "^6.0.1"
-  python-dateutil = "^2.8.2"
+- [ ] Create `EXTENSIONS/memory-ingestion/` directory structure
+- [ ] Initialize Go module: `go mod init github.com/your-org/memory-connector`
+- [ ] Set up project folders (cmd, pkg, internal, configs, deployments)
+- [ ] Create Makefile with build, test, clean targets
+- [ ] Set up `.gitignore` for Go projects
+- [ ] Initialize Go dependencies:
+  ```bash
+  go get github.com/gin-gonic/gin
+  go get github.com/robfig/cron/v3
+  go get github.com/spf13/cobra
+  go get github.com/spf13/viper
+  go get go.uber.org/zap
+  go get gopkg.in/yaml.v3
   ```
 
 **1.2 Data Models**
-- [ ] Create `lightrag/connectors/models.py`
-- [ ] Implement Memory API models (Memory, MemoryList)
-- [ ] Implement connector config models
-- [ ] Implement ingestion report models
-- [ ] Add validation logic
+- [ ] Create `pkg/models/memory.go` - Memory API models
+- [ ] Create `pkg/models/connector.go` - Connector configuration models
+- [ ] Create `pkg/models/report.go` - Ingestion report models
+- [ ] Add JSON/YAML struct tags
+- [ ] Add validation tags
 
 **1.3 Memory API Client**
-- [ ] Create `lightrag/connectors/memory_api_client.py`
-- [ ] Implement `MemoryAPIClient` class
+- [ ] Create `pkg/client/memory_client.go`
+- [ ] Implement `MemoryClient` struct
 - [ ] Add authentication (API key header)
-- [ ] Implement `get_memories()` method
+- [ ] Implement `GetMemories()` method with context
 - [ ] Add retry logic with exponential backoff
 - [ ] Add timeout handling
-- [ ] Write unit tests
+- [ ] Write unit tests with httptest
 
 **1.4 Data Transformer**
-- [ ] Create `lightrag/connectors/memory_transformer.py`
-- [ ] Implement `TransformationStrategy` abstract base
-- [ ] Implement `StandardTransformationStrategy`
-- [ ] Implement `MemoryTransformer` class
+- [ ] Create `pkg/transformer/transformer.go`
+- [ ] Implement `Strategy` interface
+- [ ] Implement `StandardStrategy` struct
+- [ ] Implement `Transform()` method
+- [ ] Add date/time formatting
 - [ ] Add tests for transformation logic
 
 **1.5 LightRAG Client**
-- [ ] Create `lightrag/connectors/lightrag_client.py`
-- [ ] Implement `LightRAGClient` abstract base
-- [ ] Implement `LightRAGAPIClient` (HTTP mode)
-- [ ] Implement `LightRAGDirectClient` (library mode)
+- [ ] Create `pkg/client/lightrag_client.go`
+- [ ] Implement `LightRAGClient` interface
+- [ ] Implement HTTP client for LightRAG API
+- [ ] Add `InsertDocument()` method
 - [ ] Write integration tests
 
 **1.6 Basic CLI**
-- [ ] Create `memory_connector/__main__.py`
+- [ ] Create `cmd/memory-connector/main.go`
+- [ ] Set up Cobra for CLI commands
 - [ ] Implement `sync` command for one-time sync
-- [ ] Add argument parsing (argparse or typer)
-- [ ] Basic logging setup
+- [ ] Add flag parsing (--config, --connector-id, etc.)
+- [ ] Basic logging setup with zap
 
 **Testing Phase 1**:
 - [ ] Manual test: Pull memories from test API
@@ -70,62 +74,63 @@
 #### Tasks:
 
 **2.1 State Manager**
-- [ ] Create `lightrag/connectors/state_manager.py`
-- [ ] Implement JSON backend for state storage
-- [ ] Implement `SyncState` model
+- [ ] Create `pkg/state/state.go` - State manager interface
+- [ ] Create `pkg/state/json_store.go` - JSON backend
+- [ ] Implement `SyncState` struct
 - [ ] Implement state CRUD operations
-- [ ] Add atomic write operations (temp file + rename)
-- [ ] Implement `get_unprocessed_ids()` filtering
+- [ ] Add atomic file writes (write to temp, then rename)
+- [ ] Implement `GetUnprocessedIDs()` filtering
 - [ ] Add state history tracking
-- [ ] Write unit tests
+- [ ] Write unit tests with temp files
 
 **2.2 Configuration Manager**
-- [ ] Create `lightrag/connectors/config_manager.py`
-- [ ] Implement YAML config loading
-- [ ] Add environment variable substitution
+- [ ] Create `pkg/config/config.go`
+- [ ] Integrate Viper for config loading
+- [ ] Implement YAML config parsing
+- [ ] Add environment variable substitution (os.ExpandEnv)
 - [ ] Implement config validation
 - [ ] Support multiple connector definitions
-- [ ] Add config reload mechanism
+- [ ] Add config reload via SIGHUP signal
 - [ ] Write validation tests
 
 **2.3 Scheduler Service**
-- [ ] Create `lightrag/connectors/scheduler_service.py`
-- [ ] Integrate APScheduler
-- [ ] Implement interval trigger support
-- [ ] Implement cron trigger support
-- [ ] Add job control methods (pause, resume, trigger)
-- [ ] Implement graceful shutdown
-- [ ] Add scheduler persistence (SQLite jobstore)
+- [ ] Create `pkg/scheduler/scheduler.go`
+- [ ] Integrate robfig/cron/v3
+- [ ] Implement interval trigger support (@every 1h)
+- [ ] Implement cron trigger support (0 */1 * * *)
+- [ ] Add job control methods (AddJob, RemoveJob, TriggerNow)
+- [ ] Implement graceful shutdown with context
+- [ ] Add job persistence (resume after restart)
 - [ ] Write scheduler tests
 
 **2.4 Ingestion Orchestrator**
-- [ ] Create `lightrag/connectors/ingestion_orchestrator.py`
+- [ ] Create `pkg/orchestrator/orchestrator.go`
 - [ ] Implement main ingestion pipeline
-- [ ] Add batch processing logic
-- [ ] Implement error handling and retry
+- [ ] Add batch processing logic with goroutines
+- [ ] Implement error handling and retry with backoff
 - [ ] Generate ingestion reports
 - [ ] Add progress callbacks
-- [ ] Implement cancellation support
+- [ ] Implement cancellation via context
 - [ ] Write integration tests
 
 **2.5 Enhanced CLI**
-- [ ] Add `serve` command to run scheduler
+- [ ] Add `serve` command to run scheduler + API
 - [ ] Add `status` command to check sync state
 - [ ] Add `list` command to show connectors
 - [ ] Add `trigger` command for manual runs
-- [ ] Improve logging (structured logging)
+- [ ] Improve logging (structured JSON logging)
 
 **2.6 Configuration File**
-- [ ] Create example `config.yaml`
-- [ ] Add inline documentation
-- [ ] Create config validation script
+- [ ] Create example `configs/config.yaml`
+- [ ] Add inline documentation with comments
+- [ ] Create `configs/config.schema.json`
 - [ ] Write config documentation
 
 **Testing Phase 2**:
 - [ ] Test incremental sync (no duplicate processing)
 - [ ] Test scheduler (interval and cron)
 - [ ] Test state persistence across restarts
-- [ ] Test concurrent processing
+- [ ] Test concurrent processing with goroutines
 - [ ] Load test with 1000+ memory items
 
 ### Phase 3: Management API & Monitoring (Week 3)
@@ -135,34 +140,36 @@
 #### Tasks:
 
 **3.1 Management API**
-- [ ] Create `lightrag/connectors/connector_api.py`
-- [ ] Implement FastAPI application
-- [ ] Add authentication (API key)
+- [ ] Create `pkg/api/server.go`
+- [ ] Set up Gin router (or net/http if preferred)
+- [ ] Implement authentication middleware (API key)
 - [ ] Implement connector CRUD endpoints:
-  - `GET /connectors` - List all connectors
-  - `POST /connectors` - Create new connector
-  - `GET /connectors/{id}` - Get connector details
-  - `PUT /connectors/{id}` - Update connector
-  - `DELETE /connectors/{id}` - Delete connector
+  - `GET /api/v1/connectors` - List all connectors
+  - `POST /api/v1/connectors` - Create new connector
+  - `GET /api/v1/connectors/:id` - Get connector details
+  - `PUT /api/v1/connectors/:id` - Update connector
+  - `DELETE /api/v1/connectors/:id` - Delete connector
 - [ ] Implement control endpoints:
-  - `POST /connectors/{id}/trigger` - Manual trigger
-  - `POST /connectors/{id}/pause` - Pause scheduler
-  - `POST /connectors/{id}/resume` - Resume scheduler
+  - `POST /api/v1/connectors/:id/trigger` - Manual trigger
+  - `POST /api/v1/connectors/:id/pause` - Pause scheduler
+  - `POST /api/v1/connectors/:id/resume` - Resume scheduler
 - [ ] Implement status endpoints:
-  - `GET /connectors/{id}/status` - Current status
-  - `GET /connectors/{id}/history` - Sync history
-  - `GET /health` - Health check
+  - `GET /api/v1/connectors/:id/status` - Current status
+  - `GET /api/v1/connectors/:id/history` - Sync history
+  - `GET /api/v1/health` - Health check
 
-**3.2 API Models**
-- [ ] Add request/response models
-- [ ] Add OpenAPI documentation
-- [ ] Add example requests/responses
+**3.2 API Handlers**
+- [ ] Create `pkg/api/handlers.go`
+- [ ] Implement request/response models
+- [ ] Add request validation
+- [ ] Add error handling middleware
+- [ ] Generate OpenAPI/Swagger docs
 
-**3.3 API Integration with Scheduler**
-- [ ] Connect API to SchedulerService
-- [ ] Connect API to StateManager
+**3.3 API Integration**
+- [ ] Connect API to Scheduler Service
+- [ ] Connect API to State Manager
 - [ ] Add real-time status updates
-- [ ] Implement WebSocket for progress streaming (optional)
+- [ ] Optional: Add Server-Sent Events for progress streaming
 
 **3.4 Enhanced CLI**
 - [ ] Update `serve` command to start both scheduler and API
@@ -170,9 +177,9 @@
 - [ ] Add `--scheduler-only` flag for scheduler-only mode
 
 **3.5 Monitoring & Logging**
-- [ ] Add structured logging (JSON format)
-- [ ] Add metrics collection (counters, timers)
-- [ ] Optional: Add Prometheus exporter
+- [ ] Set up structured logging with zap
+- [ ] Add metrics collection (simple counters)
+- [ ] Optional: Add Prometheus /metrics endpoint
 - [ ] Add health check logic
 
 **Testing Phase 3**:
@@ -181,350 +188,472 @@
 - [ ] Integration test: Create connector via API, verify it runs
 - [ ] Load test API with concurrent requests
 
-### Phase 4: Advanced Features (Week 4)
+### Phase 4: Production Ready & Deployment (Week 4)
 
-**Goal**: Add production-ready features and enhancements
+**Goal**: Add production-ready features and deployment artifacts
 
 #### Tasks:
 
-**4.1 Rich Transformation Strategy**
-- [ ] Implement `RichTransformationStrategy`
-- [ ] Add geocoding support (optional, using external service)
-- [ ] Add datetime formatting improvements
-- [ ] Add tag extraction from transcripts
-- [ ] Make strategy configurable per connector
-
-**4.2 SQLite State Backend**
+**4.1 SQLite State Backend**
+- [ ] Create `pkg/state/sqlite_store.go`
 - [ ] Implement SQLite backend for StateManager
-- [ ] Add database migrations
+- [ ] Add database schema migrations
 - [ ] Add connection pooling
 - [ ] Performance comparison with JSON backend
 
-**4.3 Error Handling Enhancements**
-- [ ] Implement dead letter queue for failed items
-- [ ] Add retry with exponential backoff per item
-- [ ] Add alerting hooks (email, webhook, Slack)
-- [ ] Add error reporting dashboard
+**4.2 Error Handling Enhancements**
+- [ ] Implement retry with exponential backoff per item
+- [ ] Add error categorization (retryable vs permanent)
+- [ ] Add alerting hooks (webhook support)
+- [ ] Add error reporting in status API
 
-**4.4 Security Enhancements**
-- [ ] Add secrets encryption at rest
-- [ ] Implement API key rotation
-- [ ] Add audit logging
+**4.3 Security Enhancements**
+- [ ] Add API key validation
+- [ ] Implement rate limiting middleware
+- [ ] Add CORS support
 - [ ] Security review and hardening
 
-**4.5 Documentation**
+**4.4 Build & Deployment Artifacts**
+- [ ] Create `deployments/docker/Dockerfile`
+- [ ] Create `deployments/docker-compose.yaml`
+- [ ] Create `deployments/systemd/memory-connector.service`
+- [ ] Create Kubernetes manifests:
+  - `deployments/k8s/deployment.yaml`
+  - `deployments/k8s/service.yaml`
+  - `deployments/k8s/configmap.yaml`
+  - `deployments/k8s/secret.yaml`
+- [ ] Optional: Create Helm chart
+
+**4.5 Build Scripts**
+- [ ] Create `scripts/build.sh` for multi-platform builds
+- [ ] Create `scripts/install.sh` for installation
+- [ ] Set up cross-compilation (Linux, macOS, Windows)
+- [ ] Add version info (git tag + commit hash)
+
+**4.6 Documentation**
+- [ ] Write README.md for EXTENSIONS/memory-ingestion/
 - [ ] User guide (setup, configuration, usage)
 - [ ] API reference (OpenAPI/Swagger)
-- [ ] Architecture documentation
 - [ ] Troubleshooting guide
 - [ ] Performance tuning guide
-
-**4.6 Deployment Artifacts**
-- [ ] Create Dockerfile
-- [ ] Create docker-compose.yaml (connector + LightRAG)
-- [ ] Create systemd service file
-- [ ] Create Kubernetes manifests (optional)
-- [ ] Create Helm chart (optional)
 
 **Testing Phase 4**:
 - [ ] End-to-end production scenario test
 - [ ] Security audit
-- [ ] Performance benchmarks
+- [ ] Performance benchmarks (Go benchmarking)
 - [ ] Failover and recovery tests
 - [ ] Documentation review
 
-## Implementation Details
+## Go-Specific Implementation Details
 
-### Priority 1: Minimal Working Implementation
-
-For fastest time-to-value, implement in this order:
-
-1. **Memory API Client** → Can fetch data
-2. **Standard Transformer** → Can convert data
-3. **LightRAG Direct Client** → Can insert data
-4. **Basic CLI sync command** → Can run manually
-
-**Deliverable**: Manual sync working end-to-end
-
-### Priority 2: Automation
-
-5. **JSON State Manager** → Tracks processed items
-6. **Config Manager** → Loads YAML config
-7. **Scheduler Service** → Automates periodic sync
-8. **Orchestrator** → Coordinates pipeline
-
-**Deliverable**: Automated hourly sync running
-
-### Priority 3: Management
-
-9. **Management API** → Control via REST API
-10. **Enhanced logging** → Production monitoring
-
-**Deliverable**: Production-ready service
-
-## Testing Strategy
-
-### Unit Tests
-- Every class has unit tests
-- Mock external dependencies (APIs, file I/O)
-- Target: 80%+ code coverage
-
-### Integration Tests
-- Test Memory API client with mock server
-- Test LightRAG integration with test instance
-- Test complete pipeline with mocked components
-
-### End-to-End Tests
-- Real Memory API (test account)
-- Real LightRAG instance (test workspace)
-- Full sync cycle
-- Verify knowledge graph contents
-
-### Performance Tests
-- Benchmark: 100 memories in <60 seconds
-- Benchmark: 1000 memories in <10 minutes
-- Memory usage: <500MB for 10,000 items
-- Scheduler overhead: <1% CPU when idle
-
-## File Creation Checklist
-
-### Core Implementation Files
+### Project Structure
 
 ```
-✓ Created in architecture planning:
-- FEATURES/FR01-memory-ingestion/00-OVERVIEW.md
-- FEATURES/FR01-memory-ingestion/01-ARCHITECTURE.md
-- FEATURES/FR01-memory-ingestion/02-IMPLEMENTATION-PLAN.md
-
-□ To be created in Phase 1:
-- lightrag/connectors/__init__.py
-- lightrag/connectors/models.py
-- lightrag/connectors/memory_api_client.py
-- lightrag/connectors/memory_transformer.py
-- lightrag/connectors/lightrag_client.py
-- memory_connector/__init__.py
-- memory_connector/__main__.py
-- tests/connectors/test_memory_api_client.py
-- tests/connectors/test_transformer.py
-- tests/connectors/test_lightrag_client.py
-
-□ To be created in Phase 2:
-- lightrag/connectors/state_manager.py
-- lightrag/connectors/config_manager.py
-- lightrag/connectors/scheduler_service.py
-- lightrag/connectors/ingestion_orchestrator.py
-- config.example.yaml
-- tests/connectors/test_state_manager.py
-- tests/connectors/test_orchestrator.py
-
-□ To be created in Phase 3:
-- lightrag/connectors/connector_api.py
-- tests/connectors/test_api.py
-
-□ To be created in Phase 4:
-- Dockerfile
-- docker-compose.yaml
-- docs/memory-connector-guide.md
-- docs/api-reference.md
+EXTENSIONS/memory-ingestion/
+├── cmd/
+│   └── memory-connector/
+│       └── main.go
+├── pkg/
+│   ├── client/
+│   ├── transformer/
+│   ├── state/
+│   ├── scheduler/
+│   ├── orchestrator/
+│   ├── config/
+│   ├── api/
+│   └── models/
+├── internal/
+│   └── logger/
+├── configs/
+├── deployments/
+├── scripts/
+├── go.mod
+├── go.sum
+├── Makefile
+└── README.md
 ```
 
-## Dependencies
+### Key Go Packages to Use
 
-### Python Dependencies
+1. **HTTP Client**: `net/http` (standard library)
+2. **HTTP Server**: `github.com/gin-gonic/gin` or `net/http`
+3. **Cron Scheduling**: `github.com/robfig/cron/v3`
+4. **CLI**: `github.com/spf13/cobra`
+5. **Configuration**: `github.com/spf13/viper`
+6. **Logging**: `go.uber.org/zap`
+7. **YAML**: `gopkg.in/yaml.v3`
+8. **SQLite**: `github.com/mattn/go-sqlite3` (CGO)
+9. **Testing**: `testing` (standard library) + `github.com/stretchr/testify`
 
-```toml
-[tool.poetry.dependencies]
-python = "^3.11"
+### Build Commands
 
-# Existing LightRAG dependencies
-# ... (all current dependencies)
+```makefile
+# Makefile
 
-# New dependencies for Memory Connector
-apscheduler = "^3.10.4"       # Job scheduling
-httpx = "^0.27.0"             # Async HTTP client
-pydantic = "^2.5.0"           # Data validation (already in LightRAG)
-pyyaml = "^6.0.1"             # YAML config parsing
-python-dateutil = "^2.8.2"    # Date parsing/formatting
+.PHONY: build test clean install
 
-# Optional dependencies
-sqlalchemy = { version = "^2.0.0", optional = true }  # SQLite backend
-alembic = { version = "^1.13.0", optional = true }    # Migrations
+BINARY_NAME=memory-connector
+BUILD_DIR=bin
+VERSION=$(shell git describe --tags --always --dirty)
+LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
-[tool.poetry.extras]
-sqlite = ["sqlalchemy", "alembic"]
+build:
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/memory-connector/main.go
+
+build-all:
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/memory-connector/main.go
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/memory-connector/main.go
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/memory-connector/main.go
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/memory-connector/main.go
+
+test:
+	go test -v -race ./...
+
+test-coverage:
+	go test -v -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+install:
+	go install $(LDFLAGS) ./cmd/memory-connector
+
+docker-build:
+	docker build -t memory-connector:$(VERSION) -f deployments/docker/Dockerfile .
+
+run:
+	go run cmd/memory-connector/main.go serve --config configs/config.yaml
+
+lint:
+	golangci-lint run ./...
 ```
 
-### System Dependencies
+### Dockerfile
 
-- Python 3.11+
-- LightRAG (latest version)
-- Access to Memory API (API key required)
-- Network connectivity
+```dockerfile
+# deployments/docker/Dockerfile
 
-## Configuration Example
+# Build stage
+FROM golang:1.21-alpine AS builder
 
-Create `config.yaml`:
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build binary
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o memory-connector cmd/memory-connector/main.go
+
+# Runtime stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/memory-connector .
+
+# Copy config
+COPY configs/config.yaml /app/config.yaml
+
+# Expose API port
+EXPOSE 9622
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:9622/api/v1/health || exit 1
+
+# Run
+ENTRYPOINT ["./memory-connector"]
+CMD ["serve", "--config", "/app/config.yaml"]
+```
+
+### Testing Strategy
+
+#### Unit Tests
+```go
+// Example: pkg/transformer/transformer_test.go
+
+package transformer_test
+
+import (
+    "testing"
+    "github.com/stretchr/testify/assert"
+    "github.com/your-org/memory-connector/pkg/models"
+    "github.com/your-org/memory-connector/pkg/transformer"
+)
+
+func TestStandardStrategy_Transform(t *testing.T) {
+    strategy := &transformer.StandardStrategy{}
+
+    memory := &models.Memory{
+        ID: "test123",
+        Type: "record",
+        Transcript: "Test transcript",
+        CreatedAt: "2025-12-18T10:00:00Z",
+    }
+
+    result, err := strategy.Transform(memory)
+
+    assert.NoError(t, err)
+    assert.Contains(t, result, "test123")
+    assert.Contains(t, result, "Test transcript")
+}
+```
+
+#### Integration Tests
+```go
+// Example: pkg/orchestrator/orchestrator_test.go
+
+package orchestrator_test
+
+import (
+    "context"
+    "net/http/httptest"
+    "testing"
+)
+
+func TestOrchestrator_RunIngestion(t *testing.T) {
+    // Set up mock Memory API server
+    mockAPI := httptest.NewServer(...)
+    defer mockAPI.Close()
+
+    // Set up mock LightRAG server
+    mockLightRAG := httptest.NewServer(...)
+    defer mockLightRAG.Close()
+
+    // Create orchestrator with mocks
+    orch := setupOrchestrator(mockAPI.URL, mockLightRAG.URL)
+
+    // Run ingestion
+    report, err := orch.RunIngestion(context.Background(), "test-connector")
+
+    // Assertions
+    assert.NoError(t, err)
+    assert.Equal(t, "success", report.Status)
+}
+```
+
+### Deployment Examples
+
+#### Systemd Service
+
+```ini
+# deployments/systemd/memory-connector.service
+
+[Unit]
+Description=Memory Connector Service
+After=network.target
+
+[Service]
+Type=simple
+User=memory-connector
+Group=memory-connector
+WorkingDirectory=/opt/memory-connector
+Environment="MEMORY_API_KEY=your-key"
+ExecStart=/opt/memory-connector/bin/memory-connector serve --config /etc/memory-connector/config.yaml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### Docker Compose
 
 ```yaml
-# Memory Connector Configuration
+# deployments/docker-compose.yaml
 
-lightrag:
-  mode: "api"
-  api:
-    url: "http://localhost:9621"
-    api_key: "your-lightrag-api-key"
-    workspace: "memories"
+version: '3.8'
 
-memory_api:
-  url: "http://127.0.0.1:8080"
-  api_key: "your-memory-api-key"
-  timeout: 30
+services:
+  memory-connector:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+    ports:
+      - "9622:9622"
+    environment:
+      - MEMORY_API_KEY=${MEMORY_API_KEY}
+      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
+    volumes:
+      - ./configs/config.yaml:/app/config.yaml:ro
+      - connector-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9622/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-connectors:
-  - id: "personal-memories"
-    enabled: true
-    context_id: "CTX123"
-    schedule:
-      type: "interval"
-      interval_hours: 1
-    ingestion:
-      query_range: "week"
-      query_limit: 100
-      batch_size: 10
-    transformation:
-      strategy: "standard"
-    retry:
-      max_attempts: 3
-
-state:
-  backend: "json"
-  path: "./memory_sync_state.json"
-
-api:
-  host: "0.0.0.0"
-  port: 9622
-  enable_auth: true
-  api_key: "your-connector-api-key"
-
-logging:
-  level: "INFO"
-  file: "./memory_connector.log"
+volumes:
+  connector-data:
 ```
 
-## Deployment Steps
+## Performance Targets
 
-### Development Deployment
+- **Throughput**: Process 100 memories in <30 seconds (Go's concurrency advantage)
+- **Memory Usage**: <200MB for 10,000 items
+- **Binary Size**: <20MB (static build)
+- **Startup Time**: <1 second
+- **API Latency**: <50ms for status endpoints
 
-```bash
-# 1. Install dependencies
-poetry install --extras sqlite
+## Success Metrics
 
-# 2. Create config file
-cp config.example.yaml config.yaml
-# Edit config.yaml with your settings
-
-# 3. Test one-time sync
-python -m memory_connector sync \
-  --config config.yaml \
-  --connector-id personal-memories
-
-# 4. Start scheduler
-python -m memory_connector serve \
-  --config config.yaml
-```
-
-### Production Deployment (Docker)
-
-```bash
-# 1. Build image
-docker build -t memory-connector:latest .
-
-# 2. Run with docker-compose
-docker-compose up -d
-
-# 3. Check logs
-docker-compose logs -f memory-connector
-
-# 4. Check status
-curl http://localhost:9622/health
-```
-
-### Production Deployment (systemd)
-
-```bash
-# 1. Install package
-pip install -e .
-
-# 2. Create systemd service
-sudo cp memory-connector.service /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# 3. Start service
-sudo systemctl start memory-connector
-sudo systemctl enable memory-connector
-
-# 4. Check status
-sudo systemctl status memory-connector
-sudo journalctl -u memory-connector -f
-```
-
-## Metrics & Success Criteria
-
-### Functionality Metrics
+### Functionality
 - ✅ Successfully connects to Memory API
 - ✅ Successfully inserts documents into LightRAG
 - ✅ No duplicate processing (idempotency)
 - ✅ Handles API errors gracefully
 - ✅ State persists across restarts
 
-### Performance Metrics
-- ⏱️ Process 100 memories in <60 seconds
-- ⏱️ Memory usage <500MB for 10K items
-- ⏱️ Scheduler latency <5 seconds
-- ⏱️ API response time <200ms
+### Performance
+- ⏱️ Process 100 memories in <30 seconds
+- ⏱️ Memory usage <200MB
+- ⏱️ Binary size <20MB
+- ⏱️ API response time <50ms
 
-### Reliability Metrics
+### Reliability
 - 🎯 99.9% uptime for scheduler
 - 🎯 <0.1% duplicate processing rate
 - 🎯 100% state recovery after crash
 - 🎯 Auto-retry on transient failures
 
-### Usability Metrics
-- 📖 Complete documentation
-- 📖 Example configuration
-- 📖 Troubleshooting guide
-- 📖 API reference (OpenAPI)
+---
 
-## Risk Mitigation
+## CLARIFICATION QUESTIONS
 
-### Risk: Memory API rate limiting
-**Mitigation**: Add configurable rate limiting, backoff, and pagination support
+**Please review and answer the following questions before we start implementation:**
 
-### Risk: LightRAG processing delays
-**Mitigation**: Queue-based ingestion with status tracking; process asynchronously
+### 1. Go Module Naming
+- **Question**: What should be the Go module name?
+- **Options**:
+  - `github.com/kamir/LightRAG/extensions/memory-ingestion`
+  - `github.com/kamir/memory-connector`
+  - Other?
+- **Your Answer**: _____________________
 
-### Risk: State corruption
-**Mitigation**: Atomic writes, backup strategy, state validation on load
+### 2. HTTP Framework Choice
+- **Question**: Which HTTP framework should we use for the REST API?
+- **Options**:
+  - **Gin** (feature-rich, popular, slightly heavier)
+  - **net/http** (standard library, lightweight, more boilerplate)
+  - **Fiber** (Express-like, very fast)
+  - **Chi** (lightweight router on top of net/http)
+- **Your Answer**: _____________________
 
-### Risk: Network failures
-**Mitigation**: Retry logic, timeout handling, circuit breaker pattern
+### 3. State Backend Priority
+- **Question**: Which state backend should we implement first?
+- **Options**:
+  - **JSON** (simpler, good for single instance)
+  - **SQLite** (better for production, allows querying)
+  - **Both in parallel**
+- **Your Answer**: _____________________
 
-### Risk: Large memory volumes
-**Mitigation**: Batch processing, incremental sync, configurable limits
+### 4. Logging Format
+- **Question**: What logging format do you prefer?
+- **Options**:
+  - **JSON** (structured, machine-readable, better for log aggregation)
+  - **Console** (human-readable, colorized, better for development)
+  - **Both** (configurable via config)
+- **Your Answer**: _____________________
 
-## Next Steps After Implementation
+### 5. Configuration Hot-Reload
+- **Question**: Should configuration support hot-reload (reload on SIGHUP without restart)?
+- **Options**:
+  - **Yes** (more flexible, but more complex)
+  - **No** (simpler, require restart for config changes)
+- **Your Answer**: _____________________
 
-1. **Beta Testing**
-   - Deploy to test environment
-   - Run for 1 week with real data
-   - Monitor for issues
+### 6. Metrics/Observability
+- **Question**: Should we include Prometheus metrics from the start?
+- **Options**:
+  - **Yes** (better observability, slightly more code)
+  - **No** (defer to Phase 2)
+  - **Simple counters only** (minimal overhead)
+- **Your Answer**: _____________________
 
-2. **Production Rollout**
-   - Deploy to production
-   - Enable for small subset of contexts
-   - Gradual rollout
+### 7. Database for State (if SQLite chosen)
+- **Question**: If using SQLite, should we use CGO or pure Go?
+- **Options**:
+  - **mattn/go-sqlite3** (CGO, full SQLite features, complicates cross-compilation)
+  - **modernc.org/sqlite** (Pure Go, easier cross-compilation, slightly slower)
+- **Your Answer**: _____________________
 
-3. **Phase 2: Memory Manager** (See `05-FUTURE-ENHANCEMENTS.md`)
-   - Bidirectional sync
-   - Export/backup features
-   - Collaborative sharing
+### 8. Concurrent Processing
+- **Question**: How many memories should we process concurrently?
+- **Options**:
+  - **Fixed** (e.g., 10 goroutines)
+  - **Configurable** (via config file)
+  - **Dynamic** (based on system resources)
+- **Your Answer**: _____________________
+
+### 9. Binary Distribution
+- **Question**: How should we distribute the binary?
+- **Options**:
+  - **GitHub Releases** (attach binaries to releases)
+  - **Docker only**
+  - **Both**
+  - **Also create install script** (download latest binary)
+- **Your Answer**: _____________________
+
+### 10. Development Environment
+- **Question**: What Go version should we target?
+- **Options**:
+  - **Go 1.21** (stable, widely available)
+  - **Go 1.22** (latest stable, better performance)
+  - **Go 1.23** (bleeding edge)
+- **Your Answer**: _____________________
+
+### 11. Testing Coverage Target
+- **Question**: What code coverage target should we aim for?
+- **Options**:
+  - **60%** (reasonable)
+  - **80%** (comprehensive)
+  - **90%+** (very thorough, more effort)
+- **Your Answer**: _____________________
+
+### 12. Error Handling for Memory API
+- **Question**: If Memory API returns partial results or times out, should we:
+- **Options**:
+  - **Process what we got** (partial sync)
+  - **Abort and retry** (all-or-nothing)
+  - **Configurable per connector**
+- **Your Answer**: _____________________
+
+### 13. LightRAG Connection Mode
+- **Question**: Should we implement both API and "Direct" mode from the start?
+- **Options**:
+  - **API mode only** (HTTP to LightRAG, easier)
+  - **Both modes** (HTTP + direct library calls, but LightRAG is Python)
+- **Note**: Since LightRAG is Python, "Direct" mode would still be HTTP calls
+- **Your Answer**: _____________________
+
+### 14. CLI Output Format
+- **Question**: What output format for CLI commands?
+- **Options**:
+  - **Human-readable text** (pretty tables, colors)
+  - **JSON** (machine-readable)
+  - **Both** (with --json flag)
+- **Your Answer**: _____________________
+
+### 15. Initial Feature Scope
+- **Question**: Should we include any Phase 2 features in initial release?
+- **Phase 2 features**: Audio/image processing, rich transformation, webhooks
+- **Options**:
+  - **No, stick to Phase 1** (faster initial delivery)
+  - **Yes, include rich transformation** (geocoding, advanced formatting)
+  - **Yes, include webhooks** (for notifications)
+- **Your Answer**: _____________________
+
+---
+
+**Instructions**: Please edit this file and fill in your answers. Once complete, let me know and we'll proceed with implementation based on your preferences.

@@ -1,4 +1,4 @@
-# FR01: Memory API Ingestion - Detailed Architecture
+# FR01: Memory API Ingestion - Detailed Architecture (Go Implementation)
 
 ## System Architecture
 
@@ -7,15 +7,16 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Memory Ingestion Connector                       │
+│                     Location: EXTENSIONS/memory-ingestion/           │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────┐    │
-│  │                    Management API (FastAPI)                 │    │
+│  │                    Management API (net/http or Gin)         │    │
 │  │  /connectors  /status  /history  /trigger  /health         │    │
 │  └───────────────────────────┬────────────────────────────────┘    │
 │                              │                                       │
 │  ┌───────────────────────────▼────────────────────────────────┐    │
 │  │              Ingestion Orchestrator                         │    │
-│  │  - Job coordination                                         │    │
+│  │  - Job coordination (goroutines)                            │    │
 │  │  - Pipeline execution                                       │    │
 │  │  - Error handling & retry                                   │    │
 │  └─────┬──────────────┬───────────────┬───────────────────────┘    │
@@ -24,7 +25,7 @@
 │  │ Scheduler  │  │  State   │  │  Config       │                   │
 │  │ Service    │  │  Manager │  │  Manager      │                   │
 │  │            │  │          │  │               │                   │
-│  │ APScheduler│  │ JSON/DB  │  │  YAML/Env     │                   │
+│  │robfig/cron │  │ JSON/DB  │  │  YAML/Env     │                   │
 │  └─────┬──────┘  └────┬─────┘  └──────┬────────┘                   │
 │        │              │               │                             │
 │  ┌─────▼──────────────▼───────────────▼─────────────────────┐     │
@@ -36,7 +37,7 @@
 │  └────────────────────────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────────────────┘
            │                                              │
-           │ HTTP                                         │ HTTP/Direct
+           │ HTTP                                         │ HTTP
            ▼                                              ▼
    ┌───────────────┐                            ┌──────────────────┐
    │  Memory API   │                            │  LightRAG        │
@@ -44,67 +45,133 @@
    └───────────────┘                            └──────────────────┘
 ```
 
+## Project Structure
+
+```
+EXTENSIONS/memory-ingestion/
+├── cmd/
+│   └── memory-connector/
+│       └── main.go                    # Application entry point
+├── pkg/
+│   ├── client/
+│   │   ├── memory_client.go           # Memory API client
+│   │   └── lightrag_client.go         # LightRAG API client
+│   ├── transformer/
+│   │   ├── transformer.go             # Data transformation
+│   │   └── strategies.go              # Transformation strategies
+│   ├── state/
+│   │   ├── state.go                   # State manager interface
+│   │   ├── json_store.go              # JSON-based state storage
+│   │   └── sqlite_store.go            # SQLite-based state storage
+│   ├── scheduler/
+│   │   └── scheduler.go               # Cron-based job scheduler
+│   ├── orchestrator/
+│   │   └── orchestrator.go            # Pipeline orchestrator
+│   ├── config/
+│   │   └── config.go                  # Configuration management
+│   ├── api/
+│   │   ├── server.go                  # HTTP server
+│   │   ├── handlers.go                # HTTP handlers
+│   │   └── middleware.go              # Middleware (auth, logging)
+│   └── models/
+│       ├── memory.go                  # Memory API models
+│       ├── connector.go               # Connector configuration
+│       └── report.go                  # Ingestion report models
+├── internal/
+│   └── logger/
+│       └── logger.go                  # Structured logging setup
+├── configs/
+│   ├── config.yaml                    # Example configuration
+│   └── config.schema.json             # Config JSON schema
+├── deployments/
+│   ├── docker/
+│   │   └── Dockerfile
+│   ├── k8s/
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   └── systemd/
+│       └── memory-connector.service
+├── scripts/
+│   ├── build.sh                       # Build script
+│   └── install.sh                     # Installation script
+├── go.mod
+├── go.sum
+├── Makefile
+└── README.md
+```
+
 ## Core Components
 
 ### 1. Memory API Client
 
-**File**: `lightrag/connectors/memory_api_client.py`
+**File**: `pkg/client/memory_client.go`
 
 **Responsibilities**:
 - Authenticate with Memory API
 - Fetch memory lists with query parameters
-- Handle pagination if API supports it
+- Handle retries and timeouts
 - Rate limiting and backoff
 - Error handling for network issues
 
-**Key Classes**:
+**Key Structures & Methods**:
 
-```python
-class MemoryAPIClient:
-    """Client for interacting with Memory API"""
+```go
+package client
 
-    def __init__(
-        self,
-        api_url: str,
-        api_key: str,
-        timeout: int = 30,
-        max_retries: int = 3
-    ):
-        """Initialize client with connection settings"""
+import (
+    "context"
+    "net/http"
+    "time"
+)
 
-    async def get_memories(
-        self,
-        ctx_id: str,
-        limit: int = 100,
-        range: str = "week"
-    ) -> MemoryList:
-        """Fetch list of memories for a context"""
+type MemoryClient struct {
+    apiURL     string
+    apiKey     string
+    httpClient *http.Client
+    maxRetries int
+}
 
-    async def get_memory(
-        self,
-        ctx_id: str,
-        memory_id: str
-    ) -> Memory:
-        """Fetch single memory item with full details"""
+type MemoryList struct {
+    Memories []Memory `json:"memories"`
+}
 
-    async def download_audio(
-        self,
-        ctx_id: str,
-        memory_id: str,
-        output_path: Path
-    ) -> bool:
-        """Download audio file for a memory"""
+type Memory struct {
+    ID          string  `json:"id"`
+    Type        string  `json:"type"`
+    Audio       bool    `json:"audio"`
+    Image       bool    `json:"image"`
+    Transcript  string  `json:"transcript"`
+    LocationLat float64 `json:"location_lat"`
+    LocationLon float64 `json:"location_lon"`
+    CreatedAt   string  `json:"created_at"`
+}
 
-    async def download_image(
-        self,
-        ctx_id: str,
-        memory_id: str,
-        output_path: Path
-    ) -> bool:
-        """Download image file for a memory"""
+func NewMemoryClient(apiURL, apiKey string, timeout time.Duration) *MemoryClient {
+    return &MemoryClient{
+        apiURL: apiURL,
+        apiKey: apiKey,
+        httpClient: &http.Client{
+            Timeout: timeout,
+        },
+        maxRetries: 3,
+    }
+}
 
-    async def check_connection(self) -> bool:
-        """Test API connectivity and authentication"""
+func (c *MemoryClient) GetMemories(ctx context.Context, ctxID string, limit int, rangeParam string) (*MemoryList, error) {
+    // Implementation with retry logic
+}
+
+func (c *MemoryClient) DownloadAudio(ctx context.Context, ctxID, memoryID string) ([]byte, error) {
+    // Implementation
+}
+
+func (c *MemoryClient) DownloadImage(ctx context.Context, ctxID, memoryID string) ([]byte, error) {
+    // Implementation
+}
+
+func (c *MemoryClient) CheckConnection(ctx context.Context) error {
+    // Test API connectivity
+}
 ```
 
 **Configuration**:
@@ -112,14 +179,14 @@ class MemoryAPIClient:
 memory_api:
   url: "http://127.0.0.1:8080"
   api_key: "${MEMORY_API_KEY}"
-  timeout: 30
+  timeout: 30s
   max_retries: 3
-  retry_backoff: 2.0  # Exponential backoff multiplier
+  retry_backoff: 2s
 ```
 
 ### 2. Data Transformer
 
-**File**: `lightrag/connectors/memory_transformer.py`
+**File**: `pkg/transformer/transformer.go`
 
 **Responsibilities**:
 - Convert Memory API schema to LightRAG document format
@@ -128,109 +195,98 @@ memory_api:
 - Handle missing/optional fields
 - Support multiple transformation strategies
 
-**Key Classes**:
+**Key Structures & Methods**:
 
-```python
-class TransformationStrategy(ABC):
-    """Base class for transformation strategies"""
+```go
+package transformer
 
-    @abstractmethod
-    def transform(self, memory: Memory) -> str:
-        """Transform Memory to LightRAG document text"""
+import (
+    "fmt"
+    "time"
+    "github.com/your-org/memory-connector/pkg/models"
+)
 
-
-class StandardTransformationStrategy(TransformationStrategy):
-    """Standard transformation: transcript + metadata as structured text"""
-
-    def transform(self, memory: Memory) -> str:
-        """
-        Output format:
-        ---
-        Memory Record
-        ID: {id}
-        Type: {type}
-        Recorded: {created_at}
-        Location: ({lat}, {lon})
-        Has Audio: {audio}
-        Has Image: {image}
-
-        Transcript:
-        {transcript}
-        ---
-        """
-
-
-class RichTransformationStrategy(TransformationStrategy):
-    """
-    Rich transformation: includes geocoding, datetime parsing,
-    and additional context
-    """
-
-    def __init__(self, geocoding_enabled: bool = False):
-        self.geocoding = geocoding_enabled
-
-    def transform(self, memory: Memory) -> str:
-        """
-        Output format includes:
-        - Reverse geocoded location names
-        - Formatted dates (relative and absolute)
-        - Inferred tags/categories
-        - Sentiment analysis (optional)
-        """
-
-
-class MemoryTransformer:
-    """Main transformer class"""
-
-    def __init__(self, strategy: TransformationStrategy):
-        self.strategy = strategy
-
-    async def transform_batch(
-        self,
-        memories: List[Memory]
-    ) -> List[TransformedDocument]:
-        """Transform multiple memories in parallel"""
-
-    def set_strategy(self, strategy: TransformationStrategy):
-        """Change transformation strategy at runtime"""
-```
-
-**Example Transformation**:
-
-Input (Memory API JSON):
-```json
-{
-  "id": "mem_1234567890",
-  "type": "record",
-  "audio": true,
-  "image": false,
-  "transcript": "Had a great meeting with the team today. We discussed the new product roadmap and agreed on Q1 priorities.",
-  "location_lat": 37.7749,
-  "location_lon": -122.4194,
-  "created_at": "2025-12-18T14:30:00Z"
+type Strategy interface {
+    Transform(memory *models.Memory) (string, error)
 }
-```
 
-Output (LightRAG document):
-```
----
-Memory Record from December 18, 2025
-ID: mem_1234567890
-Type: Voice Recording
-Location: San Francisco, CA (37.7749, -122.4194)
-Time: 2:30 PM UTC
-Media: Audio available
+type StandardStrategy struct{}
+
+func (s *StandardStrategy) Transform(memory *models.Memory) (string, error) {
+    createdAt, _ := time.Parse(time.RFC3339, memory.CreatedAt)
+    dateStr := createdAt.Format("January 02, 2006 at 03:04 PM UTC")
+
+    locationStr := ""
+    if memory.LocationLat != 0.0 || memory.LocationLon != 0.0 {
+        locationStr = fmt.Sprintf("\nLocation: (%.6f, %.6f)",
+            memory.LocationLat, memory.LocationLon)
+    }
+
+    media := []string{}
+    if memory.Audio {
+        media = append(media, "Audio")
+    }
+    if memory.Image {
+        media = append(media, "Image")
+    }
+    mediaStr := "None"
+    if len(media) > 0 {
+        mediaStr = fmt.Sprintf("%v", media)
+    }
+
+    transcript := memory.Transcript
+    if transcript == "" {
+        transcript = "[No transcript available]"
+    }
+
+    return fmt.Sprintf(`---
+Memory Record
+ID: %s
+Type: %s
+Recorded: %s%s
+Media Available: %s
 
 Transcript:
-Had a great meeting with the team today. We discussed the new product roadmap and agreed on Q1 priorities.
+%s
+---`, memory.ID, memory.Type, dateStr, locationStr, mediaStr, transcript), nil
+}
 
-Tags: #meeting #team #product-roadmap #planning
----
+type RichStrategy struct {
+    GeocodingEnabled bool
+}
+
+func (s *RichStrategy) Transform(memory *models.Memory) (string, error) {
+    // Enhanced transformation with geocoding, tagging, etc.
+}
+
+type Transformer struct {
+    strategy Strategy
+}
+
+func New(strategy Strategy) *Transformer {
+    return &Transformer{strategy: strategy}
+}
+
+func (t *Transformer) Transform(memory *models.Memory) (string, error) {
+    return t.strategy.Transform(memory)
+}
+
+func (t *Transformer) TransformBatch(memories []*models.Memory) ([]string, error) {
+    results := make([]string, 0, len(memories))
+    for _, memory := range memories {
+        doc, err := t.Transform(memory)
+        if err != nil {
+            return nil, err
+        }
+        results = append(results, doc)
+    }
+    return results, nil
+}
 ```
 
 ### 3. State Manager
 
-**File**: `lightrag/connectors/state_manager.py`
+**File**: `pkg/state/state.go`
 
 **Responsibilities**:
 - Track ingestion state per connector/context
@@ -238,84 +294,48 @@ Tags: #meeting #team #product-roadmap #planning
 - Store sync history and metrics
 - Support state queries and rollback
 
-**Key Classes**:
+**Key Structures & Methods**:
 
-```python
-class SyncState(BaseModel):
-    """State for a single sync operation"""
-    connector_id: str
-    context_id: str
-    last_sync_timestamp: datetime
-    last_successful_sync: datetime
-    processed_memory_ids: Set[str]
-    failed_memory_ids: Dict[str, str]  # memory_id -> error_message
-    total_processed: int
-    total_failed: int
-    status: Literal["idle", "running", "completed", "failed"]
+```go
+package state
 
+import (
+    "context"
+    "time"
+)
 
-class StateManager:
-    """Manages ingestion state persistence"""
+type SyncState struct {
+    ConnectorID         string            `json:"connector_id"`
+    ContextID           string            `json:"context_id"`
+    LastSyncTimestamp   time.Time         `json:"last_sync_timestamp"`
+    LastSuccessfulSync  time.Time         `json:"last_successful_sync"`
+    ProcessedMemoryIDs  map[string]bool   `json:"processed_memory_ids"`
+    FailedMemoryIDs     map[string]string `json:"failed_memory_ids"` // memory_id -> error
+    TotalProcessed      int               `json:"total_processed"`
+    TotalFailed         int               `json:"total_failed"`
+    Status              string            `json:"status"` // idle, running, completed, failed
+}
 
-    def __init__(self, storage_path: Path, backend: str = "json"):
-        """
-        Args:
-            storage_path: Path to state file/directory
-            backend: "json" or "sqlite"
-        """
+type Manager interface {
+    GetState(ctx context.Context, connectorID, contextID string) (*SyncState, error)
+    UpdateState(ctx context.Context, state *SyncState) error
+    MarkProcessed(ctx context.Context, connectorID, contextID, memoryID string) error
+    MarkFailed(ctx context.Context, connectorID, contextID, memoryID string, errorMsg string) error
+    IsProcessed(ctx context.Context, connectorID, contextID, memoryID string) (bool, error)
+    GetUnprocessedIDs(ctx context.Context, connectorID, contextID string, allIDs []string) ([]string, error)
+    GetSyncHistory(ctx context.Context, connectorID string, limit int) ([]*SyncState, error)
+    ResetState(ctx context.Context, connectorID, contextID string) error
+}
 
-    async def get_state(self, connector_id: str, context_id: str) -> SyncState:
-        """Retrieve current state for a connector/context"""
+// JSONStore implements Manager using JSON files
+type JSONStore struct {
+    filePath string
+}
 
-    async def update_state(self, state: SyncState):
-        """Update state atomically"""
-
-    async def mark_processed(
-        self,
-        connector_id: str,
-        context_id: str,
-        memory_id: str
-    ):
-        """Mark a memory as successfully processed"""
-
-    async def mark_failed(
-        self,
-        connector_id: str,
-        context_id: str,
-        memory_id: str,
-        error: str
-    ):
-        """Mark a memory as failed"""
-
-    async def is_processed(
-        self,
-        connector_id: str,
-        context_id: str,
-        memory_id: str
-    ) -> bool:
-        """Check if memory has been processed"""
-
-    async def get_unprocessed_ids(
-        self,
-        connector_id: str,
-        context_id: str,
-        all_memory_ids: List[str]
-    ) -> List[str]:
-        """Filter out already-processed memory IDs"""
-
-    async def get_sync_history(
-        self,
-        connector_id: str,
-        limit: int = 10
-    ) -> List[SyncState]:
-        """Retrieve sync history"""
-
-    async def reset_state(
-        self,
-        connector_id: str,
-        context_id: str
-    ):
-        """Reset state for re-sync"""
+// SQLiteStore implements Manager using SQLite database
+type SQLiteStore struct {
+    dbPath string
+}
 ```
 
 **State Storage Format (JSON)**:
@@ -325,11 +345,15 @@ class StateManager:
     "memory-connector-1": {
       "contexts": {
         "CTX123": {
+          "connector_id": "memory-connector-1",
+          "context_id": "CTX123",
           "last_sync_timestamp": "2025-12-18T15:00:00Z",
           "last_successful_sync": "2025-12-18T15:00:00Z",
-          "processed_memory_ids": [
-            "mem_001", "mem_002", "mem_003"
-          ],
+          "processed_memory_ids": {
+            "mem_001": true,
+            "mem_002": true,
+            "mem_003": true
+          },
           "failed_memory_ids": {
             "mem_004": "Network timeout"
           },
@@ -343,204 +367,84 @@ class StateManager:
 }
 ```
 
-### 4. Configuration Manager
+### 4. Scheduler Service
 
-**File**: `lightrag/connectors/config_manager.py`
-
-**Responsibilities**:
-- Load and validate configuration
-- Support multiple config sources (file, env, CLI)
-- Hot-reload for non-critical settings
-- Schema validation
-
-**Configuration Schema**:
-
-```yaml
-# config.yaml
-
-# LightRAG connection settings
-lightrag:
-  mode: "api"  # "api" or "direct"
-
-  # API mode settings
-  api:
-    url: "http://localhost:9621"
-    api_key: "${LIGHTRAG_API_KEY}"
-    workspace: "memories"
-
-  # Direct mode settings (if mode: "direct")
-  direct:
-    working_dir: "./lightrag_storage"
-    # LLM/embedding settings inherited from environment
-
-# Memory API settings
-memory_api:
-  url: "http://127.0.0.1:8080"
-  api_key: "${MEMORY_API_KEY}"
-  timeout: 30
-  max_retries: 3
-
-# Connector definitions
-connectors:
-  - id: "personal-memories"
-    enabled: true
-    context_id: "CTX123"
-
-    # Scheduling
-    schedule:
-      type: "interval"  # "interval" or "cron"
-      interval_hours: 1  # for interval type
-      # cron: "0 */1 * * *"  # for cron type
-
-    # Ingestion settings
-    ingestion:
-      query_range: "week"  # how far back to query
-      query_limit: 100     # max items per query
-      batch_size: 10       # memories to process in parallel
-
-    # Transformation settings
-    transformation:
-      strategy: "standard"  # "standard" or "rich"
-      include_audio: false  # download and process audio
-      include_image: false  # download and process images
-      geocoding: false      # reverse geocode locations
-
-    # Retry settings
-    retry:
-      max_attempts: 3
-      backoff_multiplier: 2.0
-      max_backoff_seconds: 60
-
-  - id: "work-memories"
-    enabled: false
-    context_id: "CTX456"
-    schedule:
-      type: "cron"
-      cron: "0 9,17 * * 1-5"  # 9am and 5pm on weekdays
-
-# State management
-state:
-  backend: "json"  # "json" or "sqlite"
-  path: "./memory_sync_state.json"
-  # For SQLite:
-  # path: "./memory_sync_state.db"
-
-# API server (for management interface)
-api:
-  host: "0.0.0.0"
-  port: 9622
-  enable_auth: true
-  api_key: "${CONNECTOR_API_KEY}"
-
-# Logging
-logging:
-  level: "INFO"
-  format: "json"  # "json" or "text"
-  file: "./memory_connector.log"
-```
-
-### 5. Scheduler Service
-
-**File**: `lightrag/connectors/scheduler_service.py`
+**File**: `pkg/scheduler/scheduler.go`
 
 **Responsibilities**:
-- Manage periodic ingestion jobs
+- Manage periodic ingestion jobs using robfig/cron
 - Support multiple schedules
 - Job control (pause, resume, trigger)
 - Monitor job health
 
-**Key Classes**:
+**Key Structures & Methods**:
 
-```python
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.cron import CronTrigger
+```go
+package scheduler
 
+import (
+    "context"
+    "github.com/robfig/cron/v3"
+)
 
-class SchedulerService:
-    """Manages scheduled ingestion jobs"""
+type Scheduler struct {
+    cron        *cron.Cron
+    jobs        map[string]cron.EntryID
+    orchestrator Orchestrator
+}
 
-    def __init__(
-        self,
-        orchestrator: IngestionOrchestrator,
-        config_manager: ConfigManager
-    ):
-        self.scheduler = AsyncIOScheduler()
-        self.orchestrator = orchestrator
-        self.config = config_manager
+type JobConfig struct {
+    ConnectorID string
+    Schedule    string // Cron expression or @every interval
+}
 
-    async def start(self):
-        """Start scheduler and register jobs"""
-        for connector_config in self.config.get_connectors():
-            if connector_config.enabled:
-                self.add_job(connector_config)
+func New(orchestrator Orchestrator) *Scheduler {
+    return &Scheduler{
+        cron: cron.New(cron.WithSeconds()),
+        jobs: make(map[string]cron.EntryID),
+        orchestrator: orchestrator,
+    }
+}
 
-        self.scheduler.start()
+func (s *Scheduler) Start(ctx context.Context) error {
+    s.cron.Start()
+    <-ctx.Done()
+    s.cron.Stop()
+    return nil
+}
 
-    async def stop(self):
-        """Gracefully stop all jobs"""
-        self.scheduler.shutdown(wait=True)
+func (s *Scheduler) AddJob(config JobConfig) error {
+    entryID, err := s.cron.AddFunc(config.Schedule, func() {
+        s.runJob(config.ConnectorID)
+    })
+    if err != nil {
+        return err
+    }
+    s.jobs[config.ConnectorID] = entryID
+    return nil
+}
 
-    def add_job(self, connector_config: ConnectorConfig):
-        """Add a scheduled job for a connector"""
-        if connector_config.schedule.type == "interval":
-            trigger = IntervalTrigger(
-                hours=connector_config.schedule.interval_hours
-            )
-        elif connector_config.schedule.type == "cron":
-            trigger = CronTrigger.from_crontab(
-                connector_config.schedule.cron
-            )
+func (s *Scheduler) RemoveJob(connectorID string) {
+    if entryID, exists := s.jobs[connectorID]; exists {
+        s.cron.Remove(entryID)
+        delete(s.jobs, connectorID)
+    }
+}
 
-        self.scheduler.add_job(
-            func=self._run_ingestion_job,
-            trigger=trigger,
-            args=[connector_config.id],
-            id=f"connector_{connector_config.id}",
-            name=f"Ingestion: {connector_config.id}",
-            replace_existing=True
-        )
+func (s *Scheduler) TriggerNow(connectorID string) error {
+    go s.runJob(connectorID)
+    return nil
+}
 
-    async def _run_ingestion_job(self, connector_id: str):
-        """Execute ingestion for a connector"""
-        try:
-            await self.orchestrator.run_ingestion(connector_id)
-        except Exception as e:
-            logger.error(
-                f"Ingestion job failed for {connector_id}: {e}"
-            )
-
-    def trigger_now(self, connector_id: str):
-        """Manually trigger a job immediately"""
-        self.scheduler.modify_job(
-            f"connector_{connector_id}",
-            next_run_time=datetime.now()
-        )
-
-    def pause_job(self, connector_id: str):
-        """Pause a scheduled job"""
-        self.scheduler.pause_job(f"connector_{connector_id}")
-
-    def resume_job(self, connector_id: str):
-        """Resume a paused job"""
-        self.scheduler.resume_job(f"connector_{connector_id}")
-
-    def get_job_status(self, connector_id: str) -> dict:
-        """Get job status and next run time"""
-        job = self.scheduler.get_job(f"connector_{connector_id}")
-        if job:
-            return {
-                "id": job.id,
-                "name": job.name,
-                "next_run": job.next_run_time,
-                "paused": job.next_run_time is None
-            }
-        return None
+func (s *Scheduler) runJob(connectorID string) {
+    ctx := context.Background()
+    _ = s.orchestrator.RunIngestion(ctx, connectorID)
+}
 ```
 
-### 6. Ingestion Orchestrator
+### 5. Ingestion Orchestrator
 
-**File**: `lightrag/connectors/ingestion_orchestrator.py`
+**File**: `pkg/orchestrator/orchestrator.go`
 
 **Responsibilities**:
 - Coordinate the complete ingestion pipeline
@@ -548,359 +452,233 @@ class SchedulerService:
 - Error handling and retry logic
 - Progress reporting
 
-**Key Classes**:
+**Key Structures & Methods**:
 
-```python
-class IngestionOrchestrator:
-    """Orchestrates the complete ingestion pipeline"""
+```go
+package orchestrator
 
-    def __init__(
-        self,
-        config_manager: ConfigManager,
-        state_manager: StateManager,
-        memory_client_factory: callable,
-        lightrag_client_factory: callable,
-        transformer_factory: callable
-    ):
-        self.config = config_manager
-        self.state = state_manager
-        self.memory_client_factory = memory_client_factory
-        self.lightrag_client_factory = lightrag_client_factory
-        self.transformer_factory = transformer_factory
+import (
+    "context"
+    "sync"
+    "time"
+)
 
-    async def run_ingestion(
-        self,
-        connector_id: str,
-        strategy: str = "incremental"
-    ) -> IngestionReport:
-        """
-        Run ingestion for a connector
+type Orchestrator struct {
+    configMgr     ConfigManager
+    stateMgr      StateManager
+    memoryClient  MemoryClient
+    lightragClient LightRAGClient
+    transformer   Transformer
+    logger        Logger
+}
 
-        Args:
-            connector_id: ID of connector to run
-            strategy: "full", "incremental", or "selective"
+type IngestionReport struct {
+    ConnectorID      string    `json:"connector_id"`
+    StartTime        time.Time `json:"start_time"`
+    EndTime          time.Time `json:"end_time"`
+    Status           string    `json:"status"`
+    TotalFetched     int       `json:"total_fetched"`
+    TotalToProcess   int       `json:"total_to_process"`
+    SuccessfulCount  int       `json:"successful_count"`
+    FailedCount      int       `json:"failed_count"`
+    Errors           []string  `json:"errors"`
+    Error            string    `json:"error,omitempty"`
+}
 
-        Returns:
-            IngestionReport with results
-        """
+func (o *Orchestrator) RunIngestion(ctx context.Context, connectorID string) (*IngestionReport, error) {
+    // 1. Load connector config
+    // 2. Initialize clients
+    // 3. Get current state
+    // 4. Fetch memories from API
+    // 5. Filter unprocessed
+    // 6. Process in batches (concurrent using goroutines)
+    // 7. Update state
+    // 8. Generate report
+}
 
-        # 1. Load connector config
-        config = self.config.get_connector(connector_id)
+func (o *Orchestrator) processBatch(ctx context.Context, batch []*Memory, config ConnectorConfig) error {
+    var wg sync.WaitGroup
+    errChan := make(chan error, len(batch))
 
-        # 2. Initialize clients
-        memory_client = self.memory_client_factory(config)
-        lightrag_client = self.lightrag_client_factory(config)
-        transformer = self.transformer_factory(config)
-
-        # 3. Get current state
-        state = await self.state.get_state(
-            connector_id,
-            config.context_id
-        )
-
-        # 4. Update state: mark as running
-        state.status = "running"
-        await self.state.update_state(state)
-
-        report = IngestionReport(
-            connector_id=connector_id,
-            start_time=datetime.now(timezone.utc)
-        )
-
-        try:
-            # 5. Fetch memories from API
-            memories = await memory_client.get_memories(
-                ctx_id=config.context_id,
-                limit=config.ingestion.query_limit,
-                range=config.ingestion.query_range
-            )
-
-            # 6. Filter unprocessed
-            all_memory_ids = [m.id for m in memories.memories]
-            unprocessed_ids = await self.state.get_unprocessed_ids(
-                connector_id,
-                config.context_id,
-                all_memory_ids
-            )
-
-            memories_to_process = [
-                m for m in memories.memories if m.id in unprocessed_ids
-            ]
-
-            report.total_fetched = len(memories.memories)
-            report.total_to_process = len(memories_to_process)
-
-            # 7. Process in batches
-            for i in range(0, len(memories_to_process), config.ingestion.batch_size):
-                batch = memories_to_process[i:i + config.ingestion.batch_size]
-
-                await self._process_batch(
-                    batch=batch,
-                    connector_id=connector_id,
-                    context_id=config.context_id,
-                    transformer=transformer,
-                    lightrag_client=lightrag_client,
-                    report=report
-                )
-
-            # 8. Update state: mark as completed
-            state.status = "completed"
-            state.last_successful_sync = datetime.now(timezone.utc)
-            await self.state.update_state(state)
-
-            report.status = "success"
-
-        except Exception as e:
-            # 9. Update state: mark as failed
-            state.status = "failed"
-            await self.state.update_state(state)
-
-            report.status = "failed"
-            report.error = str(e)
-            logger.error(f"Ingestion failed: {e}", exc_info=True)
-
-        finally:
-            report.end_time = datetime.now(timezone.utc)
-
-        return report
-
-    async def _process_batch(
-        self,
-        batch: List[Memory],
-        connector_id: str,
-        context_id: str,
-        transformer: MemoryTransformer,
-        lightrag_client: LightRAGClient,
-        report: IngestionReport
-    ):
-        """Process a batch of memories in parallel"""
-
-        async def process_single(memory: Memory):
-            try:
-                # Transform
-                document = await transformer.transform(memory)
-
-                # Submit to LightRAG
-                await lightrag_client.insert_document(
-                    text=document,
-                    file_source=f"memory://{context_id}/{memory.id}"
-                )
-
-                # Mark as processed
-                await self.state.mark_processed(
-                    connector_id,
-                    context_id,
-                    memory.id
-                )
-
-                report.successful_count += 1
-
-            except Exception as e:
-                # Mark as failed
-                await self.state.mark_failed(
-                    connector_id,
-                    context_id,
-                    memory.id,
-                    str(e)
-                )
-
-                report.failed_count += 1
-                report.errors.append({
-                    "memory_id": memory.id,
-                    "error": str(e)
-                })
-
-        # Process batch concurrently
-        await asyncio.gather(*[process_single(m) for m in batch])
-```
-
-### 7. LightRAG Client
-
-**File**: `lightrag/connectors/lightrag_client.py`
-
-**Responsibilities**:
-- Abstract LightRAG integration (API or Direct)
-- Handle authentication
-- Submit documents
-- Track status
-
-**Key Classes**:
-
-```python
-class LightRAGClient(ABC):
-    """Abstract base for LightRAG integration"""
-
-    @abstractmethod
-    async def insert_document(
-        self,
-        text: str,
-        file_source: Optional[str] = None
-    ) -> str:
-        """Insert document, return document ID"""
-
-
-class LightRAGAPIClient(LightRAGClient):
-    """LightRAG API integration"""
-
-    def __init__(
-        self,
-        api_url: str,
-        api_key: str,
-        workspace: str = "default"
-    ):
-        self.api_url = api_url
-        self.api_key = api_key
-        self.workspace = workspace
-        self.client = httpx.AsyncClient()
-
-    async def insert_document(
-        self,
-        text: str,
-        file_source: Optional[str] = None
-    ) -> str:
-        response = await self.client.post(
-            f"{self.api_url}/documents/text",
-            json={
-                "text": text,
-                "file_source": file_source or "memory_api"
-            },
-            headers={
-                "X-API-Key": self.api_key,
-                "LIGHTRAG-WORKSPACE": self.workspace
+    for _, memory := range batch {
+        wg.Add(1)
+        go func(m *Memory) {
+            defer wg.Done()
+            if err := o.processMemory(ctx, m, config); err != nil {
+                errChan <- err
             }
-        )
-        response.raise_for_status()
-        return response.json()["doc_id"]
+        }(memory)
+    }
 
+    wg.Wait()
+    close(errChan)
 
-class LightRAGDirectClient(LightRAGClient):
-    """Direct LightRAG library integration"""
+    // Collect errors
+    for err := range errChan {
+        // Handle errors
+    }
 
-    def __init__(
-        self,
-        working_dir: str,
-        **lightrag_kwargs
-    ):
-        from lightrag import LightRAG
-        self.rag = LightRAG(working_dir=working_dir, **lightrag_kwargs)
-
-    async def initialize(self):
-        await self.rag.initialize_storages()
-
-    async def insert_document(
-        self,
-        text: str,
-        file_source: Optional[str] = None
-    ) -> str:
-        doc_id = await self.rag.ainsert(
-            input=text,
-            file_paths=[file_source] if file_source else None
-        )
-        return doc_id
+    return nil
+}
 ```
 
-## File Structure
+### 6. Configuration Manager
 
+**File**: `pkg/config/config.go`
+
+**Configuration Schema**:
+
+```go
+package config
+
+type Config struct {
+    LightRAG   LightRAGConfig   `yaml:"lightrag"`
+    MemoryAPI  MemoryAPIConfig  `yaml:"memory_api"`
+    Connectors []ConnectorConfig `yaml:"connectors"`
+    State      StateConfig      `yaml:"state"`
+    API        APIConfig        `yaml:"api"`
+    Logging    LoggingConfig    `yaml:"logging"`
+}
+
+type LightRAGConfig struct {
+    Mode   string         `yaml:"mode"` // "api" or "direct"
+    API    APIConnConfig  `yaml:"api"`
+}
+
+type MemoryAPIConfig struct {
+    URL           string        `yaml:"url"`
+    APIKey        string        `yaml:"api_key"`
+    Timeout       time.Duration `yaml:"timeout"`
+    MaxRetries    int           `yaml:"max_retries"`
+    RetryBackoff  time.Duration `yaml:"retry_backoff"`
+}
+
+type ConnectorConfig struct {
+    ID              string               `yaml:"id"`
+    Enabled         bool                 `yaml:"enabled"`
+    ContextID       string               `yaml:"context_id"`
+    Schedule        ScheduleConfig       `yaml:"schedule"`
+    Ingestion       IngestionConfig      `yaml:"ingestion"`
+    Transformation  TransformationConfig `yaml:"transformation"`
+    Retry           RetryConfig          `yaml:"retry"`
+}
+
+type ScheduleConfig struct {
+    Type          string `yaml:"type"` // "interval" or "cron"
+    IntervalHours int    `yaml:"interval_hours,omitempty"`
+    Cron          string `yaml:"cron,omitempty"`
+}
+
+func Load(path string) (*Config, error) {
+    // Load YAML config with environment variable substitution
+}
+
+func (c *Config) Validate() error {
+    // Validate configuration
+}
 ```
-lightrag/
-├── connectors/
-│   ├── __init__.py
-│   ├── memory_api_client.py       # Memory API client
-│   ├── memory_transformer.py      # Data transformation
-│   ├── state_manager.py           # State persistence
-│   ├── config_manager.py          # Configuration
-│   ├── scheduler_service.py       # Job scheduling
-│   ├── ingestion_orchestrator.py  # Pipeline orchestration
-│   ├── lightrag_client.py         # LightRAG integration
-│   ├── connector_api.py           # Management REST API
-│   ├── models.py                  # Pydantic models
-│   └── cli.py                     # CLI interface
-├── api/
-│   └── (existing LightRAG API files)
-└── (existing LightRAG files)
 
-# Executable entry point
-memory_connector/
-├── __init__.py
-└── __main__.py  # CLI entry point
+### 7. REST API Server
+
+**File**: `pkg/api/server.go`
+
+**Endpoints**:
+
+```go
+package api
+
+import (
+    "net/http"
+    "github.com/gin-gonic/gin" // or use net/http
+)
+
+type Server struct {
+    router      *gin.Engine
+    orchestrator *Orchestrator
+    stateMgr    StateManager
+    configMgr   ConfigManager
+}
+
+func NewServer(orchestrator *Orchestrator, stateMgr StateManager, configMgr ConfigManager) *Server {
+    s := &Server{
+        router: gin.Default(),
+        orchestrator: orchestrator,
+        stateMgr: stateMgr,
+        configMgr: configMgr,
+    }
+    s.setupRoutes()
+    return s
+}
+
+func (s *Server) setupRoutes() {
+    api := s.router.Group("/api/v1")
+    {
+        api.GET("/health", s.handleHealth)
+        api.GET("/connectors", s.handleListConnectors)
+        api.GET("/connectors/:id/status", s.handleGetStatus)
+        api.GET("/connectors/:id/history", s.handleGetHistory)
+        api.POST("/connectors/:id/trigger", s.handleTrigger)
+    }
+}
+
+func (s *Server) handleHealth(c *gin.Context) {
+    c.JSON(http.StatusOK, gin.H{
+        "status": "healthy",
+        "version": "1.0.0",
+    })
+}
 ```
 
-## Data Models
+## Dependencies (go.mod)
 
-**File**: `lightrag/connectors/models.py`
+```go
+module github.com/your-org/memory-connector
 
-```python
-from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
-from datetime import datetime
+go 1.21
 
+require (
+    github.com/gin-gonic/gin v1.10.0
+    github.com/robfig/cron/v3 v3.0.1
+    github.com/mattn/go-sqlite3 v1.14.19
+    github.com/spf13/cobra v1.8.0
+    github.com/spf13/viper v1.18.2
+    go.uber.org/zap v1.26.0
+    gopkg.in/yaml.v3 v3.0.1
+)
+```
 
-# Memory API Models (from OpenAPI spec)
-class Memory(BaseModel):
-    id: str
-    type: str = "record"
-    audio: bool
-    image: bool
-    transcript: str = ""
-    location_lat: float = 0.0
-    location_lon: float = 0.0
-    created_at: str
+## Build & Deployment
 
+### Makefile
 
-class MemoryList(BaseModel):
-    memories: List[Memory]
+```makefile
+.PHONY: build test clean install
 
+BINARY_NAME=memory-connector
+BUILD_DIR=bin
 
-# Connector Configuration Models
-class ScheduleConfig(BaseModel):
-    type: Literal["interval", "cron"]
-    interval_hours: Optional[int] = None
-    cron: Optional[str] = None
+build:
+	go build -o $(BUILD_DIR)/$(BINARY_NAME) cmd/memory-connector/main.go
 
+build-linux:
+	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_NAME)-linux cmd/memory-connector/main.go
 
-class IngestionConfig(BaseModel):
-    query_range: str = "week"
-    query_limit: int = 100
-    batch_size: int = 10
+test:
+	go test -v ./...
 
+clean:
+	rm -rf $(BUILD_DIR)
 
-class TransformationConfig(BaseModel):
-    strategy: Literal["standard", "rich"] = "standard"
-    include_audio: bool = False
-    include_image: bool = False
-    geocoding: bool = False
+install:
+	go install ./cmd/memory-connector
 
+docker-build:
+	docker build -t memory-connector:latest -f deployments/docker/Dockerfile .
 
-class RetryConfig(BaseModel):
-    max_attempts: int = 3
-    backoff_multiplier: float = 2.0
-    max_backoff_seconds: int = 60
-
-
-class ConnectorConfig(BaseModel):
-    id: str
-    enabled: bool = True
-    context_id: str
-    schedule: ScheduleConfig
-    ingestion: IngestionConfig
-    transformation: TransformationConfig
-    retry: RetryConfig
-
-
-# Ingestion Report Models
-class IngestionReport(BaseModel):
-    connector_id: str
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    status: Literal["running", "success", "failed"] = "running"
-    total_fetched: int = 0
-    total_to_process: int = 0
-    successful_count: int = 0
-    failed_count: int = 0
-    errors: List[dict] = Field(default_factory=list)
-    error: Optional[str] = None
+run:
+	go run cmd/memory-connector/main.go serve --config configs/config.yaml
 ```
 
 ## Next Steps
 
-See `02-IMPLEMENTATION-PLAN.md` for the detailed implementation roadmap.
+See `02-IMPLEMENTATION-PLAN.md` for the detailed implementation roadmap with Go-specific tooling and build instructions.

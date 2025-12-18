@@ -55,12 +55,16 @@ This folder contains the complete architectural design and implementation plan f
 
 Automatically pulls memory items from your Memory API on a configurable schedule and populates a LightRAG knowledge graph with the content.
 
+**Implementation**: Go-based standalone service in `EXTENSIONS/memory-ingestion/`
+
 **Key Benefits**:
 - ✅ Automated hourly sync (configurable)
 - ✅ Incremental updates (no duplicate processing)
 - ✅ Transcript + metadata → knowledge graph entities
 - ✅ Progress tracking and status monitoring
 - ✅ REST API for management
+- ✅ Fast, compiled Go binary (~20MB)
+- ✅ Low resource usage (<200MB RAM)
 - ✅ Multiple deployment options
 
 ### Architecture at a Glance
@@ -132,20 +136,20 @@ This is implemented as a **standalone service** (not integrated into LightRAG co
 
 ## 🔧 Technology Stack
 
-- **Python 3.11+**
-- **FastAPI** - REST API framework
-- **APScheduler** - Job scheduling
-- **httpx** - Async HTTP client
-- **Pydantic** - Data validation
+- **Go 1.21+** - Fast, compiled, concurrent
+- **Gin or net/http** - REST API framework
+- **robfig/cron** - Job scheduling
+- **Viper** - Configuration management
+- **Zap** - Structured logging
 - **SQLite/JSON** - State storage
-- **PyYAML** - Config parsing
+- **Cobra** - CLI framework
 
 ## 🚀 Quick Example
 
 ### One-Time Sync (Manual)
 
 ```bash
-python -m memory_connector sync \
+./memory-connector sync \
   --config config.yaml \
   --connector-id personal-memories
 ```
@@ -153,8 +157,16 @@ python -m memory_connector sync \
 ### Automated Sync (Service)
 
 ```bash
-python -m memory_connector serve \
+./memory-connector serve \
   --config config.yaml
+```
+
+### Build from Source
+
+```bash
+cd EXTENSIONS/memory-ingestion
+make build
+./bin/memory-connector --help
 ```
 
 ### Configuration Example

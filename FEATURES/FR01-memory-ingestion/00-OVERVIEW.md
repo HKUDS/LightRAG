@@ -82,10 +82,9 @@ The tool will support two integration modes:
 - Better for distributed deployments
 
 **B. Direct Library Mode** (For embedded scenarios)
-- Imports LightRAG as Python library
-- Calls `rag.ainsert()` directly
-- Lower overhead, no network latency
-- Better for single-process deployments
+- Calls LightRAG API directly (no Python library dependency)
+- Lower overhead for co-located deployments
+- Better for single-host deployments
 
 ### 3. State Management
 
@@ -101,26 +100,26 @@ The tool will support two integration modes:
 
 ### 4. Scheduling
 
-**DECISION: APScheduler with Configurable Triggers**
+**DECISION: Cron-based Scheduler with Configurable Triggers**
 
-- Use `APScheduler` library for flexible scheduling
+- Use `robfig/cron` (Go library) for flexible scheduling
 - Support multiple trigger types:
   - Interval: Every N hours/minutes
   - Cron: Specific times (e.g., "0 */1 * * *" for hourly)
   - Manual: On-demand trigger via API
-- Background scheduler runs in separate thread
-- Graceful shutdown on signals
+- Background scheduler runs in separate goroutines
+- Graceful shutdown on signals (SIGTERM, SIGINT)
 
 ## Component Overview
 
-### 1. Memory API Client (`memory_api_client.py`)
+### 1. Memory API Client (`pkg/client/memory_client.go`)
 - Authenticates with Memory API (API key)
 - Fetches memory lists with filtering (context, date range, limit)
 - Retrieves individual memory items
 - Downloads associated resources (audio, images) if needed
 - Handles pagination and rate limiting
 
-### 2. Data Transformer (`memory_transformer.py`)
+### 2. Data Transformer (`pkg/transformer/transformer.go`)
 - Converts Memory API schema → LightRAG document format
 - Enriches transcript with metadata:
   - Location information (lat/lon → place names if available)
@@ -129,7 +128,7 @@ The tool will support two integration modes:
 - Generates structured text for optimal entity extraction
 - Handles missing/optional fields gracefully
 
-### 3. Ingestion Orchestrator (`ingestion_orchestrator.py`)
+### 3. Ingestion Orchestrator (`pkg/orchestrator/orchestrator.go`)
 - Coordinates the ingestion pipeline
 - Implements ingestion strategies:
   - **Full Sync**: Process all memories (first run)
@@ -138,28 +137,28 @@ The tool will support two integration modes:
 - Handles errors and retries
 - Tracks progress and generates reports
 
-### 4. State Manager (`state_manager.py`)
+### 4. State Manager (`pkg/state/state.go`)
 - Persists sync state across runs
 - Implements idempotency (no duplicate processing)
 - Tracks per-context sync status
 - Provides state query APIs
 
-### 5. Configuration Manager (`config_manager.py`)
+### 5. Configuration Manager (`pkg/config/config.go`)
 - Loads configuration from:
-  - YAML/JSON config files
+  - YAML config files
   - Environment variables
-  - CLI arguments
+  - CLI flags
 - Validates configuration
-- Supports hot-reload for some settings
+- Supports hot-reload for some settings (via SIGHUP)
 
-### 6. Scheduler Service (`scheduler_service.py`)
+### 6. Scheduler Service (`pkg/scheduler/scheduler.go`)
 - Manages periodic ingestion jobs
 - Supports multiple schedules (different contexts on different cadences)
 - Provides job control (pause, resume, trigger now)
 - Logs scheduler events
 
-### 7. REST API Interface (`connector_api.py`)
-- FastAPI-based management API
+### 7. REST API Interface (`pkg/api/server.go`)
+- Go standard library or Gin-based management API
 - Endpoints:
   - `GET /connectors` - List configured connectors
   - `POST /connectors` - Add new connector
@@ -252,39 +251,54 @@ The tool will support two integration modes:
 
 ## Technology Stack
 
-- **Python 3.11+**
-- **FastAPI** - REST API framework
-- **APScheduler** - Job scheduling
-- **httpx** - Async HTTP client
-- **Pydantic** - Data validation
-- **SQLAlchemy** (optional) - SQLite ORM for state
-- **PyYAML** - Configuration parsing
+- **Go 1.21+**
+- **net/http** or **Gin** - REST API framework
+- **robfig/cron** - Job scheduling
+- **net/http** - HTTP client
+- **go-playground/validator** - Data validation
+- **mattn/go-sqlite3** (optional) - SQLite for state
+- **gopkg.in/yaml.v3** - YAML configuration parsing
+- **uber-go/zap** - Structured logging
+
+## Project Location
+
+**Installation Path**: `EXTENSIONS/memory-ingestion/`
+
+This standalone service lives in the EXTENSIONS directory to maintain clean separation from the core LightRAG codebase.
 
 ## Deployment Modes
 
-### Mode 1: Standalone Service
+### Mode 1: Standalone Service (Binary)
 ```bash
-python -m memory_connector serve \
+./memory-connector serve \
   --config config.yaml \
   --host 0.0.0.0 \
   --port 9622
 ```
 
-### Mode 2: Embedded in LightRAG API
-```python
-# In lightrag_server.py
-from memory_connector import MemoryConnectorApp
-app.mount("/memory-connector", MemoryConnectorApp())
+### Mode 2: Systemd Service
+```bash
+# Install as system service
+sudo systemctl enable memory-connector
+sudo systemctl start memory-connector
 ```
 
 ### Mode 3: CLI Tool
 ```bash
 # One-time manual sync
-python -m memory_connector sync \
+./memory-connector sync \
   --api-url http://127.0.0.1:8080 \
   --api-key YOUR_KEY \
   --context-id CTX123 \
   --lightrag-workspace memories
+```
+
+### Mode 4: Docker Container
+```bash
+docker run -d \
+  -v /path/to/config.yaml:/config/config.yaml \
+  -p 9622:9622 \
+  memory-connector:latest
 ```
 
 ## Future Extensions (Phase 2)
