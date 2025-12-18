@@ -1,0 +1,342 @@
+# Memory Ingestion Connector - Architecture Diagram
+
+## System Overview
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│                          YOUR MEMORY API                                 │
+│                      (http://127.0.0.1:8080)                            │
+│                                                                          │
+│    Endpoints:                                                            │
+│    • GET /memory/{ctx_id}              - List memories                  │
+│    • GET /memory/{ctx_id}/{id}/audio   - Download audio                 │
+│    • GET /memory/{ctx_id}/{id}/image   - Download image                 │
+│    • PUT /memory/{ctx_id}/{id}         - Update memory                  │
+│                                                                          │
+│    Authentication: X-API-KEY header                                      │
+│                                                                          │
+└─────────────────────────┬────────────────────────────────────────────────┘
+                          │
+                          │ HTTP REST API
+                          │ (polling every hour)
+                          │
+┌─────────────────────────▼────────────────────────────────────────────────┐
+│                                                                          │
+│                    MEMORY INGESTION CONNECTOR                            │
+│                         (New Component)                                  │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                      Management API                                 │ │
+│  │                    (http://localhost:9622)                         │ │
+│  │                                                                     │ │
+│  │  FastAPI Endpoints:                                                │ │
+│  │  • GET  /connectors                 - List connectors             │ │
+│  │  • POST /connectors                 - Create connector            │ │
+│  │  • GET  /connectors/{id}/status     - Get status                  │ │
+│  │  • POST /connectors/{id}/trigger    - Manual trigger              │ │
+│  │  • GET  /health                     - Health check                │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    Ingestion Pipeline                              │ │
+│  │                                                                     │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐            │ │
+│  │  │   Scheduler  │  │     State    │  │    Config    │            │ │
+│  │  │   Service    │  │   Manager    │  │   Manager    │            │ │
+│  │  │              │  │              │  │              │            │ │
+│  │  │ APScheduler  │  │  JSON/SQLite │  │  YAML/Env    │            │ │
+│  │  │ • Interval   │  │  • Track IDs │  │  • Load cfg  │            │ │
+│  │  │ • Cron       │  │  • Last sync │  │  • Validate  │            │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘            │ │
+│  │                                                                     │ │
+│  │  ┌───────────────────────────────────────────────────────────────┐│ │
+│  │  │             Ingestion Orchestrator                            ││ │
+│  │  │                                                                ││ │
+│  │  │  1. Fetch    →  2. Filter  →  3. Transform  →  4. Submit    ││ │
+│  │  │     │               │              │                │         ││ │
+│  │  │     ▼               ▼              ▼                ▼         ││ │
+│  │  │  Memory API    State Check    Transformer     LightRAG       ││ │
+│  │  │  Client        (dedupe)        (format)       Client         ││ │
+│  │  │                                                                ││ │
+│  │  └───────────────────────────────────────────────────────────────┘│ │
+│  │                                                                     │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  Core Components:                                                        │
+│  • memory_api_client.py      - Fetch memories from API                  │
+│  • memory_transformer.py     - Transform to LightRAG format             │
+│  • state_manager.py          - Track processed items                    │
+│  • scheduler_service.py      - Schedule periodic sync                   │
+│  • ingestion_orchestrator.py - Coordinate pipeline                      │
+│  • lightrag_client.py        - Submit to LightRAG                       │
+│  • connector_api.py          - Management REST API                      │
+│                                                                          │
+└─────────────────────────┬────────────────────────────────────────────────┘
+                          │
+                          │ HTTP REST API or Direct Library Call
+                          │ (submit transformed documents)
+                          │
+┌─────────────────────────▼────────────────────────────────────────────────┐
+│                                                                          │
+│                          LIGHTRAG INSTANCE                               │
+│                      (http://localhost:9621)                            │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    Document Processing                             │ │
+│  │                                                                     │ │
+│  │  POST /documents/text  →  Pipeline:                                │ │
+│  │                           1. Text chunking                          │ │
+│  │                           2. Entity extraction (LLM)                │ │
+│  │                           3. Relation extraction (LLM)              │ │
+│  │                           4. Knowledge graph building               │ │
+│  │                           5. Vector indexing                        │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    Knowledge Graph Storage                         │ │
+│  │                                                                     │ │
+│  │  • Entities     - People, places, concepts from memories            │ │
+│  │  • Relations    - Connections between entities                      │ │
+│  │  • Chunks       - Original text segments                            │ │
+│  │  • Vectors      - Embeddings for semantic search                    │ │
+│  │                                                                     │ │
+│  │  Storage Options:                                                   │ │
+│  │  • Graph:  NetworkX, Neo4j, PostgreSQL                             │ │
+│  │  • Vector: NanoVectorDB, Milvus, Qdrant                            │ │
+│  │  • KV:     JSON, Redis, MongoDB                                    │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+
+## Data Flow: Memory → Knowledge Graph
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ Step 1: Scheduler triggers job (every hour)                           │
+└────────────────────────────┬───────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼───────────────────────────────────────────┐
+│ Step 2: Fetch memories from Memory API                                │
+│                                                                        │
+│   GET /memory/CTX123?limit=100&range=week                             │
+│                                                                        │
+│   Response:                                                            │
+│   {                                                                    │
+│     "memories": [                                                      │
+│       {                                                                │
+│         "id": "mem_001",                                               │
+│         "transcript": "Had a meeting about the new product...",        │
+│         "created_at": "2025-12-18T14:30:00Z",                         │
+│         "location_lat": 37.7749,                                      │
+│         "location_lon": -122.4194                                     │
+│       },                                                               │
+│       ...                                                              │
+│     ]                                                                  │
+│   }                                                                    │
+└────────────────────────────┬───────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼───────────────────────────────────────────┐
+│ Step 3: Filter out already-processed memories                         │
+│                                                                        │
+│   State Manager checks: Is mem_001 in processed_memory_ids?           │
+│   • YES → Skip (already processed)                                    │
+│   • NO  → Add to processing queue                                     │
+│                                                                        │
+│   Result: [mem_001, mem_003, mem_005] (new items only)                │
+└────────────────────────────┬───────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼───────────────────────────────────────────┐
+│ Step 4: Transform each memory to LightRAG document format             │
+│                                                                        │
+│   Input (Memory):                                                      │
+│   {                                                                    │
+│     "id": "mem_001",                                                   │
+│     "transcript": "Had a meeting about the new product...",            │
+│     "created_at": "2025-12-18T14:30:00Z",                             │
+│     "location_lat": 37.7749, "location_lon": -122.4194                │
+│   }                                                                    │
+│                                                                        │
+│   Output (Document):                                                   │
+│   ---                                                                  │
+│   Memory Record from December 18, 2025                                │
+│   ID: mem_001                                                          │
+│   Type: Voice Recording                                               │
+│   Location: (37.7749, -122.4194)                                      │
+│   Time: 2:30 PM UTC                                                   │
+│                                                                        │
+│   Transcript:                                                          │
+│   Had a meeting about the new product roadmap. Discussed Q1           │
+│   priorities with the team.                                           │
+│   ---                                                                  │
+└────────────────────────────┬───────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼───────────────────────────────────────────┐
+│ Step 5: Submit to LightRAG                                            │
+│                                                                        │
+│   POST http://localhost:9621/documents/text                           │
+│   {                                                                    │
+│     "text": "---\nMemory Record...\n---",                             │
+│     "file_source": "memory://CTX123/mem_001"                          │
+│   }                                                                    │
+└────────────────────────────┬───────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼───────────────────────────────────────────┐
+│ Step 6: LightRAG processes document                                   │
+│                                                                        │
+│   a) Chunk text (1200 tokens, 100 overlap)                            │
+│   b) Extract entities with LLM:                                       │
+│      • "product roadmap" (Concept)                                    │
+│      • "Q1 priorities" (Concept)                                      │
+│      • "team" (Organization)                                          │
+│      • "meeting" (Event)                                              │
+│                                                                        │
+│   c) Extract relations:                                               │
+│      • meeting → discusses → product roadmap                          │
+│      • team → works_on → product roadmap                              │
+│                                                                        │
+│   d) Store in knowledge graph:                                        │
+│      • Add/merge entities                                             │
+│      • Add/merge relations                                            │
+│      • Create embeddings                                              │
+│      • Index for search                                               │
+└────────────────────────────┬───────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼───────────────────────────────────────────┐
+│ Step 7: Update state                                                  │
+│                                                                        │
+│   State Manager updates:                                              │
+│   • processed_memory_ids += ["mem_001"]                               │
+│   • last_sync_timestamp = "2025-12-18T15:00:00Z"                      │
+│   • total_processed += 1                                              │
+│                                                                        │
+│   Save to: memory_sync_state.json                                     │
+└────────────────────────────────────────────────────────────────────────┘
+
+
+## Configuration Flow
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ config.yaml                                                            │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│ memory_api:                                                            │
+│   url: "http://127.0.0.1:8080"                                        │
+│   api_key: "${MEMORY_API_KEY}"          ◄── From environment          │
+│                                                                        │
+│ connectors:                                                            │
+│   - id: "personal-memories"                                            │
+│     enabled: true                                                      │
+│     context_id: "CTX123"                ◄── Your context ID            │
+│                                                                        │
+│     schedule:                                                          │
+│       type: "interval"                                                 │
+│       interval_hours: 1                 ◄── Sync every hour            │
+│                                                                        │
+│     ingestion:                                                         │
+│       query_range: "week"               ◄── Look back 1 week           │
+│       query_limit: 100                  ◄── Max 100 items              │
+│       batch_size: 10                    ◄── Process 10 at a time       │
+│                                                                        │
+│ lightrag:                                                              │
+│   mode: "api"                           ◄── Use HTTP API               │
+│   api:                                                                 │
+│     url: "http://localhost:9621"                                       │
+│     workspace: "memories"               ◄── LightRAG workspace         │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+
+
+## State Storage
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ memory_sync_state.json                                                 │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│ {                                                                      │
+│   "connectors": {                                                      │
+│     "personal-memories": {                                             │
+│       "contexts": {                                                    │
+│         "CTX123": {                                                    │
+│           "last_sync_timestamp": "2025-12-18T15:00:00Z",               │
+│           "last_successful_sync": "2025-12-18T15:00:00Z",              │
+│           "processed_memory_ids": [                                    │
+│             "mem_001",      ◄── Prevent duplicate processing           │
+│             "mem_002",                                                 │
+│             "mem_003"                                                  │
+│           ],                                                           │
+│           "total_processed": 145,                                      │
+│           "total_failed": 2,                                           │
+│           "status": "completed"                                        │
+│         }                                                              │
+│       }                                                                │
+│     }                                                                  │
+│   }                                                                    │
+│ }                                                                      │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+
+
+## Deployment Architecture
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Development                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  [Your Memory API]  ──────►  [Memory Connector]  ──────►  [LightRAG]│
+│   :8080 (local)              :9622 (local)               :9621 (local│
+│                                                                      │
+│  Running:                                                            │
+│  python -m memory_connector serve --config config.yaml              │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Production (Docker)                          │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────┐       ┌──────────────────┐       ┌──────────┐│
+│  │  Memory API      │       │  Connector       │       │ LightRAG ││
+│  │  (external)      │──────►│  Container       │──────►│ Container││
+│  │  :8080           │       │  :9622           │       │ :9621    ││
+│  └──────────────────┘       └──────────────────┘       └──────────┘│
+│                                     │                       │        │
+│                                     ▼                       ▼        │
+│                              ┌───────────┐          ┌──────────┐    │
+│                              │ State     │          │ Storage  │    │
+│                              │ Volume    │          │ Volume   │    │
+│                              └───────────┘          └──────────┘    │
+│                                                                      │
+│  Running:                                                            │
+│  docker-compose up -d                                                │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                      Production (Kubernetes)                         │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │  Namespace: memory-system                                      │ │
+│  │                                                                 │ │
+│  │  ┌────────────────┐    ┌────────────────┐    ┌─────────────┐ │ │
+│  │  │ Memory API     │    │ Connector      │    │ LightRAG    │ │ │
+│  │  │ Service        │───►│ Deployment     │───►│ Deployment  │ │ │
+│  │  │ (external)     │    │ (1 replica)    │    │ (1 replica) │ │ │
+│  │  └────────────────┘    └────┬───────────┘    └─────┬───────┘ │ │
+│  │                              │                       │         │ │
+│  │                              ▼                       ▼         │ │
+│  │                       ┌─────────────┐        ┌──────────────┐ │ │
+│  │                       │ PVC (State) │        │ PVC (Storage)│ │ │
+│  │                       │ 1Gi         │        │ 10Gi         │ │ │
+│  │                       └─────────────┘        └──────────────┘ │ │
+│  │                                                                 │ │
+│  │  Secrets:                                                       │ │
+│  │  • memory-api-key                                              │ │
+│  │  • lightrag-api-key                                            │ │
+│  │  • connector-api-key                                           │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  Deploy:                                                             │
+│  kubectl apply -f k8s/                                               │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
