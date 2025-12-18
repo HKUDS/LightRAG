@@ -2837,9 +2837,9 @@ async def extract_entities(
             "entity_extraction_system_prompt"
         ].format(**context_base)
         # Format user prompts with input_text for each chunk
-        entity_extraction_user_prompt = global_config["addon_params"]["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
-        )
+        entity_extraction_user_prompt = global_config["addon_params"][
+            "entity_extraction_user_prompt"
+        ].format(**{**context_base, "input_text": content})
         entity_continue_extraction_user_prompt = global_config["addon_params"][
             "entity_continue_extraction_user_prompt"
         ].format(**{**context_base, "input_text": content})

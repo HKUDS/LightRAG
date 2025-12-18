@@ -435,12 +435,8 @@ class LightRAG:
             "summarize_entity_descriptions": PROMPTS.get(
                 "summarize_entity_descriptions"
             ),
-            "keywords_extraction": PROMPTS.get(
-                "keywords_extraction"
-            ),
-            "keywords_extraction_examples": PROMPTS.get(
-                "keywords_extraction_examples"
-            ),
+            "keywords_extraction": PROMPTS.get("keywords_extraction"),
+            "keywords_extraction_examples": PROMPTS.get("keywords_extraction_examples"),
         }
     )
 
