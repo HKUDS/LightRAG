@@ -1,0 +1,4626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FR01-memory-ingestion: FR01: Memory API Ingestion - Overview</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        .nav {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .nav h2 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            color: #667eea;
+        }
+
+        .nav ul {
+            list-style: none;
+        }
+
+        .nav li {
+            margin: 0.5rem 0;
+        }
+
+        .nav a {
+            color: #667eea;
+            text-decoration: none;
+            padding: 0.3rem 0.5rem;
+            display: inline-block;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        .nav a:hover {
+            background-color: #f0f0ff;
+        }
+
+        .content {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        }
+
+        .content h1 {
+            color: #667eea;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            font-size: 2rem;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 0.5rem;
+        }
+
+        .content h1:first-child {
+            margin-top: 0;
+        }
+
+        .content h2 {
+            color: #764ba2;
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+        }
+
+        .content h3 {
+            color: #555;
+            margin-top: 1.2rem;
+            margin-bottom: 0.8rem;
+            font-size: 1.2rem;
+        }
+
+        .content h4 {
+            color: #666;
+            margin-top: 1rem;
+            margin-bottom: 0.6rem;
+            font-size: 1.1rem;
+        }
+
+        .content p {
+            margin-bottom: 1rem;
+            line-height: 1.8;
+        }
+
+        .content ul, .content ol {
+            margin-left: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .content li {
+            margin-bottom: 0.5rem;
+        }
+
+        .content code {
+            background-color: #f4f4f4;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+            color: #e83e8c;
+        }
+
+        .content pre {
+            background-color: #2d2d2d;
+            color: #f8f8f2;
+            padding: 1rem;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin-bottom: 1rem;
+        }
+
+        .content pre code {
+            background: none;
+            color: inherit;
+            padding: 0;
+            font-size: 0.9rem;
+        }
+
+        .content blockquote {
+            border-left: 4px solid #667eea;
+            padding-left: 1rem;
+            margin: 1rem 0;
+            color: #555;
+            font-style: italic;
+            background-color: #f9f9ff;
+            padding: 1rem;
+            border-radius: 4px;
+        }
+
+        .content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+        }
+
+        .content table th {
+            background-color: #667eea;
+            color: white;
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .content table td {
+            border: 1px solid #ddd;
+            padding: 0.75rem;
+        }
+
+        .content table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        .content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 5px;
+            margin: 1rem 0;
+        }
+
+        .content a {
+            color: #667eea;
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .content a:hover {
+            border-bottom-color: #667eea;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .toc {
+            background-color: #f9f9ff;
+            border: 1px solid #e0e0ff;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .toc h2 {
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+
+        .toc ul {
+            list-style: none;
+            margin-left: 0;
+        }
+
+        .toc li {
+            margin: 0.3rem 0;
+        }
+
+        .toc a {
+            color: #555;
+        }
+
+        .breadcrumb {
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+
+        .breadcrumb a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+
+        .breadcrumb span {
+            margin: 0 0.5rem;
+            color: #999;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+
+            .header {
+                padding: 1.5rem;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            .content {
+                padding: 1rem;
+            }
+
+            .content h1 {
+                font-size: 1.5rem;
+            }
+
+            .content h2 {
+                font-size: 1.3rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>FR01-memory-ingestion: FR01: Memory API Ingestion - Overview</h1>
+            <p>7 documentation files</p>
+        </div>
+
+        
+    <div class="breadcrumb">
+        <a href="index.html">🏠 Features</a>
+        <span>›</span>
+        <span>FR01-memory-ingestion</span>
+    </div>
+    
+
+        <div class="nav"><h2>📑 Documents in this Feature</h2><ul><li><strong>00-OVERVIEW.md</strong> - FR01: Memory API Ingestion - Overview</li><li><strong>01-ARCHITECTURE.md</strong> - FR01: Memory API Ingestion - Detailed Architecture</li><li><strong>02-IMPLEMENTATION-PLAN.md</strong> - FR01: Memory API Ingestion - Implementation Plan</li><li><strong>03-API-INTEGRATION.md</strong> - FR01: Memory API Ingestion - API Integration Details</li><li><strong>04-CONFIGURATION.md</strong> - FR01: Memory API Ingestion - Configuration & Deployment</li><li><strong>05-FUTURE-ENHANCEMENTS.md</strong> - FR01: Memory API Ingestion - Future Enhancements</li><li><strong>README.md</strong> - FR01: Memory API Ingestion Feature</li></ul></div>
+
+        <div class="content">
+            <h1 id="fr01-memory-api-ingestion-overview">FR01: Memory API Ingestion - Overview</h1>
+<h2 id="executive-summary">Executive Summary</h2>
+<p>This feature adds automated ingestion capability to LightRAG for periodically pulling memory items from a remote Memory API and populating the knowledge graph. The solution includes a connector interface for configuring ingestion schedules, tracking progress, and managing the ingestion lifecycle.</p>
+<h2 id="problem-statement">Problem Statement</h2>
+<p>The user has a Memory API service that stores audio recordings, images, transcripts, and metadata (location, timestamps, etc.). Currently, there is no automated way to:</p>
+<ol>
+<li>Pull memory items from the API on a regular schedule</li>
+<li>Transform memory data into LightRAG knowledge graph format</li>
+<li>Track ingestion progress and status</li>
+<li>Configure which data to ingest and when</li>
+<li>Handle incremental updates (only new/updated items)</li>
+</ol>
+<h2 id="solution-approach">Solution Approach</h2>
+<p>We will implement a <strong>standalone ingestion service</strong> that:</p>
+<ul>
+<li>Runs independently or alongside LightRAG API server</li>
+<li>Pulls memory items from the Memory API on configurable schedules</li>
+<li>Transforms memory data (transcript, metadata) into documents for LightRAG</li>
+<li>Tracks ingestion state to avoid duplicate processing</li>
+<li>Provides a configuration interface for connector settings</li>
+<li>Reports progress and status via API endpoints</li>
+</ul>
+<h2 id="key-design-decisions">Key Design Decisions</h2>
+<h3 id="1-standalone-tool-vs-integrated-module">1. Standalone Tool vs. Integrated Module</h3>
+<p><strong>DECISION: Standalone Tool with Optional Integration</strong></p>
+<p><strong>Rationale:</strong><br />
+- <strong>Separation of Concerns</strong>: Memory API integration is domain-specific logic<br />
+- <strong>Deployment Flexibility</strong>: Can run as separate service or embedded<br />
+- <strong>Resource Isolation</strong>: Scheduler/polling doesn't impact RAG query performance<br />
+- <strong>Easier Testing</strong>: Independent testing without full LightRAG stack<br />
+- <strong>Reusability</strong>: Can connect to multiple LightRAG instances</p>
+<p><strong>Architecture:</strong></p>
+<pre class="codehilite"><code>┌─────────────────────┐
+│   Memory API        │
+│  (Your Service)     │
+└──────────┬──────────┘
+           │
+           │ HTTP/REST
+           │
+┌──────────▼──────────────────────────────────────┐
+│  Memory Ingestion Connector (Standalone)        │
+│  ┌────────────────┐  ┌──────────────────┐      │
+│  │  API Client    │  │  Scheduler       │      │
+│  │  - Fetch       │  │  - Periodic Runs │      │
+│  │  - Transform   │  │  - Cron/Interval │      │
+│  └────────────────┘  └──────────────────┘      │
+│  ┌────────────────┐  ┌──────────────────┐      │
+│  │  State Manager │  │  Config Manager  │      │
+│  │  - Last Sync   │  │  - API Keys      │      │
+│  │  - Track Items │  │  - Schedules     │      │
+│  └────────────────┘  └──────────────────┘      │
+└──────────┬──────────────────────────────────────┘
+           │
+           │ LightRAG API or Direct
+           │
+┌──────────▼──────────┐
+│   LightRAG          │
+│   Knowledge Graph   │
+└─────────────────────┘
+</code></pre>
+
+<h3 id="2-integration-method">2. Integration Method</h3>
+<p><strong>DECISION: Hybrid Approach</strong></p>
+<p>The tool will support two integration modes:</p>
+<p><strong>A. LightRAG API Mode</strong> (Recommended for production)<br />
+- Uses LightRAG's existing REST API (<code>POST /documents/text</code>)<br />
+- Works with remote or local LightRAG instances<br />
+- Proper authentication and workspace support<br />
+- Better for distributed deployments</p>
+<p><strong>B. Direct Library Mode</strong> (For embedded scenarios)<br />
+- Imports LightRAG as Python library<br />
+- Calls <code>rag.ainsert()</code> directly<br />
+- Lower overhead, no network latency<br />
+- Better for single-process deployments</p>
+<h3 id="3-state-management">3. State Management</h3>
+<p><strong>DECISION: JSON-based State Store with SQLite Option</strong></p>
+<ul>
+<li><strong>Development/Simple</strong>: JSON file (<code>memory_sync_state.json</code>)</li>
+<li><strong>Production/Advanced</strong>: SQLite database (<code>memory_sync_state.db</code>)</li>
+<li>Tracks:</li>
+<li>Last successful sync timestamp per context</li>
+<li>Memory IDs already processed</li>
+<li>Failed ingestion attempts</li>
+<li>Sync statistics and metrics</li>
+</ul>
+<h3 id="4-scheduling">4. Scheduling</h3>
+<p><strong>DECISION: APScheduler with Configurable Triggers</strong></p>
+<ul>
+<li>Use <code>APScheduler</code> library for flexible scheduling</li>
+<li>Support multiple trigger types:</li>
+<li>Interval: Every N hours/minutes</li>
+<li>Cron: Specific times (e.g., "0 <em>/1 * * </em>" for hourly)</li>
+<li>Manual: On-demand trigger via API</li>
+<li>Background scheduler runs in separate thread</li>
+<li>Graceful shutdown on signals</li>
+</ul>
+<h2 id="component-overview">Component Overview</h2>
+<h3 id="1-memory-api-client-memory_api_clientpy">1. Memory API Client (<code>memory_api_client.py</code>)</h3>
+<ul>
+<li>Authenticates with Memory API (API key)</li>
+<li>Fetches memory lists with filtering (context, date range, limit)</li>
+<li>Retrieves individual memory items</li>
+<li>Downloads associated resources (audio, images) if needed</li>
+<li>Handles pagination and rate limiting</li>
+</ul>
+<h3 id="2-data-transformer-memory_transformerpy">2. Data Transformer (<code>memory_transformer.py</code>)</h3>
+<ul>
+<li>Converts Memory API schema → LightRAG document format</li>
+<li>Enriches transcript with metadata:</li>
+<li>Location information (lat/lon → place names if available)</li>
+<li>Temporal context (created_at → human-readable dates)</li>
+<li>Memory type and characteristics</li>
+<li>Generates structured text for optimal entity extraction</li>
+<li>Handles missing/optional fields gracefully</li>
+</ul>
+<h3 id="3-ingestion-orchestrator-ingestion_orchestratorpy">3. Ingestion Orchestrator (<code>ingestion_orchestrator.py</code>)</h3>
+<ul>
+<li>Coordinates the ingestion pipeline</li>
+<li>Implements ingestion strategies:</li>
+<li><strong>Full Sync</strong>: Process all memories (first run)</li>
+<li><strong>Incremental Sync</strong>: Only new memories since last sync</li>
+<li><strong>Selective Sync</strong>: Filter by date range, type, etc.</li>
+<li>Handles errors and retries</li>
+<li>Tracks progress and generates reports</li>
+</ul>
+<h3 id="4-state-manager-state_managerpy">4. State Manager (<code>state_manager.py</code>)</h3>
+<ul>
+<li>Persists sync state across runs</li>
+<li>Implements idempotency (no duplicate processing)</li>
+<li>Tracks per-context sync status</li>
+<li>Provides state query APIs</li>
+</ul>
+<h3 id="5-configuration-manager-config_managerpy">5. Configuration Manager (<code>config_manager.py</code>)</h3>
+<ul>
+<li>Loads configuration from:</li>
+<li>YAML/JSON config files</li>
+<li>Environment variables</li>
+<li>CLI arguments</li>
+<li>Validates configuration</li>
+<li>Supports hot-reload for some settings</li>
+</ul>
+<h3 id="6-scheduler-service-scheduler_servicepy">6. Scheduler Service (<code>scheduler_service.py</code>)</h3>
+<ul>
+<li>Manages periodic ingestion jobs</li>
+<li>Supports multiple schedules (different contexts on different cadences)</li>
+<li>Provides job control (pause, resume, trigger now)</li>
+<li>Logs scheduler events</li>
+</ul>
+<h3 id="7-rest-api-interface-connector_apipy">7. REST API Interface (<code>connector_api.py</code>)</h3>
+<ul>
+<li>FastAPI-based management API</li>
+<li>Endpoints:</li>
+<li><code>GET /connectors</code> - List configured connectors</li>
+<li><code>POST /connectors</code> - Add new connector</li>
+<li><code>PUT /connectors/{id}</code> - Update connector config</li>
+<li><code>DELETE /connectors/{id}</code> - Remove connector</li>
+<li><code>POST /connectors/{id}/trigger</code> - Manual trigger</li>
+<li><code>GET /connectors/{id}/status</code> - Get sync status</li>
+<li><code>GET /connectors/{id}/history</code> - Sync history</li>
+</ul>
+<h2 id="data-flow">Data Flow</h2>
+<pre class="codehilite"><code>1. Scheduler triggers ingestion job
+   ↓
+2. Memory API Client fetches memory list
+   - Query: /memory/{ctx_id}?range=week&amp;limit=100
+   - Response: MemoryList with Memory items
+   ↓
+3. State Manager filters out already-processed items
+   - Check memory IDs against state store
+   - Return only new/updated items
+   ↓
+4. For each new Memory item:
+   a. Fetch full details (if needed)
+   b. Download transcript (or use from list)
+   c. Transform to LightRAG document format:
+
+      Document:
+      ---
+      Memory Record [ID: {memory_id}]
+      Type: {type}
+      Recorded: {created_at}
+      Location: {location_lat}, {location_lon}
+
+      Transcript:
+      {transcript}
+
+      Audio Available: {audio}
+      Image Available: {image}
+      ---
+
+   d. Submit to LightRAG:
+      - API Mode: POST /documents/text
+      - Direct Mode: rag.ainsert(document)
+   ↓
+5. Update state store:
+   - Mark memory IDs as processed
+   - Update last_sync_timestamp
+   - Record statistics (success/failure counts)
+   ↓
+6. Generate sync report
+   - Items processed
+   - Errors encountered
+   - Next scheduled run
+</code></pre>
+
+<h2 id="key-features">Key Features</h2>
+<h3 id="1-connector-configuration-ui">1. Connector Configuration UI</h3>
+<ul>
+<li>Configure multiple Memory API connectors</li>
+<li>Each connector represents:</li>
+<li>API endpoint and credentials</li>
+<li>Target context ID(s)</li>
+<li>Ingestion schedule</li>
+<li>Transformation rules</li>
+<li>LightRAG workspace mapping</li>
+</ul>
+<h3 id="2-incremental-sync">2. Incremental Sync</h3>
+<ul>
+<li>Tracks last sync timestamp per context</li>
+<li>Queries API with <code>range</code> and date filtering</li>
+<li>Only processes new items</li>
+<li>Configurable lookback window for safety</li>
+</ul>
+<h3 id="3-progress-tracking">3. Progress Tracking</h3>
+<ul>
+<li>Real-time sync status</li>
+<li>Items queued/processed/failed</li>
+<li>Estimated time remaining</li>
+<li>Historical sync reports</li>
+</ul>
+<h3 id="4-error-handling">4. Error Handling</h3>
+<ul>
+<li>Automatic retry with exponential backoff</li>
+<li>Dead letter queue for failed items</li>
+<li>Alerts on consecutive failures</li>
+<li>Detailed error logs</li>
+</ul>
+<h3 id="5-multi-context-support">5. Multi-Context Support</h3>
+<ul>
+<li>Single connector can sync multiple contexts</li>
+<li>Per-context scheduling (context A: hourly, context B: daily)</li>
+<li>Isolated state tracking per context</li>
+</ul>
+<h2 id="technology-stack">Technology Stack</h2>
+<ul>
+<li><strong>Python 3.11+</strong></li>
+<li><strong>FastAPI</strong> - REST API framework</li>
+<li><strong>APScheduler</strong> - Job scheduling</li>
+<li><strong>httpx</strong> - Async HTTP client</li>
+<li><strong>Pydantic</strong> - Data validation</li>
+<li><strong>SQLAlchemy</strong> (optional) - SQLite ORM for state</li>
+<li><strong>PyYAML</strong> - Configuration parsing</li>
+</ul>
+<h2 id="deployment-modes">Deployment Modes</h2>
+<h3 id="mode-1-standalone-service">Mode 1: Standalone Service</h3>
+<pre class="codehilite"><code class="language-bash">python -m memory_connector serve \
+  --config config.yaml \
+  --host 0.0.0.0 \
+  --port 9622
+</code></pre>
+
+<h3 id="mode-2-embedded-in-lightrag-api">Mode 2: Embedded in LightRAG API</h3>
+<pre class="codehilite"><code class="language-python"># In lightrag_server.py
+from memory_connector import MemoryConnectorApp
+app.mount(&quot;/memory-connector&quot;, MemoryConnectorApp())
+</code></pre>
+
+<h3 id="mode-3-cli-tool">Mode 3: CLI Tool</h3>
+<pre class="codehilite"><code class="language-bash"># One-time manual sync
+python -m memory_connector sync \
+  --api-url http://127.0.0.1:8080 \
+  --api-key YOUR_KEY \
+  --context-id CTX123 \
+  --lightrag-workspace memories
+</code></pre>
+
+<h2 id="future-extensions-phase-2">Future Extensions (Phase 2)</h2>
+<ol>
+<li>
+<p><strong>Memory Manager</strong><br />
+   - Bidirectional sync (LightRAG → Memory API)<br />
+   - Export knowledge graph to portable format<br />
+   - Backup/restore workflows<br />
+   - Collaborative sharing (replicate to other instances)</p>
+</li>
+<li>
+<p><strong>Advanced Features</strong><br />
+   - Audio/image processing (transcription, OCR, vision models)<br />
+   - Entity linking across memory items<br />
+   - Temporal analysis (memory timelines)<br />
+   - Location-based clustering<br />
+   - Multi-modal knowledge graph</p>
+</li>
+<li>
+<p><strong>Enterprise Features</strong><br />
+   - Multi-tenant support<br />
+   - RBAC for connector management<br />
+   - Audit logs<br />
+   - Prometheus metrics<br />
+   - Webhook notifications</p>
+</li>
+</ol>
+<h2 id="success-metrics">Success Metrics</h2>
+<ul>
+<li>Successful hourly sync of new memory items</li>
+<li>&lt;1% duplicate processing rate</li>
+<li>&lt;5 second latency per memory item</li>
+<li>99.9% uptime for connector service</li>
+<li>Full state recovery after crashes</li>
+</ul>
+<h2 id="next-steps">Next Steps</h2>
+<ol>
+<li>Review and approve this architectural plan</li>
+<li>Implement Phase 1: Core ingestion connector</li>
+<li>Test with real Memory API</li>
+<li>Deploy and monitor</li>
+<li>Iterate based on feedback</li>
+<li>Plan Phase 2: Memory Manager features</li>
+</ol>
+<hr />
+<h1 id="fr01-memory-api-ingestion-detailed-architecture">FR01: Memory API Ingestion - Detailed Architecture</h1>
+<h2 id="system-architecture">System Architecture</h2>
+<h3 id="high-level-component-diagram">High-Level Component Diagram</h3>
+<pre class="codehilite"><code>┌─────────────────────────────────────────────────────────────────────┐
+│                     Memory Ingestion Connector                       │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │                    Management API (FastAPI)                 │    │
+│  │  /connectors  /status  /history  /trigger  /health         │    │
+│  └───────────────────────────┬────────────────────────────────┘    │
+│                              │                                       │
+│  ┌───────────────────────────▼────────────────────────────────┐    │
+│  │              Ingestion Orchestrator                         │    │
+│  │  - Job coordination                                         │    │
+│  │  - Pipeline execution                                       │    │
+│  │  - Error handling &amp; retry                                   │    │
+│  └─────┬──────────────┬───────────────┬───────────────────────┘    │
+│        │              │               │                             │
+│  ┌─────▼─────┐  ┌────▼─────┐  ┌──────▼────────┐                   │
+│  │ Scheduler  │  │  State   │  │  Config       │                   │
+│  │ Service    │  │  Manager │  │  Manager      │                   │
+│  │            │  │          │  │               │                   │
+│  │ APScheduler│  │ JSON/DB  │  │  YAML/Env     │                   │
+│  └─────┬──────┘  └────┬─────┘  └──────┬────────┘                   │
+│        │              │               │                             │
+│  ┌─────▼──────────────▼───────────────▼─────────────────────┐     │
+│  │              Ingestion Pipeline                           │     │
+│  │                                                            │     │
+│  │  1. Fetch  →  2. Filter  →  3. Transform  →  4. Submit   │     │
+│  │     ↓             ↓              ↓               ↓         │     │
+│  │  API Client  State Check   Transformer    LightRAG Client │     │
+│  └────────────────────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+           │                                              │
+           │ HTTP                                         │ HTTP/Direct
+           ▼                                              ▼
+   ┌───────────────┐                            ┌──────────────────┐
+   │  Memory API   │                            │  LightRAG        │
+   │               │                            │  Instance        │
+   └───────────────┘                            └──────────────────┘
+</code></pre>
+
+<h2 id="core-components">Core Components</h2>
+<h3 id="1-memory-api-client">1. Memory API Client</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/memory_api_client.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Authenticate with Memory API<br />
+- Fetch memory lists with query parameters<br />
+- Handle pagination if API supports it<br />
+- Rate limiting and backoff<br />
+- Error handling for network issues</p>
+<p><strong>Key Classes</strong>:</p>
+<pre class="codehilite"><code class="language-python">class MemoryAPIClient:
+    &quot;&quot;&quot;Client for interacting with Memory API&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        api_url: str,
+        api_key: str,
+        timeout: int = 30,
+        max_retries: int = 3
+    ):
+        &quot;&quot;&quot;Initialize client with connection settings&quot;&quot;&quot;
+
+    async def get_memories(
+        self,
+        ctx_id: str,
+        limit: int = 100,
+        range: str = &quot;week&quot;
+    ) -&gt; MemoryList:
+        &quot;&quot;&quot;Fetch list of memories for a context&quot;&quot;&quot;
+
+    async def get_memory(
+        self,
+        ctx_id: str,
+        memory_id: str
+    ) -&gt; Memory:
+        &quot;&quot;&quot;Fetch single memory item with full details&quot;&quot;&quot;
+
+    async def download_audio(
+        self,
+        ctx_id: str,
+        memory_id: str,
+        output_path: Path
+    ) -&gt; bool:
+        &quot;&quot;&quot;Download audio file for a memory&quot;&quot;&quot;
+
+    async def download_image(
+        self,
+        ctx_id: str,
+        memory_id: str,
+        output_path: Path
+    ) -&gt; bool:
+        &quot;&quot;&quot;Download image file for a memory&quot;&quot;&quot;
+
+    async def check_connection(self) -&gt; bool:
+        &quot;&quot;&quot;Test API connectivity and authentication&quot;&quot;&quot;
+</code></pre>
+
+<p><strong>Configuration</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">memory_api:
+  url: &quot;http://127.0.0.1:8080&quot;
+  api_key: &quot;${MEMORY_API_KEY}&quot;
+  timeout: 30
+  max_retries: 3
+  retry_backoff: 2.0  # Exponential backoff multiplier
+</code></pre>
+
+<h3 id="2-data-transformer">2. Data Transformer</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/memory_transformer.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Convert Memory API schema to LightRAG document format<br />
+- Enrich data with context and metadata<br />
+- Generate structured text for entity extraction<br />
+- Handle missing/optional fields<br />
+- Support multiple transformation strategies</p>
+<p><strong>Key Classes</strong>:</p>
+<pre class="codehilite"><code class="language-python">class TransformationStrategy(ABC):
+    &quot;&quot;&quot;Base class for transformation strategies&quot;&quot;&quot;
+
+    @abstractmethod
+    def transform(self, memory: Memory) -&gt; str:
+        &quot;&quot;&quot;Transform Memory to LightRAG document text&quot;&quot;&quot;
+
+
+class StandardTransformationStrategy(TransformationStrategy):
+    &quot;&quot;&quot;Standard transformation: transcript + metadata as structured text&quot;&quot;&quot;
+
+    def transform(self, memory: Memory) -&gt; str:
+        &quot;&quot;&quot;
+        Output format:
+        ---
+        Memory Record
+        ID: {id}
+        Type: {type}
+        Recorded: {created_at}
+        Location: ({lat}, {lon})
+        Has Audio: {audio}
+        Has Image: {image}
+
+        Transcript:
+        {transcript}
+        ---
+        &quot;&quot;&quot;
+
+
+class RichTransformationStrategy(TransformationStrategy):
+    &quot;&quot;&quot;
+    Rich transformation: includes geocoding, datetime parsing,
+    and additional context
+    &quot;&quot;&quot;
+
+    def __init__(self, geocoding_enabled: bool = False):
+        self.geocoding = geocoding_enabled
+
+    def transform(self, memory: Memory) -&gt; str:
+        &quot;&quot;&quot;
+        Output format includes:
+        - Reverse geocoded location names
+        - Formatted dates (relative and absolute)
+        - Inferred tags/categories
+        - Sentiment analysis (optional)
+        &quot;&quot;&quot;
+
+
+class MemoryTransformer:
+    &quot;&quot;&quot;Main transformer class&quot;&quot;&quot;
+
+    def __init__(self, strategy: TransformationStrategy):
+        self.strategy = strategy
+
+    async def transform_batch(
+        self,
+        memories: List[Memory]
+    ) -&gt; List[TransformedDocument]:
+        &quot;&quot;&quot;Transform multiple memories in parallel&quot;&quot;&quot;
+
+    def set_strategy(self, strategy: TransformationStrategy):
+        &quot;&quot;&quot;Change transformation strategy at runtime&quot;&quot;&quot;
+</code></pre>
+
+<p><strong>Example Transformation</strong>:</p>
+<p>Input (Memory API JSON):</p>
+<pre class="codehilite"><code class="language-json">{
+  &quot;id&quot;: &quot;mem_1234567890&quot;,
+  &quot;type&quot;: &quot;record&quot;,
+  &quot;audio&quot;: true,
+  &quot;image&quot;: false,
+  &quot;transcript&quot;: &quot;Had a great meeting with the team today. We discussed the new product roadmap and agreed on Q1 priorities.&quot;,
+  &quot;location_lat&quot;: 37.7749,
+  &quot;location_lon&quot;: -122.4194,
+  &quot;created_at&quot;: &quot;2025-12-18T14:30:00Z&quot;
+}
+</code></pre>
+
+<p>Output (LightRAG document):</p>
+<pre class="codehilite"><code>---
+Memory Record from December 18, 2025
+ID: mem_1234567890
+Type: Voice Recording
+Location: San Francisco, CA (37.7749, -122.4194)
+Time: 2:30 PM UTC
+Media: Audio available
+
+Transcript:
+Had a great meeting with the team today. We discussed the new product roadmap and agreed on Q1 priorities.
+
+Tags: #meeting #team #product-roadmap #planning
+---
+</code></pre>
+
+<h3 id="3-state-manager">3. State Manager</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/state_manager.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Track ingestion state per connector/context<br />
+- Prevent duplicate processing<br />
+- Store sync history and metrics<br />
+- Support state queries and rollback</p>
+<p><strong>Key Classes</strong>:</p>
+<pre class="codehilite"><code class="language-python">class SyncState(BaseModel):
+    &quot;&quot;&quot;State for a single sync operation&quot;&quot;&quot;
+    connector_id: str
+    context_id: str
+    last_sync_timestamp: datetime
+    last_successful_sync: datetime
+    processed_memory_ids: Set[str]
+    failed_memory_ids: Dict[str, str]  # memory_id -&gt; error_message
+    total_processed: int
+    total_failed: int
+    status: Literal[&quot;idle&quot;, &quot;running&quot;, &quot;completed&quot;, &quot;failed&quot;]
+
+
+class StateManager:
+    &quot;&quot;&quot;Manages ingestion state persistence&quot;&quot;&quot;
+
+    def __init__(self, storage_path: Path, backend: str = &quot;json&quot;):
+        &quot;&quot;&quot;
+        Args:
+            storage_path: Path to state file/directory
+            backend: &quot;json&quot; or &quot;sqlite&quot;
+        &quot;&quot;&quot;
+
+    async def get_state(self, connector_id: str, context_id: str) -&gt; SyncState:
+        &quot;&quot;&quot;Retrieve current state for a connector/context&quot;&quot;&quot;
+
+    async def update_state(self, state: SyncState):
+        &quot;&quot;&quot;Update state atomically&quot;&quot;&quot;
+
+    async def mark_processed(
+        self,
+        connector_id: str,
+        context_id: str,
+        memory_id: str
+    ):
+        &quot;&quot;&quot;Mark a memory as successfully processed&quot;&quot;&quot;
+
+    async def mark_failed(
+        self,
+        connector_id: str,
+        context_id: str,
+        memory_id: str,
+        error: str
+    ):
+        &quot;&quot;&quot;Mark a memory as failed&quot;&quot;&quot;
+
+    async def is_processed(
+        self,
+        connector_id: str,
+        context_id: str,
+        memory_id: str
+    ) -&gt; bool:
+        &quot;&quot;&quot;Check if memory has been processed&quot;&quot;&quot;
+
+    async def get_unprocessed_ids(
+        self,
+        connector_id: str,
+        context_id: str,
+        all_memory_ids: List[str]
+    ) -&gt; List[str]:
+        &quot;&quot;&quot;Filter out already-processed memory IDs&quot;&quot;&quot;
+
+    async def get_sync_history(
+        self,
+        connector_id: str,
+        limit: int = 10
+    ) -&gt; List[SyncState]:
+        &quot;&quot;&quot;Retrieve sync history&quot;&quot;&quot;
+
+    async def reset_state(
+        self,
+        connector_id: str,
+        context_id: str
+    ):
+        &quot;&quot;&quot;Reset state for re-sync&quot;&quot;&quot;
+</code></pre>
+
+<p><strong>State Storage Format (JSON)</strong>:</p>
+<pre class="codehilite"><code class="language-json">{
+  &quot;connectors&quot;: {
+    &quot;memory-connector-1&quot;: {
+      &quot;contexts&quot;: {
+        &quot;CTX123&quot;: {
+          &quot;last_sync_timestamp&quot;: &quot;2025-12-18T15:00:00Z&quot;,
+          &quot;last_successful_sync&quot;: &quot;2025-12-18T15:00:00Z&quot;,
+          &quot;processed_memory_ids&quot;: [
+            &quot;mem_001&quot;, &quot;mem_002&quot;, &quot;mem_003&quot;
+          ],
+          &quot;failed_memory_ids&quot;: {
+            &quot;mem_004&quot;: &quot;Network timeout&quot;
+          },
+          &quot;total_processed&quot;: 145,
+          &quot;total_failed&quot;: 2,
+          &quot;status&quot;: &quot;completed&quot;
+        }
+      }
+    }
+  }
+}
+</code></pre>
+
+<h3 id="4-configuration-manager">4. Configuration Manager</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/config_manager.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Load and validate configuration<br />
+- Support multiple config sources (file, env, CLI)<br />
+- Hot-reload for non-critical settings<br />
+- Schema validation</p>
+<p><strong>Configuration Schema</strong>:</p>
+<pre class="codehilite"><code class="language-yaml"># config.yaml
+
+# LightRAG connection settings
+lightrag:
+  mode: &quot;api&quot;  # &quot;api&quot; or &quot;direct&quot;
+
+  # API mode settings
+  api:
+    url: &quot;http://localhost:9621&quot;
+    api_key: &quot;${LIGHTRAG_API_KEY}&quot;
+    workspace: &quot;memories&quot;
+
+  # Direct mode settings (if mode: &quot;direct&quot;)
+  direct:
+    working_dir: &quot;./lightrag_storage&quot;
+    # LLM/embedding settings inherited from environment
+
+# Memory API settings
+memory_api:
+  url: &quot;http://127.0.0.1:8080&quot;
+  api_key: &quot;${MEMORY_API_KEY}&quot;
+  timeout: 30
+  max_retries: 3
+
+# Connector definitions
+connectors:
+  - id: &quot;personal-memories&quot;
+    enabled: true
+    context_id: &quot;CTX123&quot;
+
+    # Scheduling
+    schedule:
+      type: &quot;interval&quot;  # &quot;interval&quot; or &quot;cron&quot;
+      interval_hours: 1  # for interval type
+      # cron: &quot;0 */1 * * *&quot;  # for cron type
+
+    # Ingestion settings
+    ingestion:
+      query_range: &quot;week&quot;  # how far back to query
+      query_limit: 100     # max items per query
+      batch_size: 10       # memories to process in parallel
+
+    # Transformation settings
+    transformation:
+      strategy: &quot;standard&quot;  # &quot;standard&quot; or &quot;rich&quot;
+      include_audio: false  # download and process audio
+      include_image: false  # download and process images
+      geocoding: false      # reverse geocode locations
+
+    # Retry settings
+    retry:
+      max_attempts: 3
+      backoff_multiplier: 2.0
+      max_backoff_seconds: 60
+
+  - id: &quot;work-memories&quot;
+    enabled: false
+    context_id: &quot;CTX456&quot;
+    schedule:
+      type: &quot;cron&quot;
+      cron: &quot;0 9,17 * * 1-5&quot;  # 9am and 5pm on weekdays
+
+# State management
+state:
+  backend: &quot;json&quot;  # &quot;json&quot; or &quot;sqlite&quot;
+  path: &quot;./memory_sync_state.json&quot;
+  # For SQLite:
+  # path: &quot;./memory_sync_state.db&quot;
+
+# API server (for management interface)
+api:
+  host: &quot;0.0.0.0&quot;
+  port: 9622
+  enable_auth: true
+  api_key: &quot;${CONNECTOR_API_KEY}&quot;
+
+# Logging
+logging:
+  level: &quot;INFO&quot;
+  format: &quot;json&quot;  # &quot;json&quot; or &quot;text&quot;
+  file: &quot;./memory_connector.log&quot;
+</code></pre>
+
+<h3 id="5-scheduler-service">5. Scheduler Service</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/scheduler_service.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Manage periodic ingestion jobs<br />
+- Support multiple schedules<br />
+- Job control (pause, resume, trigger)<br />
+- Monitor job health</p>
+<p><strong>Key Classes</strong>:</p>
+<pre class="codehilite"><code class="language-python">from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+
+
+class SchedulerService:
+    &quot;&quot;&quot;Manages scheduled ingestion jobs&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        orchestrator: IngestionOrchestrator,
+        config_manager: ConfigManager
+    ):
+        self.scheduler = AsyncIOScheduler()
+        self.orchestrator = orchestrator
+        self.config = config_manager
+
+    async def start(self):
+        &quot;&quot;&quot;Start scheduler and register jobs&quot;&quot;&quot;
+        for connector_config in self.config.get_connectors():
+            if connector_config.enabled:
+                self.add_job(connector_config)
+
+        self.scheduler.start()
+
+    async def stop(self):
+        &quot;&quot;&quot;Gracefully stop all jobs&quot;&quot;&quot;
+        self.scheduler.shutdown(wait=True)
+
+    def add_job(self, connector_config: ConnectorConfig):
+        &quot;&quot;&quot;Add a scheduled job for a connector&quot;&quot;&quot;
+        if connector_config.schedule.type == &quot;interval&quot;:
+            trigger = IntervalTrigger(
+                hours=connector_config.schedule.interval_hours
+            )
+        elif connector_config.schedule.type == &quot;cron&quot;:
+            trigger = CronTrigger.from_crontab(
+                connector_config.schedule.cron
+            )
+
+        self.scheduler.add_job(
+            func=self._run_ingestion_job,
+            trigger=trigger,
+            args=[connector_config.id],
+            id=f&quot;connector_{connector_config.id}&quot;,
+            name=f&quot;Ingestion: {connector_config.id}&quot;,
+            replace_existing=True
+        )
+
+    async def _run_ingestion_job(self, connector_id: str):
+        &quot;&quot;&quot;Execute ingestion for a connector&quot;&quot;&quot;
+        try:
+            await self.orchestrator.run_ingestion(connector_id)
+        except Exception as e:
+            logger.error(
+                f&quot;Ingestion job failed for {connector_id}: {e}&quot;
+            )
+
+    def trigger_now(self, connector_id: str):
+        &quot;&quot;&quot;Manually trigger a job immediately&quot;&quot;&quot;
+        self.scheduler.modify_job(
+            f&quot;connector_{connector_id}&quot;,
+            next_run_time=datetime.now()
+        )
+
+    def pause_job(self, connector_id: str):
+        &quot;&quot;&quot;Pause a scheduled job&quot;&quot;&quot;
+        self.scheduler.pause_job(f&quot;connector_{connector_id}&quot;)
+
+    def resume_job(self, connector_id: str):
+        &quot;&quot;&quot;Resume a paused job&quot;&quot;&quot;
+        self.scheduler.resume_job(f&quot;connector_{connector_id}&quot;)
+
+    def get_job_status(self, connector_id: str) -&gt; dict:
+        &quot;&quot;&quot;Get job status and next run time&quot;&quot;&quot;
+        job = self.scheduler.get_job(f&quot;connector_{connector_id}&quot;)
+        if job:
+            return {
+                &quot;id&quot;: job.id,
+                &quot;name&quot;: job.name,
+                &quot;next_run&quot;: job.next_run_time,
+                &quot;paused&quot;: job.next_run_time is None
+            }
+        return None
+</code></pre>
+
+<h3 id="6-ingestion-orchestrator">6. Ingestion Orchestrator</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/ingestion_orchestrator.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Coordinate the complete ingestion pipeline<br />
+- Implement ingestion strategies (full, incremental, selective)<br />
+- Error handling and retry logic<br />
+- Progress reporting</p>
+<p><strong>Key Classes</strong>:</p>
+<pre class="codehilite"><code class="language-python">class IngestionOrchestrator:
+    &quot;&quot;&quot;Orchestrates the complete ingestion pipeline&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        state_manager: StateManager,
+        memory_client_factory: callable,
+        lightrag_client_factory: callable,
+        transformer_factory: callable
+    ):
+        self.config = config_manager
+        self.state = state_manager
+        self.memory_client_factory = memory_client_factory
+        self.lightrag_client_factory = lightrag_client_factory
+        self.transformer_factory = transformer_factory
+
+    async def run_ingestion(
+        self,
+        connector_id: str,
+        strategy: str = &quot;incremental&quot;
+    ) -&gt; IngestionReport:
+        &quot;&quot;&quot;
+        Run ingestion for a connector
+
+        Args:
+            connector_id: ID of connector to run
+            strategy: &quot;full&quot;, &quot;incremental&quot;, or &quot;selective&quot;
+
+        Returns:
+            IngestionReport with results
+        &quot;&quot;&quot;
+
+        # 1. Load connector config
+        config = self.config.get_connector(connector_id)
+
+        # 2. Initialize clients
+        memory_client = self.memory_client_factory(config)
+        lightrag_client = self.lightrag_client_factory(config)
+        transformer = self.transformer_factory(config)
+
+        # 3. Get current state
+        state = await self.state.get_state(
+            connector_id,
+            config.context_id
+        )
+
+        # 4. Update state: mark as running
+        state.status = &quot;running&quot;
+        await self.state.update_state(state)
+
+        report = IngestionReport(
+            connector_id=connector_id,
+            start_time=datetime.now(timezone.utc)
+        )
+
+        try:
+            # 5. Fetch memories from API
+            memories = await memory_client.get_memories(
+                ctx_id=config.context_id,
+                limit=config.ingestion.query_limit,
+                range=config.ingestion.query_range
+            )
+
+            # 6. Filter unprocessed
+            all_memory_ids = [m.id for m in memories.memories]
+            unprocessed_ids = await self.state.get_unprocessed_ids(
+                connector_id,
+                config.context_id,
+                all_memory_ids
+            )
+
+            memories_to_process = [
+                m for m in memories.memories if m.id in unprocessed_ids
+            ]
+
+            report.total_fetched = len(memories.memories)
+            report.total_to_process = len(memories_to_process)
+
+            # 7. Process in batches
+            for i in range(0, len(memories_to_process), config.ingestion.batch_size):
+                batch = memories_to_process[i:i + config.ingestion.batch_size]
+
+                await self._process_batch(
+                    batch=batch,
+                    connector_id=connector_id,
+                    context_id=config.context_id,
+                    transformer=transformer,
+                    lightrag_client=lightrag_client,
+                    report=report
+                )
+
+            # 8. Update state: mark as completed
+            state.status = &quot;completed&quot;
+            state.last_successful_sync = datetime.now(timezone.utc)
+            await self.state.update_state(state)
+
+            report.status = &quot;success&quot;
+
+        except Exception as e:
+            # 9. Update state: mark as failed
+            state.status = &quot;failed&quot;
+            await self.state.update_state(state)
+
+            report.status = &quot;failed&quot;
+            report.error = str(e)
+            logger.error(f&quot;Ingestion failed: {e}&quot;, exc_info=True)
+
+        finally:
+            report.end_time = datetime.now(timezone.utc)
+
+        return report
+
+    async def _process_batch(
+        self,
+        batch: List[Memory],
+        connector_id: str,
+        context_id: str,
+        transformer: MemoryTransformer,
+        lightrag_client: LightRAGClient,
+        report: IngestionReport
+    ):
+        &quot;&quot;&quot;Process a batch of memories in parallel&quot;&quot;&quot;
+
+        async def process_single(memory: Memory):
+            try:
+                # Transform
+                document = await transformer.transform(memory)
+
+                # Submit to LightRAG
+                await lightrag_client.insert_document(
+                    text=document,
+                    file_source=f&quot;memory://{context_id}/{memory.id}&quot;
+                )
+
+                # Mark as processed
+                await self.state.mark_processed(
+                    connector_id,
+                    context_id,
+                    memory.id
+                )
+
+                report.successful_count += 1
+
+            except Exception as e:
+                # Mark as failed
+                await self.state.mark_failed(
+                    connector_id,
+                    context_id,
+                    memory.id,
+                    str(e)
+                )
+
+                report.failed_count += 1
+                report.errors.append({
+                    &quot;memory_id&quot;: memory.id,
+                    &quot;error&quot;: str(e)
+                })
+
+        # Process batch concurrently
+        await asyncio.gather(*[process_single(m) for m in batch])
+</code></pre>
+
+<h3 id="7-lightrag-client">7. LightRAG Client</h3>
+<p><strong>File</strong>: <code>lightrag/connectors/lightrag_client.py</code></p>
+<p><strong>Responsibilities</strong>:<br />
+- Abstract LightRAG integration (API or Direct)<br />
+- Handle authentication<br />
+- Submit documents<br />
+- Track status</p>
+<p><strong>Key Classes</strong>:</p>
+<pre class="codehilite"><code class="language-python">class LightRAGClient(ABC):
+    &quot;&quot;&quot;Abstract base for LightRAG integration&quot;&quot;&quot;
+
+    @abstractmethod
+    async def insert_document(
+        self,
+        text: str,
+        file_source: Optional[str] = None
+    ) -&gt; str:
+        &quot;&quot;&quot;Insert document, return document ID&quot;&quot;&quot;
+
+
+class LightRAGAPIClient(LightRAGClient):
+    &quot;&quot;&quot;LightRAG API integration&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        api_url: str,
+        api_key: str,
+        workspace: str = &quot;default&quot;
+    ):
+        self.api_url = api_url
+        self.api_key = api_key
+        self.workspace = workspace
+        self.client = httpx.AsyncClient()
+
+    async def insert_document(
+        self,
+        text: str,
+        file_source: Optional[str] = None
+    ) -&gt; str:
+        response = await self.client.post(
+            f&quot;{self.api_url}/documents/text&quot;,
+            json={
+                &quot;text&quot;: text,
+                &quot;file_source&quot;: file_source or &quot;memory_api&quot;
+            },
+            headers={
+                &quot;X-API-Key&quot;: self.api_key,
+                &quot;LIGHTRAG-WORKSPACE&quot;: self.workspace
+            }
+        )
+        response.raise_for_status()
+        return response.json()[&quot;doc_id&quot;]
+
+
+class LightRAGDirectClient(LightRAGClient):
+    &quot;&quot;&quot;Direct LightRAG library integration&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        working_dir: str,
+        **lightrag_kwargs
+    ):
+        from lightrag import LightRAG
+        self.rag = LightRAG(working_dir=working_dir, **lightrag_kwargs)
+
+    async def initialize(self):
+        await self.rag.initialize_storages()
+
+    async def insert_document(
+        self,
+        text: str,
+        file_source: Optional[str] = None
+    ) -&gt; str:
+        doc_id = await self.rag.ainsert(
+            input=text,
+            file_paths=[file_source] if file_source else None
+        )
+        return doc_id
+</code></pre>
+
+<h2 id="file-structure">File Structure</h2>
+<pre class="codehilite"><code>lightrag/
+├── connectors/
+│   ├── __init__.py
+│   ├── memory_api_client.py       # Memory API client
+│   ├── memory_transformer.py      # Data transformation
+│   ├── state_manager.py           # State persistence
+│   ├── config_manager.py          # Configuration
+│   ├── scheduler_service.py       # Job scheduling
+│   ├── ingestion_orchestrator.py  # Pipeline orchestration
+│   ├── lightrag_client.py         # LightRAG integration
+│   ├── connector_api.py           # Management REST API
+│   ├── models.py                  # Pydantic models
+│   └── cli.py                     # CLI interface
+├── api/
+│   └── (existing LightRAG API files)
+└── (existing LightRAG files)
+
+# Executable entry point
+memory_connector/
+├── __init__.py
+└── __main__.py  # CLI entry point
+</code></pre>
+
+<h2 id="data-models">Data Models</h2>
+<p><strong>File</strong>: <code>lightrag/connectors/models.py</code></p>
+<pre class="codehilite"><code class="language-python">from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
+from datetime import datetime
+
+
+# Memory API Models (from OpenAPI spec)
+class Memory(BaseModel):
+    id: str
+    type: str = &quot;record&quot;
+    audio: bool
+    image: bool
+    transcript: str = &quot;&quot;
+    location_lat: float = 0.0
+    location_lon: float = 0.0
+    created_at: str
+
+
+class MemoryList(BaseModel):
+    memories: List[Memory]
+
+
+# Connector Configuration Models
+class ScheduleConfig(BaseModel):
+    type: Literal[&quot;interval&quot;, &quot;cron&quot;]
+    interval_hours: Optional[int] = None
+    cron: Optional[str] = None
+
+
+class IngestionConfig(BaseModel):
+    query_range: str = &quot;week&quot;
+    query_limit: int = 100
+    batch_size: int = 10
+
+
+class TransformationConfig(BaseModel):
+    strategy: Literal[&quot;standard&quot;, &quot;rich&quot;] = &quot;standard&quot;
+    include_audio: bool = False
+    include_image: bool = False
+    geocoding: bool = False
+
+
+class RetryConfig(BaseModel):
+    max_attempts: int = 3
+    backoff_multiplier: float = 2.0
+    max_backoff_seconds: int = 60
+
+
+class ConnectorConfig(BaseModel):
+    id: str
+    enabled: bool = True
+    context_id: str
+    schedule: ScheduleConfig
+    ingestion: IngestionConfig
+    transformation: TransformationConfig
+    retry: RetryConfig
+
+
+# Ingestion Report Models
+class IngestionReport(BaseModel):
+    connector_id: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    status: Literal[&quot;running&quot;, &quot;success&quot;, &quot;failed&quot;] = &quot;running&quot;
+    total_fetched: int = 0
+    total_to_process: int = 0
+    successful_count: int = 0
+    failed_count: int = 0
+    errors: List[dict] = Field(default_factory=list)
+    error: Optional[str] = None
+</code></pre>
+
+<h2 id="next-steps_1">Next Steps</h2>
+<p>See <code>02-IMPLEMENTATION-PLAN.md</code> for the detailed implementation roadmap.</p>
+<hr />
+<h1 id="fr01-memory-api-ingestion-implementation-plan">FR01: Memory API Ingestion - Implementation Plan</h1>
+<h2 id="implementation-phases">Implementation Phases</h2>
+<h3 id="phase-1-core-foundation-week-1">Phase 1: Core Foundation (Week 1)</h3>
+<p><strong>Goal</strong>: Build the minimum viable connector that can pull memories and insert into LightRAG</p>
+<h4 id="tasks">Tasks:</h4>
+<p><strong>1.1 Project Setup</strong><br />
+- [ ] Create <code>lightrag/connectors/</code> directory structure<br />
+- [ ] Set up <code>memory_connector</code> package for CLI<br />
+- [ ] Create <code>pyproject.toml</code> or update existing with new dependencies<br />
+- [ ] Add dependencies:<br />
+<code>toml
+  [tool.poetry.dependencies]
+  apscheduler = "^3.10.4"
+  httpx = "^0.27.0"
+  pydantic = "^2.5.0"
+  pyyaml = "^6.0.1"
+  python-dateutil = "^2.8.2"</code></p>
+<p><strong>1.2 Data Models</strong><br />
+- [ ] Create <code>lightrag/connectors/models.py</code><br />
+- [ ] Implement Memory API models (Memory, MemoryList)<br />
+- [ ] Implement connector config models<br />
+- [ ] Implement ingestion report models<br />
+- [ ] Add validation logic</p>
+<p><strong>1.3 Memory API Client</strong><br />
+- [ ] Create <code>lightrag/connectors/memory_api_client.py</code><br />
+- [ ] Implement <code>MemoryAPIClient</code> class<br />
+- [ ] Add authentication (API key header)<br />
+- [ ] Implement <code>get_memories()</code> method<br />
+- [ ] Add retry logic with exponential backoff<br />
+- [ ] Add timeout handling<br />
+- [ ] Write unit tests</p>
+<p><strong>1.4 Data Transformer</strong><br />
+- [ ] Create <code>lightrag/connectors/memory_transformer.py</code><br />
+- [ ] Implement <code>TransformationStrategy</code> abstract base<br />
+- [ ] Implement <code>StandardTransformationStrategy</code><br />
+- [ ] Implement <code>MemoryTransformer</code> class<br />
+- [ ] Add tests for transformation logic</p>
+<p><strong>1.5 LightRAG Client</strong><br />
+- [ ] Create <code>lightrag/connectors/lightrag_client.py</code><br />
+- [ ] Implement <code>LightRAGClient</code> abstract base<br />
+- [ ] Implement <code>LightRAGAPIClient</code> (HTTP mode)<br />
+- [ ] Implement <code>LightRAGDirectClient</code> (library mode)<br />
+- [ ] Write integration tests</p>
+<p><strong>1.6 Basic CLI</strong><br />
+- [ ] Create <code>memory_connector/__main__.py</code><br />
+- [ ] Implement <code>sync</code> command for one-time sync<br />
+- [ ] Add argument parsing (argparse or typer)<br />
+- [ ] Basic logging setup</p>
+<p><strong>Testing Phase 1</strong>:<br />
+- [ ] Manual test: Pull memories from test API<br />
+- [ ] Manual test: Transform and insert into test LightRAG instance<br />
+- [ ] Verify knowledge graph contains entities from memory transcripts</p>
+<h3 id="phase-2-state-management-scheduling-week-2">Phase 2: State Management &amp; Scheduling (Week 2)</h3>
+<p><strong>Goal</strong>: Add persistence, deduplication, and automated scheduling</p>
+<h4 id="tasks_1">Tasks:</h4>
+<p><strong>2.1 State Manager</strong><br />
+- [ ] Create <code>lightrag/connectors/state_manager.py</code><br />
+- [ ] Implement JSON backend for state storage<br />
+- [ ] Implement <code>SyncState</code> model<br />
+- [ ] Implement state CRUD operations<br />
+- [ ] Add atomic write operations (temp file + rename)<br />
+- [ ] Implement <code>get_unprocessed_ids()</code> filtering<br />
+- [ ] Add state history tracking<br />
+- [ ] Write unit tests</p>
+<p><strong>2.2 Configuration Manager</strong><br />
+- [ ] Create <code>lightrag/connectors/config_manager.py</code><br />
+- [ ] Implement YAML config loading<br />
+- [ ] Add environment variable substitution<br />
+- [ ] Implement config validation<br />
+- [ ] Support multiple connector definitions<br />
+- [ ] Add config reload mechanism<br />
+- [ ] Write validation tests</p>
+<p><strong>2.3 Scheduler Service</strong><br />
+- [ ] Create <code>lightrag/connectors/scheduler_service.py</code><br />
+- [ ] Integrate APScheduler<br />
+- [ ] Implement interval trigger support<br />
+- [ ] Implement cron trigger support<br />
+- [ ] Add job control methods (pause, resume, trigger)<br />
+- [ ] Implement graceful shutdown<br />
+- [ ] Add scheduler persistence (SQLite jobstore)<br />
+- [ ] Write scheduler tests</p>
+<p><strong>2.4 Ingestion Orchestrator</strong><br />
+- [ ] Create <code>lightrag/connectors/ingestion_orchestrator.py</code><br />
+- [ ] Implement main ingestion pipeline<br />
+- [ ] Add batch processing logic<br />
+- [ ] Implement error handling and retry<br />
+- [ ] Generate ingestion reports<br />
+- [ ] Add progress callbacks<br />
+- [ ] Implement cancellation support<br />
+- [ ] Write integration tests</p>
+<p><strong>2.5 Enhanced CLI</strong><br />
+- [ ] Add <code>serve</code> command to run scheduler<br />
+- [ ] Add <code>status</code> command to check sync state<br />
+- [ ] Add <code>list</code> command to show connectors<br />
+- [ ] Add <code>trigger</code> command for manual runs<br />
+- [ ] Improve logging (structured logging)</p>
+<p><strong>2.6 Configuration File</strong><br />
+- [ ] Create example <code>config.yaml</code><br />
+- [ ] Add inline documentation<br />
+- [ ] Create config validation script<br />
+- [ ] Write config documentation</p>
+<p><strong>Testing Phase 2</strong>:<br />
+- [ ] Test incremental sync (no duplicate processing)<br />
+- [ ] Test scheduler (interval and cron)<br />
+- [ ] Test state persistence across restarts<br />
+- [ ] Test concurrent processing<br />
+- [ ] Load test with 1000+ memory items</p>
+<h3 id="phase-3-management-api-monitoring-week-3">Phase 3: Management API &amp; Monitoring (Week 3)</h3>
+<p><strong>Goal</strong>: Add REST API for connector management and monitoring</p>
+<h4 id="tasks_2">Tasks:</h4>
+<p><strong>3.1 Management API</strong><br />
+- [ ] Create <code>lightrag/connectors/connector_api.py</code><br />
+- [ ] Implement FastAPI application<br />
+- [ ] Add authentication (API key)<br />
+- [ ] Implement connector CRUD endpoints:<br />
+  - <code>GET /connectors</code> - List all connectors<br />
+  - <code>POST /connectors</code> - Create new connector<br />
+  - <code>GET /connectors/{id}</code> - Get connector details<br />
+  - <code>PUT /connectors/{id}</code> - Update connector<br />
+  - <code>DELETE /connectors/{id}</code> - Delete connector<br />
+- [ ] Implement control endpoints:<br />
+  - <code>POST /connectors/{id}/trigger</code> - Manual trigger<br />
+  - <code>POST /connectors/{id}/pause</code> - Pause scheduler<br />
+  - <code>POST /connectors/{id}/resume</code> - Resume scheduler<br />
+- [ ] Implement status endpoints:<br />
+  - <code>GET /connectors/{id}/status</code> - Current status<br />
+  - <code>GET /connectors/{id}/history</code> - Sync history<br />
+  - <code>GET /health</code> - Health check</p>
+<p><strong>3.2 API Models</strong><br />
+- [ ] Add request/response models<br />
+- [ ] Add OpenAPI documentation<br />
+- [ ] Add example requests/responses</p>
+<p><strong>3.3 API Integration with Scheduler</strong><br />
+- [ ] Connect API to SchedulerService<br />
+- [ ] Connect API to StateManager<br />
+- [ ] Add real-time status updates<br />
+- [ ] Implement WebSocket for progress streaming (optional)</p>
+<p><strong>3.4 Enhanced CLI</strong><br />
+- [ ] Update <code>serve</code> command to start both scheduler and API<br />
+- [ ] Add <code>--api-only</code> flag for API-only mode<br />
+- [ ] Add <code>--scheduler-only</code> flag for scheduler-only mode</p>
+<p><strong>3.5 Monitoring &amp; Logging</strong><br />
+- [ ] Add structured logging (JSON format)<br />
+- [ ] Add metrics collection (counters, timers)<br />
+- [ ] Optional: Add Prometheus exporter<br />
+- [ ] Add health check logic</p>
+<p><strong>Testing Phase 3</strong>:<br />
+- [ ] API endpoint tests (all CRUD operations)<br />
+- [ ] Authentication tests<br />
+- [ ] Integration test: Create connector via API, verify it runs<br />
+- [ ] Load test API with concurrent requests</p>
+<h3 id="phase-4-advanced-features-week-4">Phase 4: Advanced Features (Week 4)</h3>
+<p><strong>Goal</strong>: Add production-ready features and enhancements</p>
+<h4 id="tasks_3">Tasks:</h4>
+<p><strong>4.1 Rich Transformation Strategy</strong><br />
+- [ ] Implement <code>RichTransformationStrategy</code><br />
+- [ ] Add geocoding support (optional, using external service)<br />
+- [ ] Add datetime formatting improvements<br />
+- [ ] Add tag extraction from transcripts<br />
+- [ ] Make strategy configurable per connector</p>
+<p><strong>4.2 SQLite State Backend</strong><br />
+- [ ] Implement SQLite backend for StateManager<br />
+- [ ] Add database migrations<br />
+- [ ] Add connection pooling<br />
+- [ ] Performance comparison with JSON backend</p>
+<p><strong>4.3 Error Handling Enhancements</strong><br />
+- [ ] Implement dead letter queue for failed items<br />
+- [ ] Add retry with exponential backoff per item<br />
+- [ ] Add alerting hooks (email, webhook, Slack)<br />
+- [ ] Add error reporting dashboard</p>
+<p><strong>4.4 Security Enhancements</strong><br />
+- [ ] Add secrets encryption at rest<br />
+- [ ] Implement API key rotation<br />
+- [ ] Add audit logging<br />
+- [ ] Security review and hardening</p>
+<p><strong>4.5 Documentation</strong><br />
+- [ ] User guide (setup, configuration, usage)<br />
+- [ ] API reference (OpenAPI/Swagger)<br />
+- [ ] Architecture documentation<br />
+- [ ] Troubleshooting guide<br />
+- [ ] Performance tuning guide</p>
+<p><strong>4.6 Deployment Artifacts</strong><br />
+- [ ] Create Dockerfile<br />
+- [ ] Create docker-compose.yaml (connector + LightRAG)<br />
+- [ ] Create systemd service file<br />
+- [ ] Create Kubernetes manifests (optional)<br />
+- [ ] Create Helm chart (optional)</p>
+<p><strong>Testing Phase 4</strong>:<br />
+- [ ] End-to-end production scenario test<br />
+- [ ] Security audit<br />
+- [ ] Performance benchmarks<br />
+- [ ] Failover and recovery tests<br />
+- [ ] Documentation review</p>
+<h2 id="implementation-details">Implementation Details</h2>
+<h3 id="priority-1-minimal-working-implementation">Priority 1: Minimal Working Implementation</h3>
+<p>For fastest time-to-value, implement in this order:</p>
+<ol>
+<li><strong>Memory API Client</strong> → Can fetch data</li>
+<li><strong>Standard Transformer</strong> → Can convert data</li>
+<li><strong>LightRAG Direct Client</strong> → Can insert data</li>
+<li><strong>Basic CLI sync command</strong> → Can run manually</li>
+</ol>
+<p><strong>Deliverable</strong>: Manual sync working end-to-end</p>
+<h3 id="priority-2-automation">Priority 2: Automation</h3>
+<ol start="5">
+<li><strong>JSON State Manager</strong> → Tracks processed items</li>
+<li><strong>Config Manager</strong> → Loads YAML config</li>
+<li><strong>Scheduler Service</strong> → Automates periodic sync</li>
+<li><strong>Orchestrator</strong> → Coordinates pipeline</li>
+</ol>
+<p><strong>Deliverable</strong>: Automated hourly sync running</p>
+<h3 id="priority-3-management">Priority 3: Management</h3>
+<ol start="9">
+<li><strong>Management API</strong> → Control via REST API</li>
+<li><strong>Enhanced logging</strong> → Production monitoring</li>
+</ol>
+<p><strong>Deliverable</strong>: Production-ready service</p>
+<h2 id="testing-strategy">Testing Strategy</h2>
+<h3 id="unit-tests">Unit Tests</h3>
+<ul>
+<li>Every class has unit tests</li>
+<li>Mock external dependencies (APIs, file I/O)</li>
+<li>Target: 80%+ code coverage</li>
+</ul>
+<h3 id="integration-tests">Integration Tests</h3>
+<ul>
+<li>Test Memory API client with mock server</li>
+<li>Test LightRAG integration with test instance</li>
+<li>Test complete pipeline with mocked components</li>
+</ul>
+<h3 id="end-to-end-tests">End-to-End Tests</h3>
+<ul>
+<li>Real Memory API (test account)</li>
+<li>Real LightRAG instance (test workspace)</li>
+<li>Full sync cycle</li>
+<li>Verify knowledge graph contents</li>
+</ul>
+<h3 id="performance-tests">Performance Tests</h3>
+<ul>
+<li>Benchmark: 100 memories in &lt;60 seconds</li>
+<li>Benchmark: 1000 memories in &lt;10 minutes</li>
+<li>Memory usage: &lt;500MB for 10,000 items</li>
+<li>Scheduler overhead: &lt;1% CPU when idle</li>
+</ul>
+<h2 id="file-creation-checklist">File Creation Checklist</h2>
+<h3 id="core-implementation-files">Core Implementation Files</h3>
+<pre class="codehilite"><code>✓ Created in architecture planning:
+- FEATURES/FR01-memory-ingestion/00-OVERVIEW.md
+- FEATURES/FR01-memory-ingestion/01-ARCHITECTURE.md
+- FEATURES/FR01-memory-ingestion/02-IMPLEMENTATION-PLAN.md
+
+□ To be created in Phase 1:
+- lightrag/connectors/__init__.py
+- lightrag/connectors/models.py
+- lightrag/connectors/memory_api_client.py
+- lightrag/connectors/memory_transformer.py
+- lightrag/connectors/lightrag_client.py
+- memory_connector/__init__.py
+- memory_connector/__main__.py
+- tests/connectors/test_memory_api_client.py
+- tests/connectors/test_transformer.py
+- tests/connectors/test_lightrag_client.py
+
+□ To be created in Phase 2:
+- lightrag/connectors/state_manager.py
+- lightrag/connectors/config_manager.py
+- lightrag/connectors/scheduler_service.py
+- lightrag/connectors/ingestion_orchestrator.py
+- config.example.yaml
+- tests/connectors/test_state_manager.py
+- tests/connectors/test_orchestrator.py
+
+□ To be created in Phase 3:
+- lightrag/connectors/connector_api.py
+- tests/connectors/test_api.py
+
+□ To be created in Phase 4:
+- Dockerfile
+- docker-compose.yaml
+- docs/memory-connector-guide.md
+- docs/api-reference.md
+</code></pre>
+
+<h2 id="dependencies">Dependencies</h2>
+<h3 id="python-dependencies">Python Dependencies</h3>
+<pre class="codehilite"><code class="language-toml">[tool.poetry.dependencies]
+python = &quot;^3.11&quot;
+
+# Existing LightRAG dependencies
+# ... (all current dependencies)
+
+# New dependencies for Memory Connector
+apscheduler = &quot;^3.10.4&quot;       # Job scheduling
+httpx = &quot;^0.27.0&quot;             # Async HTTP client
+pydantic = &quot;^2.5.0&quot;           # Data validation (already in LightRAG)
+pyyaml = &quot;^6.0.1&quot;             # YAML config parsing
+python-dateutil = &quot;^2.8.2&quot;    # Date parsing/formatting
+
+# Optional dependencies
+sqlalchemy = { version = &quot;^2.0.0&quot;, optional = true }  # SQLite backend
+alembic = { version = &quot;^1.13.0&quot;, optional = true }    # Migrations
+
+[tool.poetry.extras]
+sqlite = [&quot;sqlalchemy&quot;, &quot;alembic&quot;]
+</code></pre>
+
+<h3 id="system-dependencies">System Dependencies</h3>
+<ul>
+<li>Python 3.11+</li>
+<li>LightRAG (latest version)</li>
+<li>Access to Memory API (API key required)</li>
+<li>Network connectivity</li>
+</ul>
+<h2 id="configuration-example">Configuration Example</h2>
+<p>Create <code>config.yaml</code>:</p>
+<pre class="codehilite"><code class="language-yaml"># Memory Connector Configuration
+
+lightrag:
+  mode: &quot;api&quot;
+  api:
+    url: &quot;http://localhost:9621&quot;
+    api_key: &quot;your-lightrag-api-key&quot;
+    workspace: &quot;memories&quot;
+
+memory_api:
+  url: &quot;http://127.0.0.1:8080&quot;
+  api_key: &quot;your-memory-api-key&quot;
+  timeout: 30
+
+connectors:
+  - id: &quot;personal-memories&quot;
+    enabled: true
+    context_id: &quot;CTX123&quot;
+    schedule:
+      type: &quot;interval&quot;
+      interval_hours: 1
+    ingestion:
+      query_range: &quot;week&quot;
+      query_limit: 100
+      batch_size: 10
+    transformation:
+      strategy: &quot;standard&quot;
+    retry:
+      max_attempts: 3
+
+state:
+  backend: &quot;json&quot;
+  path: &quot;./memory_sync_state.json&quot;
+
+api:
+  host: &quot;0.0.0.0&quot;
+  port: 9622
+  enable_auth: true
+  api_key: &quot;your-connector-api-key&quot;
+
+logging:
+  level: &quot;INFO&quot;
+  file: &quot;./memory_connector.log&quot;
+</code></pre>
+
+<h2 id="deployment-steps">Deployment Steps</h2>
+<h3 id="development-deployment">Development Deployment</h3>
+<pre class="codehilite"><code class="language-bash"># 1. Install dependencies
+poetry install --extras sqlite
+
+# 2. Create config file
+cp config.example.yaml config.yaml
+# Edit config.yaml with your settings
+
+# 3. Test one-time sync
+python -m memory_connector sync \
+  --config config.yaml \
+  --connector-id personal-memories
+
+# 4. Start scheduler
+python -m memory_connector serve \
+  --config config.yaml
+</code></pre>
+
+<h3 id="production-deployment-docker">Production Deployment (Docker)</h3>
+<pre class="codehilite"><code class="language-bash"># 1. Build image
+docker build -t memory-connector:latest .
+
+# 2. Run with docker-compose
+docker-compose up -d
+
+# 3. Check logs
+docker-compose logs -f memory-connector
+
+# 4. Check status
+curl http://localhost:9622/health
+</code></pre>
+
+<h3 id="production-deployment-systemd">Production Deployment (systemd)</h3>
+<pre class="codehilite"><code class="language-bash"># 1. Install package
+pip install -e .
+
+# 2. Create systemd service
+sudo cp memory-connector.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# 3. Start service
+sudo systemctl start memory-connector
+sudo systemctl enable memory-connector
+
+# 4. Check status
+sudo systemctl status memory-connector
+sudo journalctl -u memory-connector -f
+</code></pre>
+
+<h2 id="metrics-success-criteria">Metrics &amp; Success Criteria</h2>
+<h3 id="functionality-metrics">Functionality Metrics</h3>
+<ul>
+<li>✅ Successfully connects to Memory API</li>
+<li>✅ Successfully inserts documents into LightRAG</li>
+<li>✅ No duplicate processing (idempotency)</li>
+<li>✅ Handles API errors gracefully</li>
+<li>✅ State persists across restarts</li>
+</ul>
+<h3 id="performance-metrics">Performance Metrics</h3>
+<ul>
+<li>⏱️ Process 100 memories in &lt;60 seconds</li>
+<li>⏱️ Memory usage &lt;500MB for 10K items</li>
+<li>⏱️ Scheduler latency &lt;5 seconds</li>
+<li>⏱️ API response time &lt;200ms</li>
+</ul>
+<h3 id="reliability-metrics">Reliability Metrics</h3>
+<ul>
+<li>🎯 99.9% uptime for scheduler</li>
+<li>🎯 &lt;0.1% duplicate processing rate</li>
+<li>🎯 100% state recovery after crash</li>
+<li>🎯 Auto-retry on transient failures</li>
+</ul>
+<h3 id="usability-metrics">Usability Metrics</h3>
+<ul>
+<li>📖 Complete documentation</li>
+<li>📖 Example configuration</li>
+<li>📖 Troubleshooting guide</li>
+<li>📖 API reference (OpenAPI)</li>
+</ul>
+<h2 id="risk-mitigation">Risk Mitigation</h2>
+<h3 id="risk-memory-api-rate-limiting">Risk: Memory API rate limiting</h3>
+<p><strong>Mitigation</strong>: Add configurable rate limiting, backoff, and pagination support</p>
+<h3 id="risk-lightrag-processing-delays">Risk: LightRAG processing delays</h3>
+<p><strong>Mitigation</strong>: Queue-based ingestion with status tracking; process asynchronously</p>
+<h3 id="risk-state-corruption">Risk: State corruption</h3>
+<p><strong>Mitigation</strong>: Atomic writes, backup strategy, state validation on load</p>
+<h3 id="risk-network-failures">Risk: Network failures</h3>
+<p><strong>Mitigation</strong>: Retry logic, timeout handling, circuit breaker pattern</p>
+<h3 id="risk-large-memory-volumes">Risk: Large memory volumes</h3>
+<p><strong>Mitigation</strong>: Batch processing, incremental sync, configurable limits</p>
+<h2 id="next-steps-after-implementation">Next Steps After Implementation</h2>
+<ol>
+<li>
+<p><strong>Beta Testing</strong><br />
+   - Deploy to test environment<br />
+   - Run for 1 week with real data<br />
+   - Monitor for issues</p>
+</li>
+<li>
+<p><strong>Production Rollout</strong><br />
+   - Deploy to production<br />
+   - Enable for small subset of contexts<br />
+   - Gradual rollout</p>
+</li>
+<li>
+<p><strong>Phase 2: Memory Manager</strong> (See <code>05-FUTURE-ENHANCEMENTS.md</code>)<br />
+   - Bidirectional sync<br />
+   - Export/backup features<br />
+   - Collaborative sharing</p>
+</li>
+</ol>
+<hr />
+<h1 id="fr01-memory-api-ingestion-api-integration-details">FR01: Memory API Ingestion - API Integration Details</h1>
+<h2 id="memory-api-integration">Memory API Integration</h2>
+<h3 id="api-specification-summary">API Specification Summary</h3>
+<p>Based on your OpenAPI spec:</p>
+<p><strong>Base URL</strong>: <code>http://127.0.0.1:8080</code><br />
+<strong>Authentication</strong>: API Key in header (<code>X-API-KEY</code>)</p>
+<h3 id="relevant-endpoints">Relevant Endpoints</h3>
+<h4 id="1-get-memory-list">1. Get Memory List</h4>
+<p><strong>Endpoint</strong>: <code>GET /memory/{ctx_id}</code></p>
+<p><strong>Description</strong>: Retrieve list of memory items from given context</p>
+<p><strong>Parameters</strong>:<br />
+- <code>ctx_id</code> (path, required): Context ID<br />
+- <code>limit</code> (query, optional): Limit of memory items (default: 10)<br />
+- <code>range</code> (query, optional): Range of memory items (default: "week")</p>
+<p><strong>Response</strong> (200):</p>
+<pre class="codehilite"><code class="language-json">{
+  &quot;memories&quot;: [
+    {
+      &quot;id&quot;: &quot;1234567890&quot;,
+      &quot;type&quot;: &quot;record&quot;,
+      &quot;audio&quot;: true,
+      &quot;image&quot;: true,
+      &quot;transcript&quot;: &quot;&quot;,
+      &quot;location_lat&quot;: 0.8008282,
+      &quot;location_lon&quot;: 6.0274563,
+      &quot;created_at&quot;: &quot;2025-12-18T14:30:00Z&quot;
+    }
+  ]
+}
+</code></pre>
+
+<p><strong>Error Responses</strong>:<br />
+- 401: Unauthorized (invalid API key)<br />
+- 403: Forbidden<br />
+- 404: Context not found<br />
+- 500: Internal error</p>
+<h4 id="2-get-audio-for-memory">2. Get Audio for Memory</h4>
+<p><strong>Endpoint</strong>: <code>GET /memory/{ctx_id}/{memory_id}/audio</code></p>
+<p><strong>Description</strong>: Retrieve audio resource for a given memory</p>
+<p><strong>Parameters</strong>:<br />
+- <code>ctx_id</code> (path, required): Context ID<br />
+- <code>memory_id</code> (path, required): Memory ID</p>
+<p><strong>Response</strong> (200):<br />
+- Content-Type: <code>audio/mpeg</code>, <code>audio/ogg</code>, or <code>audio/webm</code><br />
+- Body: Binary audio data</p>
+<p><strong>Use Case</strong>: Optional - can download and transcribe if transcript is empty</p>
+<h4 id="3-get-image-for-memory">3. Get Image for Memory</h4>
+<p><strong>Endpoint</strong>: <code>GET /memory/{ctx_id}/{memory_id}/image</code></p>
+<p><strong>Description</strong>: Retrieve image resource for a given memory</p>
+<p><strong>Parameters</strong>:<br />
+- <code>ctx_id</code> (path, required): Context ID<br />
+- <code>memory_id</code> (path, required): Memory ID</p>
+<p><strong>Response</strong> (200):<br />
+- Content-Type: <code>image/jpeg</code> or <code>image/png</code><br />
+- Body: Binary image data</p>
+<p><strong>Use Case</strong>: Optional - can download and process with vision models</p>
+<h3 id="integration-strategy">Integration Strategy</h3>
+<h4 id="phase-1-transcript-only-ingestion">Phase 1: Transcript-Only Ingestion</h4>
+<p><strong>Scope</strong>: Ingest only transcript data and metadata</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python"># Fetch memories
+response = await client.get(
+    f&quot;/memory/{ctx_id}&quot;,
+    params={&quot;limit&quot;: 100, &quot;range&quot;: &quot;week&quot;},
+    headers={&quot;X-API-KEY&quot;: api_key}
+)
+
+# Process each memory
+for memory in response.json()[&quot;memories&quot;]:
+    if memory[&quot;transcript&quot;]:  # Only if transcript exists
+        document = transform_memory_to_document(memory)
+        await lightrag.insert(document)
+</code></pre>
+
+<p><strong>Advantages</strong>:<br />
+- Simple and fast<br />
+- No additional API calls<br />
+- Lower bandwidth usage</p>
+<p><strong>Limitations</strong>:<br />
+- Misses memories without transcripts<br />
+- No audio/image content</p>
+<h4 id="phase-2-enhanced-ingestion-future">Phase 2: Enhanced Ingestion (Future)</h4>
+<p><strong>Scope</strong>: Download and process audio/images</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">for memory in memories:
+    # Get transcript (if missing, transcribe audio)
+    if not memory[&quot;transcript&quot;] and memory[&quot;audio&quot;]:
+        audio_data = await client.get(
+            f&quot;/memory/{ctx_id}/{memory_id}/audio&quot;
+        )
+        transcript = await transcribe_audio(audio_data)
+        memory[&quot;transcript&quot;] = transcript
+
+    # Get image analysis (if available)
+    if memory[&quot;image&quot;]:
+        image_data = await client.get(
+            f&quot;/memory/{ctx_id}/{memory_id}/image&quot;
+        )
+        image_description = await analyze_image(image_data)
+        memory[&quot;image_description&quot;] = image_description
+
+    document = transform_memory_to_document(memory)
+    await lightrag.insert(document)
+</code></pre>
+
+<h2 id="memory-api-client-implementation">Memory API Client Implementation</h2>
+<h3 id="core-client-class">Core Client Class</h3>
+<pre class="codehilite"><code class="language-python">import httpx
+from typing import Optional
+from lightrag.connectors.models import Memory, MemoryList
+
+
+class MemoryAPIClient:
+    &quot;&quot;&quot;Client for interacting with Memory API&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        api_url: str,
+        api_key: str,
+        timeout: int = 30,
+        max_retries: int = 3
+    ):
+        self.api_url = api_url.rstrip(&quot;/&quot;)
+        self.api_key = api_key
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            headers={&quot;X-API-KEY&quot;: api_key}
+        )
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def close(self):
+        &quot;&quot;&quot;Close HTTP client&quot;&quot;&quot;
+        await self.client.aclose()
+
+    async def get_memories(
+        self,
+        ctx_id: str,
+        limit: int = 100,
+        range: str = &quot;week&quot;
+    ) -&gt; MemoryList:
+        &quot;&quot;&quot;
+        Fetch list of memories for a context
+
+        Args:
+            ctx_id: Context ID
+            limit: Maximum number of memories to fetch
+            range: Time range (e.g., &quot;week&quot;, &quot;month&quot;, &quot;day&quot;)
+
+        Returns:
+            MemoryList with memory items
+
+        Raises:
+            httpx.HTTPStatusError: On API errors (401, 403, 404, 500)
+            httpx.TimeoutException: On timeout
+        &quot;&quot;&quot;
+        url = f&quot;{self.api_url}/memory/{ctx_id}&quot;
+        params = {&quot;limit&quot;: limit, &quot;range&quot;: range}
+
+        # Retry logic with exponential backoff
+        for attempt in range(self.max_retries):
+            try:
+                response = await self.client.get(url, params=params)
+                response.raise_for_status()
+
+                data = response.json()
+                return MemoryList(**data)
+
+            except httpx.TimeoutException as e:
+                if attempt == self.max_retries - 1:
+                    raise
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+
+            except httpx.HTTPStatusError as e:
+                # Don't retry on auth errors or client errors
+                if e.response.status_code in [401, 403, 404]:
+                    raise
+                # Retry on server errors
+                if attempt == self.max_retries - 1:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+
+    async def get_memory(
+        self,
+        ctx_id: str,
+        memory_id: str
+    ) -&gt; Memory:
+        &quot;&quot;&quot;
+        Fetch single memory item
+
+        Note: Current API spec doesn't have a single-item endpoint,
+        so we fetch the list and filter. This can be optimized if
+        the API adds a GET /memory/{ctx_id}/{memory_id} endpoint.
+
+        Args:
+            ctx_id: Context ID
+            memory_id: Memory ID
+
+        Returns:
+            Memory item
+
+        Raises:
+            ValueError: If memory not found
+        &quot;&quot;&quot;
+        memories = await self.get_memories(ctx_id, limit=1000)
+        for memory in memories.memories:
+            if memory.id == memory_id:
+                return memory
+        raise ValueError(f&quot;Memory {memory_id} not found in context {ctx_id}&quot;)
+
+    async def download_audio(
+        self,
+        ctx_id: str,
+        memory_id: str,
+        output_path: Path
+    ) -&gt; bool:
+        &quot;&quot;&quot;
+        Download audio file for a memory
+
+        Args:
+            ctx_id: Context ID
+            memory_id: Memory ID
+            output_path: Path to save audio file
+
+        Returns:
+            True if successful, False otherwise
+        &quot;&quot;&quot;
+        url = f&quot;{self.api_url}/memory/{ctx_id}/{memory_id}/audio&quot;
+
+        try:
+            response = await self.client.get(url)
+
+            if response.status_code == 404:
+                return False  # Audio not available
+
+            response.raise_for_status()
+
+            # Save to file
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(output_path, &quot;wb&quot;) as f:
+                await f.write(response.content)
+
+            return True
+
+        except httpx.HTTPStatusError:
+            return False
+
+    async def download_image(
+        self,
+        ctx_id: str,
+        memory_id: str,
+        output_path: Path
+    ) -&gt; bool:
+        &quot;&quot;&quot;
+        Download image file for a memory
+
+        Args:
+            ctx_id: Context ID
+            memory_id: Memory ID
+            output_path: Path to save image file
+
+        Returns:
+            True if successful, False otherwise
+        &quot;&quot;&quot;
+        url = f&quot;{self.api_url}/memory/{ctx_id}/{memory_id}/image&quot;
+
+        try:
+            response = await self.client.get(url)
+
+            if response.status_code == 404:
+                return False  # Image not available
+
+            response.raise_for_status()
+
+            # Save to file
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(output_path, &quot;wb&quot;) as f:
+                await f.write(response.content)
+
+            return True
+
+        except httpx.HTTPStatusError:
+            return False
+
+    async def check_connection(self) -&gt; bool:
+        &quot;&quot;&quot;
+        Test API connectivity and authentication
+
+        Returns:
+            True if connection successful, False otherwise
+        &quot;&quot;&quot;
+        try:
+            # Try to fetch empty list (minimal request)
+            await self.get_memories(ctx_id=&quot;test&quot;, limit=1)
+            return True
+        except httpx.HTTPStatusError as e:
+            # 404 is OK (context doesn't exist, but auth worked)
+            if e.response.status_code == 404:
+                return True
+            # 401/403 means auth failed
+            return False
+        except Exception:
+            return False
+</code></pre>
+
+<h2 id="lightrag-integration">LightRAG Integration</h2>
+<h3 id="lightrag-api-client">LightRAG API Client</h3>
+<pre class="codehilite"><code class="language-python">import httpx
+from typing import Optional
+
+
+class LightRAGAPIClient:
+    &quot;&quot;&quot;Client for LightRAG REST API&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        api_url: str,
+        api_key: Optional[str] = None,
+        workspace: str = &quot;default&quot;
+    ):
+        self.api_url = api_url.rstrip(&quot;/&quot;)
+        self.api_key = api_key
+        self.workspace = workspace
+
+        headers = {}
+        if api_key:
+            headers[&quot;X-API-Key&quot;] = api_key
+
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0),  # 5 min for processing
+            headers=headers
+        )
+
+    async def close(self):
+        await self.client.aclose()
+
+    async def insert_document(
+        self,
+        text: str,
+        file_source: Optional[str] = None
+    ) -&gt; str:
+        &quot;&quot;&quot;
+        Insert document into LightRAG
+
+        Args:
+            text: Document text content
+            file_source: Optional source identifier
+
+        Returns:
+            Document ID
+        &quot;&quot;&quot;
+        url = f&quot;{self.api_url}/documents/text&quot;
+
+        payload = {
+            &quot;text&quot;: text,
+            &quot;file_source&quot;: file_source or &quot;memory_api&quot;
+        }
+
+        headers = {&quot;LIGHTRAG-WORKSPACE&quot;: self.workspace}
+
+        response = await self.client.post(
+            url,
+            json=payload,
+            headers=headers
+        )
+
+        response.raise_for_status()
+        result = response.json()
+
+        return result.get(&quot;doc_id&quot;) or result.get(&quot;track_id&quot;)
+
+    async def get_document_status(self, doc_id: str) -&gt; dict:
+        &quot;&quot;&quot;
+        Get document processing status
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Status information
+        &quot;&quot;&quot;
+        url = f&quot;{self.api_url}/documents/{doc_id}/status&quot;
+
+        headers = {&quot;LIGHTRAG-WORKSPACE&quot;: self.workspace}
+
+        response = await self.client.get(url, headers=headers)
+        response.raise_for_status()
+
+        return response.json()
+</code></pre>
+
+<h3 id="lightrag-direct-client">LightRAG Direct Client</h3>
+<pre class="codehilite"><code class="language-python">from lightrag import LightRAG
+from typing import Optional
+
+
+class LightRAGDirectClient:
+    &quot;&quot;&quot;Direct LightRAG library integration&quot;&quot;&quot;
+
+    def __init__(
+        self,
+        working_dir: str,
+        **lightrag_kwargs
+    ):
+        &quot;&quot;&quot;
+        Initialize direct LightRAG client
+
+        Args:
+            working_dir: LightRAG working directory
+            **lightrag_kwargs: Additional LightRAG parameters
+                - embedding_func
+                - llm_model_func
+                - etc.
+        &quot;&quot;&quot;
+        from lightrag import LightRAG
+
+        self.rag = LightRAG(working_dir=working_dir, **lightrag_kwargs)
+        self._initialized = False
+
+    async def initialize(self):
+        &quot;&quot;&quot;Initialize storage (call once at startup)&quot;&quot;&quot;
+        if not self._initialized:
+            await self.rag.initialize_storages()
+            self._initialized = True
+
+    async def close(self):
+        &quot;&quot;&quot;Clean up resources&quot;&quot;&quot;
+        if self._initialized:
+            await self.rag.finalize_storages()
+
+    async def insert_document(
+        self,
+        text: str,
+        file_source: Optional[str] = None
+    ) -&gt; str:
+        &quot;&quot;&quot;
+        Insert document into LightRAG
+
+        Args:
+            text: Document text content
+            file_source: Optional source identifier
+
+        Returns:
+            Document ID
+        &quot;&quot;&quot;
+        if not self._initialized:
+            await self.initialize()
+
+        # Use ainsert with file_paths for source tracking
+        doc_id = await self.rag.ainsert(
+            input=text,
+            file_paths=[file_source] if file_source else None
+        )
+
+        return doc_id
+</code></pre>
+
+<h2 id="data-transformation">Data Transformation</h2>
+<h3 id="standard-transformation">Standard Transformation</h3>
+<pre class="codehilite"><code class="language-python">from lightrag.connectors.models import Memory
+from datetime import datetime
+import re
+
+
+class StandardTransformationStrategy:
+    &quot;&quot;&quot;Standard transformation: transcript + metadata as structured text&quot;&quot;&quot;
+
+    def transform(self, memory: Memory) -&gt; str:
+        &quot;&quot;&quot;
+        Transform Memory to LightRAG document
+
+        Args:
+            memory: Memory object from API
+
+        Returns:
+            Formatted document text
+        &quot;&quot;&quot;
+        # Parse timestamp
+        try:
+            created_at = datetime.fromisoformat(
+                memory.created_at.replace(&quot;Z&quot;, &quot;+00:00&quot;)
+            )
+            date_str = created_at.strftime(&quot;%B %d, %Y at %I:%M %p UTC&quot;)
+        except Exception:
+            date_str = memory.created_at
+
+        # Format location
+        location_str = &quot;&quot;
+        if memory.location_lat != 0.0 or memory.location_lon != 0.0:
+            location_str = f&quot;\nLocation: ({memory.location_lat}, {memory.location_lon})&quot;
+
+        # Media availability
+        media_parts = []
+        if memory.audio:
+            media_parts.append(&quot;Audio&quot;)
+        if memory.image:
+            media_parts.append(&quot;Image&quot;)
+        media_str = &quot;, &quot;.join(media_parts) if media_parts else &quot;None&quot;
+
+        # Build document
+        document = f&quot;&quot;&quot;---
+Memory Record
+ID: {memory.id}
+Type: {memory.type}
+Recorded: {date_str}{location_str}
+Media Available: {media_str}
+
+Transcript:
+{memory.transcript if memory.transcript else &quot;[No transcript available]&quot;}
+---&quot;&quot;&quot;
+
+        return document
+
+    def extract_tags(self, text: str) -&gt; list[str]:
+        &quot;&quot;&quot;
+        Extract hashtags from text
+
+        Args:
+            text: Input text
+
+        Returns:
+            List of hashtags
+        &quot;&quot;&quot;
+        return re.findall(r'#\w+', text)
+</code></pre>
+
+<h3 id="rich-transformation-future">Rich Transformation (Future)</h3>
+<pre class="codehilite"><code class="language-python">class RichTransformationStrategy:
+    &quot;&quot;&quot;
+    Rich transformation with geocoding, enhanced metadata, and tagging
+    &quot;&quot;&quot;
+
+    def __init__(
+        self,
+        geocoding_enabled: bool = False,
+        tagging_enabled: bool = True
+    ):
+        self.geocoding_enabled = geocoding_enabled
+        self.tagging_enabled = tagging_enabled
+
+    async def transform(self, memory: Memory) -&gt; str:
+        &quot;&quot;&quot;Transform with enhanced features&quot;&quot;&quot;
+
+        # Geocode location (if enabled)
+        location_str = await self._format_location(
+            memory.location_lat,
+            memory.location_lon
+        )
+
+        # Extract or generate tags
+        tags = []
+        if self.tagging_enabled:
+            tags = await self._extract_tags(memory.transcript)
+
+        # Format timestamp
+        date_str = self._format_datetime(memory.created_at)
+
+        # Build enhanced document
+        document = f&quot;&quot;&quot;---
+Memory Record from {date_str}
+ID: {memory.id}
+Type: {self._humanize_type(memory.type)}
+{location_str}
+
+Transcript:
+{memory.transcript}
+
+Tags: {', '.join(tags) if tags else 'None'}
+Media: {'Audio, ' if memory.audio else ''}{'Image' if memory.image else ''}
+---&quot;&quot;&quot;
+
+        return document
+
+    async def _format_location(self, lat: float, lon: float) -&gt; str:
+        &quot;&quot;&quot;Reverse geocode location&quot;&quot;&quot;
+        if not self.geocoding_enabled or (lat == 0.0 and lon == 0.0):
+            return f&quot;Location: ({lat}, {lon})&quot;
+
+        # Use geocoding service (e.g., Nominatim, Google Maps)
+        try:
+            place_name = await self._reverse_geocode(lat, lon)
+            return f&quot;Location: {place_name} ({lat}, {lon})&quot;
+        except Exception:
+            return f&quot;Location: ({lat}, {lon})&quot;
+
+    async def _reverse_geocode(self, lat: float, lon: float) -&gt; str:
+        &quot;&quot;&quot;Call geocoding service (placeholder)&quot;&quot;&quot;
+        # Implement with actual geocoding service
+        # Example: Nominatim, Google Maps, Mapbox
+        return f&quot;{lat}, {lon}&quot;
+
+    async def _extract_tags(self, text: str) -&gt; list[str]:
+        &quot;&quot;&quot;Extract meaningful tags from text&quot;&quot;&quot;
+        # Simple keyword extraction (can be enhanced with NLP)
+        keywords = re.findall(r'\b[A-Z][a-z]+\b', text)
+        return [f&quot;#{kw.lower()}&quot; for kw in keywords[:5]]
+
+    def _format_datetime(self, dt_str: str) -&gt; str:
+        &quot;&quot;&quot;Format datetime in human-readable form&quot;&quot;&quot;
+        try:
+            dt = datetime.fromisoformat(dt_str.replace(&quot;Z&quot;, &quot;+00:00&quot;))
+            return dt.strftime(&quot;%B %d, %Y at %I:%M %p&quot;)
+        except Exception:
+            return dt_str
+
+    def _humanize_type(self, type_str: str) -&gt; str:
+        &quot;&quot;&quot;Convert type to human-readable form&quot;&quot;&quot;
+        type_map = {
+            &quot;record&quot;: &quot;Voice Recording&quot;,
+            &quot;note&quot;: &quot;Text Note&quot;,
+            &quot;photo&quot;: &quot;Photo Memory&quot;
+        }
+        return type_map.get(type_str, type_str.title())
+</code></pre>
+
+<h2 id="query-parameters-and-filtering">Query Parameters and Filtering</h2>
+<h3 id="understanding-the-range-parameter">Understanding the <code>range</code> Parameter</h3>
+<p>The Memory API supports a <code>range</code> parameter for filtering memories:</p>
+<p><strong>Common values</strong>:<br />
+- <code>"day"</code> - Memories from the last 24 hours<br />
+- <code>"week"</code> - Memories from the last 7 days (default)<br />
+- <code>"month"</code> - Memories from the last 30 days<br />
+- <code>"all"</code> - All memories (if supported)</p>
+<h3 id="incremental-sync-strategy">Incremental Sync Strategy</h3>
+<p><strong>Challenge</strong>: The API doesn't have a "since timestamp" filter</p>
+<p><strong>Solution</strong>: Use <code>range</code> + client-side filtering</p>
+<pre class="codehilite"><code class="language-python">async def get_new_memories(
+    client: MemoryAPIClient,
+    ctx_id: str,
+    last_sync_timestamp: datetime
+) -&gt; List[Memory]:
+    &quot;&quot;&quot;
+    Get only memories created since last sync
+
+    Args:
+        client: Memory API client
+        ctx_id: Context ID
+        last_sync_timestamp: Timestamp of last successful sync
+
+    Returns:
+        List of new memories
+    &quot;&quot;&quot;
+    # Fetch recent memories (using appropriate range)
+    # If last sync was &lt;1 day ago, use &quot;day&quot;
+    # If last sync was &lt;7 days ago, use &quot;week&quot;
+    # Otherwise use &quot;month&quot; or &quot;all&quot;
+
+    delta = datetime.now(timezone.utc) - last_sync_timestamp
+
+    if delta.days &lt; 1:
+        range_param = &quot;day&quot;
+    elif delta.days &lt; 7:
+        range_param = &quot;week&quot;
+    else:
+        range_param = &quot;month&quot;
+
+    # Fetch from API
+    result = await client.get_memories(
+        ctx_id=ctx_id,
+        limit=1000,  # Max limit
+        range=range_param
+    )
+
+    # Filter client-side
+    new_memories = []
+    for memory in result.memories:
+        memory_dt = datetime.fromisoformat(
+            memory.created_at.replace(&quot;Z&quot;, &quot;+00:00&quot;)
+        )
+        if memory_dt &gt; last_sync_timestamp:
+            new_memories.append(memory)
+
+    return new_memories
+</code></pre>
+
+<h3 id="pagination-handling">Pagination Handling</h3>
+<p><strong>Note</strong>: Current API spec doesn't show pagination support</p>
+<p><strong>Future Enhancement</strong>: If API adds pagination:</p>
+<pre class="codehilite"><code class="language-python">async def get_all_memories(
+    client: MemoryAPIClient,
+    ctx_id: str,
+    range: str = &quot;week&quot;
+) -&gt; List[Memory]:
+    &quot;&quot;&quot;Fetch all memories with pagination&quot;&quot;&quot;
+
+    all_memories = []
+    offset = 0
+    limit = 100
+
+    while True:
+        result = await client.get_memories(
+            ctx_id=ctx_id,
+            limit=limit,
+            range=range,
+            # offset=offset  # If API supports it
+        )
+
+        all_memories.extend(result.memories)
+
+        if len(result.memories) &lt; limit:
+            break  # No more pages
+
+        offset += limit
+
+    return all_memories
+</code></pre>
+
+<h2 id="error-handling">Error Handling</h2>
+<h3 id="common-error-scenarios">Common Error Scenarios</h3>
+<p><strong>1. Authentication Failures (401)</strong></p>
+<pre class="codehilite"><code class="language-python">try:
+    memories = await client.get_memories(ctx_id)
+except httpx.HTTPStatusError as e:
+    if e.response.status_code == 401:
+        logger.error(&quot;Invalid API key&quot;)
+        # Alert admin, pause connector
+</code></pre>
+
+<p><strong>2. Context Not Found (404)</strong></p>
+<pre class="codehilite"><code class="language-python">try:
+    memories = await client.get_memories(ctx_id)
+except httpx.HTTPStatusError as e:
+    if e.response.status_code == 404:
+        logger.warning(f&quot;Context {ctx_id} not found&quot;)
+        # Disable connector or alert user
+</code></pre>
+
+<p><strong>3. Rate Limiting (429)</strong> - Not in spec, but good to handle</p>
+<pre class="codehilite"><code class="language-python">try:
+    memories = await client.get_memories(ctx_id)
+except httpx.HTTPStatusError as e:
+    if e.response.status_code == 429:
+        retry_after = int(e.response.headers.get(&quot;Retry-After&quot;, 60))
+        await asyncio.sleep(retry_after)
+        # Retry
+</code></pre>
+
+<p><strong>4. Server Errors (500)</strong></p>
+<pre class="codehilite"><code class="language-python">try:
+    memories = await client.get_memories(ctx_id)
+except httpx.HTTPStatusError as e:
+    if e.response.status_code &gt;= 500:
+        logger.error(f&quot;Memory API server error: {e}&quot;)
+        # Retry with exponential backoff
+</code></pre>
+
+<h2 id="testing-the-integration">Testing the Integration</h2>
+<h3 id="manual-testing">Manual Testing</h3>
+<pre class="codehilite"><code class="language-python"># test_memory_api.py
+
+import asyncio
+from lightrag.connectors.memory_api_client import MemoryAPIClient
+
+async def test_connection():
+    client = MemoryAPIClient(
+        api_url=&quot;http://127.0.0.1:8080&quot;,
+        api_key=&quot;your-api-key&quot;
+    )
+
+    # Test connection
+    connected = await client.check_connection()
+    print(f&quot;Connected: {connected}&quot;)
+
+    # Fetch memories
+    memories = await client.get_memories(
+        ctx_id=&quot;CTX123&quot;,
+        limit=10,
+        range=&quot;week&quot;
+    )
+
+    print(f&quot;Fetched {len(memories.memories)} memories&quot;)
+
+    for memory in memories.memories:
+        print(f&quot;- {memory.id}: {memory.transcript[:50]}...&quot;)
+
+    await client.close()
+
+asyncio.run(test_connection())
+</code></pre>
+
+<h3 id="integration-testing">Integration Testing</h3>
+<pre class="codehilite"><code class="language-python"># test_end_to_end.py
+
+import asyncio
+from lightrag.connectors.memory_api_client import MemoryAPIClient
+from lightrag.connectors.memory_transformer import StandardTransformationStrategy
+from lightrag.connectors.lightrag_client import LightRAGDirectClient
+
+async def test_end_to_end():
+    # 1. Fetch from Memory API
+    memory_client = MemoryAPIClient(
+        api_url=&quot;http://127.0.0.1:8080&quot;,
+        api_key=&quot;your-memory-api-key&quot;
+    )
+
+    memories = await memory_client.get_memories(
+        ctx_id=&quot;CTX123&quot;,
+        limit=5,
+        range=&quot;day&quot;
+    )
+
+    print(f&quot;Fetched {len(memories.memories)} memories&quot;)
+
+    # 2. Transform
+    transformer = StandardTransformationStrategy()
+    documents = [transformer.transform(m) for m in memories.memories]
+
+    # 3. Insert into LightRAG
+    lightrag_client = LightRAGDirectClient(
+        working_dir=&quot;./test_lightrag&quot;
+    )
+
+    await lightrag_client.initialize()
+
+    for i, doc in enumerate(documents):
+        doc_id = await lightrag_client.insert_document(
+            text=doc,
+            file_source=f&quot;memory://{memories.memories[i].id}&quot;
+        )
+        print(f&quot;Inserted: {doc_id}&quot;)
+
+    await lightrag_client.close()
+    await memory_client.close()
+
+asyncio.run(test_end_to_end())
+</code></pre>
+
+<h2 id="next-steps_2">Next Steps</h2>
+<p>See <code>04-CONFIGURATION.md</code> for deployment and configuration details.</p>
+<hr />
+<h1 id="fr01-memory-api-ingestion-configuration-deployment">FR01: Memory API Ingestion - Configuration &amp; Deployment</h1>
+<h2 id="configuration-file-reference">Configuration File Reference</h2>
+<h3 id="complete-configuration-example">Complete Configuration Example</h3>
+<pre class="codehilite"><code class="language-yaml"># config.yaml - Memory Connector Configuration
+
+# ============================================================================
+# LightRAG Connection Settings
+# ============================================================================
+lightrag:
+  # Integration mode: &quot;api&quot; (HTTP) or &quot;direct&quot; (library)
+  mode: &quot;api&quot;
+
+  # API mode settings (used when mode: &quot;api&quot;)
+  api:
+    url: &quot;http://localhost:9621&quot;
+    api_key: &quot;${LIGHTRAG_API_KEY}&quot;  # Environment variable
+    workspace: &quot;memories&quot;
+    timeout: 300  # Request timeout in seconds
+
+  # Direct mode settings (used when mode: &quot;direct&quot;)
+  direct:
+    working_dir: &quot;./lightrag_storage&quot;
+    # LLM settings inherited from environment variables:
+    # - LLM_BINDING=openai
+    # - LLM_MODEL=gpt-4o-mini
+    # - OPENAI_API_KEY=...
+    # - EMBEDDING_BINDING=openai
+    # - EMBEDDING_MODEL=text-embedding-3-small
+
+# ============================================================================
+# Memory API Settings
+# ============================================================================
+memory_api:
+  url: &quot;http://127.0.0.1:8080&quot;
+  api_key: &quot;${MEMORY_API_KEY}&quot;  # Environment variable
+  timeout: 30  # Request timeout in seconds
+  max_retries: 3  # Retry attempts on failure
+  retry_backoff: 2.0  # Exponential backoff multiplier
+
+# ============================================================================
+# Connector Definitions
+# ============================================================================
+connectors:
+  # Personal memories connector
+  - id: &quot;personal-memories&quot;
+    enabled: true
+    description: &quot;Personal memory sync&quot;
+    context_id: &quot;CTX123&quot;
+
+    # Schedule configuration
+    schedule:
+      type: &quot;interval&quot;  # &quot;interval&quot; or &quot;cron&quot;
+      interval_hours: 1  # Run every 1 hour (for interval type)
+      # For cron type, use:
+      # type: &quot;cron&quot;
+      # cron: &quot;0 */1 * * *&quot;  # Hourly at minute 0
+
+    # Ingestion settings
+    ingestion:
+      query_range: &quot;week&quot;  # API range parameter (day, week, month)
+      query_limit: 100     # Max items per query
+      batch_size: 10       # Memories to process in parallel
+      skip_empty_transcripts: true  # Skip memories with no transcript
+
+    # Transformation settings
+    transformation:
+      strategy: &quot;standard&quot;  # &quot;standard&quot; or &quot;rich&quot;
+      include_audio: false  # Download and process audio files
+      include_image: false  # Download and process image files
+      geocoding: false      # Reverse geocode locations
+      extract_tags: true    # Extract hashtags from transcripts
+
+    # Retry settings for failed items
+    retry:
+      max_attempts: 3
+      backoff_multiplier: 2.0
+      max_backoff_seconds: 60
+
+  # Work memories connector (disabled by default)
+  - id: &quot;work-memories&quot;
+    enabled: false
+    description: &quot;Work memory sync (weekdays only)&quot;
+    context_id: &quot;CTX456&quot;
+
+    schedule:
+      type: &quot;cron&quot;
+      cron: &quot;0 9,17 * * 1-5&quot;  # 9am and 5pm on weekdays
+
+    ingestion:
+      query_range: &quot;day&quot;
+      query_limit: 50
+      batch_size: 5
+      skip_empty_transcripts: true
+
+    transformation:
+      strategy: &quot;standard&quot;
+      include_audio: false
+      include_image: false
+
+    retry:
+      max_attempts: 3
+
+# ============================================================================
+# State Management
+# ============================================================================
+state:
+  backend: &quot;json&quot;  # &quot;json&quot; or &quot;sqlite&quot;
+  path: &quot;./memory_sync_state.json&quot;
+
+  # For SQLite backend:
+  # backend: &quot;sqlite&quot;
+  # path: &quot;./memory_sync_state.db&quot;
+
+  # State cleanup settings
+  cleanup:
+    enabled: true
+    retention_days: 90  # Keep history for 90 days
+    cleanup_cron: &quot;0 2 * * *&quot;  # Run cleanup at 2am daily
+
+# ============================================================================
+# Management API Server
+# ============================================================================
+api:
+  enabled: true
+  host: &quot;0.0.0.0&quot;
+  port: 9622
+
+  # Authentication
+  enable_auth: true
+  api_key: &quot;${CONNECTOR_API_KEY}&quot;  # Environment variable
+
+  # CORS settings
+  cors:
+    enabled: true
+    origins:
+      - &quot;http://localhost:3000&quot;
+      - &quot;http://localhost:9621&quot;
+
+  # Rate limiting (optional)
+  rate_limit:
+    enabled: false
+    requests_per_minute: 60
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+logging:
+  level: &quot;INFO&quot;  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: &quot;json&quot;  # &quot;json&quot; or &quot;text&quot;
+
+  # File logging
+  file:
+    enabled: true
+    path: &quot;./logs/memory_connector.log&quot;
+    max_bytes: 10485760  # 10MB
+    backup_count: 5  # Keep 5 backup files
+    rotation: &quot;size&quot;  # &quot;size&quot; or &quot;time&quot;
+
+  # Console logging
+  console:
+    enabled: true
+    colorize: true
+
+  # Log specific components
+  components:
+    scheduler: &quot;INFO&quot;
+    api_client: &quot;INFO&quot;
+    orchestrator: &quot;INFO&quot;
+    state_manager: &quot;DEBUG&quot;
+
+# ============================================================================
+# Monitoring &amp; Alerting (Optional)
+# ============================================================================
+monitoring:
+  # Prometheus metrics
+  prometheus:
+    enabled: false
+    port: 9623
+    path: &quot;/metrics&quot;
+
+  # Health check
+  health_check:
+    enabled: true
+    endpoint: &quot;/health&quot;
+
+  # Alerts (webhook notifications)
+  alerts:
+    enabled: false
+    webhook_url: &quot;${ALERT_WEBHOOK_URL}&quot;
+    alert_on:
+      - consecutive_failures: 3  # Alert after 3 consecutive failures
+      - no_sync_for_hours: 24    # Alert if no sync for 24 hours
+
+# ============================================================================
+# Advanced Settings
+# ============================================================================
+advanced:
+  # Graceful shutdown timeout
+  shutdown_timeout: 30
+
+  # Pipeline settings
+  pipeline:
+    max_concurrent_connectors: 2  # Max connectors running simultaneously
+    job_timeout_minutes: 60       # Max time for single ingestion job
+
+  # Performance tuning
+  performance:
+    enable_caching: true
+    cache_ttl_seconds: 3600
+
+  # Security
+  security:
+    encrypt_secrets: false  # Encrypt API keys in state file
+    encryption_key: &quot;${ENCRYPTION_KEY}&quot;
+</code></pre>
+
+<h2 id="environment-variables">Environment Variables</h2>
+<h3 id="required-variables">Required Variables</h3>
+<pre class="codehilite"><code class="language-bash"># Memory API credentials
+export MEMORY_API_KEY=&quot;your-memory-api-key&quot;
+
+# LightRAG API credentials (if using API mode)
+export LIGHTRAG_API_KEY=&quot;your-lightrag-api-key&quot;
+
+# Connector API credentials (if authentication enabled)
+export CONNECTOR_API_KEY=&quot;your-connector-api-key&quot;
+</code></pre>
+
+<h3 id="optional-variables">Optional Variables</h3>
+<pre class="codehilite"><code class="language-bash"># LightRAG LLM settings (for direct mode)
+export LLM_BINDING=&quot;openai&quot;
+export LLM_MODEL=&quot;gpt-4o-mini&quot;
+export OPENAI_API_KEY=&quot;your-openai-api-key&quot;
+export EMBEDDING_BINDING=&quot;openai&quot;
+export EMBEDDING_MODEL=&quot;text-embedding-3-small&quot;
+
+# Logging
+export LOG_LEVEL=&quot;INFO&quot;
+export LOG_FORMAT=&quot;json&quot;
+
+# Monitoring
+export ALERT_WEBHOOK_URL=&quot;https://hooks.slack.com/...&quot;
+
+# Security
+export ENCRYPTION_KEY=&quot;your-32-character-encryption-key&quot;
+</code></pre>
+
+<h3 id="using-env-file">Using .env File</h3>
+<p>Create <code>.env</code> file:</p>
+<pre class="codehilite"><code class="language-bash"># .env
+MEMORY_API_KEY=your-memory-api-key
+LIGHTRAG_API_KEY=your-lightrag-api-key
+CONNECTOR_API_KEY=your-connector-api-key
+OPENAI_API_KEY=your-openai-api-key
+</code></pre>
+
+<p>The connector will automatically load from <code>.env</code> file.</p>
+<h2 id="deployment-scenarios">Deployment Scenarios</h2>
+<h3 id="scenario-1-development-local">Scenario 1: Development (Local)</h3>
+<p><strong>Setup</strong>:</p>
+<pre class="codehilite"><code class="language-bash"># 1. Clone repository
+git clone https://github.com/your/lightrag.git
+cd lightrag
+
+# 2. Install dependencies
+poetry install
+
+# 3. Create config
+cp config.example.yaml config.yaml
+# Edit config.yaml with your settings
+
+# 4. Create .env file
+cat &gt; .env &lt;&lt;EOF
+MEMORY_API_KEY=your-key
+LIGHTRAG_API_KEY=your-key
+CONNECTOR_API_KEY=dev-key
+EOF
+
+# 5. Test one-time sync
+poetry run python -m memory_connector sync \
+  --config config.yaml \
+  --connector-id personal-memories
+
+# 6. Start service
+poetry run python -m memory_connector serve \
+  --config config.yaml
+</code></pre>
+
+<p><strong>Recommended Settings</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">lightrag:
+  mode: &quot;api&quot;
+  api:
+    url: &quot;http://localhost:9621&quot;
+
+state:
+  backend: &quot;json&quot;
+
+logging:
+  level: &quot;DEBUG&quot;
+  format: &quot;text&quot;
+  console:
+    enabled: true
+    colorize: true
+</code></pre>
+
+<h3 id="scenario-2-production-server">Scenario 2: Production (Server)</h3>
+<p><strong>Setup</strong>:</p>
+<pre class="codehilite"><code class="language-bash"># 1. Install as package
+pip install lightrag[connectors]
+
+# 2. Create config directory
+sudo mkdir -p /etc/memory-connector
+sudo cp config.yaml /etc/memory-connector/
+
+# 3. Create data directory
+sudo mkdir -p /var/lib/memory-connector
+sudo chown -R connector:connector /var/lib/memory-connector
+
+# 4. Set environment variables
+sudo vi /etc/environment
+# Add API keys
+
+# 5. Create systemd service
+sudo cp memory-connector.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# 6. Start service
+sudo systemctl start memory-connector
+sudo systemctl enable memory-connector
+
+# 7. Check status
+sudo systemctl status memory-connector
+sudo journalctl -u memory-connector -f
+</code></pre>
+
+<p><strong>Systemd Service File</strong> (<code>memory-connector.service</code>):</p>
+<pre class="codehilite"><code class="language-ini">[Unit]
+Description=Memory Connector Service
+After=network.target
+
+[Service]
+Type=simple
+User=connector
+Group=connector
+WorkingDirectory=/var/lib/memory-connector
+Environment=&quot;CONFIG_PATH=/etc/memory-connector/config.yaml&quot;
+EnvironmentFile=/etc/memory-connector/.env
+ExecStart=/usr/local/bin/memory-connector serve --config ${CONFIG_PATH}
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+
+<p><strong>Recommended Settings</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">lightrag:
+  mode: &quot;api&quot;
+  api:
+    url: &quot;http://lightrag-service:9621&quot;
+
+state:
+  backend: &quot;sqlite&quot;
+  path: &quot;/var/lib/memory-connector/state.db&quot;
+
+logging:
+  level: &quot;INFO&quot;
+  format: &quot;json&quot;
+  file:
+    enabled: true
+    path: &quot;/var/log/memory-connector/app.log&quot;
+</code></pre>
+
+<h3 id="scenario-3-docker-container">Scenario 3: Docker Container</h3>
+<p><strong>Dockerfile</strong>:</p>
+<pre class="codehilite"><code class="language-dockerfile">FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY pyproject.toml poetry.lock ./
+RUN pip install poetry &amp;&amp; \
+    poetry config virtualenvs.create false &amp;&amp; \
+    poetry install --no-dev --extras connectors
+
+# Copy application
+COPY lightrag/ ./lightrag/
+COPY memory_connector/ ./memory_connector/
+
+# Create data directory
+RUN mkdir -p /data
+
+# Expose API port
+EXPOSE 9622
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:9622/health || exit 1
+
+# Run service
+CMD [&quot;python&quot;, &quot;-m&quot;, &quot;memory_connector&quot;, &quot;serve&quot;, &quot;--config&quot;, &quot;/config/config.yaml&quot;]
+</code></pre>
+
+<p><strong>docker-compose.yaml</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">version: '3.8'
+
+services:
+  lightrag:
+    image: lightrag:latest
+    ports:
+      - &quot;9621:9621&quot;
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - lightrag-data:/app/storage
+
+  memory-connector:
+    build: .
+    ports:
+      - &quot;9622:9622&quot;
+    environment:
+      - MEMORY_API_KEY=${MEMORY_API_KEY}
+      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
+      - CONNECTOR_API_KEY=${CONNECTOR_API_KEY}
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - connector-data:/data
+    depends_on:
+      - lightrag
+    restart: unless-stopped
+
+volumes:
+  lightrag-data:
+  connector-data:
+</code></pre>
+
+<p><strong>Usage</strong>:</p>
+<pre class="codehilite"><code class="language-bash"># Build and start
+docker-compose up -d
+
+# View logs
+docker-compose logs -f memory-connector
+
+# Check status
+curl http://localhost:9622/health
+
+# Stop
+docker-compose down
+</code></pre>
+
+<h3 id="scenario-4-kubernetes-deployment">Scenario 4: Kubernetes Deployment</h3>
+<p><strong>ConfigMap</strong> (<code>configmap.yaml</code>):</p>
+<pre class="codehilite"><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memory-connector-config
+data:
+  config.yaml: |
+    lightrag:
+      mode: &quot;api&quot;
+      api:
+        url: &quot;http://lightrag-service:9621&quot;
+        api_key: &quot;${LIGHTRAG_API_KEY}&quot;
+        workspace: &quot;memories&quot;
+
+    memory_api:
+      url: &quot;http://memory-api-service:8080&quot;
+      api_key: &quot;${MEMORY_API_KEY}&quot;
+
+    connectors:
+      - id: &quot;personal-memories&quot;
+        enabled: true
+        context_id: &quot;CTX123&quot;
+        schedule:
+          type: &quot;interval&quot;
+          interval_hours: 1
+        ingestion:
+          query_range: &quot;week&quot;
+          query_limit: 100
+
+    state:
+      backend: &quot;sqlite&quot;
+      path: &quot;/data/state.db&quot;
+
+    logging:
+      level: &quot;INFO&quot;
+      format: &quot;json&quot;
+</code></pre>
+
+<p><strong>Secret</strong> (<code>secret.yaml</code>):</p>
+<pre class="codehilite"><code class="language-yaml">apiVersion: v1
+kind: Secret
+metadata:
+  name: memory-connector-secrets
+type: Opaque
+stringData:
+  MEMORY_API_KEY: &quot;your-memory-api-key&quot;
+  LIGHTRAG_API_KEY: &quot;your-lightrag-api-key&quot;
+  CONNECTOR_API_KEY: &quot;your-connector-api-key&quot;
+</code></pre>
+
+<p><strong>Deployment</strong> (<code>deployment.yaml</code>):</p>
+<pre class="codehilite"><code class="language-yaml">apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-connector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: memory-connector
+  template:
+    metadata:
+      labels:
+        app: memory-connector
+    spec:
+      containers:
+      - name: memory-connector
+        image: memory-connector:latest
+        ports:
+        - containerPort: 9622
+        env:
+        - name: MEMORY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: memory-connector-secrets
+              key: MEMORY_API_KEY
+        - name: LIGHTRAG_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: memory-connector-secrets
+              key: LIGHTRAG_API_KEY
+        - name: CONNECTOR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: memory-connector-secrets
+              key: CONNECTOR_API_KEY
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            memory: &quot;256Mi&quot;
+            cpu: &quot;250m&quot;
+          limits:
+            memory: &quot;512Mi&quot;
+            cpu: &quot;500m&quot;
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9622
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9622
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: memory-connector-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: memory-connector-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-connector-service
+spec:
+  selector:
+    app: memory-connector
+  ports:
+  - protocol: TCP
+    port: 9622
+    targetPort: 9622
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memory-connector-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+</code></pre>
+
+<p><strong>Deploy</strong>:</p>
+<pre class="codehilite"><code class="language-bash">kubectl apply -f secret.yaml
+kubectl apply -f configmap.yaml
+kubectl apply -f deployment.yaml
+
+# Check status
+kubectl get pods -l app=memory-connector
+kubectl logs -f deployment/memory-connector
+
+# Port forward for testing
+kubectl port-forward deployment/memory-connector 9622:9622
+</code></pre>
+
+<h2 id="cli-usage">CLI Usage</h2>
+<h3 id="commands">Commands</h3>
+<h4 id="serve-start-service"><code>serve</code> - Start service</h4>
+<p>Start the connector service with scheduler and API:</p>
+<pre class="codehilite"><code class="language-bash">memory-connector serve --config config.yaml
+
+# Options:
+  --config PATH        Configuration file path
+  --api-only          Run only API server (no scheduler)
+  --scheduler-only    Run only scheduler (no API)
+  --host HOST         API host (default: from config)
+  --port PORT         API port (default: from config)
+</code></pre>
+
+<h4 id="sync-one-time-sync"><code>sync</code> - One-time sync</h4>
+<p>Run a one-time sync for a connector:</p>
+<pre class="codehilite"><code class="language-bash">memory-connector sync \
+  --config config.yaml \
+  --connector-id personal-memories
+
+# Options:
+  --config PATH           Configuration file path
+  --connector-id ID       Connector ID to sync
+  --force                Force full resync (ignore state)
+</code></pre>
+
+<h4 id="status-check-status"><code>status</code> - Check status</h4>
+<p>Check sync status for a connector:</p>
+<pre class="codehilite"><code class="language-bash">memory-connector status \
+  --config config.yaml \
+  --connector-id personal-memories
+
+# Output:
+# Connector: personal-memories
+# Status: completed
+# Last Sync: 2025-12-18 15:00:00 UTC
+# Processed: 145 memories
+# Failed: 2 memories
+# Next Run: 2025-12-18 16:00:00 UTC
+</code></pre>
+
+<h4 id="list-list-connectors"><code>list</code> - List connectors</h4>
+<p>List all configured connectors:</p>
+<pre class="codehilite"><code class="language-bash">memory-connector list --config config.yaml
+
+# Output:
+# ID                   Status    Enabled  Last Sync
+# personal-memories    idle      yes      2025-12-18 15:00:00
+# work-memories        disabled  no       -
+</code></pre>
+
+<h4 id="trigger-manual-trigger"><code>trigger</code> - Manual trigger</h4>
+<p>Manually trigger a connector:</p>
+<pre class="codehilite"><code class="language-bash">memory-connector trigger \
+  --config config.yaml \
+  --connector-id personal-memories
+
+# This will start the sync immediately (async)
+</code></pre>
+
+<h4 id="reset-reset-state"><code>reset</code> - Reset state</h4>
+<p>Reset sync state for a connector (force full resync):</p>
+<pre class="codehilite"><code class="language-bash">memory-connector reset \
+  --config config.yaml \
+  --connector-id personal-memories
+
+# WARNING: This will reprocess all memories!
+</code></pre>
+
+<h2 id="monitoring-operations">Monitoring &amp; Operations</h2>
+<h3 id="health-check">Health Check</h3>
+<pre class="codehilite"><code class="language-bash"># Check service health
+curl http://localhost:9622/health
+
+# Response:
+{
+  &quot;status&quot;: &quot;healthy&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;uptime_seconds&quot;: 3600,
+  &quot;active_jobs&quot;: 1,
+  &quot;last_error&quot;: null
+}
+</code></pre>
+
+<h3 id="view-logs">View Logs</h3>
+<pre class="codehilite"><code class="language-bash"># Tail logs (systemd)
+sudo journalctl -u memory-connector -f
+
+# Tail logs (docker)
+docker-compose logs -f memory-connector
+
+# Tail logs (file)
+tail -f /var/log/memory-connector/app.log
+</code></pre>
+
+<h3 id="metrics-prometheus">Metrics (Prometheus)</h3>
+<p>Enable Prometheus metrics in <code>config.yaml</code>:</p>
+<pre class="codehilite"><code class="language-yaml">monitoring:
+  prometheus:
+    enabled: true
+    port: 9623
+</code></pre>
+
+<p><strong>Metrics available</strong>:<br />
+- <code>memory_connector_syncs_total{connector_id, status}</code> - Total syncs<br />
+- <code>memory_connector_memories_processed{connector_id}</code> - Memories processed<br />
+- <code>memory_connector_sync_duration_seconds{connector_id}</code> - Sync duration<br />
+- <code>memory_connector_errors_total{connector_id, error_type}</code> - Errors</p>
+<p><strong>Query examples</strong>:</p>
+<pre class="codehilite"><code class="language-promql"># Sync success rate
+rate(memory_connector_syncs_total{status=&quot;success&quot;}[5m])
+
+# Average sync duration
+avg(memory_connector_sync_duration_seconds) by (connector_id)
+
+# Error rate
+rate(memory_connector_errors_total[5m])
+</code></pre>
+
+<h3 id="troubleshooting">Troubleshooting</h3>
+<h4 id="issue-connector-not-running">Issue: Connector not running</h4>
+<pre class="codehilite"><code class="language-bash"># Check scheduler status
+memory-connector status --config config.yaml
+
+# Check logs for errors
+sudo journalctl -u memory-connector -n 100
+
+# Check if connector is enabled
+cat config.yaml | grep -A 20 &quot;id: personal-memories&quot;
+</code></pre>
+
+<h4 id="issue-duplicate-processing">Issue: Duplicate processing</h4>
+<pre class="codehilite"><code class="language-bash"># Check state file
+cat memory_sync_state.json | jq '.connectors.&quot;personal-memories&quot;'
+
+# If corrupted, reset state
+memory-connector reset --config config.yaml --connector-id personal-memories
+</code></pre>
+
+<h4 id="issue-memory-api-connection-failures">Issue: Memory API connection failures</h4>
+<pre class="codehilite"><code class="language-bash"># Test API connectivity
+curl -H &quot;X-API-KEY: your-key&quot; http://127.0.0.1:8080/memory/CTX123
+
+# Check DNS resolution
+nslookup memory-api-host
+
+# Check network connectivity
+ping memory-api-host
+</code></pre>
+
+<h2 id="backup-recovery">Backup &amp; Recovery</h2>
+<h3 id="backup-state">Backup State</h3>
+<pre class="codehilite"><code class="language-bash"># Backup JSON state
+cp memory_sync_state.json memory_sync_state.json.backup
+
+# Backup SQLite state
+sqlite3 memory_sync_state.db &quot;.backup memory_sync_state.db.backup&quot;
+
+# Automated backup (cron)
+0 2 * * * /usr/local/bin/backup-memory-connector.sh
+</code></pre>
+
+<h3 id="restore-state">Restore State</h3>
+<pre class="codehilite"><code class="language-bash"># Restore JSON state
+cp memory_sync_state.json.backup memory_sync_state.json
+
+# Restore SQLite state
+cp memory_sync_state.db.backup memory_sync_state.db
+
+# Restart service
+sudo systemctl restart memory-connector
+</code></pre>
+
+<h2 id="security-best-practices">Security Best Practices</h2>
+<ol>
+<li>
+<p><strong>API Keys</strong>:<br />
+   - Store in environment variables or secrets manager<br />
+   - Never commit to version control<br />
+   - Rotate regularly</p>
+</li>
+<li>
+<p><strong>File Permissions</strong>:<br />
+<code>bash
+   chmod 600 config.yaml
+   chmod 600 .env
+   chmod 700 /var/lib/memory-connector</code></p>
+</li>
+<li>
+<p><strong>Network Security</strong>:<br />
+   - Use HTTPS for all API connections<br />
+   - Restrict API access with firewall rules<br />
+   - Use VPN for remote connections</p>
+</li>
+<li>
+<p><strong>Encryption</strong>:<br />
+   - Enable secrets encryption in config<br />
+   - Use TLS for LightRAG API connection<br />
+   - Encrypt state files at rest</p>
+</li>
+</ol>
+<h2 id="next-steps_3">Next Steps</h2>
+<p>See <code>05-FUTURE-ENHANCEMENTS.md</code> for roadmap and future features.</p>
+<hr />
+<h1 id="fr01-memory-api-ingestion-future-enhancements">FR01: Memory API Ingestion - Future Enhancements</h1>
+<h2 id="phase-2-memory-manager">Phase 2: Memory Manager</h2>
+<p>The current implementation (Phase 1) focuses on <strong>unidirectional ingestion</strong> from Memory API → LightRAG. Phase 2 will expand this into a full <strong>Memory Manager</strong> with bidirectional sync, backup/restore, and collaborative features.</p>
+<h2 id="vision-complete-memory-management-platform">Vision: Complete Memory Management Platform</h2>
+<pre class="codehilite"><code>┌────────────────────────────────────────────────────────────────────┐
+│                      Memory Manager                                │
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐            │
+│  │  Ingestion   │  │  Export/     │  │  Replication │            │
+│  │  Engine      │  │  Backup      │  │  &amp; Sharing   │            │
+│  └──────────────┘  └──────────────┘  └──────────────┘            │
+│         │                  │                  │                    │
+└─────────┼──────────────────┼──────────────────┼────────────────────┘
+          │                  │                  │
+          ▼                  ▼                  ▼
+  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
+  │  Memory API   │  │  Local Files  │  │  Remote RAG   │
+  │  (Source)     │  │  (Backup)     │  │  (Replica)    │
+  └───────────────┘  └───────────────┘  └───────────────┘
+          ▲                  │                  │
+          │                  │                  │
+          └──────────────────┴──────────────────┘
+                  Bidirectional Sync
+</code></pre>
+
+<h2 id="enhanced-features-roadmap">Enhanced Features Roadmap</h2>
+<h3 id="feature-1-bidirectional-sync">Feature 1: Bidirectional Sync</h3>
+<p><strong>Goal</strong>: Sync changes from LightRAG back to Memory API</p>
+<p><strong>Use Cases</strong>:<br />
+- User edits transcript in LightRAG UI → update Memory API<br />
+- User adds annotations/tags in RAG → sync to Memory API<br />
+- User deletes memory from RAG → optionally delete from Memory API</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class BidirectionalSyncManager:
+    &quot;&quot;&quot;Manages two-way sync between Memory API and LightRAG&quot;&quot;&quot;
+
+    async def sync_to_memory_api(
+        self,
+        doc_id: str,
+        updates: dict
+    ):
+        &quot;&quot;&quot;
+        Sync LightRAG changes back to Memory API
+
+        Args:
+            doc_id: LightRAG document ID (mapped to memory_id)
+            updates: Changes to sync (transcript, tags, etc.)
+        &quot;&quot;&quot;
+
+        # 1. Look up original memory_id from doc_id
+        memory_id = await self.mapping_store.get_memory_id(doc_id)
+
+        # 2. Determine what changed
+        if &quot;transcript&quot; in updates:
+            # Update transcript via PUT /memory/{ctx_id}/{memory_id}
+            await self.memory_client.update_memory(
+                ctx_id=self.ctx_id,
+                memory_id=memory_id,
+                transcript=updates[&quot;transcript&quot;]
+            )
+
+        # 3. Record sync event
+        await self.state.record_bidirectional_sync(
+            doc_id=doc_id,
+            memory_id=memory_id,
+            direction=&quot;rag_to_api&quot;,
+            updates=updates
+        )
+
+    async def detect_changes(self):
+        &quot;&quot;&quot;Detect changes in LightRAG documents&quot;&quot;&quot;
+
+        # Monitor doc_status storage for updates
+        # Compare last_modified timestamp
+        # Identify changed documents
+        pass
+</code></pre>
+
+<p><strong>Challenges</strong>:<br />
+- Change detection in LightRAG (no built-in change tracking)<br />
+- Conflict resolution (simultaneous edits)<br />
+- Mapping document IDs ↔ memory IDs</p>
+<p><strong>Solution</strong>:<br />
+- Add metadata to LightRAG documents with memory_id<br />
+- Implement change log/audit trail<br />
+- Use last-write-wins or manual conflict resolution</p>
+<h3 id="feature-2-audioimage-processing">Feature 2: Audio/Image Processing</h3>
+<p><strong>Goal</strong>: Process multimedia content from memories</p>
+<p><strong>Use Cases</strong>:<br />
+- Transcribe audio if transcript is missing<br />
+- Extract text from images (OCR)<br />
+- Analyze images with vision models<br />
+- Generate summaries of audio content</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class MultimodalProcessor:
+    &quot;&quot;&quot;Processes audio and image content from memories&quot;&quot;&quot;
+
+    async def process_audio(
+        self,
+        ctx_id: str,
+        memory_id: str,
+        audio_path: Path
+    ) -&gt; str:
+        &quot;&quot;&quot;
+        Transcribe audio to text
+
+        Uses: OpenAI Whisper, AssemblyAI, or local Whisper model
+        &quot;&quot;&quot;
+        if self.transcription_service == &quot;openai&quot;:
+            with open(audio_path, &quot;rb&quot;) as f:
+                transcript = await openai.audio.transcriptions.create(
+                    model=&quot;whisper-1&quot;,
+                    file=f
+                )
+            return transcript.text
+
+        elif self.transcription_service == &quot;local&quot;:
+            # Use local Whisper model
+            import whisper
+            model = whisper.load_model(&quot;base&quot;)
+            result = model.transcribe(str(audio_path))
+            return result[&quot;text&quot;]
+
+    async def process_image(
+        self,
+        ctx_id: str,
+        memory_id: str,
+        image_path: Path
+    ) -&gt; dict:
+        &quot;&quot;&quot;
+        Analyze image with vision model
+
+        Uses: GPT-4 Vision, Claude Vision, or LLaVA
+        &quot;&quot;&quot;
+        with open(image_path, &quot;rb&quot;) as f:
+            image_data = base64.b64encode(f.read()).decode()
+
+        # Use GPT-4 Vision
+        response = await openai.chat.completions.create(
+            model=&quot;gpt-4-vision-preview&quot;,
+            messages=[
+                {
+                    &quot;role&quot;: &quot;user&quot;,
+                    &quot;content&quot;: [
+                        {
+                            &quot;type&quot;: &quot;text&quot;,
+                            &quot;text&quot;: &quot;Describe this image in detail. Extract any visible text.&quot;
+                        },
+                        {
+                            &quot;type&quot;: &quot;image_url&quot;,
+                            &quot;image_url&quot;: {
+                                &quot;url&quot;: f&quot;data:image/jpeg;base64,{image_data}&quot;
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        return {
+            &quot;description&quot;: response.choices[0].message.content,
+            &quot;ocr_text&quot;: self.extract_text_from_description(
+                response.choices[0].message.content
+            )
+        }
+</code></pre>
+
+<p><strong>Configuration</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">connectors:
+  - id: &quot;personal-memories&quot;
+    transformation:
+      strategy: &quot;rich&quot;
+      include_audio: true
+      include_image: true
+      audio_processing:
+        enabled: true
+        service: &quot;openai&quot;  # openai, assemblyai, local
+        model: &quot;whisper-1&quot;
+      image_processing:
+        enabled: true
+        service: &quot;openai&quot;  # openai, anthropic, local
+        model: &quot;gpt-4-vision-preview&quot;
+        extract_ocr: true
+</code></pre>
+
+<h3 id="feature-3-export-backup">Feature 3: Export &amp; Backup</h3>
+<p><strong>Goal</strong>: Export knowledge graph and memory data for backup/archival</p>
+<p><strong>Use Cases</strong>:<br />
+- Periodic backup of entire knowledge graph<br />
+- Export to portable format (JSON, CSV, RDF)<br />
+- Archive old memories to cold storage<br />
+- Migrate to different LightRAG instance</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class MemoryExporter:
+    &quot;&quot;&quot;Exports memory data and knowledge graph&quot;&quot;&quot;
+
+    async def export_full_backup(
+        self,
+        output_path: Path,
+        format: str = &quot;json&quot;
+    ):
+        &quot;&quot;&quot;
+        Export complete backup
+
+        Includes:
+        - All memory items from Memory API
+        - LightRAG knowledge graph
+        - State and metadata
+        &quot;&quot;&quot;
+
+        backup_data = {
+            &quot;version&quot;: &quot;1.0&quot;,
+            &quot;export_timestamp&quot;: datetime.now(timezone.utc).isoformat(),
+            &quot;memories&quot;: [],
+            &quot;knowledge_graph&quot;: {},
+            &quot;state&quot;: {}
+        }
+
+        # 1. Export all memories from Memory API
+        for ctx_id in self.context_ids:
+            memories = await self.memory_client.get_memories(
+                ctx_id=ctx_id,
+                limit=10000,
+                range=&quot;all&quot;
+            )
+            backup_data[&quot;memories&quot;].extend([
+                {
+                    &quot;context_id&quot;: ctx_id,
+                    **memory.model_dump()
+                }
+                for memory in memories.memories
+            ])
+
+        # 2. Export LightRAG knowledge graph
+        # Export from storage backends
+        backup_data[&quot;knowledge_graph&quot;] = await self.export_kg()
+
+        # 3. Export state
+        backup_data[&quot;state&quot;] = await self.state_manager.export_all()
+
+        # 4. Write to file
+        if format == &quot;json&quot;:
+            with open(output_path, &quot;w&quot;) as f:
+                json.dump(backup_data, f, indent=2)
+
+        elif format == &quot;archive&quot;:
+            # Create tar.gz with all data + media files
+            self.create_archive(backup_data, output_path)
+
+    async def export_kg(self) -&gt; dict:
+        &quot;&quot;&quot;Export knowledge graph from LightRAG&quot;&quot;&quot;
+
+        # Read from storage backends
+        kg_data = {
+            &quot;entities&quot;: [],
+            &quot;relations&quot;: [],
+            &quot;chunks&quot;: []
+        }
+
+        # Export entities
+        if hasattr(self.rag, &quot;graph_storage&quot;):
+            entities = await self.rag.graph_storage.get_all_nodes()
+            kg_data[&quot;entities&quot;] = entities
+
+        # Export relations
+        if hasattr(self.rag, &quot;graph_storage&quot;):
+            relations = await self.rag.graph_storage.get_all_edges()
+            kg_data[&quot;relations&quot;] = relations
+
+        # Export chunks
+        if hasattr(self.rag, &quot;kv_storage&quot;):
+            chunks = await self.rag.kv_storage.get_all()
+            kg_data[&quot;chunks&quot;] = chunks
+
+        return kg_data
+
+    async def restore_from_backup(
+        self,
+        backup_path: Path
+    ):
+        &quot;&quot;&quot;Restore from backup file&quot;&quot;&quot;
+
+        with open(backup_path) as f:
+            backup_data = json.load(f)
+
+        # 1. Restore memories to Memory API (optional)
+        if self.restore_to_memory_api:
+            for memory_data in backup_data[&quot;memories&quot;]:
+                await self.memory_client.upload_memory(...)
+
+        # 2. Restore to LightRAG
+        for memory_data in backup_data[&quot;memories&quot;]:
+            memory = Memory(**memory_data)
+            document = self.transformer.transform(memory)
+            await self.lightrag_client.insert_document(document)
+
+        # 3. Restore state
+        await self.state_manager.import_state(backup_data[&quot;state&quot;])
+</code></pre>
+
+<p><strong>CLI Commands</strong>:</p>
+<pre class="codehilite"><code class="language-bash"># Export backup
+memory-connector export \
+  --config config.yaml \
+  --output backup_2025-12-18.json \
+  --format json
+
+# Restore from backup
+memory-connector restore \
+  --config config.yaml \
+  --input backup_2025-12-18.json \
+  --target lightrag  # or &quot;memory_api&quot; or &quot;both&quot;
+</code></pre>
+
+<h3 id="feature-4-replication-sharing">Feature 4: Replication &amp; Sharing</h3>
+<p><strong>Goal</strong>: Replicate knowledge graph to other instances for collaboration</p>
+<p><strong>Use Cases</strong>:<br />
+- Share knowledge graph with team members<br />
+- Replicate to multiple LightRAG instances<br />
+- Collaborative knowledge building<br />
+- Multi-region deployment</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class ReplicationManager:
+    &quot;&quot;&quot;Manages replication to multiple LightRAG instances&quot;&quot;&quot;
+
+    def __init__(self, config: ReplicationConfig):
+        self.replicas = [
+            LightRAGAPIClient(**replica_config)
+            for replica_config in config.replicas
+        ]
+
+    async def replicate(
+        self,
+        memory: Memory,
+        strategy: str = &quot;all&quot;
+    ):
+        &quot;&quot;&quot;
+        Replicate memory to all replicas
+
+        Args:
+            memory: Memory to replicate
+            strategy: &quot;all&quot;, &quot;nearest&quot;, &quot;selective&quot;
+        &quot;&quot;&quot;
+
+        document = self.transformer.transform(memory)
+
+        if strategy == &quot;all&quot;:
+            # Replicate to all instances
+            tasks = [
+                replica.insert_document(document)
+                for replica in self.replicas
+            ]
+            await asyncio.gather(*tasks)
+
+        elif strategy == &quot;nearest&quot;:
+            # Replicate to geographically nearest instance
+            replica = await self.select_nearest_replica(memory.location)
+            await replica.insert_document(document)
+
+        elif strategy == &quot;selective&quot;:
+            # Replicate based on rules (e.g., tags, type)
+            replicas = self.select_replicas_by_rules(memory)
+            tasks = [
+                replica.insert_document(document)
+                for replica in replicas
+            ]
+            await asyncio.gather(*tasks)
+
+    async def sync_replicas(self):
+        &quot;&quot;&quot;Sync all replicas to ensure consistency&quot;&quot;&quot;
+
+        # 1. Get state from primary
+        primary_state = await self.get_primary_state()
+
+        # 2. Compare with replicas
+        for replica in self.replicas:
+            replica_state = await self.get_replica_state(replica)
+
+            # 3. Find differences
+            missing_docs = primary_state - replica_state
+
+            # 4. Replicate missing docs
+            for doc_id in missing_docs:
+                document = await self.get_document(doc_id)
+                await replica.insert_document(document)
+</code></pre>
+
+<p><strong>Configuration</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">replication:
+  enabled: true
+  strategy: &quot;all&quot;  # all, nearest, selective
+
+  replicas:
+    - id: &quot;team-instance&quot;
+      url: &quot;http://team-lightrag:9621&quot;
+      api_key: &quot;${TEAM_LIGHTRAG_KEY}&quot;
+      workspace: &quot;shared-memories&quot;
+
+    - id: &quot;backup-instance&quot;
+      url: &quot;http://backup-lightrag:9621&quot;
+      api_key: &quot;${BACKUP_LIGHTRAG_KEY}&quot;
+      workspace: &quot;backup&quot;
+
+  sync:
+    enabled: true
+    interval_hours: 6  # Sync every 6 hours
+</code></pre>
+
+<h3 id="feature-5-memory-timeline-analytics">Feature 5: Memory Timeline &amp; Analytics</h3>
+<p><strong>Goal</strong>: Visualize and analyze memory data over time</p>
+<p><strong>Use Cases</strong>:<br />
+- View memory timeline<br />
+- Analyze patterns (most active times, locations)<br />
+- Trend analysis (topic shifts over time)<br />
+- Memory heatmap (geographic distribution)</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class MemoryAnalytics:
+    &quot;&quot;&quot;Analytics and visualization for memory data&quot;&quot;&quot;
+
+    async def get_timeline(
+        self,
+        ctx_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        granularity: str = &quot;day&quot;
+    ) -&gt; dict:
+        &quot;&quot;&quot;Get memory timeline data&quot;&quot;&quot;
+
+        memories = await self.get_memories_in_range(
+            ctx_id, start_date, end_date
+        )
+
+        # Group by time bucket
+        timeline = {}
+        for memory in memories:
+            bucket = self.get_time_bucket(
+                memory.created_at, granularity
+            )
+            if bucket not in timeline:
+                timeline[bucket] = []
+            timeline[bucket].append(memory)
+
+        return {
+            &quot;granularity&quot;: granularity,
+            &quot;buckets&quot;: [
+                {
+                    &quot;timestamp&quot;: bucket,
+                    &quot;count&quot;: len(items),
+                    &quot;memories&quot;: items
+                }
+                for bucket, items in sorted(timeline.items())
+            ]
+        }
+
+    async def get_location_heatmap(
+        self,
+        ctx_id: str
+    ) -&gt; dict:
+        &quot;&quot;&quot;Generate location heatmap data&quot;&quot;&quot;
+
+        memories = await self.memory_client.get_memories(
+            ctx_id=ctx_id,
+            limit=10000,
+            range=&quot;all&quot;
+        )
+
+        locations = [
+            {
+                &quot;lat&quot;: m.location_lat,
+                &quot;lon&quot;: m.location_lon,
+                &quot;timestamp&quot;: m.created_at,
+                &quot;id&quot;: m.id
+            }
+            for m in memories.memories
+            if m.location_lat != 0.0 or m.location_lon != 0.0
+        ]
+
+        # Cluster nearby locations
+        clusters = self.cluster_locations(locations)
+
+        return {
+            &quot;locations&quot;: locations,
+            &quot;clusters&quot;: clusters
+        }
+
+    async def get_topic_trends(
+        self,
+        ctx_id: str,
+        time_range: str = &quot;month&quot;
+    ) -&gt; dict:
+        &quot;&quot;&quot;Analyze topic trends over time&quot;&quot;&quot;
+
+        # Query LightRAG knowledge graph for entities
+        entities = await self.get_entities_over_time(ctx_id, time_range)
+
+        # Group by time period and count frequency
+        trends = self.calculate_trends(entities)
+
+        return {
+            &quot;time_range&quot;: time_range,
+            &quot;topics&quot;: trends
+        }
+</code></pre>
+
+<p><strong>API Endpoints</strong>:</p>
+<pre class="codehilite"><code class="language-python">@router.get(&quot;/analytics/timeline&quot;)
+async def get_timeline(
+    ctx_id: str,
+    start_date: datetime,
+    end_date: datetime,
+    granularity: str = &quot;day&quot;
+):
+    &quot;&quot;&quot;Get memory timeline&quot;&quot;&quot;
+    return await analytics.get_timeline(...)
+
+@router.get(&quot;/analytics/heatmap&quot;)
+async def get_heatmap(ctx_id: str):
+    &quot;&quot;&quot;Get location heatmap&quot;&quot;&quot;
+    return await analytics.get_location_heatmap(ctx_id)
+
+@router.get(&quot;/analytics/trends&quot;)
+async def get_trends(ctx_id: str, range: str = &quot;month&quot;):
+    &quot;&quot;&quot;Get topic trends&quot;&quot;&quot;
+    return await analytics.get_topic_trends(ctx_id, range)
+</code></pre>
+
+<h3 id="feature-6-smart-filtering-search">Feature 6: Smart Filtering &amp; Search</h3>
+<p><strong>Goal</strong>: Advanced filtering and search capabilities</p>
+<p><strong>Features</strong>:<br />
+- Filter by location (radius search)<br />
+- Filter by date range (custom ranges)<br />
+- Filter by keywords/tags<br />
+- Filter by memory type<br />
+- Full-text search in transcripts<br />
+- Semantic search (using embeddings)</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class MemorySearch:
+    &quot;&quot;&quot;Advanced search and filtering&quot;&quot;&quot;
+
+    async def search(
+        self,
+        ctx_id: str,
+        query: SearchQuery
+    ) -&gt; List[Memory]:
+        &quot;&quot;&quot;
+        Search memories with advanced filters
+
+        Args:
+            ctx_id: Context ID
+            query: Search query with filters
+        &quot;&quot;&quot;
+
+        # 1. Fetch base set
+        memories = await self.memory_client.get_memories(
+            ctx_id=ctx_id,
+            limit=query.limit or 1000,
+            range=query.time_range or &quot;all&quot;
+        )
+
+        # 2. Apply filters
+        filtered = memories.memories
+
+        if query.keywords:
+            filtered = self.filter_by_keywords(filtered, query.keywords)
+
+        if query.location:
+            filtered = self.filter_by_location(
+                filtered,
+                query.location.lat,
+                query.location.lon,
+                query.location.radius_km
+            )
+
+        if query.date_range:
+            filtered = self.filter_by_date_range(
+                filtered,
+                query.date_range.start,
+                query.date_range.end
+            )
+
+        if query.memory_type:
+            filtered = [m for m in filtered if m.type == query.memory_type]
+
+        # 3. Sort results
+        if query.sort_by == &quot;relevance&quot;:
+            filtered = await self.rank_by_relevance(filtered, query.keywords)
+        elif query.sort_by == &quot;date&quot;:
+            filtered = sorted(filtered, key=lambda m: m.created_at, reverse=True)
+
+        return filtered[:query.limit or 100]
+
+    def filter_by_location(
+        self,
+        memories: List[Memory],
+        lat: float,
+        lon: float,
+        radius_km: float
+    ) -&gt; List[Memory]:
+        &quot;&quot;&quot;Filter memories within radius of location&quot;&quot;&quot;
+
+        def distance(m: Memory) -&gt; float:
+            # Haversine distance
+            from math import radians, sin, cos, sqrt, atan2
+
+            lat1, lon1 = radians(m.location_lat), radians(m.location_lon)
+            lat2, lon2 = radians(lat), radians(lon)
+
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+
+            return 6371 * c  # Earth radius in km
+
+        return [m for m in memories if distance(m) &lt;= radius_km]
+</code></pre>
+
+<h3 id="feature-7-webhooks-notifications">Feature 7: Webhooks &amp; Notifications</h3>
+<p><strong>Goal</strong>: Real-time notifications for memory events</p>
+<p><strong>Events</strong>:<br />
+- New memory ingested<br />
+- Ingestion job completed<br />
+- Ingestion job failed<br />
+- Duplicate detected<br />
+- Interesting entity discovered</p>
+<p><strong>Implementation</strong>:</p>
+<pre class="codehilite"><code class="language-python">class WebhookManager:
+    &quot;&quot;&quot;Manages webhooks and notifications&quot;&quot;&quot;
+
+    async def send_webhook(
+        self,
+        event_type: str,
+        payload: dict
+    ):
+        &quot;&quot;&quot;Send webhook notification&quot;&quot;&quot;
+
+        for webhook in self.webhooks:
+            if event_type in webhook.events:
+                await self.http_client.post(
+                    webhook.url,
+                    json={
+                        &quot;event&quot;: event_type,
+                        &quot;timestamp&quot;: datetime.now(timezone.utc).isoformat(),
+                        &quot;data&quot;: payload
+                    },
+                    headers={
+                        &quot;X-Webhook-Secret&quot;: webhook.secret
+                    }
+                )
+
+    async def on_memory_ingested(self, memory: Memory, doc_id: str):
+        &quot;&quot;&quot;Called when memory is successfully ingested&quot;&quot;&quot;
+        await self.send_webhook(
+            &quot;memory.ingested&quot;,
+            {
+                &quot;memory_id&quot;: memory.id,
+                &quot;doc_id&quot;: doc_id,
+                &quot;transcript_preview&quot;: memory.transcript[:100]
+            }
+        )
+
+    async def on_job_completed(self, report: IngestionReport):
+        &quot;&quot;&quot;Called when ingestion job completes&quot;&quot;&quot;
+        await self.send_webhook(
+            &quot;job.completed&quot;,
+            report.model_dump()
+        )
+</code></pre>
+
+<p><strong>Configuration</strong>:</p>
+<pre class="codehilite"><code class="language-yaml">webhooks:
+  - url: &quot;https://hooks.slack.com/services/...&quot;
+    secret: &quot;${WEBHOOK_SECRET}&quot;
+    events:
+      - memory.ingested
+      - job.completed
+      - job.failed
+</code></pre>
+
+<h2 id="technology-upgrades">Technology Upgrades</h2>
+<h3 id="1-web-ui-dashboard">1. Web UI Dashboard</h3>
+<p>Build a React-based dashboard for managing connectors:</p>
+<p><strong>Features</strong>:<br />
+- Visual connector configuration<br />
+- Real-time sync status<br />
+- Memory timeline visualization<br />
+- Location heatmap<br />
+- Search and filter interface<br />
+- Settings management</p>
+<p><strong>Tech Stack</strong>:<br />
+- React + TypeScript<br />
+- TanStack Query (data fetching)<br />
+- Recharts (charts/graphs)<br />
+- Mapbox (location visualization)<br />
+- Tailwind CSS (styling)</p>
+<h3 id="2-mobile-app-integration">2. Mobile App Integration</h3>
+<p>Mobile app for on-the-go memory management:</p>
+<p><strong>Features</strong>:<br />
+- View memories<br />
+- Trigger sync<br />
+- Monitor status<br />
+- Receive notifications<br />
+- Search memories</p>
+<p><strong>Tech Stack</strong>:<br />
+- React Native<br />
+- Expo<br />
+- Push notifications</p>
+<h3 id="3-database-upgrade">3. Database Upgrade</h3>
+<p>Migrate from JSON/SQLite to production database:</p>
+<p><strong>Options</strong>:<br />
+- PostgreSQL (relational, JSONB support)<br />
+- MongoDB (document store)<br />
+- Redis (caching layer)</p>
+<p><strong>Benefits</strong>:<br />
+- Better performance at scale<br />
+- Advanced querying<br />
+- Concurrent access<br />
+- Replication support</p>
+<h2 id="enterprise-features">Enterprise Features</h2>
+<h3 id="1-multi-tenant-support">1. Multi-Tenant Support</h3>
+<p>Support multiple users/organizations:</p>
+<pre class="codehilite"><code class="language-python">class TenantManager:
+    &quot;&quot;&quot;Manages multi-tenant isolation&quot;&quot;&quot;
+
+    async def create_tenant(self, tenant_id: str, config: dict):
+        &quot;&quot;&quot;Create new tenant&quot;&quot;&quot;
+        pass
+
+    async def get_connectors(self, tenant_id: str):
+        &quot;&quot;&quot;Get connectors for tenant&quot;&quot;&quot;
+        pass
+</code></pre>
+
+<h3 id="2-role-based-access-control-rbac">2. Role-Based Access Control (RBAC)</h3>
+<p>Different permission levels:</p>
+<ul>
+<li><strong>Admin</strong>: Full access</li>
+<li><strong>Manager</strong>: Configure connectors</li>
+<li><strong>Viewer</strong>: Read-only access</li>
+</ul>
+<h3 id="3-audit-logging">3. Audit Logging</h3>
+<p>Track all operations:</p>
+<ul>
+<li>Who did what, when</li>
+<li>Changes to configuration</li>
+<li>Data access logs</li>
+<li>Compliance reporting</li>
+</ul>
+<h3 id="4-high-availability">4. High Availability</h3>
+<ul>
+<li>Active-active deployment</li>
+<li>Load balancing</li>
+<li>Automatic failover</li>
+<li>Data replication</li>
+</ul>
+<h2 id="implementation-priority">Implementation Priority</h2>
+<p><strong>Priority 1 (Next 3 months)</strong>:<br />
+1. Bidirectional sync<br />
+2. Export/backup functionality<br />
+3. Basic analytics (timeline, stats)</p>
+<p><strong>Priority 2 (3-6 months)</strong>:<br />
+4. Audio/image processing<br />
+5. Web UI dashboard<br />
+6. Advanced search</p>
+<p><strong>Priority 3 (6-12 months)</strong>:<br />
+7. Replication &amp; sharing<br />
+8. Mobile app<br />
+9. Enterprise features</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>The Memory Manager will evolve from a simple ingestion tool to a comprehensive memory management platform, enabling users to:</p>
+<ul>
+<li>Seamlessly sync memories between systems</li>
+<li>Backup and archive their data</li>
+<li>Collaborate and share knowledge</li>
+<li>Analyze patterns and insights</li>
+<li>Scale to enterprise use cases</li>
+</ul>
+<p>This roadmap ensures the tool grows with user needs while maintaining simplicity and reliability.</p>
+<hr />
+<h1 id="fr01-memory-api-ingestion-feature">FR01: Memory API Ingestion Feature</h1>
+<h2 id="documentation-index">📚 Documentation Index</h2>
+<p>This folder contains the complete architectural design and implementation plan for the Memory API Ingestion feature.</p>
+<h3 id="documents">Documents</h3>
+<ol>
+<li>
+<p><strong><a href="00-OVERVIEW.md">00-OVERVIEW.md</a></strong> - Executive summary and high-level design decisions<br />
+   - Problem statement<br />
+   - Solution approach<br />
+   - Key architectural decisions<br />
+   - Component overview<br />
+   - Success metrics</p>
+</li>
+<li>
+<p><strong><a href="01-ARCHITECTURE.md">01-ARCHITECTURE.md</a></strong> - Detailed technical architecture<br />
+   - Component diagrams<br />
+   - Class designs<br />
+   - Data models<br />
+   - Storage schemas<br />
+   - Integration patterns</p>
+</li>
+<li>
+<p><strong><a href="02-IMPLEMENTATION-PLAN.md">02-IMPLEMENTATION-PLAN.md</a></strong> - Step-by-step implementation roadmap<br />
+   - Phase breakdown (4 weeks)<br />
+   - Task checklist<br />
+   - Testing strategy<br />
+   - Dependencies<br />
+   - Deployment steps</p>
+</li>
+<li>
+<p><strong><a href="03-API-INTEGRATION.md">03-API-INTEGRATION.md</a></strong> - Memory API integration details<br />
+   - API client implementation<br />
+   - Data transformation logic<br />
+   - LightRAG integration<br />
+   - Error handling<br />
+   - Testing procedures</p>
+</li>
+<li>
+<p><strong><a href="04-CONFIGURATION.md">04-CONFIGURATION.md</a></strong> - Configuration and deployment guide<br />
+   - Configuration reference<br />
+   - Environment variables<br />
+   - Deployment scenarios (dev, production, docker, k8s)<br />
+   - CLI usage<br />
+   - Monitoring and troubleshooting</p>
+</li>
+<li>
+<p><strong><a href="05-FUTURE-ENHANCEMENTS.md">05-FUTURE-ENHANCEMENTS.md</a></strong> - Roadmap and future features<br />
+   - Phase 2: Memory Manager<br />
+   - Bidirectional sync<br />
+   - Audio/image processing<br />
+   - Export/backup<br />
+   - Analytics and visualization<br />
+   - Enterprise features</p>
+</li>
+</ol>
+<h2 id="quick-start">🎯 Quick Start</h2>
+<h3 id="what-this-feature-does">What This Feature Does</h3>
+<p>Automatically pulls memory items from your Memory API on a configurable schedule and populates a LightRAG knowledge graph with the content.</p>
+<p><strong>Key Benefits</strong>:<br />
+- ✅ Automated hourly sync (configurable)<br />
+- ✅ Incremental updates (no duplicate processing)<br />
+- ✅ Transcript + metadata → knowledge graph entities<br />
+- ✅ Progress tracking and status monitoring<br />
+- ✅ REST API for management<br />
+- ✅ Multiple deployment options</p>
+<h3 id="architecture-at-a-glance">Architecture at a Glance</h3>
+<pre class="codehilite"><code>Memory API → Memory Connector → LightRAG Knowledge Graph
+              (This Feature)
+</code></pre>
+
+<p><strong>Memory Connector includes</strong>:<br />
+- API client for fetching memories<br />
+- Data transformer (Memory → LightRAG document format)<br />
+- State manager (tracks what's been synced)<br />
+- Scheduler (runs sync jobs on schedule)<br />
+- Management API (configure and monitor)</p>
+<h3 id="design-decision-standalone-tool">Design Decision: Standalone Tool</h3>
+<p>This is implemented as a <strong>standalone service</strong> (not integrated into LightRAG core) because:</p>
+<ol>
+<li><strong>Separation of Concerns</strong> - Memory API integration is domain-specific</li>
+<li><strong>Deployment Flexibility</strong> - Can run separately or embedded</li>
+<li><strong>Resource Isolation</strong> - Scheduler doesn't impact RAG query performance</li>
+<li><strong>Reusability</strong> - Can connect to multiple LightRAG instances</li>
+</ol>
+<h3 id="implementation-phases_1">Implementation Phases</h3>
+<p><strong>Phase 1: Core Ingestion</strong> (Week 1)<br />
+- Build Memory API client<br />
+- Implement data transformation<br />
+- Create basic CLI for manual sync<br />
+- <strong>Deliverable</strong>: One-time sync working</p>
+<p><strong>Phase 2: Automation</strong> (Week 2)<br />
+- Add state management (no duplicates)<br />
+- Implement scheduler (hourly sync)<br />
+- Add configuration system<br />
+- <strong>Deliverable</strong>: Automated sync running</p>
+<p><strong>Phase 3: Management</strong> (Week 3)<br />
+- Build REST API for management<br />
+- Add monitoring and logging<br />
+- <strong>Deliverable</strong>: Production-ready service</p>
+<p><strong>Phase 4: Polish</strong> (Week 4)<br />
+- Advanced features (rich transformation)<br />
+- Documentation<br />
+- Deployment artifacts (Docker, K8s)<br />
+- <strong>Deliverable</strong>: Complete package</p>
+<h2 id="how-to-use-this-documentation">📖 How to Use This Documentation</h2>
+<h3 id="if-youre-reviewing-the-design">If you're reviewing the design:</h3>
+<ol>
+<li>Start with <strong>00-OVERVIEW.md</strong> for the big picture</li>
+<li>Read <strong>01-ARCHITECTURE.md</strong> for technical details</li>
+<li>Review <strong>02-IMPLEMENTATION-PLAN.md</strong> for feasibility</li>
+</ol>
+<h3 id="if-youre-implementing">If you're implementing:</h3>
+<ol>
+<li>Follow <strong>02-IMPLEMENTATION-PLAN.md</strong> phase by phase</li>
+<li>Reference <strong>01-ARCHITECTURE.md</strong> for class/module designs</li>
+<li>Use <strong>03-API-INTEGRATION.md</strong> for API client code</li>
+<li>Check <strong>04-CONFIGURATION.md</strong> for deployment</li>
+</ol>
+<h3 id="if-youre-deploying">If you're deploying:</h3>
+<ol>
+<li>Jump to <strong>04-CONFIGURATION.md</strong></li>
+<li>Choose deployment scenario (local, docker, k8s)</li>
+<li>Configure with example configs</li>
+<li>Monitor using health checks and logs</li>
+</ol>
+<h2 id="technology-stack_1">🔧 Technology Stack</h2>
+<ul>
+<li><strong>Python 3.11+</strong></li>
+<li><strong>FastAPI</strong> - REST API framework</li>
+<li><strong>APScheduler</strong> - Job scheduling</li>
+<li><strong>httpx</strong> - Async HTTP client</li>
+<li><strong>Pydantic</strong> - Data validation</li>
+<li><strong>SQLite/JSON</strong> - State storage</li>
+<li><strong>PyYAML</strong> - Config parsing</li>
+</ul>
+<h2 id="quick-example">🚀 Quick Example</h2>
+<h3 id="one-time-sync-manual">One-Time Sync (Manual)</h3>
+<pre class="codehilite"><code class="language-bash">python -m memory_connector sync \
+  --config config.yaml \
+  --connector-id personal-memories
+</code></pre>
+
+<h3 id="automated-sync-service">Automated Sync (Service)</h3>
+<pre class="codehilite"><code class="language-bash">python -m memory_connector serve \
+  --config config.yaml
+</code></pre>
+
+<h3 id="configuration-example_1">Configuration Example</h3>
+<pre class="codehilite"><code class="language-yaml">memory_api:
+  url: &quot;http://127.0.0.1:8080&quot;
+  api_key: &quot;your-api-key&quot;
+
+connectors:
+  - id: &quot;personal-memories&quot;
+    enabled: true
+    context_id: &quot;CTX123&quot;
+    schedule:
+      type: &quot;interval&quot;
+      interval_hours: 1
+    ingestion:
+      query_range: &quot;week&quot;
+      query_limit: 100
+
+lightrag:
+  mode: &quot;api&quot;
+  api:
+    url: &quot;http://localhost:9621&quot;
+    workspace: &quot;memories&quot;
+</code></pre>
+
+<h2 id="success-metrics_1">📊 Success Metrics</h2>
+<ul>
+<li>✅ Hourly sync of new memories</li>
+<li>✅ &lt;1% duplicate processing rate</li>
+<li>✅ &lt;5 second latency per memory</li>
+<li>✅ 99.9% uptime</li>
+<li>✅ Full state recovery after crashes</li>
+</ul>
+<h2 id="future-vision">🔮 Future Vision</h2>
+<p>This is <strong>Phase 1</strong> of a larger vision:</p>
+<p><strong>Phase 2: Memory Manager</strong> includes:<br />
+- Bidirectional sync (LightRAG → Memory API)<br />
+- Export/backup functionality<br />
+- Audio/image processing (transcription, OCR, vision)<br />
+- Analytics dashboard<br />
+- Replication &amp; sharing<br />
+- Mobile app</p>
+<p>See <strong>05-FUTURE-ENHANCEMENTS.md</strong> for complete roadmap.</p>
+<h2 id="decision-points-for-review">🤝 Decision Points for Review</h2>
+<p>Before implementation, please review and approve:</p>
+<ol>
+<li>
+<p><strong>Standalone vs. Integrated</strong>: Standalone service or part of LightRAG?<br />
+   - <strong>Recommendation</strong>: Standalone (as designed)</p>
+</li>
+<li>
+<p><strong>State Backend</strong>: JSON or SQLite?<br />
+   - <strong>Recommendation</strong>: JSON for dev, SQLite for production</p>
+</li>
+<li>
+<p><strong>LightRAG Integration</strong>: API or Direct library?<br />
+   - <strong>Recommendation</strong>: Support both modes</p>
+</li>
+<li>
+<p><strong>Scheduling</strong>: APScheduler or external cron?<br />
+   - <strong>Recommendation</strong>: APScheduler (built-in)</p>
+</li>
+<li>
+<p><strong>Phase 1 Scope</strong>: Transcript-only or include audio/image?<br />
+   - <strong>Recommendation</strong>: Transcript-only (audio/image in Phase 2)</p>
+</li>
+</ol>
+<h2 id="next-steps_4">📝 Next Steps</h2>
+<ol>
+<li><strong>Review</strong>: Read and approve this design</li>
+<li><strong>Feedback</strong>: Provide comments/questions</li>
+<li><strong>Approval</strong>: Green-light for implementation</li>
+<li><strong>Build</strong>: Follow implementation plan (4 weeks)</li>
+<li><strong>Test</strong>: Beta testing with real data</li>
+<li><strong>Deploy</strong>: Production rollout</li>
+<li><strong>Iterate</strong>: Phase 2 planning</li>
+</ol>
+<h2 id="questions">📞 Questions?</h2>
+<p>Review the documents in order, and let me know if you have any questions or want to discuss any design decisions before we proceed with implementation.</p>
+<hr />
+<p><strong>Status</strong>: 📋 Design/Planning Phase<br />
+<strong>Last Updated</strong>: 2025-12-18<br />
+<strong>Next Milestone</strong>: Implementation approval</p>
+        </div>
+
+        <div class="footer">
+            <p>Generated from markdown files in FEATURES/FR01-memory-ingestion/</p>
+            <p>LightRAG Feature Documentation • 2025-12-18 09:57</p>
+        </div>
+    </div>
+</body>
+</html>
