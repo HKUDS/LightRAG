@@ -103,10 +103,16 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
     mock_point = MagicMock()
     mock_point.id = "old_id"
     mock_point.vector = [0.1] * 768
-    mock_point.payload = {"content": "test"}
+    mock_point.payload = {"content": "test"}  # No workspace_id in payload
 
-    # First call returns points, second call returns empty (end of scroll)
-    mock_qdrant_client.scroll.side_effect = [([mock_point], "next_offset"), ([], None)]
+    # When payload_schema is empty, the code first samples payloads to detect workspace_id
+    # Then proceeds with migration batches
+    # Scroll calls: 1) Sampling (limit=10), 2) Migration batch, 3) End of migration
+    mock_qdrant_client.scroll.side_effect = [
+        ([mock_point], "_"),  # Sampling scroll - no workspace_id found
+        ([mock_point], "next_offset"),  # Migration batch
+        ([], None),  # End of migration
+    ]
 
     def upsert_mock(*args, **kwargs):
         migration_state["new_workspace_count"] = 100
@@ -127,10 +133,17 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
     mock_qdrant_client.create_collection.assert_called()
 
     # 3. Data scrolled from legacy
-    assert mock_qdrant_client.scroll.call_count >= 1
-    call_args = mock_qdrant_client.scroll.call_args_list[0]
-    assert call_args.kwargs["collection_name"] == legacy_collection
-    assert call_args.kwargs["limit"] == 500
+    # First call (index 0) is sampling scroll with limit=10
+    # Second call (index 1) is migration batch with limit=500
+    assert mock_qdrant_client.scroll.call_count >= 2
+    # Check sampling scroll
+    sampling_call = mock_qdrant_client.scroll.call_args_list[0]
+    assert sampling_call.kwargs["collection_name"] == legacy_collection
+    assert sampling_call.kwargs["limit"] == 10
+    # Check migration batch scroll
+    migration_call = mock_qdrant_client.scroll.call_args_list[1]
+    assert migration_call.kwargs["collection_name"] == legacy_collection
+    assert migration_call.kwargs["limit"] == 500
 
     # 4. Data upserted to new
     mock_qdrant_client.upsert.assert_called()
@@ -302,11 +315,18 @@ async def test_scenario_2_legacy_upgrade_migration(
         point = MagicMock()
         point.id = f"legacy-{i}"
         point.vector = [0.1] * 1536
+        # No workspace_id in payload - simulates legacy data
         point.payload = {"content": f"Legacy document {i}", "id": f"doc-{i}"}
         mock_points.append(point)
 
-    # First batch returns points, second batch returns empty
-    mock_qdrant_client.scroll.side_effect = [(mock_points, "offset1"), ([], None)]
+    # When payload_schema is empty, the code first samples payloads to detect workspace_id
+    # Then proceeds with migration batches
+    # Scroll calls: 1) Sampling (limit=10), 2) Migration batch, 3) End of migration
+    mock_qdrant_client.scroll.side_effect = [
+        (mock_points, "_"),  # Sampling scroll - no workspace_id found in payloads
+        (mock_points, "offset1"),  # Migration batch
+        ([], None),  # End of migration
+    ]
 
     def upsert_mock(*args, **kwargs):
         migration_state["new_workspace_count"] = 150

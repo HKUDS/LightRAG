@@ -181,7 +181,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             ).count
 
             # Skip data migration if new collection already has workspace data
-            if new_workspace_count == 0:
+            if new_workspace_count == 0 and not (collection_name == legacy_collection):
                 logger.warning(
                     f"Qdrant: workspace data in collection '{collection_name}' is empty. "
                     f"Ensure it is caused by new workspace setup and not an unexpected embedding model change."
@@ -261,16 +261,39 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 return
 
             # Case 3: Only legacy exists - migrate data from legacy collection to new collection
-            # Check if legacy collection has workspace_id index to determine migration strategy
+            # Check if legacy collection has workspace_id to determine migration strategy
+            # Note: payload_schema only reflects INDEXED fields, so we also sample
+            # actual payloads to detect unindexed workspace_id fields
             legacy_info = client.get_collection(legacy_collection)
             has_workspace_index = WORKSPACE_ID_FIELD in (
                 legacy_info.payload_schema or {}
             )
 
+            # Detect workspace_id field presence by sampling payloads if not indexed
+            # This prevents cross-workspace data leakage when workspace_id exists but isn't indexed
+            has_workspace_field = has_workspace_index
+            if not has_workspace_index:
+                # Sample a small batch of points to check for workspace_id in payloads
+                sample_result = client.scroll(
+                    collection_name=legacy_collection,
+                    limit=10,  # Small sample is sufficient for detection
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                sample_points, _ = sample_result
+                for point in sample_points:
+                    if point.payload and WORKSPACE_ID_FIELD in point.payload:
+                        has_workspace_field = True
+                        logger.info(
+                            f"Qdrant: Detected unindexed {WORKSPACE_ID_FIELD} field "
+                            f"in legacy collection '{legacy_collection}' via payload sampling"
+                        )
+                        break
+
             # Build workspace filter if legacy collection has workspace support
             # This prevents cross-workspace data leakage during migration
             legacy_scroll_filter = None
-            if has_workspace_index:
+            if has_workspace_field:
                 legacy_scroll_filter = models.Filter(
                     should=[
                         workspace_filter_condition(workspace),
