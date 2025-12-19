@@ -295,12 +295,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             legacy_scroll_filter = None
             if has_workspace_field:
                 legacy_scroll_filter = models.Filter(
-                    should=[
-                        workspace_filter_condition(workspace),
-                        models.IsNullCondition(
-                            is_null=models.PayloadField(key=WORKSPACE_ID_FIELD)
-                        ),
-                    ]
+                    must=[workspace_filter_condition(workspace)]
                 )
                 # Recount with workspace filter for accurate migration tracking
                 legacy_count = client.count(
