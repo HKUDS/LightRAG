@@ -520,7 +520,6 @@ class LightRAG:
 
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying decorator
-        # (decorator strips dataclass attributes, and asdict() converts EmbeddingFunc to dict)
         original_embedding_func = self.embedding_func
         embedding_max_token_size = None
         if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
@@ -538,12 +537,15 @@ class LightRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
-        # Step 2: Apply priority wrapper decorator
-        self.embedding_func = priority_limit_async_func_call(
-            self.embedding_func_max_async,
-            llm_timeout=self.default_embedding_timeout,
-            queue_name="Embedding func",
-        )(self.embedding_func)
+        # Step 2: Apply priority wrapper decorator to EmbeddingFunc's inner func
+        # Only wrap the inner func to preserve EmbeddingFunc attributes (model_name, embedding_dim)
+        # This ensures _generate_collection_suffix can still access these attributes for collection isolation
+        if self.embedding_func is not None:
+            self.embedding_func.func = priority_limit_async_func_call(
+                self.embedding_func_max_async,
+                llm_timeout=self.default_embedding_timeout,
+                queue_name="Embedding func",
+            )(self.embedding_func.func)
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (
