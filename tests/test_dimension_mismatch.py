@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
+from lightrag.exceptions import DataMigrationError
 
 
 # Note: Tests should use proper table names that have DDL templates
@@ -21,12 +22,12 @@ from lightrag.kg.postgres_impl import PGVectorStorage
 class TestQdrantDimensionMismatch:
     """Test suite for Qdrant dimension mismatch handling."""
 
-    def test_qdrant_dimension_mismatch_skip_migration(self):
+    def test_qdrant_dimension_mismatch_raises_error(self):
         """
-        Test that Qdrant skips migration when dimensions don't match.
+        Test that Qdrant raises DataMigrationError when dimensions don't match.
 
         Scenario: Legacy collection has 1536d vectors, new model expects 3072d.
-        Expected: Migration skipped, new empty collection created, legacy preserved.
+        Expected: DataMigrationError is raised to prevent data corruption.
         """
         from qdrant_client import models
 
@@ -39,7 +40,9 @@ class TestQdrantDimensionMismatch:
 
         # Setup collection existence checks
         def collection_exists_side_effect(name):
-            if name == "lightrag_chunks":  # legacy
+            if (
+                name == "lightrag_vdb_chunks"
+            ):  # legacy (matches _find_legacy_collection pattern)
                 return True
             elif name == "lightrag_chunks_model_3072d":  # new
                 return False
@@ -49,21 +52,35 @@ class TestQdrantDimensionMismatch:
         client.get_collection.return_value = legacy_collection_info
         client.count.return_value.count = 100  # Legacy has data
 
-        # Call setup_collection with 3072d (different from legacy 1536d)
-        QdrantVectorDBStorage.setup_collection(
-            client,
-            "lightrag_chunks_model_3072d",
-            namespace="chunks",
-            workspace="test",
-            vectors_config=models.VectorParams(
-                size=3072, distance=models.Distance.COSINE
-            ),
-        )
+        # Patch _find_legacy_collection to return the legacy collection name
+        with patch(
+            "lightrag.kg.qdrant_impl._find_legacy_collection",
+            return_value="lightrag_vdb_chunks",
+        ):
+            # Call setup_collection with 3072d (different from legacy 1536d)
+            # Should raise DataMigrationError due to dimension mismatch
+            with pytest.raises(DataMigrationError) as exc_info:
+                QdrantVectorDBStorage.setup_collection(
+                    client,
+                    "lightrag_chunks_model_3072d",
+                    namespace="chunks",
+                    workspace="test",
+                    vectors_config=models.VectorParams(
+                        size=3072, distance=models.Distance.COSINE
+                    ),
+                    hnsw_config=models.HnswConfigDiff(
+                        payload_m=16,
+                        m=0,
+                    ),
+                )
 
-        # Verify new collection was created
-        client.create_collection.assert_called_once()
+        # Verify error message contains dimension information
+        assert "3072" in str(exc_info.value) or "1536" in str(exc_info.value)
 
-        # Verify migration was NOT attempted (no scroll/upsert calls)
+        # Verify new collection was NOT created (error raised before creation)
+        client.create_collection.assert_not_called()
+
+        # Verify migration was NOT attempted
         client.scroll.assert_not_called()
         client.upsert.assert_not_called()
 
@@ -113,6 +130,10 @@ class TestQdrantDimensionMismatch:
                 workspace="test",
                 vectors_config=models.VectorParams(
                     size=1536, distance=models.Distance.COSINE
+                ),
+                hnsw_config=models.HnswConfigDiff(
+                    payload_m=16,
+                    m=0,
                 ),
             )
 

@@ -45,17 +45,27 @@ class TestNoModelSuffixSafety:
         # Collection is empty
         client.count.return_value.count = 0
 
-        # Call setup_collection
-        # This should detect that new == legacy and skip deletion
-        QdrantVectorDBStorage.setup_collection(
-            client,
-            collection_name,
-            namespace="chunks",
-            workspace=None,
-            vectors_config=models.VectorParams(
-                size=1536, distance=models.Distance.COSINE
-            ),
-        )
+        # Patch _find_legacy_collection to return the SAME collection name
+        # This simulates the scenario where new collection == legacy collection
+        with patch(
+            "lightrag.kg.qdrant_impl._find_legacy_collection",
+            return_value="lightrag_vdb_chunks",  # Same as collection_name
+        ):
+            # Call setup_collection
+            # This should detect that new == legacy and skip deletion
+            QdrantVectorDBStorage.setup_collection(
+                client,
+                collection_name,
+                namespace="chunks",
+                workspace="_",
+                vectors_config=models.VectorParams(
+                    size=1536, distance=models.Distance.COSINE
+                ),
+                hnsw_config=models.HnswConfigDiff(
+                    payload_m=16,
+                    m=0,
+                ),
+            )
 
         # CRITICAL: Collection should NOT be deleted
         client.delete_collection.assert_not_called()
@@ -152,9 +162,13 @@ class TestNoModelSuffixSafety:
             client,
             collection_name,
             namespace="chunks",
-            workspace=None,
+            workspace="_",
             vectors_config=models.VectorParams(
                 size=1536, distance=models.Distance.COSINE
+            ),
+            hnsw_config=models.HnswConfigDiff(
+                payload_m=16,
+                m=0,
             ),
         )
 

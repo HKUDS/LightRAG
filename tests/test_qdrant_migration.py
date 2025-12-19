@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 import numpy as np
+from qdrant_client import models
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 
@@ -124,7 +125,13 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
 
 @pytest.mark.asyncio
 async def test_qdrant_no_migration_needed(mock_qdrant_client, mock_embedding_func):
-    """Test scenario where new collection already exists"""
+    """Test scenario where new collection already exists (Case 1 in setup_collection)
+
+    When only the new collection exists and no legacy collection is found,
+    the implementation should:
+    1. Create payload index on the new collection (ensure index exists)
+    2. NOT attempt any data migration (no scroll calls)
+    """
     config = {
         "embedding_batch_num": 10,
         "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
@@ -137,15 +144,7 @@ async def test_qdrant_no_migration_needed(mock_qdrant_client, mock_embedding_fun
         workspace="test_ws",
     )
 
-    # New collection exists and Legacy exists (warning case)
-    # or New collection exists and Legacy does not exist (normal case)
-    # Mocking case where both exist to test logic flow but without migration
-
-    # Logic in code:
-    # Case 1: Both exist -> Warning only
-    # Case 2: Only new exists -> Ensure index
-
-    # Let's test Case 2: Only new collection exists
+    # Only new collection exists (no legacy collection found)
     mock_qdrant_client.collection_exists.side_effect = (
         lambda name: name == storage.final_namespace
     )
@@ -153,9 +152,16 @@ async def test_qdrant_no_migration_needed(mock_qdrant_client, mock_embedding_fun
     # Initialize
     await storage.initialize()
 
-    # Should check index but NOT migrate
-    # In Qdrant implementation, Case 2 calls get_collection
-    mock_qdrant_client.get_collection.assert_called_with(storage.final_namespace)
+    # Should create payload index on the new collection (ensure index)
+    mock_qdrant_client.create_payload_index.assert_called_with(
+        collection_name=storage.final_namespace,
+        field_name="workspace_id",
+        field_schema=models.KeywordIndexParams(
+            type=models.KeywordIndexType.KEYWORD,
+            is_tenant=True,
+        ),
+    )
+    # Should NOT migrate (no scroll calls since no legacy collection exists)
     mock_qdrant_client.scroll.assert_not_called()
 
 

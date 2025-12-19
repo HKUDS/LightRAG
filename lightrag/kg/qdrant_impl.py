@@ -127,45 +127,41 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     def setup_collection(
         client: QdrantClient,
         collection_name: str,
-        namespace: str = None,
-        workspace: str = None,
-        **kwargs,
+        namespace: str,
+        workspace: str,
+        vectors_config: models.VectorParams,
+        hnsw_config: models.HnswConfigDiff,
     ):
         """
         Setup Qdrant collection with migration support from legacy collections.
 
-        Ensure final collection is created with workspace isolation index.
-        This method now supports backward compatibility by automatically detecting
-        legacy collections created by older versions of LightRAG using multiple
-        naming patterns.
-
-        Behavior:
-            - Case 1: New collection is the same as legacy collection - show debug message and continue
-            - Case 2: Only new collection exists - - show debug message and continue
-            - Case 3: Both new and legacy collections exist with different names - show warning and continue
-            - Case 4: Only legacy exists - migrate data from legacy collection to new collection
-                      Raise DataMigrationError if legacy collection has different dimension than new collection
+        Ensure final collection has workspace isolation index.
+        Check vector dimension compatibility before new collection creation.
+        Drop legacy collection if it exists and is empty.
+        Only migrate data from legacy collection to new collection when new collection first created and legacy collection is not empty.
 
         Args:
             client: QdrantClient instance
             collection_name: Name of the final collection
             namespace: Base namespace (e.g., "chunks", "entities")
             workspace: Workspace identifier for data isolation
-            **kwargs: Additional arguments for collection creation (vectors_config, hnsw_config, etc.)
-
-        Raises:
-            DataMigrationError: If migration fails or index creation fails
+            vectors_config: Vector configuration parameters for the collection
+            hnsw_config: HNSW index configuration diff for the collection
         """
-        new_collection_exists = client.collection_exists(collection_name)
+        if not namespace or not workspace:
+            raise ValueError("namespace and workspace must be provided")
 
-        # Try to find legacy collection with backward compatibility
+        new_collection_exists = client.collection_exists(collection_name)
         legacy_collection = (
             _find_legacy_collection(client, namespace, workspace) if namespace else None
         )
 
-        if not new_collection_exists:
-            logger.info(f"Qdrant: Creating new collection '{collection_name}'")
-            client.create_collection(collection_name, **kwargs)
+        # Case 1: Only new collection exists or  new collection is the same as legacy collection
+        #         No data migration needed,  and ensuring index is created then return
+        if (new_collection_exists and not legacy_collection) or (
+            collection_name == legacy_collection
+        ):
+            # create_payload_index return without error if index already exists
             client.create_payload_index(
                 collection_name=collection_name,
                 field_name=WORKSPACE_ID_FIELD,
@@ -174,163 +170,154 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     is_tenant=True,
                 ),
             )
-            logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
-
-        # Case 1: New collection is the same as legacy collection - show debug message and continue
-        if collection_name == legacy_collection:
-            logger.debug(
-                "Qdrant: legacy collection '%s' is the same as new collection '%s'.",
-                legacy_collection,
-                collection_name,
-            )
             return
 
-        # Case 2: Only new collection exists - silently return
-        if new_collection_exists and not legacy_collection:
-            logger.debug(
-                "Qdrant: Only new collection '%s' exists. No migration needed.",
-                collection_name,
-            )
-            return
-
-        # Case 3: Both new and legacy collections exist with different names - show warning and continue
-        # Only delete legacy if it's empty (safe cleanup) and it's not the same as new collection
-        if new_collection_exists and legacy_collection:
-            try:
-                # Check if legacy collection is empty
+        legacy_count = None
+        if not new_collection_exists:
+            # Check vector dimension compatibility before creating new collection
+            if legacy_collection:
                 legacy_count = client.count(
                     collection_name=legacy_collection, exact=True
                 ).count
+                if legacy_count > 0:
+                    legacy_info = client.get_collection(legacy_collection)
+                    legacy_dim = legacy_info.config.params.vectors.size
 
-                if legacy_count == 0:
-                    # Legacy collection is empty, safe to delete without data loss
-                    logger.info(
-                        f"Qdrant: Legacy collection '{legacy_collection}' is empty. Deleting..."
-                    )
-                    client.delete_collection(collection_name=legacy_collection)
-                    logger.info(
-                        f"Qdrant: Legacy collection '{legacy_collection}' deleted successfully"
-                    )
-                else:
-                    # Legacy collection still has data - don't risk deleting it
-                    logger.warning(
-                        f"Qdrant: Legacy collection '{legacy_collection}' still contains {legacy_count} records. "
-                        f"Manual deletion is required after data migration verification."
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Qdrant: Could not check or cleanup legacy collection '{legacy_collection}': {e}. "
-                    "You may need to delete it manually."
-                )
-            return
+                    if vectors_config.size and legacy_dim != vectors_config.size:
+                        logger.error(
+                            f"Qdrant: Dimension mismatch detected! "
+                            f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
+                            f"but new embedding model expects {vectors_config.size}d."
+                        )
 
-        # Case 4: Only legacy exists - migrate data from legacy collection to new collection
-        logger.info(
-            f"Qdrant: Migrating data from legacy collection '{legacy_collection}'"
+                        raise DataMigrationError(
+                            f"Dimension mismatch between legacy collection '{legacy_collection}' "
+                            f"and new collection. Expected {vectors_config.size}d but got {legacy_dim}d."
+                        )
+
+            client.create_collection(
+                collection_name, vectors_config=vectors_config, hnsw_config=hnsw_config
+            )
+            logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
+
+        # create_payload_index return without error if index already exists
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=WORKSPACE_ID_FIELD,
+            field_schema=models.KeywordIndexParams(
+                type=models.KeywordIndexType.KEYWORD,
+                is_tenant=True,
+            ),
         )
 
-        try:
-            # Get legacy collection count
-            legacy_count = client.count(
-                collection_name=legacy_collection, exact=True
-            ).count
+        # Case 2: Legacy collection exist
+        if legacy_collection:
+            # Only drop legacy collection if it's empty
+            if legacy_count is None:
+                legacy_count = client.count(
+                    collection_name=legacy_collection, exact=True
+                ).count
             if legacy_count == 0:
+                client.delete_collection(collection_name=legacy_collection)
                 logger.info(
-                    f"Qdrant: Legacy collection '{legacy_collection}' is empty. No migration needed."
+                    f"Qdrant: Empty legacy collection '{legacy_collection}' deleted successfully"
                 )
                 return
 
-            logger.info(f"Qdrant: Found {legacy_count} records in legacy collection")
+            # If both new and legacy collections exist with different names - skip data migration
+            if new_collection_exists:
+                logger.warning(
+                    f"Qdrant: Both new collection '{collection_name}' and legacy collection '{legacy_collection}' exist. "
+                    f"Data migration skipped. You may need to delete the legacy collection manually."
+                )
+                return
 
-            # Check vector dimension compatibility before migration
-            legacy_info = client.get_collection(legacy_collection)
-            legacy_dim = legacy_info.config.params.vectors.size
-
-            # Get expected dimension from kwargs
-            new_dim = (
-                kwargs.get("vectors_config").size
-                if "vectors_config" in kwargs
-                else None
+            # Case 3: Only legacy exists - migrate data from legacy collection to new collection
+            logger.info(
+                f"Qdrant: Found legacy collection '{legacy_collection}' with {legacy_count} records."
+            )
+            logger.info(
+                f"Qdrant: Migrating data from legacy collection '{legacy_collection}' to new collection '{collection_name}'"
             )
 
-            if new_dim and legacy_dim != new_dim:
-                logger.error(
-                    f"Qdrant: Dimension mismatch detected! "
-                    f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
-                    f"but new embedding model expects {new_dim}d. "
-                )
+            try:
+                # Batch migration (500 records per batch)
+                migrated_count = 0
+                offset = None
+                batch_size = 500
 
-                raise DataMigrationError(
-                    f"Qdrant: Dimension mismatch! "
-                    f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
-                    f"but new embedding model expects {new_dim}d. "
-                )
+                while True:
+                    # Scroll through legacy data
+                    result = client.scroll(
+                        collection_name=legacy_collection,
+                        limit=batch_size,
+                        offset=offset,
+                        with_vectors=True,
+                        with_payload=True,
+                    )
+                    points, next_offset = result
 
-            # Batch migration (500 records per batch)
-            migrated_count = 0
-            offset = None
-            batch_size = 500
+                    if not points:
+                        break
 
-            while True:
-                # Scroll through legacy data
-                result = client.scroll(
-                    collection_name=legacy_collection,
-                    limit=batch_size,
-                    offset=offset,
-                    with_vectors=True,
-                    with_payload=True,
-                )
-                points, next_offset = result
+                    # Transform points for new collection
+                    new_points = []
+                    for point in points:
+                        # Add workspace_id to payload
+                        new_payload = dict(point.payload or {})
+                        new_payload[WORKSPACE_ID_FIELD] = workspace or DEFAULT_WORKSPACE
 
-                if not points:
-                    break
+                        # Create new point with workspace-prefixed ID
+                        original_id = new_payload.get(ID_FIELD)
+                        if original_id:
+                            new_point_id = compute_mdhash_id_for_qdrant(
+                                original_id, prefix=workspace or DEFAULT_WORKSPACE
+                            )
+                        else:
+                            # Fallback: use original point ID
+                            new_point_id = str(point.id)
 
-                # Transform points for new collection
-                new_points = []
-                for point in points:
-                    # Add workspace_id to payload
-                    new_payload = dict(point.payload or {})
-                    new_payload[WORKSPACE_ID_FIELD] = workspace or DEFAULT_WORKSPACE
-
-                    # Create new point with workspace-prefixed ID
-                    original_id = new_payload.get(ID_FIELD)
-                    if original_id:
-                        new_point_id = compute_mdhash_id_for_qdrant(
-                            original_id, prefix=workspace or DEFAULT_WORKSPACE
+                        new_points.append(
+                            models.PointStruct(
+                                id=new_point_id,
+                                vector=point.vector,
+                                payload=new_payload,
+                            )
                         )
-                    else:
-                        # Fallback: use original point ID
-                        new_point_id = str(point.id)
 
-                    new_points.append(
-                        models.PointStruct(
-                            id=new_point_id,
-                            vector=point.vector,
-                            payload=new_payload,
-                        )
+                    # Upsert to new collection
+                    client.upsert(
+                        collection_name=collection_name, points=new_points, wait=True
                     )
 
-                # Upsert to new collection
-                client.upsert(
-                    collection_name=collection_name, points=new_points, wait=True
+                    migrated_count += len(points)
+                    logger.info(
+                        f"Qdrant: {migrated_count}/{legacy_count} records migrated"
+                    )
+
+                    # Check if we've reached the end
+                    if next_offset is None:
+                        break
+                    offset = next_offset
+
+                new_count = client.count(
+                    collection_name=collection_name, exact=True
+                ).count
+                if new_count != legacy_count:
+                    error_msg = f"Qdrant: Migration verification failed, expected {legacy_count} records, got {new_count} in new collection"
+                    logger.error(error_msg)
+                    raise DataMigrationError(error_msg)
+
+            except DataMigrationError:
+                # Re-raise DataMigrationError as-is to preserve specific error messages
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Qdrant: Failed to migrate data from legacy collection '{legacy_collection}' to new collection '{collection_name}': {e}"
                 )
-
-                migrated_count += len(points)
-                logger.info(f"Qdrant: {migrated_count}/{legacy_count} records migrated")
-
-                # Check if we've reached the end
-                if next_offset is None:
-                    break
-                offset = next_offset
-
-            # Verify migration by comparing counts
-            logger.info("Verifying migration...")
-            new_count = client.count(collection_name=collection_name, exact=True).count
-
-            if new_count != legacy_count:
-                error_msg = f"Qdrant: Migration verification failed, expected {legacy_count} records, got {new_count} in new collection"
-                logger.error(error_msg)
-                raise DataMigrationError(error_msg)
+                raise DataMigrationError(
+                    f"Failed to migrate data from legacy collection '{legacy_collection}' to new collection '{collection_name}'"
+                ) from e
 
             logger.info(
                 f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
@@ -338,14 +325,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             logger.info(
                 "Qdrant: Manual deletion is required after data migration verification."
             )
-
-        except DataMigrationError:
-            # Re-raise migration errors without wrapping
-            raise
-        except Exception as e:
-            error_msg = f"Qdrant: Collection initialization failed with error: {e}"
-            logger.error(error_msg)
-            raise DataMigrationError(error_msg) from e
 
     def __post_init__(self):
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
