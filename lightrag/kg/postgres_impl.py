@@ -2359,7 +2359,7 @@ class PGVectorStorage(BaseVectorStorage):
             workspace_count = (
                 workspace_count_result.get("count", 0) if workspace_count_result else 0
             )
-            if workspace_count == 0:
+            if workspace_count == 0 and not (table_name.lower() == legacy_table_name.lower()):
                 logger.warning(
                     f"PostgreSQL: workspace data in table '{table_name}' is empty. "
                     f"Ensure it is caused by new workspace setup and not an unexpected embedding model change."
