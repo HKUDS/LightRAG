@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -55,6 +56,42 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=".env", override=False)
 
 T = TypeVar("T")
+
+# PostgreSQL identifier length limit (in bytes)
+PG_MAX_IDENTIFIER_LENGTH = 63
+
+
+def _safe_index_name(table_name: str, index_suffix: str) -> str:
+    """
+    Generate a PostgreSQL-safe index name that won't be truncated.
+
+    PostgreSQL silently truncates identifiers to 63 bytes. This function
+    ensures index names stay within that limit by hashing long table names.
+
+    Args:
+        table_name: The table name (may be long with model suffix)
+        index_suffix: The index type suffix (e.g., 'hnsw_cosine', 'id', 'workspace_id')
+
+    Returns:
+        A deterministic index name that fits within 63 bytes
+    """
+    # Construct the full index name
+    full_name = f"idx_{table_name.lower()}_{index_suffix}"
+
+    # If it fits within the limit, use it as-is
+    if len(full_name.encode("utf-8")) <= PG_MAX_IDENTIFIER_LENGTH:
+        return full_name
+
+    # Otherwise, hash the table name to create a shorter unique identifier
+    # Keep 'idx_' prefix and suffix readable, hash the middle
+    hash_input = table_name.lower().encode("utf-8")
+    table_hash = hashlib.md5(hash_input).hexdigest()[:12]  # 12 hex chars
+
+    # Format: idx_{hash}_{suffix} - guaranteed to fit
+    # Maximum: idx_ (4) + hash (12) + _ (1) + suffix (variable) = 17 + suffix
+    shortened_name = f"idx_{table_hash}_{index_suffix}"
+
+    return shortened_name
 
 
 class PostgreSQLDB:
@@ -1435,7 +1472,9 @@ class PostgreSQLDB:
             return
 
         k = table_name
-        vector_index_name = f"idx_{k.lower()}_{self.vector_index_type.lower()}_cosine"
+        # Use _safe_index_name to avoid PostgreSQL's 63-byte identifier truncation
+        index_suffix = f"{self.vector_index_type.lower()}_cosine"
+        vector_index_name = _safe_index_name(k, index_suffix)
         check_vector_index_sql = f"""
             SELECT 1 FROM pg_indexes
             WHERE indexname = '{vector_index_name}' AND tablename = '{k.lower()}'
@@ -2378,9 +2417,9 @@ class PGVectorStorage(BaseVectorStorage):
         logger.info(f"PostgreSQL table name: {self.table_name}")
 
         # Validate table name length (PostgreSQL identifier limit is 63 characters)
-        if len(self.table_name) > 63:
+        if len(self.table_name) > PG_MAX_IDENTIFIER_LENGTH:
             raise ValueError(
-                f"PostgreSQL table name exceeds 63 character limit: '{self.table_name}' "
+                f"PostgreSQL table name exceeds {PG_MAX_IDENTIFIER_LENGTH} character limit: '{self.table_name}' "
                 f"(length: {len(self.table_name)}). "
                 f"Consider using a shorter embedding model name or workspace name."
             )
