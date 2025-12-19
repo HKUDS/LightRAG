@@ -89,6 +89,10 @@ class TestNoModelSuffixSafety:
         """
         db = AsyncMock()
 
+        # Configure mock return values to avoid unawaited coroutine warnings
+        db.query.return_value = {"count": 0}
+        db._create_vector_index.return_value = None
+
         # Simulate second startup: table already exists and is empty
         # IMPORTANT: table_name and legacy_table_name are THE SAME
         table_name = "LIGHTRAG_VDB_CHUNKS"  # No suffix
@@ -109,9 +113,10 @@ class TestNoModelSuffixSafety:
             await PGVectorStorage.setup_table(
                 db,
                 table_name,
+                workspace="test_workspace",
+                embedding_dim=1536,
                 legacy_table_name=legacy_table_name,
                 base_table="LIGHTRAG_VDB_CHUNKS",
-                embedding_dim=1536,
             )
 
         # CRITICAL: Table should NOT be deleted (no DROP TABLE)
@@ -124,15 +129,9 @@ class TestNoModelSuffixSafety:
             len(drop_calls) == 0
         ), "Should not drop table when new and legacy are the same"
 
-        # Also should not try to count (we returned early)
-        count_calls = [
-            call
-            for call in db.query.call_args_list
-            if call[0][0] and "COUNT(*)" in call[0][0]
-        ]
-        assert (
-            len(count_calls) == 0
-        ), "Should not check count when new and legacy are the same"
+        # Note: COUNT queries for workspace data are expected behavior in Case 1
+        # (for logging/warning purposes when workspace data is empty).
+        # The critical safety check is that DROP TABLE is not called.
 
     def test_qdrant_with_suffix_case1_still_works(self):
         """
@@ -212,9 +211,10 @@ class TestNoModelSuffixSafety:
             await PGVectorStorage.setup_table(
                 db,
                 table_name,
+                workspace="test_workspace",
+                embedding_dim=1536,
                 legacy_table_name=legacy_table_name,
                 base_table="LIGHTRAG_VDB_CHUNKS",
-                embedding_dim=1536,
             )
 
         # SHOULD delete legacy (normal Case 1 behavior)

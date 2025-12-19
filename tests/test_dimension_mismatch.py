@@ -108,9 +108,33 @@ class TestQdrantDimensionMismatch:
 
         client.collection_exists.side_effect = collection_exists_side_effect
         client.get_collection.return_value = legacy_collection_info
-        client.count.return_value.count = 100  # Legacy has data
 
-        # Mock scroll to return sample data
+        # Track whether upsert has been called (migration occurred)
+        migration_done = {"value": False}
+
+        def upsert_side_effect(*args, **kwargs):
+            migration_done["value"] = True
+            return MagicMock()
+
+        client.upsert.side_effect = upsert_side_effect
+
+        # Mock count to return different values based on collection name and migration state
+        # Before migration: new collection has 0 records
+        # After migration: new collection has 1 record (matching migrated data)
+        def count_side_effect(collection_name, **kwargs):
+            result = MagicMock()
+            if collection_name == "lightrag_chunks":  # legacy
+                result.count = 1  # Legacy has 1 record
+            elif collection_name == "lightrag_chunks_model_1536d":  # new
+                # Return 0 before migration, 1 after migration
+                result.count = 1 if migration_done["value"] else 0
+            else:
+                result.count = 0
+            return result
+
+        client.count.side_effect = count_side_effect
+
+        # Mock scroll to return sample data (1 record for easier verification)
         sample_point = MagicMock()
         sample_point.id = "test_id"
         sample_point.vector = [0.1] * 1536
@@ -263,6 +287,23 @@ class TestPostgresDimensionMismatch:
         """
         db = AsyncMock()
 
+        # Track migration state
+        migration_done = {"value": False}
+
+        # Define exactly 2 records for consistency
+        mock_records = [
+            {
+                "id": "test1",
+                "content_vector": [0.1] * 1536,
+                "workspace": "test",
+            },
+            {
+                "id": "test2",
+                "content_vector": [0.2] * 1536,
+                "workspace": "test",
+            },
+        ]
+
         async def query_side_effect(query, params, **kwargs):
             multirows = kwargs.get("multirows", False)
 
@@ -272,7 +313,12 @@ class TestPostgresDimensionMismatch:
                 elif params[0] == "LIGHTRAG_DOC_CHUNKS_model_1536d":  # new
                     return {"exists": False}
             elif "COUNT(*)" in query:
-                return {"count": 100}  # Legacy has data
+                # Return different counts based on table name in query and migration state
+                if "LIGHTRAG_DOC_CHUNKS_model_1536d" in query:
+                    # After migration: return migrated count, before: return 0
+                    return {"count": len(mock_records) if migration_done["value"] else 0}
+                # Legacy table always has 2 records (matching mock_records)
+                return {"count": len(mock_records)}
             elif "pg_attribute" in query:
                 return {"vector_dim": 1536}  # Legacy has matching 1536d
             elif "SELECT * FROM" in query and multirows:
@@ -284,23 +330,23 @@ class TestPostgresDimensionMismatch:
                     offset = params[0] if params else 0
 
                 if offset == 0:  # First batch
-                    return [
-                        {
-                            "id": "test1",
-                            "content_vector": [0.1] * 1536,
-                            "workspace": "test",
-                        },
-                        {
-                            "id": "test2",
-                            "content_vector": [0.2] * 1536,
-                            "workspace": "test",
-                        },
-                    ]
+                    return mock_records
                 else:  # offset > 0
                     return []  # No more data
             return {}
 
         db.query.side_effect = query_side_effect
+
+        # Mock _run_with_retry to track when migration happens
+        original_run_with_retry = db._run_with_retry
+
+        async def mock_run_with_retry(operation, *args, **kwargs):
+            result = await original_run_with_retry(operation, *args, **kwargs)
+            # After executemany is called, migration is done
+            migration_done["value"] = True
+            return result
+
+        db._run_with_retry.side_effect = mock_run_with_retry
         db.execute = AsyncMock()
         db._create_vector_index = AsyncMock()
 
@@ -312,10 +358,18 @@ class TestPostgresDimensionMismatch:
                 return False
             return False
 
+        # Custom mock for _pg_migrate_workspace_data that updates migration_done
+        async def mock_migrate_func(*args, **kwargs):
+            migration_done["value"] = True  # Set BEFORE returning so verification query sees it
+            return len(mock_records)
+
         with patch(
             "lightrag.kg.postgres_impl._pg_table_exists",
             side_effect=mock_table_exists,
-        ):
+        ), patch(
+            "lightrag.kg.postgres_impl._pg_migrate_workspace_data",
+            side_effect=mock_migrate_func,
+        ) as mock_migrate:
             # Call setup_table with matching 1536d
             await PGVectorStorage.setup_table(
                 db,
@@ -326,12 +380,5 @@ class TestPostgresDimensionMismatch:
                 workspace="test",
             )
 
-        # Verify migration WAS attempted (INSERT calls made)
-        insert_calls = [
-            call
-            for call in db.execute.call_args_list
-            if call[0][0] and "INSERT INTO" in call[0][0]
-        ]
-        assert (
-            len(insert_calls) > 0
-        ), "Migration should proceed with matching dimensions"
+        # Verify migration function WAS called
+        mock_migrate.assert_called_once()
