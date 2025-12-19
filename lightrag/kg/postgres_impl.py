@@ -2348,9 +2348,23 @@ class PGVectorStorage(BaseVectorStorage):
         # Case 1: Only new table exists or new table is the same as legacy table
         #         No data migration needed, ensuring index is created then return
         if (new_table_exists and not legacy_exists) or (
-            table_name.lower() == legacy_table_name.lower()
+            new_table_exists and (table_name.lower() == legacy_table_name.lower())
         ):
             await db._create_vector_index(table_name, embedding_dim)
+
+            workspace_count_query = (
+                f"SELECT COUNT(*) as count FROM {table_name} WHERE workspace = $1"
+            )
+            workspace_count_result = await db.query(workspace_count_query, [workspace])
+            workspace_count = (
+                workspace_count_result.get("count", 0) if workspace_count_result else 0
+            )
+            if workspace_count == 0:
+                logger.warning(
+                    f"PostgreSQL: workspace data in table '{table_name}' is empty. "
+                    f"Ensure it is caused by new workspace setup and not an unexpected embedding model change."
+                )
+
             return
 
         legacy_count = None
@@ -2399,6 +2413,13 @@ class PGVectorStorage(BaseVectorStorage):
 
             await _pg_create_table(db, table_name, base_table, embedding_dim)
             logger.info(f"PostgreSQL: New table '{table_name}' created successfully")
+
+            if not legacy_exists:
+                await db._create_vector_index(table_name, embedding_dim)
+                logger.info(
+                    "Ensure this new table creation is caused by new workspace setup and not an unexpected embedding model change."
+                )
+                return
 
         # Ensure vector index is created
         await db._create_vector_index(table_name, embedding_dim)

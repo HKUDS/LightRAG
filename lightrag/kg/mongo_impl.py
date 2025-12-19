@@ -2131,8 +2131,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
             indexes = await indexes_cursor.to_list(length=None)
             for index in indexes:
                 if index["name"] == self._index_name:
+                    # Check if the existing index has matching vector dimensions
+                    existing_dim = None
+                    definition = index.get("latestDefinition", {})
+                    fields = definition.get("fields", [])
+                    for field in fields:
+                        if (
+                            field.get("type") == "vector"
+                            and field.get("path") == "vector"
+                        ):
+                            existing_dim = field.get("numDimensions")
+                            break
+
+                    expected_dim = self.embedding_func.embedding_dim
+
+                    if existing_dim is not None and existing_dim != expected_dim:
+                        error_msg = (
+                            f"Vector dimension mismatch! Index '{self._index_name}' has "
+                            f"dimension {existing_dim}, but current embedding model expects "
+                            f"dimension {expected_dim}. Please drop the existing index or "
+                            f"use an embedding model with matching dimensions."
+                        )
+                        logger.error(f"[{self.workspace}] {error_msg}")
+                        raise ValueError(error_msg)
+
                     logger.info(
-                        f"[{self.workspace}] vector index {self._index_name} already exist"
+                        f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
                     )
                     return
 

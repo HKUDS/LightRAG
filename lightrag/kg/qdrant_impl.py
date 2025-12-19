@@ -151,6 +151,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         if not namespace or not workspace:
             raise ValueError("namespace and workspace must be provided")
 
+        workspace_count_filter = models.Filter(
+            must=[workspace_filter_condition(workspace)]
+        )
+
         new_collection_exists = client.collection_exists(collection_name)
         legacy_collection = (
             _find_legacy_collection(client, namespace, workspace) if namespace else None
@@ -170,6 +174,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     is_tenant=True,
                 ),
             )
+            new_workspace_count = client.count(
+                collection_name=collection_name,
+                count_filter=workspace_count_filter,
+                exact=True,
+            ).count
+
+            # Skip data migration if new collection already has workspace data
+            if new_workspace_count == 0:
+                logger.warning(
+                    f"Qdrant: workspace data in collection '{collection_name}' is empty. "
+                    f"Ensure it is caused by new workspace setup and not an unexpected embedding model change."
+                )
+
             return
 
         legacy_count = None
@@ -199,6 +216,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 collection_name, vectors_config=vectors_config, hnsw_config=hnsw_config
             )
             logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
+            if not legacy_collection:
+                logger.warning(
+                    "Qdrant: Ensure this new collection creation is caused by new workspace setup and not an unexpected embedding model change."
+                )
 
         # create_payload_index return without error if index already exists
         client.create_payload_index(
@@ -212,11 +233,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         # Case 2: Legacy collection exist
         if legacy_collection:
-            workspace_value = workspace or DEFAULT_WORKSPACE
-            workspace_count_filter = models.Filter(
-                must=[workspace_filter_condition(workspace_value)]
-            )
-
             # Only drop legacy collection if it's empty
             if legacy_count is None:
                 legacy_count = client.count(
@@ -239,7 +255,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             if new_workspace_count > 0:
                 logger.warning(
                     f"Qdrant: New collection '{collection_name}' already has "
-                    f"{new_workspace_count} records for workspace '{workspace_value}'. "
+                    f"{new_workspace_count} records for workspace '{workspace}'. "
                     "Data migration skipped to avoid duplicates."
                 )
                 return
