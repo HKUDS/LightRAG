@@ -137,19 +137,39 @@ async def test_postgres_migration_trigger(
                 return {"count": 100}
             return {"count": 0}
         elif multirows and "SELECT *" in sql:
-            # Mock batch fetch for migration
-            # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
+            # Mock batch fetch for migration using keyset pagination
+            # New pattern: WHERE workspace = $1 AND id > $2 ORDER BY id LIMIT $3
+            # or first batch: WHERE workspace = $1 ORDER BY id LIMIT $2
             if "WHERE workspace" in sql:
-                # With workspace filter: params[0]=workspace, params[1]=offset, params[2]=limit
-                offset = params[1] if len(params) > 1 else 0
-                limit = params[2] if len(params) > 2 else 500
+                if "id >" in sql:
+                    # Keyset pagination: params = [workspace, last_id, limit]
+                    last_id = params[1] if len(params) > 1 else None
+                    # Find rows after last_id
+                    start_idx = 0
+                    for i, row in enumerate(mock_rows):
+                        if row["id"] == last_id:
+                            start_idx = i + 1
+                            break
+                    limit = params[2] if len(params) > 2 else 500
+                else:
+                    # First batch (no last_id): params = [workspace, limit]
+                    start_idx = 0
+                    limit = params[1] if len(params) > 1 else 500
             else:
-                # No workspace filter: params[0]=offset, params[1]=limit
-                offset = params[0] if params else 0
-                limit = params[1] if len(params) > 1 else 500
-            start = offset
-            end = min(offset + limit, len(mock_rows))
-            return mock_rows[start:end]
+                # No workspace filter with keyset
+                if "id >" in sql:
+                    last_id = params[0] if params else None
+                    start_idx = 0
+                    for i, row in enumerate(mock_rows):
+                        if row["id"] == last_id:
+                            start_idx = i + 1
+                            break
+                    limit = params[1] if len(params) > 1 else 500
+                else:
+                    start_idx = 0
+                    limit = params[0] if params else 500
+            end = min(start_idx + limit, len(mock_rows))
+            return mock_rows[start_idx:end]
         return {}
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
@@ -336,19 +356,39 @@ async def test_scenario_2_legacy_upgrade_migration(
                 # New table count (before/after migration)
                 return {"count": migration_state["new_table_count"]}
         elif multirows and "SELECT *" in sql:
-            # Mock batch fetch for migration
-            # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
+            # Mock batch fetch for migration using keyset pagination
+            # New pattern: WHERE workspace = $1 AND id > $2 ORDER BY id LIMIT $3
+            # or first batch: WHERE workspace = $1 ORDER BY id LIMIT $2
             if "WHERE workspace" in sql:
-                # With workspace filter: params[0]=workspace, params[1]=offset, params[2]=limit
-                offset = params[1] if len(params) > 1 else 0
-                limit = params[2] if len(params) > 2 else 500
+                if "id >" in sql:
+                    # Keyset pagination: params = [workspace, last_id, limit]
+                    last_id = params[1] if len(params) > 1 else None
+                    # Find rows after last_id
+                    start_idx = 0
+                    for i, row in enumerate(mock_rows):
+                        if row["id"] == last_id:
+                            start_idx = i + 1
+                            break
+                    limit = params[2] if len(params) > 2 else 500
+                else:
+                    # First batch (no last_id): params = [workspace, limit]
+                    start_idx = 0
+                    limit = params[1] if len(params) > 1 else 500
             else:
-                # No workspace filter: params[0]=offset, params[1]=limit
-                offset = params[0] if params else 0
-                limit = params[1] if len(params) > 1 else 500
-            start = offset
-            end = min(offset + limit, len(mock_rows))
-            return mock_rows[start:end]
+                # No workspace filter with keyset
+                if "id >" in sql:
+                    last_id = params[0] if params else None
+                    start_idx = 0
+                    for i, row in enumerate(mock_rows):
+                        if row["id"] == last_id:
+                            start_idx = i + 1
+                            break
+                    limit = params[1] if len(params) > 1 else 500
+                else:
+                    start_idx = 0
+                    limit = params[0] if params else 500
+            end = min(start_idx + limit, len(mock_rows))
+            return mock_rows[start_idx:end]
         return {}
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
@@ -677,9 +717,22 @@ async def test_case1_sequential_workspace_migration(
             if "WHERE workspace" in sql:
                 workspace = params[0] if params and len(params) > 0 else None
                 if workspace == "workspace_a":
-                    offset = params[1] if len(params) > 1 else 0
-                    limit = params[2] if len(params) > 2 else 500
-                    return mock_rows_a[offset : offset + limit]
+                    # Handle keyset pagination
+                    if "id >" in sql:
+                        # params = [workspace, last_id, limit]
+                        last_id = params[1] if len(params) > 1 else None
+                        start_idx = 0
+                        for i, row in enumerate(mock_rows_a):
+                            if row["id"] == last_id:
+                                start_idx = i + 1
+                                break
+                        limit = params[2] if len(params) > 2 else 500
+                    else:
+                        # First batch: params = [workspace, limit]
+                        start_idx = 0
+                        limit = params[1] if len(params) > 1 else 500
+                    end = min(start_idx + limit, len(mock_rows_a))
+                    return mock_rows_a[start_idx:end]
         return {}
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query_a)
@@ -762,9 +815,22 @@ async def test_case1_sequential_workspace_migration(
             if "WHERE workspace" in sql:
                 workspace = params[0] if params and len(params) > 0 else None
                 if workspace == "workspace_b":
-                    offset = params[1] if len(params) > 1 else 0
-                    limit = params[2] if len(params) > 2 else 500
-                    return mock_rows_b[offset : offset + limit]
+                    # Handle keyset pagination
+                    if "id >" in sql:
+                        # params = [workspace, last_id, limit]
+                        last_id = params[1] if len(params) > 1 else None
+                        start_idx = 0
+                        for i, row in enumerate(mock_rows_b):
+                            if row["id"] == last_id:
+                                start_idx = i + 1
+                                break
+                        limit = params[2] if len(params) > 2 else 500
+                    else:
+                        # First batch: params = [workspace, limit]
+                        start_idx = 0
+                        limit = params[1] if len(params) > 1 else 500
+                    end = min(start_idx + limit, len(mock_rows_b))
+                    return mock_rows_b[start_idx:end]
         return {}
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query_b)

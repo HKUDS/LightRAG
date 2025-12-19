@@ -2215,23 +2215,44 @@ async def _pg_migrate_workspace_data(
 
     This function uses asyncpg's executemany for efficient batch insertion,
     reducing database round-trips from N to 1 per batch.
+
+    Uses keyset pagination (cursor-based) with ORDER BY id for stable ordering.
+    This ensures every legacy row is migrated exactly once, avoiding the
+    non-deterministic row ordering issues with OFFSET/LIMIT without ORDER BY.
     """
     migrated_count = 0
-    offset = 0
+    last_id: str | None = None
     batch_size = 500
 
     while True:
+        # Use keyset pagination with ORDER BY id for deterministic ordering
+        # This avoids OFFSET/LIMIT without ORDER BY which can skip or duplicate rows
         if workspace:
-            select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 OFFSET $2 LIMIT $3"
-            rows = await db.query(
-                select_query, [workspace, offset, batch_size], multirows=True
-            )
+            if last_id is not None:
+                select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 AND id > $2 ORDER BY id LIMIT $3"
+                rows = await db.query(
+                    select_query, [workspace, last_id, batch_size], multirows=True
+                )
+            else:
+                select_query = f"SELECT * FROM {legacy_table_name} WHERE workspace = $1 ORDER BY id LIMIT $2"
+                rows = await db.query(
+                    select_query, [workspace, batch_size], multirows=True
+                )
         else:
-            select_query = f"SELECT * FROM {legacy_table_name} OFFSET $1 LIMIT $2"
-            rows = await db.query(select_query, [offset, batch_size], multirows=True)
+            if last_id is not None:
+                select_query = f"SELECT * FROM {legacy_table_name} WHERE id > $1 ORDER BY id LIMIT $2"
+                rows = await db.query(
+                    select_query, [last_id, batch_size], multirows=True
+                )
+            else:
+                select_query = f"SELECT * FROM {legacy_table_name} ORDER BY id LIMIT $1"
+                rows = await db.query(select_query, [batch_size], multirows=True)
 
         if not rows:
             break
+
+        # Track the last ID for keyset pagination cursor
+        last_id = rows[-1]["id"]
 
         # Batch insert optimization: use executemany instead of individual inserts
         # Get column names from the first row
@@ -2267,8 +2288,6 @@ async def _pg_migrate_workspace_data(
         logger.info(
             f"PostgreSQL: {migrated_count}/{expected_count} records migrated{workspace_info}"
         )
-
-        offset += batch_size
 
     return migrated_count
 

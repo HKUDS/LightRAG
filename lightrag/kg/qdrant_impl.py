@@ -274,6 +274,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             has_workspace_field = has_workspace_index
             if not has_workspace_index:
                 # Sample a small batch of points to check for workspace_id in payloads
+                # All points must have workspace_id if any point has it
                 sample_result = client.scroll(
                     collection_name=legacy_collection,
                     limit=10,  # Small sample is sufficient for detection
