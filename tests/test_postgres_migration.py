@@ -70,7 +70,6 @@ def mock_embedding_func():
     return func
 
 
-@pytest.mark.asyncio
 async def test_postgres_table_naming(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -96,7 +95,6 @@ async def test_postgres_table_naming(
     assert storage.legacy_table_name == "LIGHTRAG_VDB_CHUNKS"
 
 
-@pytest.mark.asyncio
 async def test_postgres_migration_trigger(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -181,7 +179,6 @@ async def test_postgres_migration_trigger(
         assert len(migration_executed) > 0, "Migration should have been executed"
 
 
-@pytest.mark.asyncio
 async def test_postgres_no_migration_needed(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -214,7 +211,6 @@ async def test_postgres_no_migration_needed(
         mock_create.assert_not_called()
 
 
-@pytest.mark.asyncio
 async def test_scenario_1_new_workspace_creation(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -267,7 +263,6 @@ async def test_scenario_1_new_workspace_creation(
         )  # table_name is second positional arg
 
 
-@pytest.mark.asyncio
 async def test_scenario_2_legacy_upgrade_migration(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -385,7 +380,6 @@ async def test_scenario_2_legacy_upgrade_migration(
         mock_create.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_scenario_3_multi_model_coexistence(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -459,7 +453,6 @@ async def test_scenario_3_multi_model_coexistence(
         assert storage_b.table_name in table_names
 
 
-@pytest.mark.asyncio
 async def test_case1_empty_legacy_auto_cleanup(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -524,7 +517,6 @@ async def test_case1_empty_legacy_auto_cleanup(
         )
 
 
-@pytest.mark.asyncio
 async def test_case1_nonempty_legacy_warning(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):
@@ -587,7 +579,6 @@ async def test_case1_nonempty_legacy_warning(
         )
 
 
-@pytest.mark.asyncio
 async def test_case1_sequential_workspace_migration(
     mock_client_manager, mock_pg_db, mock_embedding_func
 ):

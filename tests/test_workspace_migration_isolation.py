@@ -17,7 +17,6 @@ from lightrag.kg.postgres_impl import PGVectorStorage
 class TestWorkspaceMigrationIsolation:
     """Test suite for workspace-scoped migration in PostgreSQL."""
 
-    @pytest.mark.asyncio
     async def test_migration_filters_by_workspace(self):
         """
         Test that migration only copies data from the specified workspace.
@@ -141,7 +140,6 @@ class TestWorkspaceMigrationIsolation:
             new_table_record_count["count"] == 2
         ), "Should have migrated 2 records from workspace_a"
 
-    @pytest.mark.asyncio
     async def test_migration_without_workspace_raises_error(self):
         """
         Test that migration without workspace parameter raises ValueError.
@@ -162,7 +160,6 @@ class TestWorkspaceMigrationIsolation:
                 base_table="lightrag_doc_chunks",
             )
 
-    @pytest.mark.asyncio
     async def test_no_cross_workspace_contamination(self):
         """
         Test that workspace B's migration doesn't include workspace A's data.

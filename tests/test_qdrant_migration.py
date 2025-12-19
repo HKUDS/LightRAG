@@ -41,7 +41,6 @@ def mock_embedding_func():
     return func
 
 
-@pytest.mark.asyncio
 async def test_qdrant_collection_naming(mock_qdrant_client, mock_embedding_func):
     """Test if collection name is correctly generated with model suffix"""
     config = {
@@ -62,7 +61,6 @@ async def test_qdrant_collection_naming(mock_qdrant_client, mock_embedding_func)
     assert storage.final_namespace == f"lightrag_vdb_chunks_{expected_suffix}"
 
 
-@pytest.mark.asyncio
 async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func):
     """Test if migration logic is triggered correctly"""
     config = {
@@ -141,7 +139,6 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
     mock_qdrant_client.create_payload_index.assert_called()
 
 
-@pytest.mark.asyncio
 async def test_qdrant_no_migration_needed(mock_qdrant_client, mock_embedding_func):
     """Test scenario where new collection already exists (Case 1 in setup_collection)
 
@@ -188,7 +185,6 @@ async def test_qdrant_no_migration_needed(mock_qdrant_client, mock_embedding_fun
 # ============================================================================
 
 
-@pytest.mark.asyncio
 async def test_scenario_1_new_workspace_creation(
     mock_qdrant_client, mock_embedding_func
 ):
@@ -243,7 +239,6 @@ async def test_scenario_1_new_workspace_creation(
     )
 
 
-@pytest.mark.asyncio
 async def test_scenario_2_legacy_upgrade_migration(
     mock_qdrant_client, mock_embedding_func
 ):
@@ -353,7 +348,6 @@ async def test_scenario_2_legacy_upgrade_migration(
     )
 
 
-@pytest.mark.asyncio
 async def test_scenario_3_multi_model_coexistence(mock_qdrant_client):
     """
     场景3：多模型并存
@@ -418,7 +412,6 @@ async def test_scenario_3_multi_model_coexistence(mock_qdrant_client):
     print("   - Collections are independent")
 
 
-@pytest.mark.asyncio
 async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embedding_func):
     """
     Case 1a: 新旧collection都存在，且旧库为空
@@ -485,7 +478,6 @@ async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embeddin
     )
 
 
-@pytest.mark.asyncio
 async def test_case1_nonempty_legacy_warning(mock_qdrant_client, mock_embedding_func):
     """
     Case 1b: 新旧collection都存在，且旧库有数据

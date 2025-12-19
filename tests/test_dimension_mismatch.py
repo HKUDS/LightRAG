@@ -170,7 +170,6 @@ class TestQdrantDimensionMismatch:
 class TestPostgresDimensionMismatch:
     """Test suite for PostgreSQL dimension mismatch handling."""
 
-    @pytest.mark.asyncio
     async def test_postgres_dimension_mismatch_skip_migration_metadata(self):
         """
         Test that PostgreSQL skips migration when dimensions don't match (via metadata).
@@ -220,7 +219,6 @@ class TestPostgresDimensionMismatch:
             len(insert_calls) == 0
         ), "Migration should be skipped due to dimension mismatch"
 
-    @pytest.mark.asyncio
     async def test_postgres_dimension_mismatch_skip_migration_sampling(self):
         """
         Test that PostgreSQL skips migration when dimensions don't match (via sampling).
@@ -277,7 +275,6 @@ class TestPostgresDimensionMismatch:
         ]
         assert len(insert_calls) == 0, "Migration should be skipped"
 
-    @pytest.mark.asyncio
     async def test_postgres_dimension_match_proceed_migration(self):
         """
         Test that PostgreSQL proceeds with migration when dimensions match.

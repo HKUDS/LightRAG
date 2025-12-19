@@ -10,7 +10,6 @@ On second startup, Case 1 logic would delete the only table/collection thinking
 it's "legacy", causing all subsequent operations to fail.
 """
 
-import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
@@ -75,7 +74,6 @@ class TestNoModelSuffixSafety:
         # because we detected same name
         assert client.collection_exists.call_count >= 1
 
-    @pytest.mark.asyncio
     async def test_postgres_no_suffix_second_startup(self):
         """
         Test PostgreSQL doesn't delete table on second startup when no model_name.
@@ -176,7 +174,6 @@ class TestNoModelSuffixSafety:
             collection_name=legacy_collection
         )
 
-    @pytest.mark.asyncio
     async def test_postgres_with_suffix_case1_still_works(self):
         """
         Test that Case 1 cleanup still works when there IS a suffix.

@@ -16,8 +16,10 @@ Critical Bug 2: In __aexit__, when async_lock.release() fails, the error
 recovery logic would attempt to release it again, causing double-release issues.
 """
 
-import pytest
 from unittest.mock import MagicMock, AsyncMock
+
+import pytest
+
 from lightrag.kg.shared_storage import (
     UnifiedLock,
     get_internal_lock,
@@ -65,7 +67,7 @@ class TestUnifiedLockSafety:
         ):
             get_data_init_lock()
 
-    @pytest.mark.asyncio
+    @pytest.mark.offline
     async def test_aexit_no_double_release_on_async_lock_failure(self):
         """
         Test that __aexit__ doesn't attempt to release async_lock twice when it fails.
