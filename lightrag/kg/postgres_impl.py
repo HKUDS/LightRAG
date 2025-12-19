@@ -2271,6 +2271,25 @@ async def _pg_migrate_workspace_data(
         batch_values = []
         for row in rows:
             row_dict = dict(row)
+
+            # FIX: Parse vector strings from connections without register_vector codec.
+            # When pgvector codec is not registered on the read connection, vector
+            # columns are returned as text strings like "[0.1,0.2,...]" instead of
+            # lists/arrays. We need to convert these to numpy arrays before passing
+            # to executemany, which uses a connection WITH register_vector codec
+            # that expects list/tuple/ndarray types.
+            if "content_vector" in row_dict:
+                vec = row_dict["content_vector"]
+                if isinstance(vec, str):
+                    # pgvector text format: "[0.1,0.2,0.3,...]"
+                    vec = vec.strip("[]")
+                    if vec:
+                        row_dict["content_vector"] = np.array(
+                            [float(x) for x in vec.split(",")], dtype=np.float32
+                        )
+                    else:
+                        row_dict["content_vector"] = None
+
             # Extract values in column order to match placeholders
             values_tuple = tuple(row_dict[col] for col in columns)
             batch_values.append(values_tuple)
