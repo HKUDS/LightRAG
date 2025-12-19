@@ -212,6 +212,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         # Case 2: Legacy collection exist
         if legacy_collection:
+            workspace_value = workspace or DEFAULT_WORKSPACE
+            workspace_count_filter = models.Filter(
+                must=[workspace_filter_condition(workspace_value)]
+            )
+
             # Only drop legacy collection if it's empty
             if legacy_count is None:
                 legacy_count = client.count(
@@ -224,11 +229,18 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
                 return
 
-            # If both new and legacy collections exist with different names - skip data migration
-            if new_collection_exists:
+            new_workspace_count = client.count(
+                collection_name=collection_name,
+                count_filter=workspace_count_filter,
+                exact=True,
+            ).count
+
+            # Skip data migration if new collection already has workspace data
+            if new_workspace_count > 0:
                 logger.warning(
-                    f"Qdrant: Both new collection '{collection_name}' and legacy collection '{legacy_collection}' exist. "
-                    f"Data migration skipped. You may need to delete the legacy collection manually."
+                    f"Qdrant: New collection '{collection_name}' already has "
+                    f"{new_workspace_count} records for workspace '{workspace_value}'. "
+                    "Data migration skipped to avoid duplicates."
                 )
                 return
 
@@ -300,11 +312,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         break
                     offset = next_offset
 
-                new_count = client.count(
-                    collection_name=collection_name, exact=True
+                new_count_after = client.count(
+                    collection_name=collection_name,
+                    count_filter=workspace_count_filter,
+                    exact=True,
                 ).count
-                if new_count != legacy_count:
-                    error_msg = f"Qdrant: Migration verification failed, expected {legacy_count} records, got {new_count} in new collection"
+                inserted_count = new_count_after - new_workspace_count
+                if inserted_count != legacy_count:
+                    error_msg = (
+                        "Qdrant: Migration verification failed, expected "
+                        f"{legacy_count} inserted records, got {inserted_count}."
+                    )
                     logger.error(error_msg)
                     raise DataMigrationError(error_msg)
 

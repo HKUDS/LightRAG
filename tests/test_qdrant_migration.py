@@ -87,7 +87,19 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
     )
 
     # 2. Legacy collection exists and has data
-    mock_qdrant_client.count.return_value.count = 100
+    migration_state = {"new_workspace_count": 0}
+
+    def count_mock(collection_name, exact=True, count_filter=None):
+        mock_result = MagicMock()
+        if collection_name == legacy_collection:
+            mock_result.count = 100
+        elif collection_name == storage.final_namespace:
+            mock_result.count = migration_state["new_workspace_count"]
+        else:
+            mock_result.count = 0
+        return mock_result
+
+    mock_qdrant_client.count.side_effect = count_mock
 
     # 3. Mock scroll for data migration
     mock_point = MagicMock()
@@ -97,6 +109,12 @@ async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func)
 
     # First call returns points, second call returns empty (end of scroll)
     mock_qdrant_client.scroll.side_effect = [([mock_point], "next_offset"), ([], None)]
+
+    def upsert_mock(*args, **kwargs):
+        migration_state["new_workspace_count"] = 100
+        return None
+
+    mock_qdrant_client.upsert.side_effect = upsert_mock
 
     # Initialize storage (triggers migration)
     await storage.initialize()
@@ -269,8 +287,19 @@ async def test_scenario_2_legacy_upgrade_migration(
     legacy_collection_info.config.params.vectors.size = 1536
     mock_qdrant_client.get_collection.return_value = legacy_collection_info
 
-    # Mock legacy data
-    mock_qdrant_client.count.return_value.count = 150
+    migration_state = {"new_workspace_count": 0}
+
+    def count_mock(collection_name, exact=True, count_filter=None):
+        mock_result = MagicMock()
+        if collection_name == legacy_collection:
+            mock_result.count = 150
+        elif collection_name == new_collection:
+            mock_result.count = migration_state["new_workspace_count"]
+        else:
+            mock_result.count = 0
+        return mock_result
+
+    mock_qdrant_client.count.side_effect = count_mock
 
     # Mock scroll results (simulate migration in batches)
     mock_points = []
@@ -283,6 +312,12 @@ async def test_scenario_2_legacy_upgrade_migration(
 
     # First batch returns points, second batch returns empty
     mock_qdrant_client.scroll.side_effect = [(mock_points, "offset1"), ([], None)]
+
+    def upsert_mock(*args, **kwargs):
+        migration_state["new_workspace_count"] = 150
+        return None
+
+    mock_qdrant_client.upsert.side_effect = upsert_mock
 
     # Initialize (triggers migration)
     await storage.initialize()
@@ -412,7 +447,7 @@ async def test_case1_empty_legacy_auto_cleanup(mock_qdrant_client, mock_embeddin
     ]
 
     # Mock: Legacy collection is empty (0 records)
-    def count_mock(collection_name, exact=True):
+    def count_mock(collection_name, exact=True, count_filter=None):
         mock_result = MagicMock()
         if collection_name == legacy_collection:
             mock_result.count = 0  # Empty legacy collection
@@ -479,7 +514,7 @@ async def test_case1_nonempty_legacy_warning(mock_qdrant_client, mock_embedding_
     ]
 
     # Mock: Legacy collection has data (50 records)
-    def count_mock(collection_name, exact=True):
+    def count_mock(collection_name, exact=True, count_filter=None):
         mock_result = MagicMock()
         if collection_name == legacy_collection:
             mock_result.count = 50  # Legacy has data
