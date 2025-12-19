@@ -7,26 +7,29 @@ import glob
 from loguru import logger
 from dotenv import load_dotenv  
 
-# 強制載入 .env 檔案
+# Force load .env file
 load_dotenv()
 
-# === 1. 設定區 (Configuration) ===
-SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
-MODEL_NAME = "thudm/glm-4.1v-9b-thinking" 
+# === 1. Configuration ===
+# Azure OpenAI Settings
+AZURE_OPENAI_API_KEY = os.getenv("LLM_BINDING_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("LLM_BINDING_HOST")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o") # Must support Vision
 
-# 黑名單
+# Blacklist
 SKIP_FILES = []
 
-# 設定 Log 目錄
+# Log Directory
 LOG_DIR = "./logs"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-log_file = os.path.join(LOG_DIR, f"step2_universal_{time.strftime('%Y%m%d_%H%M%S')}.log")
+log_file = os.path.join(LOG_DIR, f"step2_azure_{time.strftime('%Y%m%d_%H%M%S')}.log")
 logger.remove() 
 logger.add(sys.stderr, level="INFO") 
 logger.add(log_file, rotation="10 MB", level="DEBUG", encoding="utf-8")
-logger.info(f"📝 Log 檔案已建立: {log_file}")
+logger.info(f"📝 Log file created: {log_file}")
 
 # ============
 
@@ -34,22 +37,24 @@ HAS_AI = False
 ai_client = None
 
 try:
-    from openai import OpenAI
-    if SILICONFLOW_API_KEY and "你的_SILICONFLOW_KEY" not in SILICONFLOW_API_KEY:
-        ai_client = OpenAI(
-            api_key=SILICONFLOW_API_KEY,
-            base_url="https://api.siliconflow.cn/v1"
+    from openai import AzureOpenAI
+    
+    if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
+        ai_client = AzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT
         )
         HAS_AI = True
-        logger.info(f"✅ 已啟用 SiliconFlow AI ({MODEL_NAME})")
+        logger.info(f"✅ Azure OpenAI Enabled (Deployment: {AZURE_DEPLOYMENT_NAME})")
     else:
-        logger.warning("⚠️ 未填寫 SILICONFLOW_API_KEY，將跳過 AI 描述功能")
+        logger.warning("⚠️ AZURE_OPENAI_API_KEY or ENDPOINT missing. AI features disabled.")
 except ImportError:
-    logger.error("⚠️ 缺少 openai 套件")
+    logger.error("⚠️ Missing 'openai' package. Run: pip install openai")
 
 def encode_image(image_path):
     if not os.path.exists(image_path): 
-        logger.error(f"❌ 找不到圖片: {image_path}")
+        logger.error(f"❌ Image not found: {image_path}")
         return None
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
@@ -78,7 +83,7 @@ def call_vision_llm(img_path, mode="table", context_text=""):
             user_msg = f"{context_instruction}\nTask: Provide a detailed description of this image. Extract key data points, trends, and the title."
 
         response = ai_client.chat.completions.create(
-            model=MODEL_NAME,
+            model=AZURE_DEPLOYMENT_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
@@ -90,35 +95,36 @@ def call_vision_llm(img_path, mode="table", context_text=""):
         )
         content = response.choices[0].message.content.strip()
         
-        if "</think>" in content:
-            content = content.split("</think>")[-1].strip()
+        # Azure sometimes adds markdown code blocks, strip them
+        if content.startswith("```"):
+            content = content.replace("```markdown", "").replace("```", "").strip()
             
         return content
 
     except Exception as e:
-        logger.error(f"❌ SiliconFlow API Error on {img_path}: {e}")
+        logger.error(f"❌ Azure OpenAI Error on {img_path}: {e}")
         return None
 
-# 🔥 [關鍵新增] 安全獲取內容的函式 (解決 Dolphin/Mineru 格式差異)
+# 🔥 Safe Content Extractor (Handles Dolphin/Mineru differences)
 def get_safe_content(item):
     """
-    嘗試從不同的 key 中抓取內容
+    Try to fetch content from different keys
     """
-    # 優先順序: text (Mineru) -> content (Dolphin) -> table_body
+    # Priority: text (Mineru) -> content (Dolphin) -> table_body
     candidates = [
         item.get("text"),
         item.get("content"),
         item.get("table_body"),
     ]
     
-    # 針對 caption 可能是 list 的情況
+    # Handle list captions
     caption = item.get("image_caption") or item.get("table_caption")
     if isinstance(caption, list):
         caption = "".join(caption)
     if caption:
         candidates.append(caption)
 
-    # 回傳第一個不是 None 且不是空字串的值
+    # Return first non-empty value
     for c in candidates:
         if c and str(c).strip():
             return str(c).strip()
@@ -130,16 +136,16 @@ def main():
     output_base_dir = "./data/output/step2_output_granular"
 
     if not os.path.exists(step1_base_dir):
-        logger.error(f"❌ 找不到 Step 1 輸出目錄: {step1_base_dir}")
+        logger.error(f"❌ Step 1 output directory not found: {step1_base_dir}")
         return
 
     all_json_files = glob.glob(os.path.join(step1_base_dir, "*", "intermediate_result.json"))
     
     if not all_json_files:
-        logger.error(f"❌ 在 {step1_base_dir} 找不到任何 intermediate_result.json")
+        logger.error(f"❌ No intermediate_result.json found in {step1_base_dir}")
         return
         
-    logger.info(f"📦 發現 {len(all_json_files)} 個檔案待處理...")
+    logger.info(f"📦 Found {len(all_json_files)} files to process...")
 
     for i, json_file_path in enumerate(all_json_files):
         file_stem = os.path.basename(os.path.dirname(json_file_path))
@@ -154,12 +160,12 @@ def main():
         if not os.path.exists(current_output_dir):
             os.makedirs(current_output_dir)
 
-        logger.info(f"\n🚀 [{i+1}/{len(all_json_files)}] 正在處理: {file_stem}")
+        logger.info(f"\n🚀 [{i+1}/{len(all_json_files)}] Processing: {file_stem}")
 
         processed_blocks = []
         existing_map = {}
         
-        # 讀取舊資料 (斷點續傳)
+        # Resume logic
         if os.path.exists(current_output_path):
             try:
                 with open(current_output_path, "r", encoding="utf-8") as f:
@@ -176,18 +182,17 @@ def main():
         stats = {"text": 0, "table": 0, "image": 0, "ai_processed": 0, "skipped": 0}
 
         for idx, item in enumerate(content_list):
-            item_type = item.get('type', 'text') # 預設為 text
+            item_type = item.get('type', 'text') # Default to text
             page_idx = item.get('page_idx', 0)
             
             raw_bbox = item.get('bbox') or item.get('rect')
             bbox = [int(b) for b in raw_bbox] if raw_bbox else None
             current_id = f"{file_stem}_{page_idx}_{str(bbox)}"
 
-            # === Skip Logic (斷點續傳) ===
+            # === Skip Logic ===
             old_block = existing_map.get(current_id)
             if old_block:
                 old_content = old_block.get("content", "").strip()
-                # 只有當內容真的很短(可能是空的)時才重跑，否則沿用舊的 (節省 AI 錢)
                 if len(old_content) > 5:
                     processed_blocks.append(old_block)
                     stats["skipped"] += 1
@@ -210,19 +215,19 @@ def main():
                 "label": item.get('label', '')
             }
 
-            # 準備 Context (給 AI 參考用)
+            # Prepare Context
             context_text = ""
             if idx > 0:
                 prev_text = get_safe_content(content_list[idx-1])
                 if prev_text: context_text += f"Pre: {prev_text[-200:]}\n"
 
-            # === 🔥 核心處理邏輯 (修正版) ===
+            # === Core Logic ===
             
-            # 1. 表格 (Table)
+            # 1. Table
             if item_type in ['table', 'tabular']:
-                content = get_safe_content(item) # 先抓原本的 OCR
+                content = get_safe_content(item)
                 if HAS_AI and abs_img_path and os.path.exists(abs_img_path):
-                    logger.info(f"   🔍 AI Table: P{page_idx+1}")
+                    logger.info(f"   🔍 Azure AI Table: P{page_idx+1}")
                     ai_content = call_vision_llm(abs_img_path, mode="table", context_text=context_text)
                     if ai_content:
                         content = ai_content
@@ -232,11 +237,11 @@ def main():
                 processed_blocks.append(block_data)
                 stats["table"] += 1
 
-            # 2. 圖片 (Image)
+            # 2. Image
             elif item_type in ['image', 'figure', 'fig']:
-                content = get_safe_content(item) # 先抓原本的 caption
+                content = get_safe_content(item)
                 if HAS_AI and abs_img_path and os.path.exists(abs_img_path):
-                    logger.info(f"   🖼️ AI Caption: P{page_idx+1}")
+                    logger.info(f"   🖼️ Azure AI Caption: P{page_idx+1}")
                     ai_desc = call_vision_llm(abs_img_path, mode="caption", context_text=context_text)
                     if ai_desc:
                         content = f"{content}\n**Image Description:** {ai_desc}".strip()
@@ -246,14 +251,12 @@ def main():
                 processed_blocks.append(block_data)
                 stats["image"] += 1
 
-            # 3. 🔥 [通用處理] 所有其他類型 (Text, Title, Header, Code...)
+            # 3. Text (Universal Fallback)
             else:
-                # 使用通用函式抓取內容，不管它是 text 還是 content
                 text_content = get_safe_content(item)
                 
                 if text_content:
                     block_data["content"] = text_content
-                    # 如果是標題，加個 Markdown 符號 (選擇性)
                     if block_data.get('label') in ['title', 'section_header', 'header']:
                         block_data["content"] = f"# {text_content}" 
                     
@@ -269,11 +272,11 @@ def main():
         with open(current_output_path, "w", encoding="utf-8") as f:
             json.dump(processed_blocks, f, ensure_ascii=False, indent=2)
 
-        logger.success(f"✅ 完成 {file_stem}")
-        logger.info(f"   📊 統計: Text={stats['text']} | Table={stats['table']} | Image={stats['image']} | Skipped={stats['skipped']}")
+        logger.success(f"✅ Completed {file_stem}")
+        logger.info(f"   📊 Stats: Text={stats['text']} | Table={stats['table']} | Image={stats['image']} | Skipped={stats['skipped']}")
 
     logger.success("=" * 40)
-    logger.success(f"🎉 所有檔案處理完畢！")
+    logger.success(f"🎉 All files processed!")
 
 if __name__ == "__main__":
     main()
