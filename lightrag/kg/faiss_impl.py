@@ -28,6 +28,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     """
 
     def __post_init__(self):
+        super().__post_init__()
         # Grab config values if available
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
