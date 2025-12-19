@@ -627,21 +627,44 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             entity_name: Name of the entity to delete
         """
         try:
-            # Generate the entity ID using the same function as used for storage
+            # Compute entity ID from name (same as Milvus)
             entity_id = compute_mdhash_id(entity_name, prefix=ENTITY_PREFIX)
-            qdrant_entity_id = compute_mdhash_id_for_qdrant(
-                entity_id, prefix=self.effective_workspace
+            logger.debug(
+                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
             )
 
-            # Delete the entity point by its Qdrant ID directly
-            self._client.delete(
+            # Scroll to find the entity by its ID field in payload with workspace filtering
+            # This is safer than reconstructing the Qdrant point ID
+            results = self._client.scroll(
                 collection_name=self.final_namespace,
-                points_selector=models.PointIdsList(points=[qdrant_entity_id]),
-                wait=True,
+                scroll_filter=models.Filter(
+                    must=[
+                        workspace_filter_condition(self.effective_workspace),
+                        models.FieldCondition(
+                            key=ID_FIELD, match=models.MatchValue(value=entity_id)
+                        ),
+                    ]
+                ),
+                with_payload=False,
+                limit=1,
             )
-            logger.debug(
-                f"[{self.workspace}] Successfully deleted entity {entity_name}"
-            )
+
+            # Extract point IDs to delete
+            points = results[0]
+            if points:
+                ids_to_delete = [point.id for point in points]
+                self._client.delete(
+                    collection_name=self.final_namespace,
+                    points_selector=models.PointIdsList(points=ids_to_delete),
+                    wait=True,
+                )
+                logger.debug(
+                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
+                )
+            else:
+                logger.debug(
+                    f"[{self.workspace}] Entity {entity_name} not found in storage"
+                )
         except Exception as e:
             logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
 
@@ -652,38 +675,60 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             entity_name: Name of the entity whose relations should be deleted
         """
         try:
-            # Find relations where the entity is either source or target, with workspace filtering
-            results = self._client.scroll(
-                collection_name=self.final_namespace,
-                scroll_filter=models.Filter(
-                    must=[workspace_filter_condition(self.effective_workspace)],
-                    should=[
-                        models.FieldCondition(
-                            key="src_id", match=models.MatchValue(value=entity_name)
-                        ),
-                        models.FieldCondition(
-                            key="tgt_id", match=models.MatchValue(value=entity_name)
-                        ),
-                    ],
-                ),
-                with_payload=True,
-                limit=1000,  # Adjust as needed for your use case
+            # Build the filter to find relations where entity is either source or target
+            # must + should = workspace_id matches AND (src_id matches OR tgt_id matches)
+            relation_filter = models.Filter(
+                must=[workspace_filter_condition(self.effective_workspace)],
+                should=[
+                    models.FieldCondition(
+                        key="src_id", match=models.MatchValue(value=entity_name)
+                    ),
+                    models.FieldCondition(
+                        key="tgt_id", match=models.MatchValue(value=entity_name)
+                    ),
+                ],
             )
 
-            # Extract points that need to be deleted
-            relation_points = results[0]
-            ids_to_delete = [point.id for point in relation_points]
+            # Paginate through all matching relations to handle large datasets
+            total_deleted = 0
+            offset = None
+            batch_size = 1000
 
-            if ids_to_delete:
-                # Delete the relations with workspace filtering
-                assert isinstance(self._client, QdrantClient)
+            while True:
+                # Scroll to find relations, using with_payload=False for efficiency
+                # since we only need point IDs for deletion
+                results = self._client.scroll(
+                    collection_name=self.final_namespace,
+                    scroll_filter=relation_filter,
+                    with_payload=False,
+                    with_vectors=False,
+                    limit=batch_size,
+                    offset=offset,
+                )
+
+                points, next_offset = results
+                if not points:
+                    break
+
+                # Extract point IDs to delete
+                ids_to_delete = [point.id for point in points]
+
+                # Delete the batch of relations
                 self._client.delete(
                     collection_name=self.final_namespace,
                     points_selector=models.PointIdsList(points=ids_to_delete),
                     wait=True,
                 )
+                total_deleted += len(ids_to_delete)
+
+                # Check if we've reached the end
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            if total_deleted > 0:
                 logger.debug(
-                    f"[{self.workspace}] Deleted {len(ids_to_delete)} relations for {entity_name}"
+                    f"[{self.workspace}] Deleted {total_deleted} relations for {entity_name}"
                 )
             else:
                 logger.debug(
