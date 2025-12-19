@@ -2892,10 +2892,18 @@ class PGVectorStorage(BaseVectorStorage):
             for result in results:
                 if result and "content_vector" in result and "id" in result:
                     try:
-                        # Parse JSON string to get vector as list of floats
-                        vector_data = json.loads(result["content_vector"])
-                        if isinstance(vector_data, list):
-                            vectors_dict[result["id"]] = vector_data
+                        vector_data = result["content_vector"]
+                        # Handle both pgvector-registered connections (returns list/tuple)
+                        # and non-registered connections (returns JSON string)
+                        if isinstance(vector_data, (list, tuple)):
+                            vectors_dict[result["id"]] = list(vector_data)
+                        elif isinstance(vector_data, str):
+                            parsed = json.loads(vector_data)
+                            if isinstance(parsed, list):
+                                vectors_dict[result["id"]] = parsed
+                        # Handle numpy arrays from pgvector
+                        elif hasattr(vector_data, "tolist"):
+                            vectors_dict[result["id"]] = vector_data.tolist()
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(
                             f"[{self.workspace}] Failed to parse vector data for ID {result['id']}: {e}"
