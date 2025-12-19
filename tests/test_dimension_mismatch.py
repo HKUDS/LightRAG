@@ -316,7 +316,9 @@ class TestPostgresDimensionMismatch:
                 # Return different counts based on table name in query and migration state
                 if "LIGHTRAG_DOC_CHUNKS_model_1536d" in query:
                     # After migration: return migrated count, before: return 0
-                    return {"count": len(mock_records) if migration_done["value"] else 0}
+                    return {
+                        "count": len(mock_records) if migration_done["value"] else 0
+                    }
                 # Legacy table always has 2 records (matching mock_records)
                 return {"count": len(mock_records)}
             elif "pg_attribute" in query:
@@ -360,16 +362,21 @@ class TestPostgresDimensionMismatch:
 
         # Custom mock for _pg_migrate_workspace_data that updates migration_done
         async def mock_migrate_func(*args, **kwargs):
-            migration_done["value"] = True  # Set BEFORE returning so verification query sees it
+            migration_done["value"] = (
+                True  # Set BEFORE returning so verification query sees it
+            )
             return len(mock_records)
 
-        with patch(
-            "lightrag.kg.postgres_impl._pg_table_exists",
-            side_effect=mock_table_exists,
-        ), patch(
-            "lightrag.kg.postgres_impl._pg_migrate_workspace_data",
-            side_effect=mock_migrate_func,
-        ) as mock_migrate:
+        with (
+            patch(
+                "lightrag.kg.postgres_impl._pg_table_exists",
+                side_effect=mock_table_exists,
+            ),
+            patch(
+                "lightrag.kg.postgres_impl._pg_migrate_workspace_data",
+                side_effect=mock_migrate_func,
+            ) as mock_migrate,
+        ):
             # Call setup_table with matching 1536d
             await PGVectorStorage.setup_table(
                 db,

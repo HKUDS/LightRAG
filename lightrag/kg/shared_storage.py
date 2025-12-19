@@ -163,30 +163,19 @@ class UnifiedLock(Generic[T]):
                     enable_output=self._enable_logging,
                 )
 
-            # Then acquire the main lock
-            if self._lock is not None:
-                if self._is_async:
-                    await self._lock.acquire()
-                else:
-                    self._lock.acquire()
-
-                direct_log(
-                    f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
-                    level="INFO",
-                    enable_output=self._enable_logging,
-                )
+            # Acquire the main lock
+            # Note: self._lock should never be None here as the check has been moved
+            # to get_internal_lock() and get_data_init_lock() functions
+            if self._is_async:
+                await self._lock.acquire()
             else:
-                # CRITICAL: Raise exception instead of allowing unprotected execution
-                error_msg = (
-                    f"CRITICAL: Lock '{self._name}' is None - shared data not initialized. "
-                    f"Call initialize_share_data() before using locks!"
-                )
-                direct_log(
-                    f"== Lock == Process {self._pid}: {error_msg}",
-                    level="ERROR",
-                    enable_output=True,
-                )
-                raise RuntimeError(error_msg)
+                self._lock.acquire()
+
+            direct_log(
+                f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
+                level="INFO",
+                enable_output=self._enable_logging,
+            )
             return self
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired
@@ -272,6 +261,10 @@ class UnifiedLock(Generic[T]):
         try:
             if self._is_async:
                 raise RuntimeError("Use 'async with' for shared_storage lock")
+
+            # Acquire the main lock
+            # Note: self._lock should never be None here as the check has been moved
+            # to get_internal_lock() and get_data_init_lock() functions
             direct_log(
                 f"== Lock == Process {self._pid}: Acquiring lock {self._name} (sync)",
                 level="DEBUG",
@@ -1077,6 +1070,10 @@ class _KeyedLockContext:
 
 def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
+    if _internal_lock is None:
+        raise RuntimeError(
+            "Shared data not initialized. Call initialize_share_data() before using locks!"
+        )
     async_lock = _async_locks.get("internal_lock") if _is_multiprocess else None
     return UnifiedLock(
         lock=_internal_lock,
@@ -1107,6 +1104,10 @@ def get_storage_keyed_lock(
 
 def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified data initialization lock for ensuring atomic data initialization"""
+    if _data_init_lock is None:
+        raise RuntimeError(
+            "Shared data not initialized. Call initialize_share_data() before using locks!"
+        )
     async_lock = _async_locks.get("data_init_lock") if _is_multiprocess else None
     return UnifiedLock(
         lock=_data_init_lock,

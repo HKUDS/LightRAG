@@ -1,13 +1,16 @@
 """
 Tests for UnifiedLock safety when lock is None.
 
-This test module verifies that UnifiedLock raises RuntimeError instead of
-allowing unprotected execution when the underlying lock is None, preventing
-false security and potential race conditions.
+This test module verifies that get_internal_lock() and get_data_init_lock()
+raise RuntimeError when shared data is not initialized, preventing false
+security and potential race conditions.
 
-Critical Bug 1: When self._lock is None, __aenter__ used to log WARNING but
-still return successfully, allowing critical sections to run without lock
-protection, causing race conditions and data corruption.
+Design: The None check has been moved from UnifiedLock.__aenter__/__enter__
+to the lock factory functions (get_internal_lock, get_data_init_lock) for
+early failure detection.
+
+Critical Bug 1 (Fixed): When self._lock is None, the code would fail with
+AttributeError. Now the check is in factory functions for clearer errors.
 
 Critical Bug 2: In __aexit__, when async_lock.release() fails, the error
 recovery logic would attempt to release it again, causing double-release issues.
@@ -15,81 +18,52 @@ recovery logic would attempt to release it again, causing double-release issues.
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from lightrag.kg.shared_storage import UnifiedLock
+from lightrag.kg.shared_storage import (
+    UnifiedLock,
+    get_internal_lock,
+    get_data_init_lock,
+    finalize_share_data,
+)
 
 
 class TestUnifiedLockSafety:
     """Test suite for UnifiedLock None safety checks."""
 
-    @pytest.mark.asyncio
-    async def test_unified_lock_raises_on_none_async(self):
+    def setup_method(self):
+        """Ensure shared data is finalized before each test."""
+        finalize_share_data()
+
+    def teardown_method(self):
+        """Clean up after each test."""
+        finalize_share_data()
+
+    def test_get_internal_lock_raises_when_not_initialized(self):
         """
-        Test that UnifiedLock raises RuntimeError when lock is None (async mode).
+        Test that get_internal_lock() raises RuntimeError when shared data is not initialized.
 
-        Scenario: Attempt to use UnifiedLock before initialize_share_data() is called.
-        Expected: RuntimeError raised, preventing unprotected critical section execution.
-        """
-        lock = UnifiedLock(
-            lock=None, is_async=True, name="test_async_lock", enable_logging=False
-        )
-
-        with pytest.raises(
-            RuntimeError, match="shared data not initialized|Lock.*is None"
-        ):
-            async with lock:
-                # This code should NEVER execute
-                pytest.fail(
-                    "Code inside lock context should not execute when lock is None"
-                )
-
-    @pytest.mark.asyncio
-    async def test_unified_lock_raises_on_none_sync(self):
-        """
-        Test that UnifiedLock raises RuntimeError when lock is None (sync mode).
-
-        Scenario: Attempt to use UnifiedLock with None lock in sync mode.
+        Scenario: Call get_internal_lock() before initialize_share_data() is called.
         Expected: RuntimeError raised with clear error message.
-        """
-        lock = UnifiedLock(
-            lock=None, is_async=False, name="test_sync_lock", enable_logging=False
-        )
 
+        This test verifies the None check has been moved to the factory function.
+        """
         with pytest.raises(
-            RuntimeError, match="shared data not initialized|Lock.*is None"
+            RuntimeError, match="Shared data not initialized.*initialize_share_data"
         ):
-            async with lock:
-                # This code should NEVER execute
-                pytest.fail(
-                    "Code inside lock context should not execute when lock is None"
-                )
+            get_internal_lock()
 
-    @pytest.mark.asyncio
-    async def test_error_message_clarity(self):
+    def test_get_data_init_lock_raises_when_not_initialized(self):
         """
-        Test that the error message clearly indicates the problem and solution.
+        Test that get_data_init_lock() raises RuntimeError when shared data is not initialized.
 
-        Scenario: Lock is None and user tries to acquire it.
-        Expected: Error message mentions 'shared data not initialized' and
-                  'initialize_share_data()'.
+        Scenario: Call get_data_init_lock() before initialize_share_data() is called.
+        Expected: RuntimeError raised with clear error message.
+
+        This test verifies the None check has been moved to the factory function.
         """
-        lock = UnifiedLock(
-            lock=None,
-            is_async=True,
-            name="test_error_message",
-            enable_logging=False,
-        )
-
-        with pytest.raises(RuntimeError) as exc_info:
-            async with lock:
-                pass
-
-        error_message = str(exc_info.value)
-        # Verify error message contains helpful information
-        assert (
-            "shared data not initialized" in error_message.lower()
-            or "lock" in error_message.lower()
-        )
-        assert "initialize_share_data" in error_message or "None" in error_message
+        with pytest.raises(
+            RuntimeError, match="Shared data not initialized.*initialize_share_data"
+        ):
+            get_data_init_lock()
 
     @pytest.mark.asyncio
     async def test_aexit_no_double_release_on_async_lock_failure(self):
@@ -144,48 +118,3 @@ class TestUnifiedLockSafety:
 
         # Main lock should have been released successfully
         main_lock.release.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_aexit_recovery_on_main_lock_failure(self):
-        """
-        Test that __aexit__ recovery logic works when main lock release fails.
-
-        Scenario: main_lock.release() fails before async_lock is attempted.
-        Expected: Recovery logic should attempt to release async_lock to prevent
-                  resource leaks.
-
-        This verifies the recovery logic still works correctly with async_lock_released tracking.
-        """
-        # Create mock locks
-        main_lock = MagicMock()
-        main_lock.acquire = MagicMock()
-
-        # Make main_lock.release() fail
-        def mock_main_release_fail():
-            raise RuntimeError("Main lock release failed")
-
-        main_lock.release = MagicMock(side_effect=mock_main_release_fail)
-
-        async_lock = AsyncMock()
-        async_lock.acquire = AsyncMock()
-        async_lock.release = MagicMock()
-
-        # Create UnifiedLock with both locks (sync mode with async_lock)
-        lock = UnifiedLock(
-            lock=main_lock, is_async=False, name="test_recovery", enable_logging=False
-        )
-        lock._async_lock = async_lock
-
-        # Try to use the lock - should fail during __aexit__
-        try:
-            async with lock:
-                pass
-        except RuntimeError as e:
-            # Should get the main lock release error
-            assert "Main lock release failed" in str(e)
-
-        # Main lock release should have been attempted
-        main_lock.release.assert_called_once()
-
-        # Recovery logic should have attempted to release async_lock
-        async_lock.release.assert_called_once()

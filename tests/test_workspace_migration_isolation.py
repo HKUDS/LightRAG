@@ -48,7 +48,11 @@ class TestWorkspaceMigrationIsolation:
             sql_lower = sql.lower()
 
             # Count query for new table workspace data (verification before migration)
-            if "count(*)" in sql_lower and "model_1536d" in sql_lower and "where workspace" in sql_lower:
+            if (
+                "count(*)" in sql_lower
+                and "model_1536d" in sql_lower
+                and "where workspace" in sql_lower
+            ):
                 return new_table_record_count  # Initially 0
 
             # Count query with workspace filter (legacy table) - for workspace count
@@ -60,11 +64,19 @@ class TestWorkspaceMigrationIsolation:
                 return {"count": 0}
 
             # Count query for legacy table (total, no workspace filter)
-            elif "count(*)" in sql_lower and "lightrag" in sql_lower and "where workspace" not in sql_lower:
+            elif (
+                "count(*)" in sql_lower
+                and "lightrag" in sql_lower
+                and "where workspace" not in sql_lower
+            ):
                 return {"count": 5}  # Total records in legacy
 
             # SELECT with workspace filter for migration
-            elif "select * from" in sql_lower and "where workspace" in sql_lower and multirows:
+            elif (
+                "select * from" in sql_lower
+                and "where workspace" in sql_lower
+                and multirows
+            ):
                 workspace = params[0] if params else None
                 offset = params[1] if len(params) > 1 else 0
                 if workspace == "workspace_a" and offset == 0:
@@ -94,7 +106,9 @@ class TestWorkspaceMigrationIsolation:
         # Mock _pg_table_exists, _pg_create_table, and _pg_migrate_workspace_data
         from unittest.mock import patch
 
-        async def mock_migrate_workspace_data(db, legacy, new, workspace, expected_count, dim):
+        async def mock_migrate_workspace_data(
+            db, legacy, new, workspace, expected_count, dim
+        ):
             # Simulate migration by updating count
             new_table_record_count["count"] = expected_count
             return expected_count
@@ -123,7 +137,9 @@ class TestWorkspaceMigrationIsolation:
         # Verify the migration function was called with the correct workspace
         # The mock_migrate_workspace_data tracks that the migration was triggered
         # with workspace_a data (2 records)
-        assert new_table_record_count["count"] == 2, "Should have migrated 2 records from workspace_a"
+        assert (
+            new_table_record_count["count"] == 2
+        ), "Should have migrated 2 records from workspace_a"
 
     @pytest.mark.asyncio
     async def test_migration_without_workspace_raises_error(self):
@@ -175,7 +191,11 @@ class TestWorkspaceMigrationIsolation:
             sql_lower = sql.lower()
 
             # Count query for new table workspace data (should be 0 initially)
-            if "count(*)" in sql_lower and "model_1536d" in sql_lower and "where workspace" in sql_lower:
+            if (
+                "count(*)" in sql_lower
+                and "model_1536d" in sql_lower
+                and "where workspace" in sql_lower
+            ):
                 return new_table_count
 
             # Count query with workspace filter (legacy table)
@@ -184,7 +204,11 @@ class TestWorkspaceMigrationIsolation:
                 return {"count": 1}  # 1 record for the queried workspace
 
             # Count query for legacy table total (no workspace filter)
-            elif "count(*)" in sql_lower and "lightrag" in sql_lower and "where workspace" not in sql_lower:
+            elif (
+                "count(*)" in sql_lower
+                and "lightrag" in sql_lower
+                and "where workspace" not in sql_lower
+            ):
                 return {"count": 3}  # 3 total records in legacy
 
             return {}
@@ -194,7 +218,9 @@ class TestWorkspaceMigrationIsolation:
 
         from unittest.mock import patch
 
-        async def mock_migrate_workspace_data(db, legacy, new, workspace, expected_count, dim):
+        async def mock_migrate_workspace_data(
+            db, legacy, new, workspace, expected_count, dim
+        ):
             # Simulate migration by updating count
             new_table_count["count"] = expected_count
             return expected_count
