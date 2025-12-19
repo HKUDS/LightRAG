@@ -2399,7 +2399,7 @@ class PGVectorStorage(BaseVectorStorage):
                             )
                             raise DataMigrationError(
                                 f"Dimension mismatch between legacy table '{legacy_table_name}' "
-                                f"and new embedding model. Expected {embedding_dim} but got {legacy_dim}."
+                                f"and new embedding model. Expected {embedding_dim}d but got {legacy_dim}d."
                             )
 
                     except DataMigrationError:
