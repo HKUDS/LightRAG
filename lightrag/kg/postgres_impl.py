@@ -2332,6 +2332,14 @@ class PGVectorStorage(BaseVectorStorage):
 
         logger.info(f"PostgreSQL table name: {self.table_name}")
 
+        # Validate table name length (PostgreSQL identifier limit is 63 characters)
+        if len(self.table_name) > 63:
+            raise ValueError(
+                f"PostgreSQL table name exceeds 63 character limit: '{self.table_name}' "
+                f"(length: {len(self.table_name)}). "
+                f"Consider using a shorter embedding model name or workspace name."
+            )
+
     @staticmethod
     async def setup_table(
         db: PostgreSQLDB,
