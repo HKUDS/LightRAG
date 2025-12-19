@@ -267,16 +267,30 @@ class PostgreSQLDB:
             await register_vector(connection)
 
         async def _create_pool_once() -> None:
+            # STEP 1: Bootstrap - ensure vector extension exists BEFORE pool creation.
+            # On a fresh database, register_vector() in _init_connection will fail
+            # if the vector extension doesn't exist yet, because the 'vector' type
+            # won't be found in pg_catalog. We must create the extension first
+            # using a standalone bootstrap connection.
+            bootstrap_conn = await asyncpg.connect(
+                user=self.user,
+                password=self.password,
+                database=self.database,
+                host=self.host,
+                port=self.port,
+                ssl=connection_params.get("ssl"),
+            )
+            try:
+                await self.configure_vector_extension(bootstrap_conn)
+            finally:
+                await bootstrap_conn.close()
+
+            # STEP 2: Now safe to create pool with register_vector callback.
+            # The vector extension is guaranteed to exist at this point.
             pool = await asyncpg.create_pool(
                 **connection_params,
                 init=_init_connection,  # Register pgvector codec on every connection
             )  # type: ignore
-            try:
-                async with pool.acquire() as connection:
-                    await self.configure_vector_extension(connection)
-            except Exception:
-                await pool.close()
-                raise
             self.pool = pool
 
         try:
