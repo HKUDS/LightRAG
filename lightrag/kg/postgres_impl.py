@@ -256,8 +256,21 @@ class PostgreSQLDB:
             else wait_fixed(0)
         )
 
+        async def _init_connection(connection: asyncpg.Connection) -> None:
+            """Initialize each connection with pgvector codec.
+
+            This callback is invoked by asyncpg for every new connection in the pool.
+            Registering the vector codec here ensures ALL connections can properly
+            encode/decode vector columns, eliminating non-deterministic behavior
+            where some connections have the codec and others don't.
+            """
+            await register_vector(connection)
+
         async def _create_pool_once() -> None:
-            pool = await asyncpg.create_pool(**connection_params)  # type: ignore
+            pool = await asyncpg.create_pool(
+                **connection_params,
+                init=_init_connection,  # Register pgvector codec on every connection
+            )  # type: ignore
             try:
                 async with pool.acquire() as connection:
                     await self.configure_vector_extension(connection)
@@ -2295,9 +2308,8 @@ async def _pg_migrate_workspace_data(
             batch_values.append(values_tuple)
 
         # Use executemany for batch execution - significantly reduces DB round-trips
-        # Register pgvector codec to handle vector fields alongside other fields seamlessly
+        # Note: register_vector is already called on pool init, no need to call it again
         async def _batch_insert(connection: asyncpg.Connection) -> None:
-            await register_vector(connection)
             await connection.executemany(insert_query, batch_values)
 
         await db._run_with_retry(_batch_insert)
@@ -2746,10 +2758,10 @@ class PGVectorStorage(BaseVectorStorage):
             batch_values.append(values)
 
         # Use executemany for batch execution - significantly reduces DB round-trips
+        # Note: register_vector is already called on pool init, no need to call it again
         if batch_values and upsert_sql:
 
             async def _batch_upsert(connection: asyncpg.Connection) -> None:
-                await register_vector(connection)
                 await connection.executemany(upsert_sql, batch_values)
 
             await self.db._run_with_retry(_batch_upsert)
