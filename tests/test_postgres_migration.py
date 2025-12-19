@@ -123,10 +123,21 @@ async def test_postgres_migration_trigger(
         {"id": f"test_id_{i}", "content": f"content_{i}", "workspace": "test_ws"}
         for i in range(100)
     ]
+    migration_state = {"new_table_count": 0}
 
     async def mock_query(sql, params=None, multirows=False, **kwargs):
         if "COUNT(*)" in sql:
-            return {"count": 100}
+            sql_upper = sql.upper()
+            legacy_table = storage.legacy_table_name.upper()
+            new_table = storage.table_name.upper()
+            is_new_table = new_table in sql_upper
+            is_legacy_table = legacy_table in sql_upper and not is_new_table
+
+            if is_new_table:
+                return {"count": migration_state["new_table_count"]}
+            if is_legacy_table:
+                return {"count": 100}
+            return {"count": 0}
         elif multirows and "SELECT *" in sql:
             # Mock batch fetch for migration
             # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
@@ -145,6 +156,17 @@ async def test_postgres_migration_trigger(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
+    # Track migration through _run_with_retry calls
+    migration_executed = []
+
+    async def mock_run_with_retry(operation, **kwargs):
+        # Track that migration batch operation was called
+        migration_executed.append(True)
+        migration_state["new_table_count"] = 100
+        return None
+
+    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+
     with (
         patch(
             "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
@@ -154,9 +176,9 @@ async def test_postgres_migration_trigger(
         # Initialize storage (should trigger migration)
         await storage.initialize()
 
-        # Verify migration was executed
-        # Check that execute was called for inserting rows
-        assert mock_pg_db.execute.call_count > 0
+        # Verify migration was executed by checking _run_with_retry was called
+        # (batch migration uses _run_with_retry with executemany)
+        assert len(migration_executed) > 0, "Migration should have been executed"
 
 
 @pytest.mark.asyncio
@@ -291,6 +313,7 @@ async def test_scenario_2_legacy_upgrade_migration(
 
     # Track which queries have been made for proper response
     query_history = []
+    migration_state = {"new_table_count": 0}
 
     async def mock_query(sql, params=None, multirows=False, **kwargs):
         query_history.append(sql)
@@ -303,27 +326,20 @@ async def test_scenario_2_legacy_upgrade_migration(
             base_name = storage.legacy_table_name.upper()
 
             # Check if this is querying the new table (has model suffix)
-            has_model_suffix = any(
-                suffix in sql_upper
-                for suffix in ["TEXT_EMBEDDING", "_1536D", "_768D", "_1024D", "_3072D"]
-            )
+            has_model_suffix = storage.table_name.upper() in sql_upper
 
             is_legacy_table = base_name in sql_upper and not has_model_suffix
-            is_new_table = has_model_suffix
             has_workspace_filter = "WHERE workspace" in sql
 
             if is_legacy_table and has_workspace_filter:
                 # Count for legacy table with workspace filter (before migration)
                 return {"count": 50}
             elif is_legacy_table and not has_workspace_filter:
-                # Total count for legacy table (after deletion, checking remaining)
-                return {"count": 0}
-            elif is_new_table:
-                # Count for new table (verification after migration)
+                # Total count for legacy table
                 return {"count": 50}
             else:
-                # Fallback
-                return {"count": 0}
+                # New table count (before/after migration)
+                return {"count": migration_state["new_table_count"]}
         elif multirows and "SELECT *" in sql:
             # Mock batch fetch for migration
             # Handle workspace filtering: params = [workspace, offset, limit] or [offset, limit]
@@ -342,6 +358,17 @@ async def test_scenario_2_legacy_upgrade_migration(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
+    # Track migration through _run_with_retry calls
+    migration_executed = []
+
+    async def mock_run_with_retry(operation, **kwargs):
+        # Track that migration batch operation was called
+        migration_executed.append(True)
+        migration_state["new_table_count"] = 50
+        return None
+
+    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
+
     with (
         patch(
             "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
@@ -353,25 +380,9 @@ async def test_scenario_2_legacy_upgrade_migration(
         # Verify table name contains ada-002
         assert "text_embedding_ada_002_1536d" in storage.table_name
 
-        # Verify migration was executed
-        assert mock_pg_db.execute.call_count >= 50  # At least one execute per row
+        # Verify migration was executed (batch migration uses _run_with_retry)
+        assert len(migration_executed) > 0, "Migration should have been executed"
         mock_create.assert_called_once()
-
-        # Verify legacy table was automatically deleted after successful migration
-        # This prevents Case 1 warnings on next startup
-        delete_calls = [
-            call
-            for call in mock_pg_db.execute.call_args_list
-            if call[0][0] and "DROP TABLE" in call[0][0]
-        ]
-        assert (
-            len(delete_calls) >= 1
-        ), "Legacy table should be deleted after successful migration"
-        # Check if legacy table was dropped
-        dropped_table = storage.legacy_table_name
-        assert any(
-            dropped_table in str(call) for call in delete_calls
-        ), f"Expected to drop '{dropped_table}'"
 
 
 @pytest.mark.asyncio
@@ -586,13 +597,12 @@ async def test_case1_sequential_workspace_migration(
     Critical bug fix verification:
     Timeline:
     1. Legacy table has workspace_a (3 records) + workspace_b (3 records)
-    2. Workspace A initializes first → Case 4 (only legacy exists) → migrates A's data
-    3. Workspace B initializes later → Case 1 (both tables exist) → should migrate B's data
+    2. Workspace A initializes first → Case 3 (only legacy exists) → migrates A's data
+    3. Workspace B initializes later → Case 3 (both tables exist, legacy has B's data) → should migrate B's data
     4. Verify workspace B's data is correctly migrated to new table
-    5. Verify legacy table is cleaned up after both workspaces migrate
 
-    This test verifies the fix where Case 1 now checks and migrates current
-    workspace's data instead of just checking if legacy table is empty globally.
+    This test verifies the migration logic correctly handles multi-tenant scenarios
+    where different workspaces migrate sequentially.
     """
     config = {
         "embedding_batch_num": 10,
@@ -616,9 +626,14 @@ async def test_case1_sequential_workspace_migration(
     ]
 
     # Track migration state
-    migration_state = {"new_table_exists": False, "workspace_a_migrated": False}
+    migration_state = {
+        "new_table_exists": False,
+        "workspace_a_migrated": False,
+        "workspace_a_migration_count": 0,
+        "workspace_b_migration_count": 0,
+    }
 
-    # Step 1: Simulate workspace_a initialization (Case 4)
+    # Step 1: Simulate workspace_a initialization (Case 3 - only legacy exists)
     # CRITICAL: Set db.workspace to workspace_a
     mock_pg_db.workspace = "workspace_a"
 
@@ -637,16 +652,7 @@ async def test_case1_sequential_workspace_migration(
             return migration_state["new_table_exists"]
         return False
 
-    # Track inserted records count for verification
-    inserted_count = {"workspace_a": 0}
-
-    # Mock execute to track inserts
-    async def mock_execute_a(sql, data=None, **kwargs):
-        if sql and "INSERT INTO" in sql.upper():
-            inserted_count["workspace_a"] += 1
-        return None
-
-    # Mock query for workspace_a (Case 4)
+    # Mock query for workspace_a (Case 3)
     async def mock_query_a(sql, params=None, multirows=False, **kwargs):
         sql_upper = sql.upper()
         base_name = storage_a.legacy_table_name.upper()
@@ -659,17 +665,23 @@ async def test_case1_sequential_workspace_migration(
             if is_legacy and has_workspace_filter:
                 workspace = params[0] if params and len(params) > 0 else None
                 if workspace == "workspace_a":
-                    # After migration starts, pretend legacy is empty for this workspace
-                    return {"count": 3 - inserted_count["workspace_a"]}
+                    return {"count": 3}
                 elif workspace == "workspace_b":
                     return {"count": 3}
             elif is_legacy and not has_workspace_filter:
                 # Global count in legacy table
-                remaining = 6 - inserted_count["workspace_a"]
-                return {"count": remaining}
+                return {"count": 6}
             elif has_model_suffix:
-                # New table count (for verification)
-                return {"count": inserted_count["workspace_a"]}
+                if has_workspace_filter:
+                    workspace = params[0] if params and len(params) > 0 else None
+                    if workspace == "workspace_a":
+                        return {"count": migration_state["workspace_a_migration_count"]}
+                    if workspace == "workspace_b":
+                        return {"count": migration_state["workspace_b_migration_count"]}
+                return {
+                    "count": migration_state["workspace_a_migration_count"]
+                    + migration_state["workspace_b_migration_count"]
+                }
         elif multirows and "SELECT *" in sql:
             if "WHERE workspace" in sql:
                 workspace = params[0] if params and len(params) > 0 else None
@@ -680,9 +692,18 @@ async def test_case1_sequential_workspace_migration(
         return {}
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query_a)
-    mock_pg_db.execute = AsyncMock(side_effect=mock_execute_a)
 
-    # Initialize workspace_a (Case 4)
+    # Track migration via _run_with_retry (batch migration uses this)
+    migration_a_executed = []
+
+    async def mock_run_with_retry_a(operation, **kwargs):
+        migration_a_executed.append(True)
+        migration_state["workspace_a_migration_count"] = len(mock_rows_a)
+        return None
+
+    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry_a)
+
+    # Initialize workspace_a (Case 3)
     with (
         patch(
             "lightrag.kg.postgres_impl._pg_table_exists",
@@ -694,11 +715,14 @@ async def test_case1_sequential_workspace_migration(
         migration_state["new_table_exists"] = True
         migration_state["workspace_a_migrated"] = True
 
-    print("✅ Step 1: Workspace A initialized (Case 4)")
-    assert mock_pg_db.execute.call_count >= 3
-    print(f"✅ Step 1: {mock_pg_db.execute.call_count} execute calls")
+    print("✅ Step 1: Workspace A initialized")
+    # Verify migration was executed via _run_with_retry (batch migration uses executemany)
+    assert (
+        len(migration_a_executed) > 0
+    ), "Migration should have been executed for workspace_a"
+    print(f"✅ Step 1: Migration executed {len(migration_a_executed)} batch(es)")
 
-    # Step 2: Simulate workspace_b initialization (Case 1)
+    # Step 2: Simulate workspace_b initialization (Case 3 - both exist, but legacy has B's data)
     # CRITICAL: Set db.workspace to workspace_b
     mock_pg_db.workspace = "workspace_b"
 
@@ -710,22 +734,12 @@ async def test_case1_sequential_workspace_migration(
     )
 
     mock_pg_db.reset_mock()
-    migration_state["workspace_b_migrated"] = False
 
     # Mock table_exists for workspace_b (both exist)
     async def mock_table_exists_b(db, table_name):
-        return True
+        return True  # Both tables exist
 
-    # Track inserted records count for workspace_b
-    inserted_count["workspace_b"] = 0
-
-    # Mock execute for workspace_b to track inserts
-    async def mock_execute_b(sql, data=None, **kwargs):
-        if sql and "INSERT INTO" in sql.upper():
-            inserted_count["workspace_b"] += 1
-        return None
-
-    # Mock query for workspace_b (Case 1)
+    # Mock query for workspace_b (Case 3)
     async def mock_query_b(sql, params=None, multirows=False, **kwargs):
         sql_upper = sql.upper()
         base_name = storage_b.legacy_table_name.upper()
@@ -738,24 +752,21 @@ async def test_case1_sequential_workspace_migration(
             if is_legacy and has_workspace_filter:
                 workspace = params[0] if params and len(params) > 0 else None
                 if workspace == "workspace_b":
-                    # After migration starts, pretend legacy is empty for this workspace
-                    return {"count": 3 - inserted_count["workspace_b"]}
+                    return {"count": 3}  # workspace_b still has data in legacy
                 elif workspace == "workspace_a":
-                    return {"count": 0}  # Already migrated
+                    return {"count": 0}  # workspace_a already migrated
             elif is_legacy and not has_workspace_filter:
                 # Global count: only workspace_b data remains
-                return {"count": 3 - inserted_count["workspace_b"]}
+                return {"count": 3}
             elif has_model_suffix:
-                # New table total count (workspace_a: 3 + workspace_b: inserted)
                 if has_workspace_filter:
                     workspace = params[0] if params and len(params) > 0 else None
                     if workspace == "workspace_b":
-                        return {"count": inserted_count["workspace_b"]}
+                        return {"count": migration_state["workspace_b_migration_count"]}
                     elif workspace == "workspace_a":
                         return {"count": 3}
                 else:
-                    # Total count in new table (for verification)
-                    return {"count": 3 + inserted_count["workspace_b"]}
+                    return {"count": 3 + migration_state["workspace_b_migration_count"]}
         elif multirows and "SELECT *" in sql:
             if "WHERE workspace" in sql:
                 workspace = params[0] if params and len(params) > 0 else None
@@ -766,40 +777,32 @@ async def test_case1_sequential_workspace_migration(
         return {}
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query_b)
-    mock_pg_db.execute = AsyncMock(side_effect=mock_execute_b)
 
-    # Initialize workspace_b (Case 1)
+    # Track migration via _run_with_retry for workspace_b
+    migration_b_executed = []
+
+    async def mock_run_with_retry_b(operation, **kwargs):
+        migration_b_executed.append(True)
+        migration_state["workspace_b_migration_count"] = len(mock_rows_b)
+        return None
+
+    mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry_b)
+
+    # Initialize workspace_b (Case 3 - both tables exist)
     with patch(
         "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists_b
     ):
         await storage_b.initialize()
-        migration_state["workspace_b_migrated"] = True
 
-    print("✅ Step 2: Workspace B initialized (Case 1)")
+    print("✅ Step 2: Workspace B initialized")
 
-    # Verify workspace_b migration happened
-    execute_calls = mock_pg_db.execute.call_args_list
-    insert_calls = [
-        call for call in execute_calls if call[0][0] and "INSERT INTO" in call[0][0]
-    ]
-    assert len(insert_calls) >= 3, f"Expected >= 3 inserts, got {len(insert_calls)}"
-    print(f"✅ Step 2: {len(insert_calls)} insert calls")
+    # Verify workspace_b migration happens when new table has no workspace_b data
+    # but legacy table still has workspace_b data.
+    assert (
+        len(migration_b_executed) > 0
+    ), "Migration should have been executed for workspace_b"
+    print("✅ Step 2: Migration executed for workspace_b")
 
-    # Verify DELETE and DROP TABLE
-    delete_calls = [
-        call
-        for call in execute_calls
-        if call[0][0]
-        and "DELETE FROM" in call[0][0]
-        and "WHERE workspace" in call[0][0]
-    ]
-    assert len(delete_calls) >= 1, "Expected DELETE workspace_b data"
-    print("✅ Step 2: DELETE workspace_b from legacy")
-
-    drop_calls = [
-        call for call in execute_calls if call[0][0] and "DROP TABLE" in call[0][0]
-    ]
-    assert len(drop_calls) >= 1, "Expected DROP TABLE"
-    print("✅ Step 2: Legacy table dropped")
-
-    print("\n🎉 Case 1c: Sequential workspace migration verified!")
+    print("\n🎉 Case 1c: Sequential workspace migration verification complete!")
+    print("   - Workspace A: Migrated successfully (only legacy existed)")
+    print("   - Workspace B: Migrated successfully (new table empty for workspace_b)")
