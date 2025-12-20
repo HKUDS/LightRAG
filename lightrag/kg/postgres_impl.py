@@ -2404,17 +2404,16 @@ class PGVectorStorage(BaseVectorStorage):
         # Ensure model_suffix is not empty before appending
         if self.model_suffix:
             self.table_name = f"{base_table}_{self.model_suffix}"
+            logger.info(f"PostgreSQL table: {self.table_name}")
         else:
             # Fallback: use base table name if model_suffix is unavailable
             self.table_name = base_table
             logger.warning(
-                "Missing collection suffix. Ensure embedding_func has model_name for proper model isolation."
+                f"PostgreSQL table: {self.table_name} missing suffix. Pls add model_name to embedding_func for proper workspace data isolation."
             )
 
         # Legacy table name (without suffix, for migration)
         self.legacy_table_name = base_table
-
-        logger.info(f"PostgreSQL table name: {self.table_name}")
 
         # Validate table name length (PostgreSQL identifier limit is 63 characters)
         if len(self.table_name) > PG_MAX_IDENTIFIER_LENGTH:
@@ -2579,9 +2578,8 @@ class PGVectorStorage(BaseVectorStorage):
 
             if new_table_workspace_count > 0:
                 logger.warning(
-                    f"PostgreSQL: New table '{table_name}' already has "
-                    f"{new_table_workspace_count} records{workspace_info}. "
-                    "Data migration skipped to avoid duplicates."
+                    f"PostgreSQL: Both new and legacy collection have data."
+                    f"Manual deleting {legacy_count} records in '{legacy_table_name}' is required after data migration verification."
                 )
                 return
 

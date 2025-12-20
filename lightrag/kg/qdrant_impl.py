@@ -254,9 +254,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             # Skip data migration if new collection already has workspace data
             if new_workspace_count > 0:
                 logger.warning(
-                    f"Qdrant: New collection '{collection_name}' already has "
-                    f"{new_workspace_count} records for workspace '{workspace}'. "
-                    "Data migration skipped to avoid duplicates."
+                    f"Qdrant: Both new and legacy collection have data.  "
+                    f"Manual deleting {legacy_count} records in '{collection_name}' is required after data migration verification."
                 )
                 return
 
@@ -440,14 +439,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # Ensure model_suffix is not empty before appending
         if model_suffix:
             self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
+            logger.info(f"Qdrant collection: {self.final_namespace}")
         else:
             # Fallback: use legacy namespace if model_suffix is unavailable
             self.final_namespace = f"lightrag_vdb_{self.namespace}"
             logger.warning(
-                "Missing collection suffix. Ensure embedding_func has model_name for proper model isolation."
+                f"Qdrant collection: {self.final_namespace} missing suffix. Pls add model_name to embedding_func for proper workspace data isolation."
             )
-
-        logger.info(f"Qdrant collection name: {self.final_namespace}")
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
