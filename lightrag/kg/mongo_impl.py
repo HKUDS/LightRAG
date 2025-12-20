@@ -89,7 +89,7 @@ class MongoKVStorage(BaseKVStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
-        self.__post_init__()
+        # __post_init__() is automatically called by dataclass
 
     def __post_init__(self):
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
@@ -317,7 +317,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
-        self.__post_init__()
+        # __post_init__() is automatically called by dataclass
 
     def __post_init__(self):
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
@@ -2052,9 +2052,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
             embedding_func=embedding_func,
             meta_fields=meta_fields or set(),
         )
-        self.__post_init__()
+        # __post_init__() is automatically called by dataclass
 
     def __post_init__(self):
+        # Call parent class __post_init__ to validate embedding_func
+        super().__post_init__()
+
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
