@@ -7,7 +7,7 @@ import inspect
 import os
 import time
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 from typing import (
@@ -538,14 +538,17 @@ class LightRAG:
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # Step 2: Apply priority wrapper decorator to EmbeddingFunc's inner func
-        # Only wrap the inner func to preserve EmbeddingFunc attributes (model_name, embedding_dim)
-        # This ensures _generate_collection_suffix can still access these attributes for collection isolation
+        # Create a NEW EmbeddingFunc instance with the wrapped func to avoid mutating the caller's object
+        # This ensures _generate_collection_suffix can still access attributes (model_name, embedding_dim)
+        # while preventing side effects when the same EmbeddingFunc is reused across multiple LightRAG instances
         if self.embedding_func is not None:
-            self.embedding_func.func = priority_limit_async_func_call(
+            wrapped_func = priority_limit_async_func_call(
                 self.embedding_func_max_async,
                 llm_timeout=self.default_embedding_timeout,
                 queue_name="Embedding func",
             )(self.embedding_func.func)
+            # Use dataclasses.replace() to create a new instance, leaving the original unchanged
+            self.embedding_func = replace(self.embedding_func, func=wrapped_func)
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (
