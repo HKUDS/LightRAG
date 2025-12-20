@@ -121,7 +121,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             embedding_func=embedding_func,
             meta_fields=meta_fields or set(),
         )
-        # __post_init__() is automatically called by dataclass
+        # __post_init__() is automatically called by super().__init__()
 
     @staticmethod
     def setup_collection(
