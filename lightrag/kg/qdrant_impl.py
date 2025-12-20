@@ -254,8 +254,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             # Skip data migration if new collection already has workspace data
             if new_workspace_count > 0:
                 logger.warning(
-                    f"Qdrant: Both new and legacy collection have data.  "
-                    f"Manual deleting {legacy_count} records in '{collection_name}' is required after data migration verification."
+                    f"Qdrant: Both new and legacy collection have data. "
+                    f"{legacy_count} records in {collection_name} require manual deletion after migration verification."
                 )
                 return
 

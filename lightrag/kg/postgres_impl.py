@@ -2578,8 +2578,8 @@ class PGVectorStorage(BaseVectorStorage):
 
             if new_table_workspace_count > 0:
                 logger.warning(
-                    f"PostgreSQL: Both new and legacy collection have data."
-                    f"Manual deleting {legacy_count} records in '{legacy_table_name}' is required after data migration verification."
+                    f"PostgreSQL: Both new and legacy collection have data. "
+                    f"{legacy_count} records in {legacy_table_name} require manual deletion after migration verification."
                 )
                 return
 
