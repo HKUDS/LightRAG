@@ -2636,7 +2636,7 @@ class PGVectorStorage(BaseVectorStorage):
             logger.info(
                 f"PostgreSQL: Migration from '{legacy_table_name}' to '{table_name}' completed successfully"
             )
-            logger.info(
+            logger.warning(
                 "PostgreSQL: Manual deletion is required after data migration verification."
             )
 

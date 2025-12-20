@@ -408,7 +408,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             logger.info(
                 f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
             )
-            logger.info(
+            logger.warning(
                 "Qdrant: Manual deletion is required after data migration verification."
             )
 
