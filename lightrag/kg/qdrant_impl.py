@@ -160,8 +160,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
 
         new_collection_exists = client.collection_exists(collection_name)
-        legacy_collection = (
-            _find_legacy_collection(client, namespace, workspace, model_suffix)
+        legacy_collection = _find_legacy_collection(
+            client, namespace, workspace, model_suffix
         )
 
         # Case 1: Only new collection exists or  new collection is the same as legacy collection
@@ -259,7 +259,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             if new_workspace_count > 0:
                 logger.warning(
                     f"Qdrant: Both new and legacy collection have data. "
-                    f"{legacy_count} records in {collection_name} require manual deletion after migration verification."
+                    f"{legacy_count} records in {legacy_collection} require manual deletion after migration verification."
                 )
                 return
 
