@@ -67,7 +67,10 @@ def workspace_filter_condition(workspace: str) -> models.FieldCondition:
 
 
 def _find_legacy_collection(
-    client: QdrantClient, namespace: str, workspace: str = None
+    client: QdrantClient,
+    namespace: str,
+    workspace: str = None,
+    model_suffix: str = None,
 ) -> str | None:
     """
     Find legacy collection with backward compatibility support.
@@ -75,14 +78,15 @@ def _find_legacy_collection(
     This function tries multiple naming patterns to locate legacy collections
     created by older versions of LightRAG:
 
-    1. {workspace}_{namespace} - Old format with workspace (pre-model-isolation) - HIGHEST PRIORITY
-    2. lightrag_vdb_{namespace} - Current legacy format
-    3. {namespace} - Old format without workspace (pre-model-isolation)
+    1. lightrag_vdb_{namespace} - if model_suffix is provided (HIGHEST PRIORITY)
+    2. {workspace}_{namespace} or {namespace} - no matter if model_suffix is provided or not
+    3. lightrag_vdb_{namespace} - fall back value no matter if model_suffix is provided or not (LOWEST PRIORITY)
 
     Args:
         client: QdrantClient instance
         namespace: Base namespace (e.g., "chunks", "entities")
         workspace: Optional workspace identifier
+        model_suffix: Optional model suffix for new collection
 
     Returns:
         Collection name if found, None otherwise
@@ -90,11 +94,10 @@ def _find_legacy_collection(
     # Try multiple naming patterns for backward compatibility
     # More specific names (with workspace) have higher priority
     candidates = [
-        f"{workspace}_{namespace}"
-        if workspace
-        else None,  # Old format with workspace - most specific
-        f"lightrag_vdb_{namespace}",  # New legacy format
-        namespace,  # Old format without workspace - most generic
+        f"lightrag_vdb_{namespace}" if model_suffix else None,
+        f"{workspace}_{namespace}" if workspace else None,
+        f"lightrag_vdb_{namespace}",
+        namespace,
     ]
 
     for candidate in candidates:
@@ -131,6 +134,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         workspace: str,
         vectors_config: models.VectorParams,
         hnsw_config: models.HnswConfigDiff,
+        model_suffix: str,
     ):
         """
         Setup Qdrant collection with migration support from legacy collections.
@@ -157,7 +161,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         new_collection_exists = client.collection_exists(collection_name)
         legacy_collection = (
-            _find_legacy_collection(client, namespace, workspace) if namespace else None
+            _find_legacy_collection(client, namespace, workspace, model_suffix)
         )
 
         # Case 1: Only new collection exists or  new collection is the same as legacy collection
@@ -432,13 +436,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         self.effective_workspace = effective_workspace or DEFAULT_WORKSPACE
 
         # Generate model suffix
-        model_suffix = self._generate_collection_suffix()
+        self.model_suffix = self._generate_collection_suffix()
 
         # New naming scheme with model isolation
         # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
         # Ensure model_suffix is not empty before appending
-        if model_suffix:
-            self.final_namespace = f"lightrag_vdb_{self.namespace}_{model_suffix}"
+        if self.model_suffix:
+            self.final_namespace = f"lightrag_vdb_{self.namespace}_{self.model_suffix}"
             logger.info(f"Qdrant collection: {self.final_namespace}")
         else:
             # Fallback: use legacy namespace if model_suffix is unavailable
@@ -497,6 +501,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         payload_m=16,
                         m=0,
                     ),
+                    model_suffix=self.model_suffix,
                 )
 
                 # Removed duplicate max batch size initialization
