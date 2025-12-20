@@ -421,7 +421,7 @@ async def llm_model_func(
         **kwargs
     )
 
-@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192, model_name="solar-embedding-1-large-query")
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embed.func(
         texts,
@@ -488,7 +488,7 @@ import numpy as np
 from lightrag.utils import wrap_embedding_func_with_attrs
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 
-@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192, model_name="nomic-embed-text")
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await ollama_embed.func(texts, embed_model="nomic-embed-text")
 
@@ -540,7 +540,7 @@ import numpy as np
 from lightrag.utils import wrap_embedding_func_with_attrs
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 
-@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192, model_name="nomic-embed-text")
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await ollama_embed.func(texts, embed_model="nomic-embed-text")
 

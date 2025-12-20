@@ -179,7 +179,9 @@ async def zhipu_complete(
         )
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=8192, model_name="embedding-3"
+)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
