@@ -64,6 +64,7 @@ class TestNoModelSuffixSafety:
                     payload_m=16,
                     m=0,
                 ),
+                model_suffix="",  # Empty suffix to simulate no model_name provided
             )
 
         # CRITICAL: Collection should NOT be deleted
@@ -167,6 +168,7 @@ class TestNoModelSuffixSafety:
                 payload_m=16,
                 m=0,
             ),
+            model_suffix="ada_002_1536d",
         )
 
         # SHOULD delete legacy (normal Case 1 behavior)

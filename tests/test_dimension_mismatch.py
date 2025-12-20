@@ -72,6 +72,7 @@ class TestQdrantDimensionMismatch:
                         payload_m=16,
                         m=0,
                     ),
+                    model_suffix="model_3072d",
                 )
 
         # Verify error message contains dimension information
@@ -159,6 +160,7 @@ class TestQdrantDimensionMismatch:
                     payload_m=16,
                     m=0,
                 ),
+                model_suffix="model_1536d",
             )
 
         # Verify migration WAS attempted
