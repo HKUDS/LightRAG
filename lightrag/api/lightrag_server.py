@@ -868,6 +868,7 @@ def create_app(args):
             func=optimized_embedding_function,
             max_token_size=final_max_token_size,
             send_dimensions=False,  # Will be set later based on binding requirements
+            model_name=model,
         )
 
         # Log final embedding configuration

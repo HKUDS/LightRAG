@@ -632,6 +632,24 @@ class PostgreSQLDB:
         }
 
         try:
+            # Filter out tables that don't exist (e.g., legacy vector tables may not exist)
+            existing_tables = {}
+            for table_name, columns in tables_to_migrate.items():
+                if await self.check_table_exists(table_name):
+                    existing_tables[table_name] = columns
+                else:
+                    logger.debug(
+                        f"Table {table_name} does not exist, skipping timestamp migration"
+                    )
+
+            # Skip if no tables to migrate
+            if not existing_tables:
+                logger.debug("No tables found for timestamp migration")
+                return
+
+            # Use filtered tables for migration
+            tables_to_migrate = existing_tables
+
             # Optimization: Batch check all columns in one query instead of 8 separate queries
             table_names_lower = [t.lower() for t in tables_to_migrate.keys()]
             all_column_names = list(
@@ -708,6 +726,22 @@ class PostgreSQLDB:
 
         """
         try:
+            # 0. Check if both tables exist before proceeding
+            vdb_chunks_exists = await self.check_table_exists("LIGHTRAG_VDB_CHUNKS")
+            doc_chunks_exists = await self.check_table_exists("LIGHTRAG_DOC_CHUNKS")
+
+            if not vdb_chunks_exists:
+                logger.debug(
+                    "Skipping migration: LIGHTRAG_VDB_CHUNKS table does not exist"
+                )
+                return
+
+            if not doc_chunks_exists:
+                logger.debug(
+                    "Skipping migration: LIGHTRAG_DOC_CHUNKS table does not exist"
+                )
+                return
+
             # 1. Check if the new table LIGHTRAG_VDB_CHUNKS is empty
             vdb_chunks_count_sql = "SELECT COUNT(1) as count FROM LIGHTRAG_VDB_CHUNKS"
             vdb_chunks_count_result = await self.query(vdb_chunks_count_sql)
@@ -1076,6 +1110,24 @@ class PostgreSQLDB:
         ]
 
         try:
+            # Filter out tables that don't exist (e.g., legacy vector tables may not exist)
+            existing_migrations = []
+            for migration in field_migrations:
+                if await self.check_table_exists(migration["table"]):
+                    existing_migrations.append(migration)
+                else:
+                    logger.debug(
+                        f"Table {migration['table']} does not exist, skipping field length migration for {migration['column']}"
+                    )
+
+            # Skip if no migrations to process
+            if not existing_migrations:
+                logger.debug("No tables found for field length migration")
+                return
+
+            # Use filtered migrations for processing
+            field_migrations = existing_migrations
+
             # Optimization: Batch check all columns in one query instead of 5 separate queries
             unique_tables = list(set(m["table"].lower() for m in field_migrations))
             unique_columns = list(set(m["column"] for m in field_migrations))
@@ -1160,8 +1212,20 @@ class PostgreSQLDB:
             logger.error(f"Failed to batch check field lengths: {e}")
 
     async def check_tables(self):
-        # First create all tables
+        # Vector tables that should be skipped - they are created by PGVectorStorage.setup_table()
+        # with proper embedding model and dimension suffix for data isolation
+        vector_tables_to_skip = {
+            "LIGHTRAG_VDB_CHUNKS",
+            "LIGHTRAG_VDB_ENTITY",
+            "LIGHTRAG_VDB_RELATION",
+        }
+
+        # First create all tables (except vector tables)
         for k, v in TABLES.items():
+            # Skip vector tables - they are created by PGVectorStorage.setup_table()
+            if k in vector_tables_to_skip:
+                continue
+
             try:
                 await self.query(f"SELECT 1 FROM {k} LIMIT 1")
             except Exception:
@@ -1179,7 +1243,8 @@ class PostgreSQLDB:
 
         # Batch check all indexes at once (optimization: single query instead of N queries)
         try:
-            table_names = list(TABLES.keys())
+            # Exclude vector tables from index creation since they are created by PGVectorStorage.setup_table()
+            table_names = [k for k in TABLES.keys() if k not in vector_tables_to_skip]
             table_names_lower = [t.lower() for t in table_names]
 
             # Get all existing indexes for our tables in one query
