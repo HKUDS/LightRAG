@@ -2493,10 +2493,21 @@ class PGVectorStorage(BaseVectorStorage):
                     try:
                         sample_query = f"SELECT content_vector FROM {legacy_table_name} WHERE workspace = $1 LIMIT 1"
                         sample_result = await db.query(sample_query, [workspace])
-                        if sample_result and sample_result.get("content_vector"):
+                        # Fix: Use 'is not None' instead of truthiness check to avoid
+                        # NumPy array boolean ambiguity error
+                        if (
+                            sample_result
+                            and sample_result.get("content_vector") is not None
+                        ):
                             vector_data = sample_result["content_vector"]
-                            # pgvector returns list directly
+                            # pgvector returns list directly, but may also return NumPy arrays
+                            # when register_vector codec is active on the connection
                             if isinstance(vector_data, (list, tuple)):
+                                legacy_dim = len(vector_data)
+                            elif hasattr(vector_data, "__len__") and not isinstance(
+                                vector_data, str
+                            ):
+                                # Handle NumPy arrays and other array-like objects
                                 legacy_dim = len(vector_data)
                             elif isinstance(vector_data, str):
                                 import json
