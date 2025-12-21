@@ -3412,9 +3412,9 @@ class LightRAG:
 
             # Log before-deletion node count for verification (002-fix-graph-deletion-sync)
             try:
-                graph_before = await self.chunk_entity_relation_graph.get_knowledge_graph()
-                node_count_before = len(graph_before.nodes) if graph_before else 0
-                edge_count_before = len(graph_before.edges) if graph_before else 0
+                graph_before = await self.chunk_entity_relation_graph._get_graph()
+                node_count_before = graph_before.number_of_nodes() if graph_before else 0
+                edge_count_before = graph_before.number_of_edges() if graph_before else 0
                 logger.info(
                     f"[{workspace}] Graph before deletion: {node_count_before} nodes, {edge_count_before} edges"
                 )
@@ -3560,9 +3560,9 @@ class LightRAG:
 
             # Log after-deletion node count for verification (002-fix-graph-deletion-sync)
             try:
-                graph_after = await self.chunk_entity_relation_graph.get_knowledge_graph()
-                node_count_after = len(graph_after.nodes) if graph_after else 0
-                edge_count_after = len(graph_after.edges) if graph_after else 0
+                graph_after = await self.chunk_entity_relation_graph._get_graph()
+                node_count_after = graph_after.number_of_nodes() if graph_after else 0
+                edge_count_after = graph_after.number_of_edges() if graph_after else 0
                 logger.info(
                     f"[{workspace}] Graph after deletion: {node_count_after} nodes, {edge_count_after} edges "
                     f"(delta: {node_count_after - node_count_before} nodes)"
