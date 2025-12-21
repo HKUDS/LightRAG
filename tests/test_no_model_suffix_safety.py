@@ -97,26 +97,23 @@ class TestNoModelSuffixSafety:
         table_name = "LIGHTRAG_VDB_CHUNKS"  # No suffix
         legacy_table_name = "LIGHTRAG_VDB_CHUNKS"  # Same as new
 
-        # Setup mock responses
-        async def table_exists_side_effect(db_instance, name):
+        # Setup mock responses using check_table_exists on db
+        async def check_table_exists_side_effect(name):
             # Both tables exist (they're the same)
             return True
 
-        # Mock _pg_table_exists function
-        with patch(
-            "lightrag.kg.postgres_impl._pg_table_exists",
-            side_effect=table_exists_side_effect,
-        ):
-            # Call setup_table
-            # This should detect that new == legacy and skip deletion
-            await PGVectorStorage.setup_table(
-                db,
-                table_name,
-                workspace="test_workspace",
-                embedding_dim=1536,
-                legacy_table_name=legacy_table_name,
-                base_table="LIGHTRAG_VDB_CHUNKS",
-            )
+        db.check_table_exists = AsyncMock(side_effect=check_table_exists_side_effect)
+
+        # Call setup_table
+        # This should detect that new == legacy and skip deletion
+        await PGVectorStorage.setup_table(
+            db,
+            table_name,
+            workspace="test_workspace",
+            embedding_dim=1536,
+            legacy_table_name=legacy_table_name,
+            base_table="LIGHTRAG_VDB_CHUNKS",
+        )
 
         # CRITICAL: Table should NOT be deleted (no DROP TABLE)
         drop_calls = [
@@ -188,10 +185,12 @@ class TestNoModelSuffixSafety:
         table_name = "LIGHTRAG_VDB_CHUNKS_ADA_002_1536D"  # With suffix
         legacy_table_name = "LIGHTRAG_VDB_CHUNKS"  # Without suffix
 
-        # Setup mock responses
-        async def table_exists_side_effect(db_instance, name):
+        # Setup mock responses using check_table_exists on db
+        async def check_table_exists_side_effect(name):
             # Both tables exist
             return True
+
+        db.check_table_exists = AsyncMock(side_effect=check_table_exists_side_effect)
 
         # Mock empty table
         async def query_side_effect(sql, params, **kwargs):
@@ -201,20 +200,15 @@ class TestNoModelSuffixSafety:
 
         db.query.side_effect = query_side_effect
 
-        # Mock _pg_table_exists function
-        with patch(
-            "lightrag.kg.postgres_impl._pg_table_exists",
-            side_effect=table_exists_side_effect,
-        ):
-            # Call setup_table
-            await PGVectorStorage.setup_table(
-                db,
-                table_name,
-                workspace="test_workspace",
-                embedding_dim=1536,
-                legacy_table_name=legacy_table_name,
-                base_table="LIGHTRAG_VDB_CHUNKS",
-            )
+        # Call setup_table
+        await PGVectorStorage.setup_table(
+            db,
+            table_name,
+            workspace="test_workspace",
+            embedding_dim=1536,
+            legacy_table_name=legacy_table_name,
+            base_table="LIGHTRAG_VDB_CHUNKS",
+        )
 
         # SHOULD delete legacy (normal Case 1 behavior)
         drop_calls = [

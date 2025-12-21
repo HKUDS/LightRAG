@@ -113,8 +113,10 @@ async def test_postgres_migration_trigger(
 
     # Setup mocks for migration scenario
     # 1. New table does not exist, legacy table exists
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return table_name == storage.legacy_table_name
+
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
 
     # 2. Legacy table has 100 records
     mock_rows = [
@@ -185,11 +187,8 @@ async def test_postgres_migration_trigger(
 
     mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
 
-    with (
-        patch(
-            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-        ),
-        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()),
+    with patch(
+        "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
     ):
         # Initialize storage (should trigger migration)
         await storage.initialize()
@@ -216,15 +215,14 @@ async def test_postgres_no_migration_needed(
     )
 
     # Mock: new table already exists
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return table_name == storage.table_name
 
-    with (
-        patch(
-            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-        ),
-        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
-    ):
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
+
+    with patch(
+        "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
+    ) as mock_create:
         await storage.initialize()
 
         # Verify no table creation was attempted
@@ -261,15 +259,14 @@ async def test_scenario_1_new_workspace_creation(
     )
 
     # Mock: neither table exists
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return False
 
-    with (
-        patch(
-            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-        ),
-        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
-    ):
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
+
+    with patch(
+        "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
+    ) as mock_create:
         await storage.initialize()
 
         # Verify table name format
@@ -313,8 +310,10 @@ async def test_scenario_2_legacy_upgrade_migration(
     )
 
     # Mock: only legacy table exists
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return table_name == storage.legacy_table_name
+
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
 
     # Mock: legacy table has 50 records
     mock_rows = [
@@ -404,12 +403,9 @@ async def test_scenario_2_legacy_upgrade_migration(
 
     mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
 
-    with (
-        patch(
-            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-        ),
-        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
-    ):
+    with patch(
+        "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
+    ) as mock_create:
         await storage.initialize()
 
         # Verify table name contains ada-002
@@ -469,15 +465,14 @@ async def test_scenario_3_multi_model_coexistence(
     assert "bge_large_1024d" in storage_b.table_name
 
     # Mock: both tables don't exist yet
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return False
 
-    with (
-        patch(
-            "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-        ),
-        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()) as mock_create,
-    ):
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
+
+    with patch(
+        "lightrag.kg.postgres_impl.PGVectorStorage._pg_create_table", AsyncMock()
+    ) as mock_create:
         # Initialize both storages
         await storage_a.initialize()
         await storage_b.initialize()
@@ -519,8 +514,10 @@ async def test_case1_empty_legacy_auto_cleanup(
     )
 
     # Mock: Both tables exist
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return True  # Both new and legacy exist
+
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
 
     # Mock: Legacy table is empty (0 records)
     async def mock_query(sql, params=None, multirows=False, **kwargs):
@@ -533,9 +530,7 @@ async def test_case1_empty_legacy_auto_cleanup(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
-    with patch(
-        "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-    ):
+    with patch("lightrag.kg.postgres_impl.logger"):
         await storage.initialize()
 
         # Verify: Empty legacy table should be automatically cleaned up
@@ -583,8 +578,10 @@ async def test_case1_nonempty_legacy_warning(
     )
 
     # Mock: Both tables exist
-    async def mock_table_exists(db, table_name):
+    async def mock_check_table_exists(table_name):
         return True  # Both new and legacy exist
+
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
 
     # Mock: Legacy table has data (50 records)
     async def mock_query(sql, params=None, multirows=False, **kwargs):
@@ -597,9 +594,7 @@ async def test_case1_nonempty_legacy_warning(
 
     mock_pg_db.query = AsyncMock(side_effect=mock_query)
 
-    with patch(
-        "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists
-    ):
+    with patch("lightrag.kg.postgres_impl.logger"):
         await storage.initialize()
 
         # Verify: Legacy table with data should be preserved
@@ -676,12 +671,14 @@ async def test_case1_sequential_workspace_migration(
     )
 
     # Mock table_exists for workspace_a
-    async def mock_table_exists_a(db, table_name):
+    async def mock_check_table_exists_a(table_name):
         if table_name == storage_a.legacy_table_name:
             return True
         if table_name == storage_a.table_name:
             return migration_state["new_table_exists"]
         return False
+
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists_a)
 
     # Mock query for workspace_a (Case 3)
     async def mock_query_a(sql, params=None, multirows=False, **kwargs):
@@ -748,13 +745,7 @@ async def test_case1_sequential_workspace_migration(
     mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry_a)
 
     # Initialize workspace_a (Case 3)
-    with (
-        patch(
-            "lightrag.kg.postgres_impl._pg_table_exists",
-            side_effect=mock_table_exists_a,
-        ),
-        patch("lightrag.kg.postgres_impl._pg_create_table", AsyncMock()),
-    ):
+    with patch("lightrag.kg.postgres_impl.logger"):
         await storage_a.initialize()
         migration_state["new_table_exists"] = True
         migration_state["workspace_a_migrated"] = True
@@ -780,8 +771,10 @@ async def test_case1_sequential_workspace_migration(
     mock_pg_db.reset_mock()
 
     # Mock table_exists for workspace_b (both exist)
-    async def mock_table_exists_b(db, table_name):
+    async def mock_check_table_exists_b(table_name):
         return True  # Both tables exist
+
+    mock_pg_db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists_b)
 
     # Mock query for workspace_b (Case 3)
     async def mock_query_b(sql, params=None, multirows=False, **kwargs):
@@ -846,9 +839,7 @@ async def test_case1_sequential_workspace_migration(
     mock_pg_db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry_b)
 
     # Initialize workspace_b (Case 3 - both tables exist)
-    with patch(
-        "lightrag.kg.postgres_impl._pg_table_exists", side_effect=mock_table_exists_b
-    ):
+    with patch("lightrag.kg.postgres_impl.logger"):
         await storage_b.initialize()
 
     print("✅ Step 2: Workspace B initialized")

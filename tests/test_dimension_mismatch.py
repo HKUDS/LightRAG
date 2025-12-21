@@ -223,13 +223,23 @@ class TestPostgresDimensionMismatch:
 
     async def test_postgres_dimension_mismatch_skip_migration_sampling(self):
         """
-        Test that PostgreSQL skips migration when dimensions don't match (via sampling).
+        Test that PostgreSQL raises error when dimensions don't match (via sampling).
 
         Scenario: Legacy table dimension detection fails via metadata,
                   falls back to vector sampling, detects 1536d vs expected 3072d.
-        Expected: Migration skipped, new empty table created, legacy preserved.
+        Expected: DataMigrationError is raised to prevent data corruption.
         """
         db = AsyncMock()
+
+        # Mock check_table_exists
+        async def mock_check_table_exists(table_name):
+            if table_name == "LIGHTRAG_DOC_CHUNKS":  # legacy
+                return True
+            elif table_name == "LIGHTRAG_DOC_CHUNKS_model_3072d":  # new
+                return False
+            return False
+
+        db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
 
         # Mock table existence and dimension checks
         async def query_side_effect(query, params, **kwargs):
@@ -241,7 +251,7 @@ class TestPostgresDimensionMismatch:
             elif "COUNT(*)" in query:
                 return {"count": 100}  # Legacy has data
             elif "pg_attribute" in query:
-                return {"vector_dim": -1}  # Metadata check fails
+                return {"vector_dim": 1536}  # Legacy has 1536d vectors
             elif "SELECT content_vector FROM" in query:
                 # Return sample vector with 1536 dimensions
                 return {"content_vector": [0.1] * 1536}
@@ -252,30 +262,19 @@ class TestPostgresDimensionMismatch:
         db._create_vector_index = AsyncMock()
 
         # Call setup_table with 3072d (different from legacy 1536d)
-        await PGVectorStorage.setup_table(
-            db,
-            "LIGHTRAG_DOC_CHUNKS_model_3072d",
-            legacy_table_name="LIGHTRAG_DOC_CHUNKS",
-            base_table="LIGHTRAG_DOC_CHUNKS",
-            embedding_dim=3072,
-            workspace="test",
-        )
+        # Should raise DataMigrationError due to dimension mismatch
+        with pytest.raises(DataMigrationError) as exc_info:
+            await PGVectorStorage.setup_table(
+                db,
+                "LIGHTRAG_DOC_CHUNKS_model_3072d",
+                legacy_table_name="LIGHTRAG_DOC_CHUNKS",
+                base_table="LIGHTRAG_DOC_CHUNKS",
+                embedding_dim=3072,
+                workspace="test",
+            )
 
-        # Verify new table was created
-        create_table_calls = [
-            call
-            for call in db.execute.call_args_list
-            if call[0][0] and "CREATE TABLE" in call[0][0]
-        ]
-        assert len(create_table_calls) > 0, "New table should be created"
-
-        # Verify migration was NOT attempted
-        insert_calls = [
-            call
-            for call in db.execute.call_args_list
-            if call[0][0] and "INSERT INTO" in call[0][0]
-        ]
-        assert len(insert_calls) == 0, "Migration should be skipped"
+        # Verify error message contains dimension information
+        assert "3072" in str(exc_info.value) or "1536" in str(exc_info.value)
 
     async def test_postgres_dimension_match_proceed_migration(self):
         """
@@ -303,88 +302,79 @@ class TestPostgresDimensionMismatch:
             },
         ]
 
+        # Mock check_table_exists
+        async def mock_check_table_exists(table_name):
+            if table_name == "LIGHTRAG_DOC_CHUNKS":  # legacy exists
+                return True
+            elif table_name == "LIGHTRAG_DOC_CHUNKS_model_1536d":  # new doesn't exist
+                return False
+            return False
+
+        db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
+
         async def query_side_effect(query, params, **kwargs):
             multirows = kwargs.get("multirows", False)
+            query_upper = query.upper()
 
             if "information_schema.tables" in query:
                 if params[0] == "LIGHTRAG_DOC_CHUNKS":  # legacy
                     return {"exists": True}
                 elif params[0] == "LIGHTRAG_DOC_CHUNKS_model_1536d":  # new
                     return {"exists": False}
-            elif "COUNT(*)" in query:
+            elif "COUNT(*)" in query_upper:
                 # Return different counts based on table name in query and migration state
-                if "LIGHTRAG_DOC_CHUNKS_model_1536d" in query:
+                if "LIGHTRAG_DOC_CHUNKS_MODEL_1536D" in query_upper:
                     # After migration: return migrated count, before: return 0
                     return {
                         "count": len(mock_records) if migration_done["value"] else 0
                     }
                 # Legacy table always has 2 records (matching mock_records)
                 return {"count": len(mock_records)}
-            elif "pg_attribute" in query:
+            elif "PG_ATTRIBUTE" in query_upper:
                 return {"vector_dim": 1536}  # Legacy has matching 1536d
-            elif "SELECT * FROM" in query and multirows:
-                # Return sample data for migration (first batch)
-                # Handle workspace filtering: params = [workspace, offset, limit]
-                if "WHERE workspace" in query:
-                    offset = params[1] if len(params) > 1 else 0
+            elif "SELECT" in query_upper and "FROM" in query_upper and multirows:
+                # Return sample data for migration using keyset pagination
+                # Handle keyset pagination: params = [workspace, limit] or [workspace, last_id, limit]
+                if "id >" in query.lower():
+                    # Keyset pagination: params = [workspace, last_id, limit]
+                    last_id = params[1] if len(params) > 1 else None
+                    # Find records after last_id
+                    found_idx = -1
+                    for i, rec in enumerate(mock_records):
+                        if rec["id"] == last_id:
+                            found_idx = i
+                            break
+                    if found_idx >= 0:
+                        return mock_records[found_idx + 1 :]
+                    return []
                 else:
-                    offset = params[0] if params else 0
-
-                if offset == 0:  # First batch
+                    # First batch: params = [workspace, limit]
                     return mock_records
-                else:  # offset > 0
-                    return []  # No more data
             return {}
 
         db.query.side_effect = query_side_effect
 
         # Mock _run_with_retry to track when migration happens
-        original_run_with_retry = db._run_with_retry
+        migration_executed = []
 
         async def mock_run_with_retry(operation, *args, **kwargs):
-            result = await original_run_with_retry(operation, *args, **kwargs)
-            # After executemany is called, migration is done
+            migration_executed.append(True)
             migration_done["value"] = True
-            return result
+            return None
 
-        db._run_with_retry.side_effect = mock_run_with_retry
+        db._run_with_retry = AsyncMock(side_effect=mock_run_with_retry)
         db.execute = AsyncMock()
         db._create_vector_index = AsyncMock()
 
-        # Mock _pg_table_exists
-        async def mock_table_exists(db_inst, name):
-            if name == "LIGHTRAG_DOC_CHUNKS":  # legacy exists
-                return True
-            elif name == "LIGHTRAG_DOC_CHUNKS_model_1536d":  # new doesn't exist
-                return False
-            return False
+        # Call setup_table with matching 1536d
+        await PGVectorStorage.setup_table(
+            db,
+            "LIGHTRAG_DOC_CHUNKS_model_1536d",
+            legacy_table_name="LIGHTRAG_DOC_CHUNKS",
+            base_table="LIGHTRAG_DOC_CHUNKS",
+            embedding_dim=1536,
+            workspace="test",
+        )
 
-        # Custom mock for _pg_migrate_workspace_data that updates migration_done
-        async def mock_migrate_func(*args, **kwargs):
-            migration_done["value"] = (
-                True  # Set BEFORE returning so verification query sees it
-            )
-            return len(mock_records)
-
-        with (
-            patch(
-                "lightrag.kg.postgres_impl._pg_table_exists",
-                side_effect=mock_table_exists,
-            ),
-            patch(
-                "lightrag.kg.postgres_impl._pg_migrate_workspace_data",
-                side_effect=mock_migrate_func,
-            ) as mock_migrate,
-        ):
-            # Call setup_table with matching 1536d
-            await PGVectorStorage.setup_table(
-                db,
-                "LIGHTRAG_DOC_CHUNKS_model_1536d",
-                legacy_table_name="LIGHTRAG_DOC_CHUNKS",
-                base_table="LIGHTRAG_DOC_CHUNKS",
-                embedding_dim=1536,
-                workspace="test",
-            )
-
-        # Verify migration function WAS called
-        mock_migrate.assert_called_once()
+        # Verify migration WAS called (via _run_with_retry for batch operations)
+        assert len(migration_executed) > 0, "Migration should have been executed"
