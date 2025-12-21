@@ -86,6 +86,20 @@ class Neo4JStorage(BaseGraphStorage):
         """Return workspace label (guaranteed non-empty during initialization)"""
         return self.workspace
 
+    def _normalize_index_suffix(self, workspace_label: str) -> str:
+        """Normalize workspace label for safe use in index names."""
+        normalized = re.sub(r"[^A-Za-z0-9_]+", "_", workspace_label).strip("_")
+        if not normalized:
+            normalized = "base"
+        if not re.match(r"[A-Za-z_]", normalized[0]):
+            normalized = f"ws_{normalized}"
+        return normalized
+
+    def _get_fulltext_index_name(self, workspace_label: str) -> str:
+        """Return a full-text index name derived from the normalized workspace label."""
+        suffix = self._normalize_index_suffix(workspace_label)
+        return f"entity_id_fulltext_idx_{suffix}"
+
     def _is_chinese_text(self, text: str) -> bool:
         """Check if text contains Chinese characters."""
         chinese_pattern = re.compile(r"[\u4e00-\u9fff]+")
@@ -247,7 +261,7 @@ class Neo4JStorage(BaseGraphStorage):
         self, driver: AsyncDriver, database: str, workspace_label: str
     ):
         """Create a full-text index on the entity_id property with Chinese tokenizer support."""
-        index_name = f"entity_id_fulltext_idx_{workspace_label}"
+        index_name = self._get_fulltext_index_name(workspace_label)
         legacy_index_name = "entity_id_fulltext_idx"
         try:
             async with driver.session(database=database) as session:
@@ -1693,7 +1707,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         query_lower = query_strip.lower()
         is_chinese = self._is_chinese_text(query_strip)
-        index_name = f"entity_id_fulltext_idx_{workspace_label}"
+        index_name = self._get_fulltext_index_name(workspace_label)
 
         # Attempt to use the full-text index first
         try:
