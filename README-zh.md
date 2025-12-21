@@ -286,7 +286,7 @@ if __name__ == "__main__":
 <summary> 参数 </summary>
 
 | **参数** | **类型** | **说明** | **默认值** |
-|--------------|----------|-----------------|-------------|
+| -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
@@ -425,7 +425,7 @@ async def llm_model_func(
         **kwargs
     )
 
-@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=4096, max_token_size=8192, model_name="solar-embedding-1-large-query")
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embed.func(
         texts,
@@ -490,7 +490,7 @@ import numpy as np
 from lightrag.utils import wrap_embedding_func_with_attrs
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 
-@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192, model_name="nomic-embed-text")
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await ollama_embed.func(texts, embed_model="nomic-embed-text")
 
@@ -542,7 +542,7 @@ import numpy as np
 from lightrag.utils import wrap_embedding_func_with_attrs
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 
-@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=768, max_token_size=8192, model_name="nomic-embed-text")
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await ollama_embed.func(texts, embed_model="nomic-embed-text")
 
@@ -1633,24 +1633,24 @@ LightRAG使用以下提示生成高级查询，相应的代码在`example/genera
 
 ### 总体性能表
 
-|                      |**农业**|            |**计算机科学**|            |**法律**|            |**混合**|            |
+||**农业**||**计算机科学**||**法律**||**混合**||
 |----------------------|---------------|------------|------|------------|---------|------------|-------|------------|
-|                      |NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|
+||NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|
 |**全面性**|32.4%|**67.6%**|38.4%|**61.6%**|16.4%|**83.6%**|38.8%|**61.2%**|
 |**多样性**|23.6%|**76.4%**|38.0%|**62.0%**|13.6%|**86.4%**|32.4%|**67.6%**|
 |**赋能性**|32.4%|**67.6%**|38.8%|**61.2%**|16.4%|**83.6%**|42.8%|**57.2%**|
 |**总体**|32.4%|**67.6%**|38.8%|**61.2%**|15.2%|**84.8%**|40.0%|**60.0%**|
-|                      |RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|
+||RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|
 |**全面性**|31.6%|**68.4%**|38.8%|**61.2%**|15.2%|**84.8%**|39.2%|**60.8%**|
 |**多样性**|29.2%|**70.8%**|39.2%|**60.8%**|11.6%|**88.4%**|30.8%|**69.2%**|
 |**赋能性**|31.6%|**68.4%**|36.4%|**63.6%**|15.2%|**84.8%**|42.4%|**57.6%**|
 |**总体**|32.4%|**67.6%**|38.0%|**62.0%**|14.4%|**85.6%**|40.0%|**60.0%**|
-|                      |HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|
+||HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|
 |**全面性**|26.0%|**74.0%**|41.6%|**58.4%**|26.8%|**73.2%**|40.4%|**59.6%**|
 |**多样性**|24.0%|**76.0%**|38.8%|**61.2%**|20.0%|**80.0%**|32.4%|**67.6%**|
 |**赋能性**|25.2%|**74.8%**|40.8%|**59.2%**|26.0%|**74.0%**|46.0%|**54.0%**|
 |**总体**|24.8%|**75.2%**|41.6%|**58.4%**|26.4%|**73.6%**|42.4%|**57.6%**|
-|                      |GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|
+||GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|
 |**全面性**|45.6%|**54.4%**|48.4%|**51.6%**|48.4%|**51.6%**|**50.4%**|49.6%|
 |**多样性**|22.8%|**77.2%**|40.8%|**59.2%**|26.4%|**73.6%**|36.0%|**64.0%**|
 |**赋能性**|41.2%|**58.8%**|45.2%|**54.8%**|43.6%|**56.4%**|**50.8%**|49.2%|
