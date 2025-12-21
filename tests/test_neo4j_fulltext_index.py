@@ -294,6 +294,17 @@ async def test_multiple_workspaces_have_separate_indexes(neo4j_storage):
             ), f"Workspace 2 index '{workspace2_index}' should exist"
 
     finally:
+        # Clean up: drop the fulltext index created for workspace 2 to prevent accumulation
+        try:
+            async with storage2._driver.session(database=storage2._DATABASE) as session:
+                index_name = storage2._get_fulltext_index_name(
+                    storage2._get_workspace_label()
+                )
+                drop_query = f"DROP INDEX {index_name} IF EXISTS"
+                result = await session.run(drop_query)
+                await result.consume()
+        except Exception:
+            pass  # Ignore errors during cleanup
         await storage2.drop()
         await storage2.finalize()
 
