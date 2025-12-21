@@ -86,10 +86,33 @@ class Neo4JStorage(BaseGraphStorage):
         """Return workspace label (guaranteed non-empty during initialization)"""
         return self.workspace
 
+    def _normalize_index_suffix(self, workspace_label: str) -> str:
+        """Normalize workspace label for safe use in index names."""
+        normalized = re.sub(r"[^A-Za-z0-9_]+", "_", workspace_label).strip("_")
+        if not normalized:
+            normalized = "base"
+        if not re.match(r"[A-Za-z_]", normalized[0]):
+            normalized = f"ws_{normalized}"
+        return normalized
+
+    def _get_fulltext_index_name(self, workspace_label: str) -> str:
+        """Return a full-text index name derived from the normalized workspace label."""
+        suffix = self._normalize_index_suffix(workspace_label)
+        return f"entity_id_fulltext_idx_{suffix}"
+
     def _is_chinese_text(self, text: str) -> bool:
-        """Check if text contains Chinese characters."""
-        chinese_pattern = re.compile(r"[\u4e00-\u9fff]+")
-        return bool(chinese_pattern.search(text))
+        """Check if text contains Chinese/CJK characters.
+
+        Covers:
+        - CJK Unified Ideographs (U+4E00-U+9FFF)
+        - CJK Extension A (U+3400-U+4DBF)
+        - CJK Compatibility Ideographs (U+F900-U+FAFF)
+        - CJK Extension B-F (U+20000-U+2FA1F) - supplementary planes
+        """
+        cjk_pattern = re.compile(
+            r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\U00020000-\U0002fa1f]"
+        )
+        return bool(cjk_pattern.search(text))
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -247,7 +270,8 @@ class Neo4JStorage(BaseGraphStorage):
         self, driver: AsyncDriver, database: str, workspace_label: str
     ):
         """Create a full-text index on the entity_id property with Chinese tokenizer support."""
-        index_name = "entity_id_fulltext_idx"
+        index_name = self._get_fulltext_index_name(workspace_label)
+        legacy_index_name = "entity_id_fulltext_idx"
         try:
             async with driver.session(database=database) as session:
                 # Check if the full-text index exists and get its configuration
@@ -257,10 +281,33 @@ class Neo4JStorage(BaseGraphStorage):
                 await result.consume()
 
                 existing_index = None
+                legacy_index = None
                 for idx in indexes:
                     if idx["name"] == index_name:
                         existing_index = idx
+                    elif idx["name"] == legacy_index_name:
+                        legacy_index = idx
+                    # Break early if we found both indexes
+                    if existing_index and legacy_index:
                         break
+
+                # Handle legacy index migration
+                if legacy_index and not existing_index:
+                    logger.info(
+                        f"[{self.workspace}] Found legacy index '{legacy_index_name}'. Migrating to '{index_name}'."
+                    )
+                    try:
+                        # Drop the legacy index (use IF EXISTS for safety)
+                        drop_query = f"DROP INDEX {legacy_index_name} IF EXISTS"
+                        result = await session.run(drop_query)
+                        await result.consume()
+                        logger.info(
+                            f"[{self.workspace}] Dropped legacy index '{legacy_index_name}'"
+                        )
+                    except Exception as drop_error:
+                        logger.warning(
+                            f"[{self.workspace}] Failed to drop legacy index: {str(drop_error)}"
+                        )
 
                 # Check if index exists and is online
                 if existing_index:
@@ -291,10 +338,10 @@ class Neo4JStorage(BaseGraphStorage):
                 needs_creation = existing_index is None
 
                 if needs_recreation or needs_creation:
-                    # Drop existing index if it needs recreation
+                    # Drop existing index if it needs recreation (use IF EXISTS for safety)
                     if needs_recreation:
                         try:
-                            drop_query = f"DROP INDEX {index_name}"
+                            drop_query = f"DROP INDEX {index_name} IF EXISTS"
                             result = await session.run(drop_query)
                             await result.consume()
                             logger.info(
@@ -1669,7 +1716,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         query_lower = query_strip.lower()
         is_chinese = self._is_chinese_text(query_strip)
-        index_name = "entity_id_fulltext_idx"
+        index_name = self._get_fulltext_index_name(workspace_label)
 
         # Attempt to use the full-text index first
         try:
