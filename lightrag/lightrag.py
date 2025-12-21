@@ -3416,7 +3416,7 @@ class LightRAG:
                 node_count_before = graph_before.number_of_nodes() if graph_before else 0
                 edge_count_before = graph_before.number_of_edges() if graph_before else 0
                 logger.info(
-                    f"[{workspace}] Graph before deletion: {node_count_before} nodes, {edge_count_before} edges"
+                    f"[{self.workspace}] Graph before deletion: {node_count_before} nodes, {edge_count_before} edges"
                 )
             except Exception as e:
                 logger.warning(f"Could not get pre-deletion graph stats: {e}")
@@ -3564,7 +3564,7 @@ class LightRAG:
                 node_count_after = graph_after.number_of_nodes() if graph_after else 0
                 edge_count_after = graph_after.number_of_edges() if graph_after else 0
                 logger.info(
-                    f"[{workspace}] Graph after deletion: {node_count_after} nodes, {edge_count_after} edges "
+                    f"[{self.workspace}] Graph after deletion: {node_count_after} nodes, {edge_count_after} edges "
                     f"(delta: {node_count_after - node_count_before} nodes)"
                 )
             except Exception as e:
