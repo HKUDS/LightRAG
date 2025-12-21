@@ -6,6 +6,7 @@ properly detect and handle vector dimension mismatches when migrating from
 legacy collections/tables to new ones with different embedding models.
 """
 
+import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -172,28 +173,33 @@ class TestQdrantDimensionMismatch:
 class TestPostgresDimensionMismatch:
     """Test suite for PostgreSQL dimension mismatch handling."""
 
-    async def test_postgres_dimension_mismatch_skip_migration_metadata(self):
+    async def test_postgres_dimension_mismatch_raises_error_metadata(self):
         """
-        Test that PostgreSQL skips migration when dimensions don't match (via metadata).
+        Test that PostgreSQL raises DataMigrationError when dimensions don't match.
 
-        Scenario: Legacy table has 1536d vectors (detected via pg_attribute),
-                  new model expects 3072d.
-        Expected: Migration skipped, new empty table created, legacy preserved.
+        Scenario: Legacy table has 1536d vectors, new model expects 3072d.
+        Expected: DataMigrationError is raised to prevent data corruption.
         """
         # Setup mock database
         db = AsyncMock()
 
+        # Mock check_table_exists
+        async def mock_check_table_exists(table_name):
+            if table_name == "LIGHTRAG_DOC_CHUNKS":  # legacy
+                return True
+            elif table_name == "LIGHTRAG_DOC_CHUNKS_model_3072d":  # new
+                return False
+            return False
+
+        db.check_table_exists = AsyncMock(side_effect=mock_check_table_exists)
+
         # Mock table existence and dimension checks
         async def query_side_effect(query, params, **kwargs):
-            if "information_schema.tables" in query:
-                if params[0] == "LIGHTRAG_DOC_CHUNKS":  # legacy
-                    return {"exists": True}
-                elif params[0] == "LIGHTRAG_DOC_CHUNKS_model_3072d":  # new
-                    return {"exists": False}
-            elif "COUNT(*)" in query:
+            if "COUNT(*)" in query:
                 return {"count": 100}  # Legacy has data
-            elif "pg_attribute" in query:
-                return {"vector_dim": 1536}  # Legacy has 1536d vectors
+            elif "SELECT content_vector FROM" in query:
+                # Return sample vector with 1536 dimensions
+                return {"content_vector": [0.1] * 1536}
             return {}
 
         db.query.side_effect = query_side_effect
@@ -201,32 +207,25 @@ class TestPostgresDimensionMismatch:
         db._create_vector_index = AsyncMock()
 
         # Call setup_table with 3072d (different from legacy 1536d)
-        await PGVectorStorage.setup_table(
-            db,
-            "LIGHTRAG_DOC_CHUNKS_model_3072d",
-            legacy_table_name="LIGHTRAG_DOC_CHUNKS",
-            base_table="LIGHTRAG_DOC_CHUNKS",
-            embedding_dim=3072,
-            workspace="test",
-        )
+        # Should raise DataMigrationError due to dimension mismatch
+        with pytest.raises(DataMigrationError) as exc_info:
+            await PGVectorStorage.setup_table(
+                db,
+                "LIGHTRAG_DOC_CHUNKS_model_3072d",
+                legacy_table_name="LIGHTRAG_DOC_CHUNKS",
+                base_table="LIGHTRAG_DOC_CHUNKS",
+                embedding_dim=3072,
+                workspace="test",
+            )
 
-        # Verify migration was NOT attempted (no INSERT calls)
-        # Note: _pg_create_table is mocked, so we check INSERT calls to verify migration was skipped
-        insert_calls = [
-            call
-            for call in db.execute.call_args_list
-            if call[0][0] and "INSERT INTO" in call[0][0]
-        ]
-        assert (
-            len(insert_calls) == 0
-        ), "Migration should be skipped due to dimension mismatch"
+        # Verify error message contains dimension information
+        assert "3072" in str(exc_info.value) or "1536" in str(exc_info.value)
 
-    async def test_postgres_dimension_mismatch_skip_migration_sampling(self):
+    async def test_postgres_dimension_mismatch_raises_error_sampling(self):
         """
         Test that PostgreSQL raises error when dimensions don't match (via sampling).
 
-        Scenario: Legacy table dimension detection fails via metadata,
-                  falls back to vector sampling, detects 1536d vs expected 3072d.
+        Scenario: Legacy table vector sampling detects 1536d vs expected 3072d.
         Expected: DataMigrationError is raised to prevent data corruption.
         """
         db = AsyncMock()
@@ -250,11 +249,9 @@ class TestPostgresDimensionMismatch:
                     return {"exists": False}
             elif "COUNT(*)" in query:
                 return {"count": 100}  # Legacy has data
-            elif "pg_attribute" in query:
-                return {"vector_dim": 1536}  # Legacy has 1536d vectors
             elif "SELECT content_vector FROM" in query:
-                # Return sample vector with 1536 dimensions
-                return {"content_vector": [0.1] * 1536}
+                # Return sample vector with 1536 dimensions as a JSON string
+                return {"content_vector": json.dumps([0.1] * 1536)}
             return {}
 
         db.query.side_effect = query_side_effect
