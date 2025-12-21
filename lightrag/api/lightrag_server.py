@@ -159,19 +159,22 @@ def check_frontend_build():
     """Check if frontend is built and optionally check if source is up-to-date
 
     Returns:
-        bool: True if frontend is outdated, False if up-to-date or production environment
+        tuple: (assets_exist: bool, is_outdated: bool)
+            - assets_exist: True if WebUI build files exist
+            - is_outdated: True if source is newer than build (only in dev environment)
     """
     webui_dir = Path(__file__).parent / "webui"
     index_html = webui_dir / "index.html"
 
-    # 1. Check if build files exist (required)
+    # 1. Check if build files exist
     if not index_html.exists():
-        ASCIIColors.red("\n" + "=" * 80)
-        ASCIIColors.red("ERROR: Frontend Not Built")
-        ASCIIColors.red("=" * 80)
+        ASCIIColors.yellow("\n" + "=" * 80)
+        ASCIIColors.yellow("WARNING: Frontend Not Built")
+        ASCIIColors.yellow("=" * 80)
         ASCIIColors.yellow("The WebUI frontend has not been built yet.")
+        ASCIIColors.yellow("The API server will start without the WebUI interface.")
         ASCIIColors.yellow(
-            "Please build the frontend code first using the following commands:\n"
+            "\nTo enable WebUI, build the frontend using these commands:\n"
         )
         ASCIIColors.cyan("    cd lightrag_webui")
         ASCIIColors.cyan("    bun install --frozen-lockfile")
@@ -181,8 +184,8 @@ def check_frontend_build():
         ASCIIColors.cyan(
             "Note: Make sure you have Bun installed. Visit https://bun.sh for installation."
         )
-        ASCIIColors.red("=" * 80 + "\n")
-        sys.exit(1)  # Exit immediately
+        ASCIIColors.yellow("=" * 80 + "\n")
+        return (False, False)  # Assets don't exist, not outdated
 
     # 2. Check if this is a development environment (source directory exists)
     try:
@@ -195,7 +198,7 @@ def check_frontend_build():
             logger.debug(
                 "Production environment detected, skipping source freshness check"
             )
-            return False
+            return (True, False)  # Assets exist, not outdated (prod environment)
 
         # Development environment, perform source code timestamp check
         logger.debug("Development environment detected, checking source freshness")
@@ -270,20 +273,20 @@ def check_frontend_build():
             ASCIIColors.cyan("    cd ..")
             ASCIIColors.yellow("\nThe server will continue with the current build.")
             ASCIIColors.yellow("=" * 80 + "\n")
-            return True  # Frontend is outdated
+            return (True, True)  # Assets exist, outdated
         else:
             logger.info("Frontend build is up-to-date")
-            return False  # Frontend is up-to-date
+            return (True, False)  # Assets exist, up-to-date
 
     except Exception as e:
         # If check fails, log warning but don't affect startup
         logger.warning(f"Failed to check frontend source freshness: {e}")
-        return False  # Assume up-to-date on error
+        return (True, False)  # Assume assets exist and up-to-date on error
 
 
 def create_app(args):
-    # Check frontend build first and get outdated status
-    is_frontend_outdated = check_frontend_build()
+    # Check frontend build first and get status
+    webui_assets_exist, is_frontend_outdated = check_frontend_build()
 
     # Create unified API version display with warning symbol if frontend is outdated
     api_version_display = (
@@ -651,6 +654,17 @@ def create_app(args):
         2. Extracts max_token_size and embedding_dim from provider if it's an EmbeddingFunc
         3. Creates an optimized wrapper that calls the underlying function directly (avoiding double-wrapping)
         4. Returns a properly configured EmbeddingFunc instance
+
+        Configuration Rules:
+        - When EMBEDDING_MODEL is not set: Uses provider's default model and dimension
+          (e.g., jina-embeddings-v4 with 2048 dims, text-embedding-3-small with 1536 dims)
+        - When EMBEDDING_MODEL is set to a custom model: User MUST also set EMBEDDING_DIM
+          to match the custom model's dimension (e.g., for jina-embeddings-v3, set EMBEDDING_DIM=1024)
+
+        Note: The embedding_dim parameter is automatically injected by EmbeddingFunc wrapper
+        when send_dimensions=True (enabled for Jina and Gemini bindings). This wrapper calls
+        the underlying provider function directly (.func) to avoid double-wrapping, so we must
+        explicitly pass embedding_dim to the provider's underlying function.
         """
 
         # Step 1: Import provider function and extract default attributes
@@ -710,6 +724,7 @@ def create_app(args):
         )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
+        # Note: When model is None, each binding will use its own default model
         async def optimized_embedding_function(texts, embedding_dim=None):
             try:
                 if binding == "lollms":
@@ -721,9 +736,9 @@ def create_app(args):
                         if isinstance(lollms_embed, EmbeddingFunc)
                         else lollms_embed
                     )
-                    return await actual_func(
-                        texts, embed_model=model, host=host, api_key=api_key
-                    )
+                    # lollms embed_model is not used (server uses configured vectorizer)
+                    # Only pass base_url and api_key
+                    return await actual_func(texts, base_url=host, api_key=api_key)
                 elif binding == "ollama":
                     from lightrag.llm.ollama import ollama_embed
 
@@ -742,13 +757,16 @@ def create_app(args):
 
                         ollama_options = OllamaEmbeddingOptions.options_dict(args)
 
-                    return await actual_func(
-                        texts,
-                        embed_model=model,
-                        host=host,
-                        api_key=api_key,
-                        options=ollama_options,
-                    )
+                    # Pass embed_model only if provided, let function use its default (bge-m3:latest)
+                    kwargs = {
+                        "texts": texts,
+                        "host": host,
+                        "api_key": api_key,
+                        "options": ollama_options,
+                    }
+                    if model:
+                        kwargs["embed_model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "azure_openai":
                     from lightrag.llm.azure_openai import azure_openai_embed
 
@@ -757,7 +775,11 @@ def create_app(args):
                         if isinstance(azure_openai_embed, EmbeddingFunc)
                         else azure_openai_embed
                     )
-                    return await actual_func(texts, model=model, api_key=api_key)
+                    # Pass model only if provided, let function use its default otherwise
+                    kwargs = {"texts": texts, "api_key": api_key}
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
@@ -766,7 +788,11 @@ def create_app(args):
                         if isinstance(bedrock_embed, EmbeddingFunc)
                         else bedrock_embed
                     )
-                    return await actual_func(texts, model=model)
+                    # Pass model only if provided, let function use its default otherwise
+                    kwargs = {"texts": texts}
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "jina":
                     from lightrag.llm.jina import jina_embed
 
@@ -775,12 +801,16 @@ def create_app(args):
                         if isinstance(jina_embed, EmbeddingFunc)
                         else jina_embed
                     )
-                    return await actual_func(
-                        texts,
-                        embedding_dim=embedding_dim,
-                        base_url=host,
-                        api_key=api_key,
-                    )
+                    # Pass model only if provided, let function use its default (jina-embeddings-v4)
+                    kwargs = {
+                        "texts": texts,
+                        "embedding_dim": embedding_dim,
+                        "base_url": host,
+                        "api_key": api_key,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
 
@@ -798,14 +828,19 @@ def create_app(args):
 
                         gemini_options = GeminiEmbeddingOptions.options_dict(args)
 
-                    return await actual_func(
-                        texts,
-                        model=model,
-                        base_url=host,
-                        api_key=api_key,
-                        embedding_dim=embedding_dim,
-                        task_type=gemini_options.get("task_type", "RETRIEVAL_DOCUMENT"),
-                    )
+                    # Pass model only if provided, let function use its default (gemini-embedding-001)
+                    kwargs = {
+                        "texts": texts,
+                        "base_url": host,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
+                        "task_type": gemini_options.get(
+                            "task_type", "RETRIEVAL_DOCUMENT"
+                        ),
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
 
@@ -814,13 +849,16 @@ def create_app(args):
                         if isinstance(openai_embed, EmbeddingFunc)
                         else openai_embed
                     )
-                    return await actual_func(
-                        texts,
-                        model=model,
-                        base_url=host,
-                        api_key=api_key,
-                        embedding_dim=embedding_dim,
-                    )
+                    # Pass model only if provided, let function use its default (text-embedding-3-small)
+                    kwargs = {
+                        "texts": texts,
+                        "base_url": host,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    return await actual_func(**kwargs)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
 
@@ -830,6 +868,7 @@ def create_app(args):
             func=optimized_embedding_function,
             max_token_size=final_max_token_size,
             send_dimensions=False,  # Will be set later based on binding requirements
+            model_name=model,
         )
 
         # Log final embedding configuration
@@ -967,15 +1006,27 @@ def create_app(args):
             query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
             """Server rerank function with configuration from environment variables"""
-            return await selected_rerank_func(
-                query=query,
-                documents=documents,
-                top_n=top_n,
-                api_key=args.rerank_binding_api_key,
-                model=args.rerank_model,
-                base_url=args.rerank_binding_host,
-                extra_body=extra_body,
-            )
+            # Prepare kwargs for rerank function
+            kwargs = {
+                "query": query,
+                "documents": documents,
+                "top_n": top_n,
+                "api_key": args.rerank_binding_api_key,
+                "model": args.rerank_model,
+                "base_url": args.rerank_binding_host,
+            }
+
+            # Add Cohere-specific parameters if using cohere binding
+            if args.rerank_binding == "cohere":
+                # Enable chunking if configured (useful for models with token limits like ColBERT)
+                kwargs["enable_chunking"] = (
+                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+                )
+                kwargs["max_tokens_per_doc"] = int(
+                    os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
+                )
+
+            return await selected_rerank_func(**kwargs, extra_body=extra_body)
 
         rerank_model_func = server_rerank_func
         logger.info(
@@ -1067,8 +1118,11 @@ def create_app(args):
 
     @app.get("/")
     async def redirect_to_webui():
-        """Redirect root path to /webui"""
-        return RedirectResponse(url="/webui")
+        """Redirect root path based on WebUI availability"""
+        if webui_assets_exist:
+            return RedirectResponse(url="/webui")
+        else:
+            return RedirectResponse(url="/docs")
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -1135,9 +1189,41 @@ def create_app(args):
             "webui_description": webui_description,
         }
 
-    @app.get("/health", dependencies=[Depends(combined_auth)])
+    @app.get(
+        "/health",
+        dependencies=[Depends(combined_auth)],
+        summary="Get system health and configuration status",
+        description="Returns comprehensive system status including WebUI availability, configuration, and operational metrics",
+        response_description="System health status with configuration details",
+        responses={
+            200: {
+                "description": "Successful response with system status",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "status": "healthy",
+                            "webui_available": True,
+                            "working_directory": "/path/to/working/dir",
+                            "input_directory": "/path/to/input/dir",
+                            "configuration": {
+                                "llm_binding": "openai",
+                                "llm_model": "gpt-4",
+                                "embedding_binding": "openai",
+                                "embedding_model": "text-embedding-ada-002",
+                                "workspace": "default",
+                            },
+                            "auth_mode": "enabled",
+                            "pipeline_busy": False,
+                            "core_version": "0.0.1",
+                            "api_version": "0.0.1",
+                        }
+                    }
+                },
+            }
+        },
+    )
     async def get_status(request: Request):
-        """Get current system status"""
+        """Get current system status including WebUI availability"""
         try:
             workspace = get_workspace_from_request(request)
             default_workspace = get_default_workspace()
@@ -1157,6 +1243,7 @@ def create_app(args):
 
             return {
                 "status": "healthy",
+                "webui_available": webui_assets_exist,
                 "working_directory": str(args.working_dir),
                 "input_directory": str(args.input_dir),
                 "configuration": {
@@ -1246,16 +1333,27 @@ def create_app(args):
             name="swagger-ui-static",
         )
 
-    # Webui mount webui/index.html
-    static_dir = Path(__file__).parent / "webui"
-    static_dir.mkdir(exist_ok=True)
-    app.mount(
-        "/webui",
-        SmartStaticFiles(
-            directory=static_dir, html=True, check_dir=True
-        ),  # Use SmartStaticFiles
-        name="webui",
-    )
+    # Conditionally mount WebUI only if assets exist
+    if webui_assets_exist:
+        static_dir = Path(__file__).parent / "webui"
+        static_dir.mkdir(exist_ok=True)
+        app.mount(
+            "/webui",
+            SmartStaticFiles(
+                directory=static_dir, html=True, check_dir=True
+            ),  # Use SmartStaticFiles
+            name="webui",
+        )
+        logger.info("WebUI assets mounted at /webui")
+    else:
+        logger.info("WebUI assets not available, /webui route not mounted")
+
+        # Add redirect for /webui when assets are not available
+        @app.get("/webui")
+        @app.get("/webui/")
+        async def webui_redirect_to_docs():
+            """Redirect /webui to /docs when WebUI is not available"""
+            return RedirectResponse(url="/docs")
 
     return app
 

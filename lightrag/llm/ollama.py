@@ -172,8 +172,12 @@ async def ollama_model_complete(
     )
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
-async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=8192, model_name="bge-m3:latest"
+)
+async def ollama_embed(
+    texts: list[str], embed_model: str = "bge-m3:latest", **kwargs
+) -> np.ndarray:
     api_key = kwargs.pop("api_key", None)
     if not api_key:
         api_key = os.getenv("OLLAMA_API_KEY")

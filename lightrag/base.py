@@ -220,6 +220,37 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
+    def __post_init__(self):
+        """Validate required embedding_func for vector storage."""
+        if self.embedding_func is None:
+            raise ValueError(
+                "embedding_func is required for vector storage. "
+                "Please provide a valid EmbeddingFunc instance."
+            )
+
+    def _generate_collection_suffix(self) -> str | None:
+        """Generates collection/table suffix from embedding_func.
+
+        Return suffix if model_name exists in embedding_func, otherwise return None.
+        Note: embedding_func is guaranteed to exist (validated in __post_init__).
+
+        Returns:
+            str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
+        """
+        import re
+
+        # Check if model_name exists (model_name is optional in EmbeddingFunc)
+        model_name = getattr(self.embedding_func, "model_name", None)
+        if not model_name:
+            return None
+
+        # embedding_dim is required in EmbeddingFunc
+        embedding_dim = self.embedding_func.embedding_dim
+
+        # Generate suffix: clean model name and append dimension
+        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
+        return f"{safe_model_name}_{embedding_dim}d"
+
     @abstractmethod
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None

@@ -23,7 +23,6 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
-    "future",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
@@ -47,13 +46,13 @@ pytest = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pre-commit",
+    "ruff",
 ]
 
 api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
@@ -73,13 +72,12 @@ api = [
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
-    "asyncpg",
     "distro",
     "fastapi",
     "httpcore",
-    "httpx",
+    "httpx>=0.28.1",
     "jiter",
-    "passlib[bcrypt]",
+    "bcrypt>=4.0.0",
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
@@ -109,7 +107,8 @@ offline-storage = [
     "neo4j>=5.0.0,<7.0.0",
     "pymilvus>=2.6.2,<3.0.0",
     "pymongo>=4.0.0,<5.0.0",
-    "asyncpg>=0.29.0,<1.0.0",
+    "asyncpg>=0.31.0,<1.0.0",
+    "pgvector>=0.4.2,<1.0.0",
     "qdrant-client>=1.11.0,<2.0.0",
 ]
 
@@ -131,15 +130,18 @@ offline = [
     "lightrag-hku[api,offline-storage,offline-llm]",
 ]
 
-evaluation = [
-    # Test framework dependencies (for evaluation)
+test = [
+    "lightrag-hku[api]",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pre-commit",
-    # RAG evaluation dependencies (RAGAS framework)
+    "ruff",
+]
+
+evaluation = [
+    "lightrag-hku[api]",
     "ragas>=0.3.7",
     "datasets>=4.3.0",
-    "httpx>=0.28.1",
 ]
 
 observability = [

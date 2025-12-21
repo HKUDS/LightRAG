@@ -934,6 +934,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     def __post_init__(self):
+        super().__post_init__()
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")

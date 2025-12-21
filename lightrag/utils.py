@@ -425,6 +425,9 @@ class EmbeddingFunc:
     send_dimensions: bool = (
         False  # Control whether to send embedding_dim to the function
     )
+    model_name: str | None = (
+        None  # Model name for implementating workspace data isolation in vector DB
+    )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
@@ -1016,41 +1019,35 @@ def wrap_embedding_func_with_attrs(**kwargs):
 
     Correct usage patterns:
 
-    1. Direct implementation (decorated):
+    1. Direct decoration:
         ```python
-        @wrap_embedding_func_with_attrs(embedding_dim=1536)
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
         async def my_embed(texts, embedding_dim=None):
             # Direct implementation
             return embeddings
         ```
-
-    2. Wrapper calling decorated function (DO NOT decorate wrapper):
+    2. Double decoration:
         ```python
-        # my_embed is already decorated above
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
+        @retry(...)
+        async def openai_embed(texts, ...):
+            # Base implementation
+            pass
 
-        async def my_wrapper(texts, **kwargs):  # ❌ DO NOT decorate this!
-            # Must call .func to access unwrapped implementation
-            return await my_embed.func(texts, **kwargs)
-        ```
-
-    3. Wrapper calling decorated function (properly decorated):
-        ```python
-        @wrap_embedding_func_with_attrs(embedding_dim=1536)
-        async def my_wrapper(texts, **kwargs):  # ✅ Can decorate if calling .func
-            # Calling .func avoids double decoration
-            return await my_embed.func(texts, **kwargs)
+        @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=4096, model_name="another_embedding_model")
+        # Note: No @retry here!
+        async def new_openai_embed(texts, ...):
+            # CRITICAL: Call .func to access unwrapped function
+            return await openai_embed.func(texts, ...)  # ✅ Correct
+            # return await openai_embed(texts, ...)     # ❌ Wrong - double decoration!
         ```
 
     The decorated function becomes an EmbeddingFunc instance with:
     - embedding_dim: The embedding dimension
     - max_token_size: Maximum token limit (optional)
+    - model_name: Model name (optional)
     - func: The original unwrapped function (access via .func)
     - __call__: Wrapper that injects embedding_dim parameter
-
-    Double decoration causes:
-    - Double injection of embedding_dim parameter
-    - Incorrect parameter passing to the underlying implementation
-    - Runtime errors due to parameter conflicts
 
     Args:
         embedding_dim: The dimension of embedding vectors
@@ -1059,21 +1056,6 @@ def wrap_embedding_func_with_attrs(**kwargs):
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance
-
-    Example of correct wrapper implementation:
-        ```python
-        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
-        @retry(...)
-        async def openai_embed(texts, ...):
-            # Base implementation
-            pass
-
-        @wrap_embedding_func_with_attrs(embedding_dim=1536)  # Note: No @retry here!
-        async def azure_openai_embed(texts, ...):
-            # CRITICAL: Call .func to access unwrapped function
-            return await openai_embed.func(texts, ...)  # ✅ Correct
-            # return await openai_embed(texts, ...)     # ❌ Wrong - double decoration!
-        ```
     """
 
     def final_decro(func) -> EmbeddingFunc:

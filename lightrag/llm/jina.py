@@ -58,7 +58,9 @@ async def fetch_data(url, headers, data):
             return data_list
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=8192)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=2048, max_token_size=8192, model_name="jina-embeddings-v4"
+)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -69,6 +71,7 @@ async def fetch_data(url, headers, data):
 )
 async def jina_embed(
     texts: list[str],
+    model: str = "jina-embeddings-v4",
     embedding_dim: int = 2048,
     late_chunking: bool = False,
     base_url: str = None,
@@ -78,6 +81,8 @@ async def jina_embed(
 
     Args:
         texts: List of texts to embed.
+        model: The Jina embedding model to use (default: jina-embeddings-v4).
+            Supported models: jina-embeddings-v3, jina-embeddings-v4, etc.
         embedding_dim: The embedding dimensions (default: 2048 for jina-embeddings-v4).
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper.
             Do NOT manually pass this parameter when calling the function directly.
@@ -107,7 +112,7 @@ async def jina_embed(
         "Authorization": f"Bearer {os.environ['JINA_API_KEY']}",
     }
     data = {
-        "model": "jina-embeddings-v4",
+        "model": model,
         "task": "text-matching",
         "dimensions": embedding_dim,
         "embedding_type": "base64",
