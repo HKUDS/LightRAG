@@ -53,6 +53,7 @@ class NetworkXStorage(BaseGraphStorage):
         self._storage_lock = None
         self.storage_updated = None
         self._graph = None
+        self._deletion_in_progress = False  # Flag to prevent graph reload during deletion
 
         # Load initial graph
         preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
@@ -81,6 +82,9 @@ class NetworkXStorage(BaseGraphStorage):
         """Check if the storage should be reloaded"""
         # Acquire lock to prevent concurrent read and write
         async with self._storage_lock:
+            # Skip reload during deletion to prevent losing in-memory changes
+            if self._deletion_in_progress:
+                return self._graph
             # Check if data needs to be reloaded
             if self.storage_updated.value:
                 logger.info(
@@ -94,6 +98,21 @@ class NetworkXStorage(BaseGraphStorage):
                 self.storage_updated.value = False
 
             return self._graph
+
+    def set_deletion_mode(self, enabled: bool) -> None:
+        """Enable or disable deletion mode to prevent graph reloads during deletion operations.
+
+        When enabled, _get_graph() will skip reloading the graph from disk even if
+        storage_updated flag is set, preserving in-memory deletion changes.
+
+        Args:
+            enabled: True to enable deletion mode (prevent reloads), False to disable
+        """
+        self._deletion_in_progress = enabled
+        if enabled:
+            logger.info(f"[{self.workspace}] Deletion mode enabled - graph reload suspended")
+        else:
+            logger.info(f"[{self.workspace}] Deletion mode disabled - graph reload resumed")
 
     async def has_node(self, node_id: str) -> bool:
         graph = await self._get_graph()

@@ -3405,6 +3405,23 @@ class LightRAG:
                     logger.error(f"Failed to delete chunks: {e}")
                     raise Exception(f"Failed to delete document chunks: {e}") from e
 
+            # Enable deletion mode to prevent graph reload during graph operations
+            # Fix for: graph not updating after document deletion (002-fix-graph-deletion-sync)
+            if hasattr(self.chunk_entity_relation_graph, "set_deletion_mode"):
+                self.chunk_entity_relation_graph.set_deletion_mode(True)
+
+            # Log before-deletion node count for verification (002-fix-graph-deletion-sync)
+            try:
+                graph_before = await self.chunk_entity_relation_graph.get_knowledge_graph()
+                node_count_before = len(graph_before.nodes) if graph_before else 0
+                edge_count_before = len(graph_before.edges) if graph_before else 0
+                logger.info(
+                    f"[{workspace}] Graph before deletion: {node_count_before} nodes, {edge_count_before} edges"
+                )
+            except Exception as e:
+                logger.warning(f"Could not get pre-deletion graph stats: {e}")
+                node_count_before = 0
+
             # 6. Delete relationships that have no remaining sources
             if relationships_to_delete:
                 try:
@@ -3541,7 +3558,47 @@ class LightRAG:
             # Persist changes to graph database before entity and relationship rebuild
             await self._insert_done()
 
-            # 8. Rebuild entities and relationships from remaining chunks
+            # Log after-deletion node count for verification (002-fix-graph-deletion-sync)
+            try:
+                graph_after = await self.chunk_entity_relation_graph.get_knowledge_graph()
+                node_count_after = len(graph_after.nodes) if graph_after else 0
+                edge_count_after = len(graph_after.edges) if graph_after else 0
+                logger.info(
+                    f"[{workspace}] Graph after deletion: {node_count_after} nodes, {edge_count_after} edges "
+                    f"(delta: {node_count_after - node_count_before} nodes)"
+                )
+            except Exception as e:
+                logger.warning(f"Could not get post-deletion graph stats: {e}")
+
+            # Disable deletion mode after persistence - graph reload can resume
+            # Fix for: graph not updating after document deletion (002-fix-graph-deletion-sync)
+            if hasattr(self.chunk_entity_relation_graph, "set_deletion_mode"):
+                self.chunk_entity_relation_graph.set_deletion_mode(False)
+
+            # 8. Delete LLM cache BEFORE rebuild to prevent stale data restoration
+            # Fix for: graph not updating after document deletion (002-fix-graph-deletion-sync)
+            if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
+                try:
+                    logger.info(
+                        f"Invalidating {len(doc_llm_cache_ids)} LLM cache entries before rebuild for document {doc_id}"
+                    )
+                    await self.llm_response_cache.delete(doc_llm_cache_ids)
+                    cache_log_message = f"Successfully deleted {len(doc_llm_cache_ids)} LLM cache entries for document {doc_id}"
+                    logger.info(cache_log_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = cache_log_message
+                        pipeline_status["history_messages"].append(cache_log_message)
+                except Exception as cache_delete_error:
+                    cache_error_msg = f"Failed to delete LLM cache for document {doc_id}: {cache_delete_error}"
+                    logger.error(cache_error_msg)
+                    logger.error(traceback.format_exc())
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = cache_error_msg
+                        pipeline_status["history_messages"].append(cache_error_msg)
+                    # Continue with rebuild even if cache deletion fails
+                    # The cache entries will be orphaned but won't affect the rebuild
+
+            # 9. Rebuild entities and relationships from remaining chunks
             if entities_to_rebuild or relationships_to_rebuild:
                 try:
                     await rebuild_knowledge_from_chunks(
@@ -3580,23 +3637,6 @@ class LightRAG:
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
-
-            if delete_llm_cache and doc_llm_cache_ids and self.llm_response_cache:
-                try:
-                    await self.llm_response_cache.delete(doc_llm_cache_ids)
-                    cache_log_message = f"Successfully deleted {len(doc_llm_cache_ids)} LLM cache entries for document {doc_id}"
-                    logger.info(cache_log_message)
-                    async with pipeline_status_lock:
-                        pipeline_status["latest_message"] = cache_log_message
-                        pipeline_status["history_messages"].append(cache_log_message)
-                    log_message = cache_log_message
-                except Exception as cache_delete_error:
-                    log_message = f"Failed to delete LLM cache for document {doc_id}: {cache_delete_error}"
-                    logger.error(log_message)
-                    logger.error(traceback.format_exc())
-                    async with pipeline_status_lock:
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
 
             return DeletionResult(
                 status="success",
