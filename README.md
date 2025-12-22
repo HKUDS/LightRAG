@@ -50,6 +50,7 @@
 </div>
 
 ---
+
 ## 🎉 News
 - [2025.11]🎯[New Feature]: Integrated **RAGAS for Evaluation** and **Langfuse for Tracing**. Updated the API to return retrieved contexts alongside query results to support context precision metrics.
 - [2025.10]🎯[Scalability Enhancement]: Eliminated processing bottlenecks to support **Large-Scale Datasets Efficiently**.
@@ -455,6 +456,13 @@ async def initialize_rag():
 See `lightrag_hf_demo.py`
 
 ```python
+from functools import partial
+from transformers import AutoTokenizer, AutoModel
+
+# Pre-load tokenizer and model
+tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+embed_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
 # Initialize LightRAG with Hugging Face model
 rag = LightRAG(
     working_dir=WORKING_DIR,
@@ -463,10 +471,12 @@ rag = LightRAG(
     # Use Hugging Face embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        func=lambda texts: hf_embed(
-            texts,
-            tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
-            embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        max_token_size=2048,
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        func=partial(
+            hf_embed.func,  # Use .func to access the unwrapped function
+            tokenizer=tokenizer,
+            embed_model=embed_model
         )
     ),
 )
@@ -562,6 +572,7 @@ rag = LightRAG(
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
 </details>
+
 <details>
 <summary> <b>LlamaIndex</b> </summary>
 
@@ -590,7 +601,9 @@ async def initialize_rag():
         llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
         embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
             embedding_dim=1536,
-            func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
+            max_token_size=2048,
+            model_name=embed_model,
+            func=partial(llama_index_embed.func, embed_model=embed_model)  # Use .func to access the unwrapped function
         ),
     )
 
@@ -634,6 +647,102 @@ if __name__ == "__main__":
 - [Direct OpenAI Example](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
 - [LiteLLM Proxy Example](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
 - [LiteLLM Proxy with Opik Example](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
+
+</details>
+
+<details>
+<summary> <b>Using Azure OpenAI Models</b> </summary>
+
+If you want to use Azure OpenAI models, you only need to set up LightRAG as follows:
+
+```python
+import os
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.azure_openai import azure_openai_complete_if_cache, azure_openai_embed
+
+# Configure the generation model
+async def llm_model_func(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> str:
+    return await azure_openai_complete_if_cache(
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        deployment_name=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
+        **kwargs
+    )
+
+# Configure the embedding model
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1536,
+    max_token_size=8192,
+    model_name=os.getenv("AZURE_OPENAI_EMBEDDING_MODEL")
+)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await azure_openai_embed.func(
+        texts,
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        deployment_name=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
+    )
+
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=embedding_func
+)
+```
+
+</details>
+
+<details>
+<summary> <b>Using Google Gemini Models</b> </summary>
+
+If you want to use Google Gemini models, you only need to set up LightRAG as follows:
+
+```python
+import os
+import numpy as np
+from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.llm.gemini import gemini_complete, gemini_embed
+
+# Configure the generation model
+async def llm_model_func(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> str:
+    return await gemini_complete(
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key=os.getenv("GEMINI_API_KEY"),
+        model="gemini-1.5-flash",
+        **kwargs
+    )
+
+# Configure the embedding model
+@wrap_embedding_func_with_attrs(
+    embedding_dim=768,
+    max_token_size=2048,
+    model_name="models/text-embedding-004"
+)
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await gemini_embed.func(
+        texts,
+        api_key=os.getenv("GEMINI_API_KEY"),
+        model="models/text-embedding-004"
+    )
+
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=embedding_func
+)
+```
 
 </details>
 
@@ -695,7 +804,7 @@ rag = LightRAG(
 rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 4
 ```
 
-The `max_parallel_insert` parameter determines the number of documents processed concurrently in the document indexing pipeline. If unspecified, the default value is **2**. We recommend keeping this setting **below 10**, as the performance bottleneck typically lies with the LLM (Large Language Model) processing.The `max_parallel_insert` parameter determines the number of documents processed concurrently in the document indexing pipeline. If unspecified, the default value is **2**. We recommend keeping this setting **below 10**, as the performance bottleneck typically lies with the LLM (Large Language Model) processing.
+The `max_parallel_insert` parameter determines the number of documents processed concurrently in the document indexing pipeline. If unspecified, the default value is **2**. We recommend keeping this setting **below 10**, as the performance bottleneck typically lies with the LLM (Large Language Model) processing.
 
 </details>
 
@@ -717,11 +826,7 @@ rag.insert(["TEXT1", "TEXT2",...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 <details>
   <summary><b>Insert using Pipeline</b></summary>
 
-The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` functions allow you to perform incremental insertion of documents into the graph.
-
-This is useful for scenarios where you want to process documents in the background while still allowing the main thread to continue executing.
-
-And using a routine to process new documents.
+The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` functions allow you to perform incremental insertion of documents into the graph.This is useful for scenarios where you want to process documents in the background while still allowing the main thread to continue executing.
 
 ```python
 rag = LightRAG(..)
@@ -832,10 +937,7 @@ export NEO4J_PASSWORD="password"
 # Setup logger for LightRAG
 setup_logger("lightrag", level="INFO")
 
-# When you launch the project be sure to override the default KG: NetworkX
-# by specifying kg="Neo4JStorage".
-
-# Note: Default settings use NetworkX
+# When you launch the project be sure to override the default KG by specifying graph_storage="Neo4JStorage".
 # Initialize LightRAG with Neo4J implementation.
 async def initialize_rag():
     rag = LightRAG(
@@ -892,6 +994,8 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
+        max_token_size=2048,
+        model_name="all-MiniLM-L6-v2",
         func=embedding_func,
     ),
     vector_storage="FaissVectorDBStorage",
@@ -1110,8 +1214,6 @@ rag.insert_custom_kg(custom_kg)
 
 - **create_entity**: Creates a new entity with specified attributes
 - **edit_entity**: Updates an existing entity's attributes or renames it
-
-
 - **create_relation**: Creates a new relation between existing entities
 - **edit_relation**: Updates an existing relation's attributes
 
@@ -1311,6 +1413,8 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
             else:
                 print("❌ No existing LightRAG instance found, will create new one")
 
+            from functools import partial
+
             # Create/Load LightRAG instance with your configurations
             lightrag_instance = LightRAG(
                 working_dir=lightrag_working_dir,
@@ -1324,8 +1428,10 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 ),
                 embedding_func=EmbeddingFunc(
                     embedding_dim=3072,
-                    func=lambda texts: openai_embed(
-                        texts,
+                    max_token_size=8192,
+                    model="text-embedding-3-large",
+                    func=partial(
+                        openai_embed.func,  # Use .func to access the unwrapped function
                         model="text-embedding-3-large",
                         api_key=api_key,
                         base_url=base_url,
@@ -1538,13 +1644,15 @@ If you encounter these errors when using LightRAG:
 
 2. **`KeyError: 'history_messages'`**
    - **Cause**: Pipeline status not initialized
-   - **Solution**: Call `
+   - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
+
 3. **Both errors in sequence**
    - **Cause**: Neither initialization method was called
    - **Solution**: Always follow this pattern:
    ```python
    rag = LightRAG(...)
-   await rag.initialize_storages()   ```
+   await rag.initialize_storages()
+   ```
 
 ### Model Switching Issues
 
