@@ -124,7 +124,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             embedding_func=embedding_func,
             meta_fields=meta_fields or set(),
         )
-        # __post_init__() is automatically called by super().__init__()
+        self.__post_init__()
 
     @staticmethod
     def setup_collection(
@@ -413,9 +413,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
     def __post_init__(self):
-        # Call parent class __post_init__ to validate embedding_func
-        super().__post_init__()
-
+        self._validate_embedding_func()
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Qdrant storage instances
         qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
@@ -423,7 +421,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = qdrant_workspace.strip()
             logger.info(
-                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
