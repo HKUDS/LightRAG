@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import logging
 import logging.config
+from functools import partial
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.ollama import ollama_embed
@@ -111,8 +112,8 @@ async def initialize_rag():
         embedding_func=EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
-            func=lambda texts: ollama_embed(
-                texts,
+            func=partial(
+                ollama_embed.func,  # Use .func to access the unwrapped function
                 embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
                 host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
             ),

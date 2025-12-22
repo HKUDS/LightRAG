@@ -519,7 +519,7 @@ class LightRAG:
             )
 
         # Init Embedding
-        # Step 1: Capture embedding_func and max_token_size before applying decorator
+        # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
         original_embedding_func = self.embedding_func
         embedding_max_token_size = None
         if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):

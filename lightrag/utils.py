@@ -409,25 +409,55 @@ class TaskState:
 @dataclass
 class EmbeddingFunc:
     """Embedding function wrapper with dimension validation
+
     This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
-    This class should not be wrapped multiple times.
+    If wrapped multiple times, the inner wrappers will be automatically unwrapped to prevent
+    configuration conflicts where inner wrapper settings would override outer wrapper settings.
+
+    Using functools.partial for parameter binding:
+        A common pattern is to use functools.partial to pre-bind model and host parameters
+        to an embedding function. When the base embedding function is already decorated with
+        @wrap_embedding_func_with_attrs (e.g., ollama_embed), use `.func` to access the
+        original unwrapped function to avoid double wrapping:
+
+        Example:
+            from functools import partial
+
+            # ❌ Wrong - causes double wrapping (inner EmbeddingFunc still executes)
+            func=partial(ollama_embed, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+            # ✅ Correct - access the unwrapped function via .func
+            func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
 
     Args:
-        embedding_dim: Expected dimension of the embeddings
+        embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
-        max_token_size: Optional token limit for the embedding model
-        send_dimensions: Whether to inject embedding_dim as a keyword argument
+        max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
+        send_dimensions: Whether to inject embedding_dim argument to underlying function
+        model_name: Model name for implementating workspace data isolation in vector DB
+    )
     """
 
     embedding_dim: int
     func: callable
-    max_token_size: int | None = None  # Token limit for the embedding model
-    send_dimensions: bool = (
-        False  # Control whether to send embedding_dim to the function
-    )
+    max_token_size: int | None = None
+    send_dimensions: bool = False
     model_name: str | None = (
         None  # Model name for implementating workspace data isolation in vector DB
     )
+
+    def __post_init__(self):
+        """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
+
+        When an EmbeddingFunc wraps another EmbeddingFunc, the inner wrapper's
+        __call__ preprocessing would override the outer wrapper's settings.
+        This method detects and unwraps nested EmbeddingFunc instances to ensure
+        that only the outermost wrapper's configuration is applied.
+        """
+        # Check if func is already an EmbeddingFunc instance and unwrap it
+        while isinstance(self.func, EmbeddingFunc):
+            # Unwrap to get the original function
+            self.func = self.func.func
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
