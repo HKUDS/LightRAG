@@ -750,6 +750,7 @@ async def openai_embed(
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
             when the underlying function signature supports it (via inspect.signature check).
             The value is controlled by the @wrap_embedding_func_with_attrs decorator.
+            Set max_token_size=0 to disable truncation.
         client_configs: Additional configuration options for the AsyncOpenAI/AsyncAzureOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url). Supports proxy configuration,
