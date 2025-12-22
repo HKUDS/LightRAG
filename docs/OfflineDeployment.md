@@ -120,7 +120,7 @@ Tiktoken downloads BPE encoding models on first use. In offline environments, yo
 After installing LightRAG, use the built-in command:
 
 ```bash
-# Download to default location (~/.tiktoken_cache)
+# Download to default location (see output for exact path)
 lightrag-download-cache
 
 # Download to specific directory
