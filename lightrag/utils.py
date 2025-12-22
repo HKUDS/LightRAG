@@ -434,8 +434,7 @@ class EmbeddingFunc:
         func: The actual embedding function to wrap
         max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
         send_dimensions: Whether to inject embedding_dim argument to underlying function
-        model_name: Model name for implementating workspace data isolation in vector DB
-    )
+        model_name: Model name for implementing workspace data isolation in vector DB
     """
 
     embedding_dim: int
@@ -443,7 +442,7 @@ class EmbeddingFunc:
     max_token_size: int | None = None
     send_dimensions: bool = False
     model_name: str | None = (
-        None  # Model name for implementating workspace data isolation in vector DB
+        None  # Model name for implementing workspace data isolation in vector DB
     )
 
     def __post_init__(self):
@@ -455,9 +454,24 @@ class EmbeddingFunc:
         that only the outermost wrapper's configuration is applied.
         """
         # Check if func is already an EmbeddingFunc instance and unwrap it
+        max_unwrap_depth = 3  # Safety limit to prevent infinite loops
+        unwrap_count = 0
         while isinstance(self.func, EmbeddingFunc):
+            unwrap_count += 1
+            if unwrap_count > max_unwrap_depth:
+                raise ValueError(
+                    f"EmbeddingFunc unwrap depth exceeded {max_unwrap_depth}. "
+                    "Possible circular reference detected."
+                )
             # Unwrap to get the original function
             self.func = self.func.func
+
+        if unwrap_count > 0:
+            logger.warning(
+                f"Detected nested EmbeddingFunc wrapping (depth: {unwrap_count}), "
+                "auto-unwrapped to prevent configuration conflicts. "
+                "Consider using .func to access the unwrapped function directly."
+            )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True

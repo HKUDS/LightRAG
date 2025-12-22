@@ -93,11 +93,15 @@ async def initialize_rag():
             "options": {"num_ctx": 8192},
             "timeout": int(os.getenv("TIMEOUT", "300")),
         },
+        # Note: ollama_embed is decorated with @wrap_embedding_func_with_attrs,
+        # which wraps it in an EmbeddingFunc. Using .func accesses the original
+        # unwrapped function to avoid double wrapping when we create our own
+        # EmbeddingFunc with custom configuration (embedding_dim, max_token_size).
         embedding_func=EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
             func=partial(
-                ollama_embed.func,  # Use .func to access the unwrapped function
+                ollama_embed.func,  # Access the unwrapped function to avoid double EmbeddingFunc wrapping
                 embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
                 host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
             ),

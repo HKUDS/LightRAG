@@ -26,6 +26,10 @@ EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
+    # Note: openai_embed is decorated with @wrap_embedding_func_with_attrs,
+    # which wraps it in an EmbeddingFunc. Using .func accesses the original
+    # unwrapped function to avoid double wrapping when we create our own
+    # EmbeddingFunc with custom configuration in create_embedding_function_instance().
     return await openai_embed.func(
         texts,
         model=EMBEDDING_MODEL,
