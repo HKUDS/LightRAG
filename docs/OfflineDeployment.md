@@ -75,7 +75,7 @@ LightRAG provides flexible dependency groups for different use cases:
 ### Available Dependency Groups
 
 | Group | Description | Use Case |
-|-------|-------------|----------|
+| ----- | ----------- | -------- |
 | `api` | API server + document processing | FastAPI server with PDF, DOCX, PPTX, XLSX support |
 | `offline-storage` | Storage backends | Redis, Neo4j, MongoDB, PostgreSQL, etc. |
 | `offline-llm` | LLM providers | OpenAI, Anthropic, Ollama, etc. |
