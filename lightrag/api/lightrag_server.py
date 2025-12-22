@@ -967,7 +967,7 @@ def create_app(args):
         )
     else:
         logger.info(
-            "Embedding max_token_size: None (Embedding token limit is disabled."
+            "Embedding max_token_size: None (Embedding token limit is disabled)."
         )
 
     # Configure rerank function based on args.rerank_bindingparameter
