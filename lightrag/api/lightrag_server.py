@@ -966,7 +966,9 @@ def create_app(args):
             f"Embedding max_token_size: {embedding_func.max_token_size} (from {source})"
         )
     else:
-        logger.info("Embedding max_token_size: not set (90% token warning disabled)")
+        logger.info(
+            "Embedding max_token_size: None (Embedding token limit is disabled)."
+        )
 
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None

@@ -476,6 +476,7 @@ async def gemini_embed(
     base_url: str | None = None,
     api_key: str | None = None,
     embedding_dim: int | None = None,
+    max_token_size: int | None = None,
     task_type: str = "RETRIEVAL_DOCUMENT",
     timeout: int | None = None,
     token_tracker: Any | None = None,
@@ -497,6 +498,11 @@ async def gemini_embed(
             The dimension is controlled by the @wrap_embedding_func_with_attrs decorator
             or the EMBEDDING_DIM environment variable.
             Supported range: 128-3072. Recommended values: 768, 1536, 3072.
+        max_token_size: Maximum tokens per text. This parameter is automatically
+            injected by the EmbeddingFunc wrapper when the underlying function
+            signature supports it (via inspect.signature check). Gemini API will
+            automatically truncate texts exceeding this limit (autoTruncate=True
+            by default), so no client-side truncation is needed.
         task_type: Task type for embedding optimization. Default is "RETRIEVAL_DOCUMENT".
             Supported types: SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING,
             RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, CODE_RETRIEVAL_QUERY,
@@ -516,7 +522,11 @@ async def gemini_embed(
         - For dimension 3072: Embeddings are already normalized by the API
         - For dimensions < 3072: Embeddings are L2-normalized after retrieval
         - Normalization ensures accurate semantic similarity via cosine distance
+        - Gemini API automatically truncates texts exceeding max_token_size (autoTruncate=True)
     """
+    # Note: max_token_size is received but not used for client-side truncation.
+    # Gemini API handles truncation automatically with autoTruncate=True (default).
+    _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
     loop = asyncio.get_running_loop()
 
     key = _ensure_api_key(api_key)

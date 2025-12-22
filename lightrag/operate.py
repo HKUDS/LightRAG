@@ -365,12 +365,12 @@ async def _summarize_descriptions(
     if embedding_token_limit is not None and summary:
         tokenizer = global_config["tokenizer"]
         summary_token_count = len(tokenizer.encode(summary))
-        threshold = int(embedding_token_limit * 0.9)
+        threshold = int(embedding_token_limit)
 
         if summary_token_count > threshold:
             logger.warning(
-                f"Summary tokens ({summary_token_count}) exceeds 90% of embedding limit "
-                f"({embedding_token_limit}) for {description_type}: {description_name}"
+                f"Summary tokens({summary_token_count}) exceeds embedding_token_limit({embedding_token_limit}) "
+                f" for {description_type}: {description_name}"
             )
 
     return summary
