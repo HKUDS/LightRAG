@@ -6,6 +6,7 @@ import sys
 import asyncio
 import html
 import csv
+import inspect
 import json
 import logging
 import logging.handlers
@@ -491,6 +492,12 @@ class EmbeddingFunc:
 
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
+
+        # Check if underlying function supports max_token_size and inject if not provided
+        if self.max_token_size is not None and "max_token_size" not in kwargs:
+            sig = inspect.signature(self.func)
+            if "max_token_size" in sig.parameters:
+                kwargs["max_token_size"] = self.max_token_size
 
         # Call the actual embedding function
         result = await self.func(*args, **kwargs)
