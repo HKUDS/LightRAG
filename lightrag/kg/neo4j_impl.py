@@ -68,6 +68,9 @@ class Neo4JStorage(BaseGraphStorage):
         # Read env and override the arg if present
         neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
         if neo4j_workspace and neo4j_workspace.strip():
+            logger.info(
+                f"Using NEO4J_WORKSPACE environment variable: '{neo4j_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+            )
             workspace = neo4j_workspace
 
         # Default to 'base' when both arg and env are empty

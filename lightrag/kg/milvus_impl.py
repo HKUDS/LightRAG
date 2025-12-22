@@ -934,7 +934,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     def __post_init__(self):
-        super().__post_init__()
+        self._validate_embedding_func()
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
@@ -942,7 +942,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = milvus_workspace.strip()
             logger.info(
-                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
