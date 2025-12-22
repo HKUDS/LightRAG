@@ -94,6 +94,37 @@ def _safe_index_name(table_name: str, index_suffix: str) -> str:
     return shortened_name
 
 
+def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
+    """
+    Generate a PostgreSQL dollar-quoted string with a unique tag.
+
+    PostgreSQL dollar-quoting uses $tag$ as delimiters. If the content contains
+    the same delimiter (e.g., $$ or $AGE1$), it will break the query.
+    This function finds a unique tag that doesn't conflict with the content.
+
+    Args:
+        s: The string to quote
+        tag_prefix: Prefix for generating unique tags (default: "AGE")
+
+    Returns:
+        The dollar-quoted string with a unique tag, e.g., $AGE1$content$AGE1$
+
+    Example:
+        >>> _dollar_quote("hello")
+        '$AGE1$hello$AGE1$'
+        >>> _dollar_quote("$AGE1$ test")
+        '$AGE2$$AGE1$ test$AGE2$'
+        >>> _dollar_quote("$$$")  # Content with dollar signs
+        '$AGE1$$$$AGE1$'
+    """
+    s = "" if s is None else str(s)
+    for i in itertools.count(1):
+        tag = f"{tag_prefix}{i}"
+        wrapper = f"${tag}$"
+        if wrapper not in s:
+            return f"{wrapper}{s}{wrapper}"
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -4232,14 +4263,12 @@ class PGGraphStorage(BaseGraphStorage):
         """
         label = self._normalize_node_id(source_node_id)
 
-        query = """SELECT * FROM cypher('%s', $$
-                      MATCH (n:base {entity_id: "%s"})
+        # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+        cypher_query = f"""MATCH (n:base {{entity_id: "{label}"}})
                       OPTIONAL MATCH (n)-[]-(connected:base)
-                      RETURN n.entity_id AS source_id, connected.entity_id AS connected_id
-                    $$) AS (source_id text, connected_id text)""" % (
-            self.graph_name,
-            label,
-        )
+                      RETURN n.entity_id AS source_id, connected.entity_id AS connected_id"""
+
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (source_id text, connected_id text)"
 
         results = await self._query(query)
         edges = []
@@ -4273,15 +4302,13 @@ class PGGraphStorage(BaseGraphStorage):
         label = self._normalize_node_id(node_id)
         properties = self._format_properties(node_data)
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MERGE (n:base {entity_id: "%s"})
-                     SET n += %s
-                     RETURN n
-                   $$) AS (n agtype)""" % (
-            self.graph_name,
-            label,
-            properties,
-        )
+        # Build Cypher query with dynamic dollar-quoting to handle content containing $$
+        # This prevents syntax errors when LLM-extracted descriptions contain $ sequences
+        cypher_query = f"""MERGE (n:base {{entity_id: "{label}"}})
+                     SET n += {properties}
+                     RETURN n"""
+
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
 
         try:
             await self._query(query, readonly=False, upsert=True)
@@ -4312,21 +4339,18 @@ class PGGraphStorage(BaseGraphStorage):
         tgt_label = self._normalize_node_id(target_node_id)
         edge_properties = self._format_properties(edge_data)
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (source:base {entity_id: "%s"})
+        # Build Cypher query with dynamic dollar-quoting to handle content containing $$
+        # This prevents syntax errors when LLM-extracted descriptions contain $ sequences
+        # See: https://github.com/HKUDS/LightRAG/issues/1438#issuecomment-2826000195
+        cypher_query = f"""MATCH (source:base {{entity_id: "{src_label}"}})
                      WITH source
-                     MATCH (target:base {entity_id: "%s"})
+                     MATCH (target:base {{entity_id: "{tgt_label}"}})
                      MERGE (source)-[r:DIRECTED]-(target)
-                     SET r += %s
-                     SET r += %s
-                     RETURN r
-                   $$) AS (r agtype)""" % (
-            self.graph_name,
-            src_label,
-            tgt_label,
-            edge_properties,
-            edge_properties,  # https://github.com/HKUDS/LightRAG/issues/1438#issuecomment-2826000195
-        )
+                     SET r += {edge_properties}
+                     SET r += {edge_properties}
+                     RETURN r"""
+
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
 
         try:
             await self._query(query, readonly=False, upsert=True)
@@ -4346,10 +4370,11 @@ class PGGraphStorage(BaseGraphStorage):
         """
         label = self._normalize_node_id(node_id)
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})
-                     DETACH DELETE n
-                   $$) AS (n agtype)""" % (self.graph_name, label)
+        # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+        cypher_query = f"""MATCH (n:base {{entity_id: "{label}"}})
+                     DETACH DELETE n"""
+
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
 
         try:
             await self._query(query, readonly=False)
@@ -4364,14 +4389,15 @@ class PGGraphStorage(BaseGraphStorage):
         Args:
             node_ids (list[str]): A list of node IDs to remove.
         """
-        node_ids = [self._normalize_node_id(node_id) for node_id in node_ids]
-        node_id_list = ", ".join([f'"{node_id}"' for node_id in node_ids])
+        node_ids_normalized = [self._normalize_node_id(node_id) for node_id in node_ids]
+        node_id_list = ", ".join([f'"{node_id}"' for node_id in node_ids_normalized])
 
-        query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base)
-                     WHERE n.entity_id IN [%s]
-                     DETACH DELETE n
-                   $$) AS (n agtype)""" % (self.graph_name, node_id_list)
+        # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+        cypher_query = f"""MATCH (n:base)
+                     WHERE n.entity_id IN [{node_id_list}]
+                     DETACH DELETE n"""
+
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
 
         try:
             await self._query(query, readonly=False)
@@ -4390,10 +4416,11 @@ class PGGraphStorage(BaseGraphStorage):
             src_label = self._normalize_node_id(source)
             tgt_label = self._normalize_node_id(target)
 
-            query = """SELECT * FROM cypher('%s', $$
-                         MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
-                         DELETE r
-                       $$) AS (r agtype)""" % (self.graph_name, src_label, tgt_label)
+            # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+            cypher_query = f"""MATCH (a:base {{entity_id: "{src_label}"}})-[r]-(b:base {{entity_id: "{tgt_label}"}})
+                         DELETE r"""
+
+            query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
 
             try:
                 await self._query(query, readonly=False)
@@ -4666,24 +4693,16 @@ class PGGraphStorage(BaseGraphStorage):
                          MATCH (a)<-[r]-(b)
                          RETURN src_eid AS source, tgt_eid AS target, properties(r) AS edge_properties"""
 
-            def dollar_quote(s: str, tag_prefix="AGE"):
-                s = "" if s is None else str(s)
-                for i in itertools.count(1):
-                    tag = f"{tag_prefix}{i}"
-                    wrapper = f"${tag}$"
-                    if wrapper not in s:
-                        return f"{wrapper}{s}{wrapper}"
-
             sql_fwd = f"""
-            SELECT * FROM cypher({dollar_quote(self.graph_name)}::name,
-                                 {dollar_quote(forward_cypher)}::cstring,
+            SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name,
+                                 {_dollar_quote(forward_cypher)}::cstring,
                                  $1::agtype)
               AS (source text, target text, edge_properties agtype)
             """
 
             sql_bwd = f"""
-            SELECT * FROM cypher({dollar_quote(self.graph_name)}::name,
-                                 {dollar_quote(backward_cypher)}::cstring,
+            SELECT * FROM cypher({_dollar_quote(self.graph_name)}::name,
+                                 {_dollar_quote(backward_cypher)}::cstring,
                                  $1::agtype)
               AS (source text, target text, edge_properties agtype)
             """
@@ -4758,25 +4777,19 @@ class PGGraphStorage(BaseGraphStorage):
             # Format node IDs for the query
             formatted_ids = ", ".join([f'"{n}"' for n in batch])
 
-            outgoing_query = """SELECT * FROM cypher('%s', $$
-                         UNWIND [%s] AS node_id
-                         MATCH (n:base {entity_id: node_id})
+            # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
+            outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
+                         MATCH (n:base {{entity_id: node_id}})
                          OPTIONAL MATCH (n:base)-[]->(connected:base)
-                         RETURN node_id, connected.entity_id AS connected_id
-                       $$) AS (node_id text, connected_id text)""" % (
-                self.graph_name,
-                formatted_ids,
-            )
+                         RETURN node_id, connected.entity_id AS connected_id"""
 
-            incoming_query = """SELECT * FROM cypher('%s', $$
-                         UNWIND [%s] AS node_id
-                         MATCH (n:base {entity_id: node_id})
+            incoming_cypher = f"""UNWIND [{formatted_ids}] AS node_id
+                         MATCH (n:base {{entity_id: node_id}})
                          OPTIONAL MATCH (n:base)<-[]-(connected:base)
-                         RETURN node_id, connected.entity_id AS connected_id
-                       $$) AS (node_id text, connected_id text)""" % (
-                self.graph_name,
-                formatted_ids,
-            )
+                         RETURN node_id, connected.entity_id AS connected_id"""
+
+            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (node_id text, connected_id text)"
+            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (node_id text, connected_id text)"
 
             outgoing_results = await self._query(outgoing_query)
             incoming_results = await self._query(incoming_query)
@@ -4850,10 +4863,12 @@ class PGGraphStorage(BaseGraphStorage):
 
         # Get starting node data
         label = self._normalize_node_id(node_label)
-        query = """SELECT * FROM cypher('%s', $$
-                    MATCH (n:base {entity_id: "%s"})
-                    RETURN id(n) as node_id, n
-                  $$) AS (node_id bigint, n agtype)""" % (self.graph_name, label)
+
+        # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+        cypher_query = f"""MATCH (n:base {{entity_id: "{label}"}})
+                    RETURN id(n) as node_id, n"""
+
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (node_id bigint, n agtype)"
 
         node_result = await self._query(query)
         if not node_result or not node_result[0].get("n"):
@@ -4909,9 +4924,8 @@ class PGGraphStorage(BaseGraphStorage):
                 [f'"{self._normalize_node_id(node_id)}"' for node_id in node_ids]
             )
 
-            # Construct batch query for outgoing edges
-            outgoing_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                UNWIND [{formatted_ids}] AS node_id
+            # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
+            outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
                 MATCH (n:base {{entity_id: node_id}})
                 OPTIONAL MATCH (n)-[r]->(neighbor:base)
                 RETURN node_id AS current_id,
@@ -4921,13 +4935,9 @@ class PGGraphStorage(BaseGraphStorage):
                        id(r) AS edge_id,
                        r,
                        neighbor,
-                       true AS is_outgoing
-              $$) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint,
-                      neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"""
+                       true AS is_outgoing"""
 
-            # Construct batch query for incoming edges
-            incoming_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                UNWIND [{formatted_ids}] AS node_id
+            incoming_cypher = f"""UNWIND [{formatted_ids}] AS node_id
                 MATCH (n:base {{entity_id: node_id}})
                 OPTIONAL MATCH (n)<-[r]-(neighbor:base)
                 RETURN node_id AS current_id,
@@ -4937,9 +4947,11 @@ class PGGraphStorage(BaseGraphStorage):
                        id(r) AS edge_id,
                        r,
                        neighbor,
-                       false AS is_outgoing
-              $$) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint,
-                      neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"""
+                       false AS is_outgoing"""
+
+            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint, neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"
+
+            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint, neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"
 
             # Execute queries
             outgoing_results = await self._query(outgoing_query)
