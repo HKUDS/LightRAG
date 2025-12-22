@@ -1852,6 +1852,9 @@ class PGKVStorage(BaseKVStorage):
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
+                logger.info(
+                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                )
                 self.workspace = self.db.workspace
             elif hasattr(self, "workspace") and self.workspace:
                 # Use storage class's workspace (medium priority)
@@ -2328,7 +2331,7 @@ class PGVectorStorage(BaseVectorStorage):
     db: PostgreSQLDB | None = field(default=None)
 
     def __post_init__(self):
-        super().__post_init__()
+        self._validate_embedding_func()
         self._max_batch_size = self.global_config["embedding_batch_num"]
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
@@ -2783,6 +2786,9 @@ class PGVectorStorage(BaseVectorStorage):
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
+                logger.info(
+                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                )
                 self.workspace = self.db.workspace
             elif hasattr(self, "workspace") and self.workspace:
                 # Use storage class's workspace (medium priority)
@@ -3196,6 +3202,9 @@ class PGDocStatusStorage(DocStatusStorage):
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
+                logger.info(
+                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                )
                 self.workspace = self.db.workspace
             elif hasattr(self, "workspace") and self.workspace:
                 # Use storage class's workspace (medium priority)
@@ -3877,6 +3886,9 @@ class PGGraphStorage(BaseGraphStorage):
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
             if self.db.workspace:
                 # Use PostgreSQLDB's workspace (highest priority)
+                logger.info(
+                    f"Using PG_WORKSPACE environment variable: '{self.db.workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                )
                 self.workspace = self.db.workspace
             elif hasattr(self, "workspace") and self.workspace:
                 # Use storage class's workspace (medium priority)

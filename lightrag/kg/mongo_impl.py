@@ -89,7 +89,7 @@ class MongoKVStorage(BaseKVStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
-        # __post_init__() is automatically called by super().__init__()
+        self.__post_init__()
 
     def __post_init__(self):
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
@@ -99,7 +99,7 @@ class MongoKVStorage(BaseKVStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -317,7 +317,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
-        # __post_init__() is automatically called by super().__init__()
+        self.__post_init__()
 
     def __post_init__(self):
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
@@ -327,7 +327,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -750,7 +750,7 @@ class MongoGraphStorage(BaseGraphStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -2052,11 +2052,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
             embedding_func=embedding_func,
             meta_fields=meta_fields or set(),
         )
-        # __post_init__() is automatically called by super().__init__()
+        self.__post_init__()
 
     def __post_init__(self):
-        # Call parent class __post_init__ to validate embedding_func
-        super().__post_init__()
+        self._validate_embedding_func()
 
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
@@ -2065,7 +2064,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization

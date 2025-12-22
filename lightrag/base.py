@@ -220,8 +220,15 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
-    def __post_init__(self):
-        """Validate required embedding_func for vector storage."""
+    def _validate_embedding_func(self):
+        """Validate that embedding_func is provided.
+
+        This method should be called at the beginning of __post_init__
+        in all vector storage implementations.
+
+        Raises:
+            ValueError: If embedding_func is None
+        """
         if self.embedding_func is None:
             raise ValueError(
                 "embedding_func is required for vector storage. "

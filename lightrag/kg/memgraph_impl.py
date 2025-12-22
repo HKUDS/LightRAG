@@ -37,6 +37,9 @@ class MemgraphStorage(BaseGraphStorage):
         # Priority: 1) MEMGRAPH_WORKSPACE env 2) user arg 3) default 'base'
         memgraph_workspace = os.environ.get("MEMGRAPH_WORKSPACE")
         if memgraph_workspace and memgraph_workspace.strip():
+            logger.info(
+                f"Using MEMGRAPH_WORKSPACE environment variable: '{memgraph_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+            )
             workspace = memgraph_workspace
 
         if not workspace or not str(workspace).strip():
