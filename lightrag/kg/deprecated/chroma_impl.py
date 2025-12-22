@@ -21,6 +21,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
 
     def __post_init__(self):
+        super().__post_init__()
         try:
             config = self.global_config.get("vector_db_storage_cls_kwargs", {})
             cosine_threshold = config.get("cosine_better_than_threshold")
