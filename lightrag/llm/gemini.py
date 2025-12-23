@@ -10,7 +10,6 @@ implementation mirrors the OpenAI helpers while relying on the official
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from collections.abc import AsyncIterator
 from functools import lru_cache
@@ -43,10 +42,6 @@ from google import genai  # type: ignore
 from google.genai import types  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
-DEFAULT_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com"
-
-LOG = logging.getLogger(__name__)
-
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
@@ -62,36 +57,57 @@ def _get_gemini_client(
     Create (or fetch cached) Gemini client.
 
     Args:
-        api_key: Google Gemini API key.
+        api_key: Google Gemini API key (not used in Vertex AI mode).
         base_url: Optional custom API endpoint.
         timeout: Optional request timeout in milliseconds.
 
     Returns:
         genai.Client: Configured Gemini client instance.
     """
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    client_kwargs: dict[str, Any] = {}
 
-    if base_url and base_url != DEFAULT_GEMINI_ENDPOINT or timeout is not None:
+    # Add Vertex AI support
+    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    if use_vertexai:
+        # Vertex AI mode: use project/location, NOT api_key
+        client_kwargs["vertexai"] = True
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if project:
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            client_kwargs["project"] = project
+            if location:
+                client_kwargs["location"] = location
+        else:
+            raise ValueError(
+                "GOOGLE_CLOUD_PROJECT must be set when using Vertex AI mode"
+            )
+    else:
+        # Standard Gemini API mode: use api_key
+        client_kwargs["api_key"] = api_key
+
+    if base_url and base_url != "DEFAULT_GEMINI_ENDPOINT" or timeout is not None:
         try:
             http_options_kwargs = {}
-            if base_url and base_url != DEFAULT_GEMINI_ENDPOINT:
-                http_options_kwargs["api_endpoint"] = base_url
+            if base_url and base_url != "DEFAULT_GEMINI_ENDPOINT":
+                http_options_kwargs["base_url"] = base_url
             if timeout is not None:
                 http_options_kwargs["timeout"] = timeout
 
             client_kwargs["http_options"] = types.HttpOptions(**http_options_kwargs)
-        except Exception as exc:  # pragma: no cover - defensive
-            LOG.warning("Failed to apply custom Gemini http_options: %s", exc)
+        except Exception as e:
+            logger.error("Failed to apply custom Gemini http_options: %s", e)
+            raise e
 
-    try:
-        return genai.Client(**client_kwargs)
-    except TypeError:
-        # Older google-genai releases don't accept http_options; retry without it.
-        client_kwargs.pop("http_options", None)
-        return genai.Client(**client_kwargs)
+    return genai.Client(**client_kwargs)
 
 
 def _ensure_api_key(api_key: str | None) -> str:
+    # In Vertex AI mode, API key is not required
+    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    if use_vertexai:
+        # Return empty string for Vertex AI mode (not used)
+        return ""
+
     key = api_key or os.getenv("LLM_BINDING_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
