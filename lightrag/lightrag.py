@@ -98,6 +98,7 @@ from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
     EmbeddingFunc,
+    TokenTracker,
     always_get_an_event_loop,
     compute_mdhash_id,
     lazy_external_import,
@@ -2677,6 +2678,7 @@ class LightRAG:
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
+        token_tracker: TokenTracker | None = None,
     ) -> dict[str, Any]:
         """
         Asynchronous complete query API: returns structured retrieval results with LLM generation.
@@ -2688,13 +2690,24 @@ class LightRAG:
             query: Query text for retrieval and LLM generation.
             param: Query parameters controlling retrieval and LLM behavior.
             system_prompt: Optional custom system prompt for LLM generation.
+            token_tracker: Optional TokenTracker instance for usage metering.
+                          If provided, token usage will be tracked and returned.
 
         Returns:
-            dict[str, Any]: Complete response with structured data and LLM response.
+            dict[str, Any]: Complete response with structured data, LLM response,
+                           and usage data (if token_tracker provided).
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
 
+        # Create token tracker if provided for usage metering
+        if token_tracker is not None:
+            token_tracker.reset()
+
         global_config = asdict(self)
+
+        # Add token tracker to global config for LLM functions to use
+        if token_tracker is not None:
+            global_config["token_tracker"] = token_tracker
 
         try:
             query_result = None
@@ -2734,9 +2747,10 @@ class LightRAG:
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
+                    token_tracker=token_tracker,
                 )
                 if type(response) is str:
-                    return {
+                    result = {
                         "status": "success",
                         "message": "Bypass mode LLM non streaming response",
                         "data": {},
@@ -2747,8 +2761,14 @@ class LightRAG:
                             "is_streaming": False,
                         },
                     }
+                    if token_tracker is not None:
+                        result["usage"] = {
+                            "llm": token_tracker.get_llm_usage(),
+                            "embedding": token_tracker.get_embedding_usage(),
+                        }
+                    return result
                 else:
-                    return {
+                    result = {
                         "status": "success",
                         "message": "Bypass mode LLM streaming response",
                         "data": {},
@@ -2759,6 +2779,12 @@ class LightRAG:
                             "is_streaming": True,
                         },
                     }
+                    if token_tracker is not None:
+                        result["usage"] = {
+                            "llm": token_tracker.get_llm_usage(),
+                            "embedding": token_tracker.get_embedding_usage(),
+                        }
+                    return result
             else:
                 raise ValueError(f"Unknown mode {param.mode}")
 
@@ -2793,12 +2819,26 @@ class LightRAG:
                 "is_streaming": query_result.is_streaming,
             }
 
+            # Add usage data if token tracking is enabled
+            if token_tracker is not None:
+                raw_data["usage"] = {
+                    "llm": token_tracker.get_llm_usage(),
+                    "embedding": token_tracker.get_embedding_usage(),
+                }
+
             return raw_data
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
+            # Build usage data even on failure (partial usage may exist)
+            usage_data = None
+            if token_tracker is not None:
+                usage_data = {
+                    "llm": token_tracker.get_llm_usage(),
+                    "embedding": token_tracker.get_embedding_usage(),
+                }
             # Return error response
-            return {
+            result = {
                 "status": "failure",
                 "message": f"Query failed: {str(e)}",
                 "data": {},
@@ -2809,6 +2849,9 @@ class LightRAG:
                     "is_streaming": False,
                 },
             }
+            if usage_data is not None:
+                result["usage"] = usage_data
+            return result
 
     def query_llm(
         self,

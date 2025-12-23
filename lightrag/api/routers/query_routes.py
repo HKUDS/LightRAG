@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.api.workspace_manager import get_rag
-from lightrag.utils import logger
+from lightrag.api.models.usage import UsageInfo, calculate_estimated_cost
+from lightrag.utils import logger, TokenTracker
 from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(tags=["query"])
@@ -163,6 +164,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
+    usage: Optional[UsageInfo] = Field(
+        default=None,
+        description="Token usage information for this request, including LLM and embedding usage.",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -188,6 +193,10 @@ class StreamChunkResponse(BaseModel):
     )
     error: Optional[str] = Field(
         default=None, description="Error message if processing fails"
+    )
+    usage: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Token usage information (only in final chunk for streaming responses)",
     )
 
 
@@ -422,8 +431,13 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
 
+            # Create token tracker for usage metering
+            token_tracker = TokenTracker()
+
             # Unified approach: always use aquery_llm for both cases
-            result = await rag.aquery_llm(request.query, param=param)
+            result = await rag.aquery_llm(
+                request.query, param=param, token_tracker=token_tracker
+            )
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
@@ -458,11 +472,31 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
+            # Build usage info from result if available
+            usage_data = result.get("usage")
+            usage_info = None
+            if usage_data:
+                # Calculate estimated cost based on pricing config
+                llm_data = token_tracker.get_llm_usage()
+                embedding_data = token_tracker.get_embedding_usage()
+                estimated_cost = calculate_estimated_cost(
+                    llm_prompt_tokens=llm_data.get("prompt_tokens", 0),
+                    llm_completion_tokens=llm_data.get("completion_tokens", 0),
+                    embedding_tokens=embedding_data.get("total_tokens", 0),
+                )
+                usage_info = UsageInfo.from_token_tracker(
+                    token_tracker, estimated_cost=estimated_cost
+                )
+
             # Return response with or without references based on request
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                return QueryResponse(
+                    response=response_content, references=references, usage=usage_info
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                return QueryResponse(
+                    response=response_content, references=None, usage=usage_info
+                )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -680,8 +714,13 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
 
             from fastapi.responses import StreamingResponse
 
+            # Create token tracker for usage metering
+            token_tracker = TokenTracker()
+
             # Unified approach: always use aquery_llm for all cases
-            result = await rag.aquery_llm(request.query, param=param)
+            result = await rag.aquery_llm(
+                request.query, param=param, token_tracker=token_tracker
+            )
 
             async def stream_generator():
                 # Extract references and LLM response from unified result
@@ -712,6 +751,23 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                         enriched_references.append(ref_copy)
                     references = enriched_references
 
+                # Build usage info if available
+                usage_data = result.get("usage")
+                usage_dict = None
+                if usage_data:
+                    # Calculate estimated cost based on pricing config
+                    llm_data = token_tracker.get_llm_usage()
+                    embedding_data = token_tracker.get_embedding_usage()
+                    estimated_cost = calculate_estimated_cost(
+                        llm_prompt_tokens=llm_data.get("prompt_tokens", 0),
+                        llm_completion_tokens=llm_data.get("completion_tokens", 0),
+                        embedding_tokens=embedding_data.get("total_tokens", 0),
+                    )
+                    usage_info = UsageInfo.from_token_tracker(
+                        token_tracker, estimated_cost=estimated_cost
+                    )
+                    usage_dict = usage_info.model_dump(exclude_none=True)
+
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
                     if request.include_references:
@@ -726,6 +782,10 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
+
+                    # Send usage as final chunk for streaming responses
+                    if usage_dict:
+                        yield f"{json.dumps({'usage': usage_dict})}\n"
                 else:
                     # Non-streaming mode: send complete response in one message
                     response_content = llm_response.get("content", "")
@@ -736,6 +796,8 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                     complete_response = {"response": response_content}
                     if request.include_references:
                         complete_response["references"] = references
+                    if usage_dict:
+                        complete_response["usage"] = usage_dict
 
                     yield f"{json.dumps(complete_response)}\n"
 
