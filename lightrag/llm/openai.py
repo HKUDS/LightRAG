@@ -772,7 +772,7 @@ async def openai_embed(
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
-            token_tracker.add_usage(token_counts)
+            token_tracker.add_embedding_usage(token_counts, model=model)
 
         return np.array(
             [

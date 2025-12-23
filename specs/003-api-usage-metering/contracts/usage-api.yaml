@@ -1,0 +1,202 @@
+openapi: 3.0.3
+info:
+  title: LightRAG Usage Metering API
+  description: API endpoints for querying usage metrics and cost tracking
+  version: 1.0.0
+
+paths:
+  /usage:
+    get:
+      summary: Get workspace usage aggregates
+      description: |
+        Returns aggregated usage statistics for the authenticated workspace.
+        Requires LIGHTRAG-WORKSPACE header for workspace identification.
+      operationId: getUsage
+      tags:
+        - Usage
+      parameters:
+        - name: start_date
+          in: query
+          description: Start date for aggregation (ISO 8601)
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2025-01-01"
+        - name: end_date
+          in: query
+          description: End date for aggregation (ISO 8601)
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2025-01-31"
+      responses:
+        '200':
+          description: Usage aggregates for the workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageAggregateResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+        '400':
+          description: Invalid date range parameters
+
+components:
+  schemas:
+    LLMUsageInfo:
+      type: object
+      description: LLM token usage details
+      properties:
+        prompt_tokens:
+          type: integer
+          description: Number of input tokens
+          example: 1250
+        completion_tokens:
+          type: integer
+          description: Number of output tokens
+          example: 340
+        total_tokens:
+          type: integer
+          description: Total tokens (prompt + completion)
+          example: 1590
+        calls:
+          type: integer
+          description: Number of LLM API calls
+          example: 2
+        model:
+          type: string
+          description: Model identifier
+          example: "gpt-4o-mini"
+          nullable: true
+
+    EmbeddingUsageInfo:
+      type: object
+      description: Embedding token usage details
+      properties:
+        tokens:
+          type: integer
+          description: Number of embedding tokens
+          example: 512
+        calls:
+          type: integer
+          description: Number of embedding API calls
+          example: 3
+        model:
+          type: string
+          description: Model identifier
+          example: "text-embedding-3-small"
+          nullable: true
+
+    UsageInfo:
+      type: object
+      description: Per-request usage information (included in API responses)
+      properties:
+        llm:
+          $ref: '#/components/schemas/LLMUsageInfo'
+          nullable: true
+        embedding:
+          $ref: '#/components/schemas/EmbeddingUsageInfo'
+          nullable: true
+        estimated_cost_usd:
+          type: number
+          format: float
+          description: Estimated cost in USD (if pricing configured)
+          example: 0.0023
+          nullable: true
+
+    UsageAggregateResponse:
+      type: object
+      description: Aggregated usage statistics for a workspace
+      required:
+        - workspace
+        - start_date
+        - end_date
+        - request_count
+      properties:
+        workspace:
+          type: string
+          description: Workspace identifier
+          example: "user_abc123"
+        start_date:
+          type: string
+          format: date
+          description: Aggregation period start
+          example: "2025-01-01"
+        end_date:
+          type: string
+          format: date
+          description: Aggregation period end
+          example: "2025-01-31"
+        llm:
+          type: object
+          properties:
+            total_prompt_tokens:
+              type: integer
+              example: 125000
+            total_completion_tokens:
+              type: integer
+              example: 34000
+            total_calls:
+              type: integer
+              example: 200
+        embedding:
+          type: object
+          properties:
+            total_tokens:
+              type: integer
+              example: 51200
+            total_calls:
+              type: integer
+              example: 300
+        total_estimated_cost_usd:
+          type: number
+          format: float
+          description: Total estimated cost for the period
+          example: 2.35
+          nullable: true
+        request_count:
+          type: integer
+          description: Number of requests in the period
+          example: 150
+
+    QueryResponseWithUsage:
+      type: object
+      description: Extended query response with usage information
+      required:
+        - response
+      properties:
+        response:
+          type: string
+          description: The generated response
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReferenceItem'
+          nullable: true
+        usage:
+          $ref: '#/components/schemas/UsageInfo'
+          nullable: true
+
+    ReferenceItem:
+      type: object
+      properties:
+        reference_id:
+          type: string
+        file_path:
+          type: string
+        content:
+          type: array
+          items:
+            type: string
+          nullable: true
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+security:
+  - ApiKeyAuth: []

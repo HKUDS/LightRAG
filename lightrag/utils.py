@@ -2410,6 +2410,7 @@ async def pick_by_vector_similarity(
     entity_info: list[dict[str, Any]],
     embedding_func: callable,
     query_embedding=None,
+    token_tracker=None,
 ) -> list[str]:
     """
     Vector similarity-based text chunk selection algorithm.
@@ -2424,6 +2425,7 @@ async def pick_by_vector_similarity(
         num_of_chunks: Number of chunks to select
         entity_info: List of entity information containing chunk IDs
         embedding_func: Embedding function to compute query embedding
+        token_tracker: Optional token tracker for usage metering
 
     Returns:
         List of selected text chunk IDs sorted by similarity (highest first)
@@ -2456,7 +2458,7 @@ async def pick_by_vector_similarity(
     try:
         # Use pre-computed query embedding if provided, otherwise compute it
         if query_embedding is None:
-            query_embedding = await embedding_func([query])
+            query_embedding = await embedding_func([query], token_tracker=token_tracker)
             query_embedding = query_embedding[
                 0
             ]  # Extract first embedding from batch result
@@ -2526,7 +2528,11 @@ async def pick_by_vector_similarity(
 
 
 class TokenTracker:
-    """Track token usage for LLM calls."""
+    """Track token usage for LLM and embedding calls.
+
+    Tracks usage separately for LLM and embedding operations, including
+    model names for accurate billing and reporting.
+    """
 
     def __init__(self):
         self.reset()
@@ -2539,16 +2545,25 @@ class TokenTracker:
         print(self)
 
     def reset(self):
+        """Reset all usage counters."""
+        # LLM usage tracking
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
         self.call_count = 0
+        self.llm_model = None
 
-    def add_usage(self, token_counts):
+        # Embedding usage tracking (separate from LLM)
+        self.embedding_tokens = 0
+        self.embedding_call_count = 0
+        self.embedding_model = None
+
+    def add_usage(self, token_counts, model: str = None):
         """Add token usage from one LLM call.
 
         Args:
             token_counts: A dictionary containing prompt_tokens, completion_tokens, total_tokens
+            model: Optional model name/identifier used for this call
         """
         self.prompt_tokens += token_counts.get("prompt_tokens", 0)
         self.completion_tokens += token_counts.get("completion_tokens", 0)
@@ -2563,8 +2578,30 @@ class TokenTracker:
 
         self.call_count += 1
 
+        # Track model name (use first model seen, or update if not set)
+        if model and not self.llm_model:
+            self.llm_model = model
+
+    def add_embedding_usage(self, token_counts, model: str = None):
+        """Add token usage from one embedding call.
+
+        Args:
+            token_counts: A dictionary containing prompt_tokens and/or total_tokens
+            model: Optional model name/identifier used for this call
+        """
+        # Embeddings typically report total_tokens or prompt_tokens
+        tokens = token_counts.get("total_tokens", 0) or token_counts.get(
+            "prompt_tokens", 0
+        )
+        self.embedding_tokens += tokens
+        self.embedding_call_count += 1
+
+        # Track model name (use first model seen, or update if not set)
+        if model and not self.embedding_model:
+            self.embedding_model = model
+
     def get_usage(self):
-        """Get current usage statistics."""
+        """Get current LLM usage statistics (backward compatible)."""
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -2572,14 +2609,39 @@ class TokenTracker:
             "call_count": self.call_count,
         }
 
+    def get_llm_usage(self):
+        """Get LLM-specific usage statistics including model name."""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "call_count": self.call_count,
+            "model": self.llm_model,
+        }
+
+    def get_embedding_usage(self):
+        """Get embedding-specific usage statistics including model name."""
+        return {
+            "total_tokens": self.embedding_tokens,
+            "call_count": self.embedding_call_count,
+            "model": self.embedding_model,
+        }
+
     def __str__(self):
         usage = self.get_usage()
-        return (
-            f"LLM call count: {usage['call_count']}, "
-            f"Prompt tokens: {usage['prompt_tokens']}, "
-            f"Completion tokens: {usage['completion_tokens']}, "
-            f"Total tokens: {usage['total_tokens']}"
-        )
+        embedding = self.get_embedding_usage()
+        parts = [
+            f"LLM call count: {usage['call_count']}",
+            f"Prompt tokens: {usage['prompt_tokens']}",
+            f"Completion tokens: {usage['completion_tokens']}",
+            f"Total tokens: {usage['total_tokens']}",
+        ]
+        if embedding["call_count"] > 0:
+            parts.extend([
+                f"Embedding calls: {embedding['call_count']}",
+                f"Embedding tokens: {embedding['total_tokens']}",
+            ])
+        return ", ".join(parts)
 
 
 async def apply_rerank_if_enabled(

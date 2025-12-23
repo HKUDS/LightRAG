@@ -3168,6 +3168,7 @@ async def kg_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=global_config.get("token_tracker"),
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
@@ -3310,7 +3311,11 @@ async def extract_keywords_only(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    result = await use_model_func(
+        kw_prompt,
+        keyword_extraction=True,
+        token_tracker=global_config.get("token_tracker"),
+    )
 
     # 5. Parse out JSON from the LLM response
     result = remove_think_tags(result)
@@ -3456,7 +3461,9 @@ async def _perform_kg_search(
         actual_embedding_func = text_chunks_db.embedding_func
         if actual_embedding_func:
             try:
-                query_embedding = await actual_embedding_func([query])
+                query_embedding = await actual_embedding_func(
+                    [query], token_tracker=global_config.get("token_tracker")
+                )
                 query_embedding = query_embedding[
                     0
                 ]  # Extract first embedding from batch result
@@ -4378,6 +4385,7 @@ async def _find_related_text_unit_from_entities(
                     entity_info=entities_with_chunks,
                     embedding_func=actual_embedding_func,
                     query_embedding=query_embedding,
+                    token_tracker=global_config.get("token_tracker"),
                 )
 
                 if selected_chunk_ids == []:
@@ -4667,6 +4675,7 @@ async def _find_related_text_unit_from_relations(
                     entity_info=relations_with_chunks,
                     embedding_func=actual_embedding_func,
                     query_embedding=query_embedding,
+                    token_tracker=global_config.get("token_tracker"),
                 )
 
                 if selected_chunk_ids == []:
@@ -4950,6 +4959,7 @@ async def naive_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=global_config.get("token_tracker"),
         )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
