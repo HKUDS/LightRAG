@@ -104,8 +104,15 @@ uv pip install "lightrag-hku[api]"
 # 或使用 pip
 # pip install "lightrag-hku[api]"
 
-cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+# 构建前端代码
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
 
+# 配置 env 文件
+cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+# 启动API-WebUI服务
 lightrag-server
 ```
 
@@ -126,14 +133,15 @@ source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
-cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
-
 # 构建前端代码
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
 
+# 配置 env 文件
+cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
+# 启动API-WebUI服务
 lightrag-server
 ```
 

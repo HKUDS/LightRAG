@@ -104,8 +104,15 @@ uv pip install "lightrag-hku[api]"
 # Or using pip
 # pip install "lightrag-hku[api]"
 
-cp env.example .env  # Update the .env with your LLM and embedding configurations
+# Build front-end artifacts
+cd lightrag_webui
+bun install --frozen-lockfile
+bun run build
+cd ..
 
+# setup env file
+cp env.example .env  # Update the .env with your LLM and embedding configurations
+# Launch the server
 lightrag-server
 ```
 
@@ -126,14 +133,15 @@ source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-
 # Build front-end artifacts
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
 
+# setup env file
+cp env.example .env  # Update the .env with your LLM and embedding configurations
+# Launch API-WebUI server
 lightrag-server
 ```
 
