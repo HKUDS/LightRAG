@@ -67,10 +67,8 @@ class Neo4JStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         # Read env and override the arg if present
         neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
+        original_workspace = workspace  # Save original value for logging
         if neo4j_workspace and neo4j_workspace.strip():
-            logger.info(
-                f"Using NEO4J_WORKSPACE environment variable: '{neo4j_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
             workspace = neo4j_workspace
 
         # Default to 'base' when both arg and env are empty
@@ -83,6 +81,13 @@ class Neo4JStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+
+        # Log after super().__init__() to ensure self.workspace is initialized
+        if neo4j_workspace and neo4j_workspace.strip():
+            logger.info(
+                f"Using NEO4J_WORKSPACE environment variable: '{neo4j_workspace}' (overriding '{original_workspace}/{namespace}')"
+            )
+
         self._driver = None
 
     def _get_workspace_label(self) -> str:
