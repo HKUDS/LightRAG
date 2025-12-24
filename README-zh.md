@@ -255,7 +255,8 @@ async def initialize_rag():
         llm_model_func=gpt_4o_mini_complete,
     )
     # IMPORTANT: Both initialization calls are required!
-    await rag.initialize_storages()  # Initialize storage backends    return rag
+    await rag.initialize_storages()  # Initialize storage backends
+    return rag
 
 async def main():
     try:
