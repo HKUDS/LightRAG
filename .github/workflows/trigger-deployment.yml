@@ -1,0 +1,37 @@
+name: Trigger Deployment
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'lightrag/**'
+      - 'lightrag_webui/**'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+jobs:
+  trigger:
+    name: Trigger Infrastructure Deployment
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Trigger deployment workflow
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token ${{ secrets.DEPLOYMENT_TRIGGER_TOKEN }}" \
+            https://api.github.com/repos/istariAI/LightRag_Deployment/dispatches \
+            -d '{
+              "event_type": "deploy-image",
+              "client_payload": {
+                "repository": "istariAI/LightRAG",
+                "ref": "${{ github.ref_name }}",
+                "sha": "${{ github.sha }}"
+              }
+            }'
+
+      - name: Deployment triggered
+        run: |
+          echo "✅ Deployment workflow triggered successfully!"
+          echo "Check deployment status at: https://github.com/istariAI/LightRag_Deployment/actions"
