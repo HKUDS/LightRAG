@@ -5,6 +5,7 @@ from lightrag.api.models.usage import (
     EmbeddingUsageInfo,
     UsageInfo,
     UsageAggregateResponse,
+    QueryTokenUsage,
     calculate_estimated_cost,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "EmbeddingUsageInfo",
     "UsageInfo",
     "UsageAggregateResponse",
+    "QueryTokenUsage",
     "calculate_estimated_cost",
 ]

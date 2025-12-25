@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.api.workspace_manager import get_rag
-from lightrag.api.models.usage import UsageInfo, calculate_estimated_cost
+from lightrag.api.models.usage import UsageInfo, QueryTokenUsage, calculate_estimated_cost
 from lightrag.utils import logger, TokenTracker
 from pydantic import BaseModel, Field, field_validator
 
@@ -168,6 +168,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Token usage information for this request, including LLM and embedding usage.",
     )
+    token_usage: Optional[QueryTokenUsage] = Field(
+        default=None,
+        description="Flat token usage structure for billing integration (llm_model, llm_input_tokens, llm_output_tokens, embedding_model, embedding_tokens).",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -197,6 +201,10 @@ class StreamChunkResponse(BaseModel):
     usage: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Token usage information (only in final chunk for streaming responses)",
+    )
+    token_usage: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Flat token usage for billing (only in final chunk for streaming responses)",
     )
 
 
@@ -475,6 +483,7 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
             # Build usage info from result if available
             usage_data = result.get("usage")
             usage_info = None
+            token_usage = None
             if usage_data:
                 # Calculate estimated cost based on pricing config
                 llm_data = token_tracker.get_llm_usage()
@@ -487,15 +496,23 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                 usage_info = UsageInfo.from_token_tracker(
                     token_tracker, estimated_cost=estimated_cost
                 )
+                # Build flat token_usage for Cleo billing
+                token_usage = QueryTokenUsage.from_token_tracker(token_tracker)
 
             # Return response with or without references based on request
             if request.include_references:
                 return QueryResponse(
-                    response=response_content, references=references, usage=usage_info
+                    response=response_content,
+                    references=references,
+                    usage=usage_info,
+                    token_usage=token_usage,
                 )
             else:
                 return QueryResponse(
-                    response=response_content, references=None, usage=usage_info
+                    response=response_content,
+                    references=None,
+                    usage=usage_info,
+                    token_usage=token_usage,
                 )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
@@ -754,6 +771,7 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                 # Build usage info if available
                 usage_data = result.get("usage")
                 usage_dict = None
+                token_usage_dict = None
                 if usage_data:
                     # Calculate estimated cost based on pricing config
                     llm_data = token_tracker.get_llm_usage()
@@ -767,6 +785,9 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                         token_tracker, estimated_cost=estimated_cost
                     )
                     usage_dict = usage_info.model_dump(exclude_none=True)
+                    # Build flat token_usage for Cleo billing
+                    token_usage_info = QueryTokenUsage.from_token_tracker(token_tracker)
+                    token_usage_dict = token_usage_info.model_dump()
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
@@ -784,8 +805,13 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                             yield f"{json.dumps({'error': str(e)})}\n"
 
                     # Send usage as final chunk for streaming responses
-                    if usage_dict:
-                        yield f"{json.dumps({'usage': usage_dict})}\n"
+                    if usage_dict or token_usage_dict:
+                        final_chunk = {}
+                        if usage_dict:
+                            final_chunk["usage"] = usage_dict
+                        if token_usage_dict:
+                            final_chunk["token_usage"] = token_usage_dict
+                        yield f"{json.dumps(final_chunk)}\n"
                 else:
                     # Non-streaming mode: send complete response in one message
                     response_content = llm_response.get("content", "")
@@ -798,6 +824,8 @@ def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
                         complete_response["references"] = references
                     if usage_dict:
                         complete_response["usage"] = usage_dict
+                    if token_usage_dict:
+                        complete_response["token_usage"] = token_usage_dict
 
                     yield f"{json.dumps(complete_response)}\n"
 

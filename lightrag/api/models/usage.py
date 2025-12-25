@@ -172,6 +172,60 @@ class UsageInfo(BaseModel):
         )
 
 
+class QueryTokenUsage(BaseModel):
+    """Flat token usage structure for Cleo billing integration.
+
+    This model provides a simplified, flat structure for token usage reporting,
+    designed specifically for external billing systems like Cleo. It maps directly
+    to billing rate tables without requiring nested object traversal.
+    """
+
+    llm_model: Optional[str] = Field(
+        default=None,
+        description="Model ID used for response generation (null if no LLM call made)",
+    )
+    llm_input_tokens: int = Field(
+        default=0,
+        description="Total input tokens sent to LLM (system prompt + context + query)",
+        ge=0,
+    )
+    llm_output_tokens: int = Field(
+        default=0,
+        description="Tokens in generated response",
+        ge=0,
+    )
+    embedding_model: Optional[str] = Field(
+        default=None,
+        description="Model ID used for query embedding",
+    )
+    embedding_tokens: int = Field(
+        default=0,
+        description="Tokens used to embed the query",
+        ge=0,
+    )
+
+    @classmethod
+    def from_token_tracker(cls, token_tracker) -> "QueryTokenUsage":
+        """Create QueryTokenUsage from a TokenTracker instance.
+
+        Args:
+            token_tracker: TokenTracker instance with usage data
+
+        Returns:
+            QueryTokenUsage instance with flat token usage data
+        """
+        llm_data = token_tracker.get_llm_usage()
+        embedding_data = token_tracker.get_embedding_usage()
+
+        return cls(
+            llm_model=llm_data.get("model"),
+            llm_input_tokens=llm_data.get("prompt_tokens", 0),
+            llm_output_tokens=llm_data.get("completion_tokens", 0),
+            embedding_model=embedding_data.get("model"),
+            embedding_tokens=embedding_data.get("total_tokens", 0),
+        )
+
+
 class UsageAggregateResponse(BaseModel):
     """Aggregated usage statistics for a workspace over a time period."""
 
