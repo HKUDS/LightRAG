@@ -8,6 +8,7 @@
 # Or use constraints: pip install --constraint constraints-offline.txt -r requirements-offline.txt
 
 aioboto3>=12.0.0,<16.0.0
+aiomysql>=0.3.2,<1.0.0
 anthropic>=0.18.0,<1.0.0
 asyncpg>=0.31.0,<1.0.0
 google-api-core>=2.0.0,<3.0.0

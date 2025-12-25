@@ -8,6 +8,7 @@
 # Or use constraints: pip install --constraint constraints-offline.txt -r requirements-offline-storage.txt
 
 # Storage backend dependencies (with version constraints matching pyproject.toml)
+aiomysql>=0.3.2,<1.0.0
 asyncpg>=0.31.0,<1.0.0
 neo4j>=5.0.0,<7.0.0
 pgvector>=0.4.2,<1.0.0

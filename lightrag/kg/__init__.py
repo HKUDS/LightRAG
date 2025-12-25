@@ -5,6 +5,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "PGKVStorage",
             "MongoKVStorage",
+            "ADBKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -27,6 +28,7 @@ STORAGE_IMPLEMENTATIONS = {
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
             # "ChromaVectorDBStorage",
+            "ADBVectorStorage",
         ],
         "required_methods": ["query", "upsert"],
     },
@@ -36,6 +38,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            "ADBDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -51,6 +54,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     ],
     "RedisKVStorage": ["REDIS_URI"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    "ADBKVStorage": ["ADB_USER", "ADB_PASSWORD", "ADB_DATABASE"],
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
@@ -83,6 +87,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "MONGO_URI",
         "MONGO_DATABASE",
     ],
+    "ADBVectorStorage": ["ADB_USER", "ADB_PASSWORD", "ADB_DATABASE"],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "RedisDocStatusStorage": ["REDIS_URI"],
@@ -91,6 +96,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "MONGO_URI",
         "MONGO_DATABASE",
     ],
+    "ADBDocStatusStorage": ["ADB_USER", "ADB_PASSWORD", "ADB_DATABASE"],
 }
 
 # Storage implementation module mapping
@@ -116,6 +122,9 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "ADBKVStorage": ".kg.adb_mysql_impl",
+    "ADBVectorStorage": ".kg.adb_mysql_impl",
+    "ADBDocStatusStorage": ".kg.adb_mysql_impl",
 }
 
 
