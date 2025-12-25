@@ -1,0 +1,231 @@
+openapi: 3.0.3
+info:
+  title: LightRAG Query API with Token Usage
+  description: |
+    Extended query endpoints with token_usage field for Cleo billing integration.
+    Adds flat token_usage structure alongside existing usage field.
+  version: 1.1.0
+
+paths:
+  /query:
+    post:
+      summary: Execute RAG query with token usage tracking
+      description: |
+        Execute a RAG query and return response with token usage information.
+        The token_usage field provides a flat structure for billing integration.
+      operationId: queryText
+      parameters:
+        - name: LIGHTRAG-WORKSPACE
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Workspace identifier for multi-tenant deployments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Query response with token usage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+              examples:
+                standard_query:
+                  summary: Standard query with LLM generation
+                  value:
+                    response: "Based on the knowledge graph..."
+                    references:
+                      - reference_id: "chunk-abc123"
+                        file_path: "documents/report.pdf"
+                    token_usage:
+                      llm_model: "gpt-4o-mini"
+                      llm_input_tokens: 2450
+                      llm_output_tokens: 380
+                      embedding_model: "text-embedding-3-small"
+                      embedding_tokens: 45
+                context_only:
+                  summary: Context-only query (no LLM call)
+                  value:
+                    response: "[Context chunks returned]"
+                    references:
+                      - reference_id: "chunk-abc123"
+                        file_path: "documents/report.pdf"
+                    token_usage:
+                      llm_model: null
+                      llm_input_tokens: 0
+                      llm_output_tokens: 0
+                      embedding_model: "text-embedding-3-small"
+                      embedding_tokens: 45
+
+  /query/stream:
+    post:
+      summary: Execute streaming RAG query with token usage
+      description: |
+        Execute a streaming RAG query. Token usage is included in the final SSE event.
+      operationId: queryTextStream
+      parameters:
+        - name: LIGHTRAG-WORKSPACE
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Workspace identifier for multi-tenant deployments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Streaming response (NDJSON)
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/StreamChunkResponse'
+
+components:
+  schemas:
+    QueryRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: The query text
+        mode:
+          type: string
+          enum: [local, global, hybrid, naive, mix]
+          default: hybrid
+          description: Query mode
+        only_need_context:
+          type: boolean
+          default: false
+          description: If true, skip LLM generation and return context only
+        include_references:
+          type: boolean
+          default: true
+          description: Include reference list in response
+
+    QueryResponse:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: string
+          description: Generated response text
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReferenceItem'
+          nullable: true
+          description: Reference list (when include_references=true)
+        usage:
+          $ref: '#/components/schemas/UsageInfo'
+          nullable: true
+          description: Nested usage structure (backward compatibility)
+        token_usage:
+          $ref: '#/components/schemas/QueryTokenUsage'
+          nullable: true
+          description: Flat token usage for billing integration
+
+    StreamChunkResponse:
+      type: object
+      properties:
+        response:
+          type: string
+          nullable: true
+          description: Response content chunk
+        references:
+          type: array
+          items:
+            type: object
+          nullable: true
+          description: Reference list (first chunk only)
+        error:
+          type: string
+          nullable: true
+          description: Error message if processing fails
+        usage:
+          type: object
+          nullable: true
+          description: Nested usage info (final chunk only)
+        token_usage:
+          $ref: '#/components/schemas/QueryTokenUsage'
+          nullable: true
+          description: Flat token usage (final chunk only)
+
+    QueryTokenUsage:
+      type: object
+      description: Flat token usage structure for Cleo billing
+      properties:
+        llm_model:
+          type: string
+          nullable: true
+          description: Model ID used for response generation (null if no LLM call)
+        llm_input_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Total input tokens (system prompt + context + query)
+        llm_output_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Tokens in generated response
+        embedding_model:
+          type: string
+          nullable: true
+          description: Model ID used for query embedding
+        embedding_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Tokens used to embed the query
+
+    ReferenceItem:
+      type: object
+      properties:
+        reference_id:
+          type: string
+          description: Chunk identifier
+        file_path:
+          type: string
+          description: Source file path
+
+    UsageInfo:
+      type: object
+      description: Nested usage structure (existing format)
+      properties:
+        llm:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+            calls:
+              type: integer
+            model:
+              type: string
+        embedding:
+          type: object
+          properties:
+            tokens:
+              type: integer
+            calls:
+              type: integer
+            model:
+              type: string
+        estimated_cost_usd:
+          type: number
+          nullable: true
