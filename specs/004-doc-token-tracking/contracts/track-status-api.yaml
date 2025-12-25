@@ -1,0 +1,180 @@
+openapi: 3.0.3
+info:
+  title: LightRAG Document Track Status API
+  description: |
+    Track status endpoint with token usage information for billing.
+    Extension to existing /documents/track_status/{track_id} endpoint.
+  version: 1.1.0
+
+paths:
+  /documents/track_status/{track_id}:
+    get:
+      summary: Get document processing status with token usage
+      description: |
+        Returns the processing status of documents associated with a track_id.
+        When documents are processed, includes token_usage data for billing.
+      operationId: getTrackStatus
+      parameters:
+        - name: track_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tracking identifier returned from document upload
+        - name: LIGHTRAG-WORKSPACE
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Workspace identifier for multi-tenant deployments
+      responses:
+        '200':
+          description: Tracking status with token usage data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackStatusResponse'
+              examples:
+                processed_with_tokens:
+                  summary: Processed document with token usage
+                  value:
+                    track_id: "insert-abc123"
+                    documents:
+                      - id: "doc-xxx-yyy"
+                        status: "processed"
+                        chunks_count: 1
+                        metadata:
+                          processing_start_time: 1766671645
+                          processing_end_time: 1766671752
+                          token_usage:
+                            embedding_tokens: 93
+                            llm_input_tokens: 7850
+                            llm_output_tokens: 462
+                            total_chunks: 1
+                            embedding_model: "text-embedding-3-small"
+                            llm_model: "openai/gpt-4o-mini"
+                        error_msg: null
+                    status_summary:
+                      pending: 0
+                      processing: 0
+                      processed: 1
+                      failed: 0
+                still_processing:
+                  summary: Document still processing (no token_usage yet)
+                  value:
+                    track_id: "insert-abc123"
+                    documents:
+                      - id: "doc-xxx-yyy"
+                        status: "processing"
+                        chunks_count: null
+                        metadata: {}
+                        error_msg: null
+                    status_summary:
+                      pending: 0
+                      processing: 1
+                      processed: 0
+                      failed: 0
+        '404':
+          description: Track ID not found
+
+components:
+  schemas:
+    TrackStatusResponse:
+      type: object
+      required:
+        - track_id
+        - documents
+        - status_summary
+      properties:
+        track_id:
+          type: string
+          description: Tracking identifier
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentStatus'
+        status_summary:
+          $ref: '#/components/schemas/StatusSummary'
+
+    DocumentStatus:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          description: Document identifier
+        status:
+          type: string
+          enum: [pending, processing, preprocessed, processed, failed]
+          description: Current processing status
+        chunks_count:
+          type: integer
+          nullable: true
+          description: Number of chunks created (when processed)
+        metadata:
+          $ref: '#/components/schemas/DocumentMetadata'
+        error_msg:
+          type: string
+          nullable: true
+          description: Error message (when failed)
+
+    DocumentMetadata:
+      type: object
+      description: Processing metadata including token usage
+      properties:
+        processing_start_time:
+          type: integer
+          description: Unix timestamp when processing started
+        processing_end_time:
+          type: integer
+          description: Unix timestamp when processing completed
+        token_usage:
+          $ref: '#/components/schemas/TokenUsage'
+
+    TokenUsage:
+      type: object
+      description: Token consumption for billing
+      required:
+        - embedding_tokens
+        - llm_input_tokens
+        - llm_output_tokens
+        - total_chunks
+      properties:
+        embedding_tokens:
+          type: integer
+          minimum: 0
+          description: Total tokens consumed by embedding API calls
+        llm_input_tokens:
+          type: integer
+          minimum: 0
+          description: Total prompt tokens consumed by LLM calls
+        llm_output_tokens:
+          type: integer
+          minimum: 0
+          description: Total completion tokens generated by LLM calls
+        total_chunks:
+          type: integer
+          minimum: 0
+          description: Number of text chunks created from document
+        embedding_model:
+          type: string
+          nullable: true
+          description: Embedding model identifier (null if local model)
+        llm_model:
+          type: string
+          nullable: true
+          description: LLM model identifier (null if local model)
+
+    StatusSummary:
+      type: object
+      properties:
+        pending:
+          type: integer
+        processing:
+          type: integer
+        processed:
+          type: integer
+        failed:
+          type: integer

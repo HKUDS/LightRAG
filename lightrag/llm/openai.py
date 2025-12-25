@@ -25,6 +25,7 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
     logger,
+    current_token_tracker,
 )
 
 from lightrag.types import GPTKeywordExtractionFormat
@@ -767,12 +768,14 @@ async def openai_embed(
         # Make API call
         response = await openai_async_client.embeddings.create(**api_params)
 
-        if token_tracker and hasattr(response, "usage"):
+        # Use explicit token_tracker, or fall back to context variable
+        effective_tracker = token_tracker or current_token_tracker.get()
+        if effective_tracker and hasattr(response, "usage"):
             token_counts = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
-            token_tracker.add_embedding_usage(token_counts, model=model)
+            effective_tracker.add_embedding_usage(token_counts, model=model)
 
         return np.array(
             [

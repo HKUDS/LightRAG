@@ -2783,6 +2783,7 @@ async def extract_entities(
 
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+    token_tracker = global_config.get("token_tracker")
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
@@ -2850,6 +2851,7 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             cache_keys_collector=cache_keys_collector,
+            token_tracker=token_tracker,
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -2877,6 +2879,7 @@ async def extract_entities(
                 cache_type="extract",
                 chunk_id=chunk_key,
                 cache_keys_collector=cache_keys_collector,
+                token_tracker=token_tracker,
             )
 
             # Process gleaning result separately with file path

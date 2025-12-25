@@ -99,6 +99,7 @@ from lightrag.utils import (
     TiktokenTokenizer,
     EmbeddingFunc,
     TokenTracker,
+    current_token_tracker,
     always_get_an_event_loop,
     compute_mdhash_id,
     lazy_external_import,
@@ -1749,6 +1750,11 @@ class LightRAG:
                     processing_start_time = int(time.time())
                     first_stage_tasks = []
                     entity_relation_task = None
+                    # Create token tracker to accumulate token usage for this document
+                    token_tracker = TokenTracker()
+                    # Set context variable for embedding calls (VDB classes use this)
+                    # Note: Each async task gets its own context copy, no cleanup needed
+                    current_token_tracker.set(token_tracker)
 
                     async with semaphore:
                         nonlocal processed_count
@@ -1889,7 +1895,8 @@ class LightRAG:
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
                             entity_relation_task = asyncio.create_task(
                                 self._process_extract_entities(
-                                    chunks, pipeline_status, pipeline_status_lock
+                                    chunks, pipeline_status, pipeline_status_lock,
+                                    token_tracker=token_tracker
                                 )
                             )
                             chunk_results = await entity_relation_task
@@ -1940,6 +1947,18 @@ class LightRAG:
                             # Record processing end time for failed case
                             processing_end_time = int(time.time())
 
+                            # Build partial token_usage from TokenTracker (may have partial data)
+                            llm_usage = token_tracker.get_llm_usage()
+                            embedding_usage = token_tracker.get_embedding_usage()
+                            partial_token_usage = {
+                                "embedding_tokens": embedding_usage.get("total_tokens", 0),
+                                "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
+                                "llm_output_tokens": llm_usage.get("completion_tokens", 0),
+                                "total_chunks": 0,  # Unknown on failure
+                                "embedding_model": embedding_usage.get("model"),
+                                "llm_model": llm_usage.get("model"),
+                            }
+
                             # Update document status to failed
                             await self.doc_status.upsert(
                                 {
@@ -1957,6 +1976,7 @@ class LightRAG:
                                         "metadata": {
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
+                                            "token_usage": partial_token_usage,
                                         },
                                     }
                                 }
@@ -1997,6 +2017,18 @@ class LightRAG:
                                 # Record processing end time
                                 processing_end_time = int(time.time())
 
+                                # Build token_usage from TokenTracker
+                                llm_usage = token_tracker.get_llm_usage()
+                                embedding_usage = token_tracker.get_embedding_usage()
+                                token_usage = {
+                                    "embedding_tokens": embedding_usage.get("total_tokens", 0),
+                                    "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
+                                    "llm_output_tokens": llm_usage.get("completion_tokens", 0),
+                                    "total_chunks": len(chunks),
+                                    "embedding_model": embedding_usage.get("model"),
+                                    "llm_model": llm_usage.get("model"),
+                                }
+
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
@@ -2014,6 +2046,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
+                                                "token_usage": token_usage,
                                             },
                                         }
                                     }
@@ -2067,6 +2100,18 @@ class LightRAG:
                                 # Record processing end time for failed case
                                 processing_end_time = int(time.time())
 
+                                # Build partial token_usage from TokenTracker (may have partial data)
+                                llm_usage = token_tracker.get_llm_usage()
+                                embedding_usage = token_tracker.get_embedding_usage()
+                                partial_token_usage = {
+                                    "embedding_tokens": embedding_usage.get("total_tokens", 0),
+                                    "llm_input_tokens": llm_usage.get("prompt_tokens", 0),
+                                    "llm_output_tokens": llm_usage.get("completion_tokens", 0),
+                                    "total_chunks": len(chunks) if chunks else 0,
+                                    "embedding_model": embedding_usage.get("model"),
+                                    "llm_model": llm_usage.get("model"),
+                                }
+
                                 # Update document status to failed
                                 await self.doc_status.upsert(
                                     {
@@ -2082,6 +2127,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
+                                                "token_usage": partial_token_usage,
                                             },
                                         }
                                     }
@@ -2158,12 +2204,17 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
     async def _process_extract_entities(
-        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None,
+        token_tracker: TokenTracker = None
     ) -> list:
         try:
+            # Build global_config with token_tracker included
+            config = asdict(self)
+            if token_tracker is not None:
+                config["token_tracker"] = token_tracker
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=config,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
