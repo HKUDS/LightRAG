@@ -718,18 +718,18 @@ If you want to use Google Gemini models, you only need to set up LightRAG as fol
 import os
 import numpy as np
 from lightrag.utils import wrap_embedding_func_with_attrs
-from lightrag.llm.gemini import gemini_complete, gemini_embed
+from lightrag.llm.gemini import gemini_model_complete, gemini_embed
 
 # Configure the generation model
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    return await gemini_complete(
+    return await gemini_model_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model="gemini-1.5-flash",
+        model_name="gemini-2.0-flash",
         **kwargs
     )
 
@@ -749,6 +749,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
+    llm_model_name="gemini-2.0-flash",
     embedding_func=embedding_func
 )
 ```
