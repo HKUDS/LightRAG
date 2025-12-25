@@ -4,6 +4,7 @@ import weakref
 import sys
 
 import asyncio
+import contextvars
 import html
 import csv
 import json
@@ -28,6 +29,7 @@ from typing import (
     Sequence,
     Collection,
 )
+
 import numpy as np
 from dotenv import load_dotenv
 
@@ -40,6 +42,12 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+)
+
+# Context variable for tracking tokens in the current document processing context
+# Used to pass TokenTracker to embedding functions without modifying VDB class signatures
+current_token_tracker: contextvars.ContextVar["TokenTracker | None"] = (
+    contextvars.ContextVar("current_token_tracker", default=None)
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -1910,6 +1918,7 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    token_tracker: "TokenTracker | None" = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -1992,6 +2001,8 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if token_tracker is not None:
+            kwargs["token_tracker"] = token_tracker
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -2026,6 +2037,8 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if token_tracker is not None:
+        kwargs["token_tracker"] = token_tracker
 
     try:
         res = await use_llm_func(
