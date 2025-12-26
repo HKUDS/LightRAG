@@ -1,3 +1,19 @@
+"""
+LightRAG Demo with Google Gemini Models
+
+This example demonstrates how to use LightRAG with Google's Gemini 2.0 Flash model
+for text generation and the text-embedding-004 model for embeddings.
+
+Prerequisites:
+    1. Set GEMINI_API_KEY environment variable:
+       export GEMINI_API_KEY='your-actual-api-key'
+    
+    2. Prepare a text file named 'book.txt' in the current directory
+       (or modify BOOK_FILE constant to point to your text file)
+
+Usage:
+    python examples/lightrag_gemini_demo.py
+"""
 import os
 import asyncio
 import nest_asyncio
@@ -10,7 +26,15 @@ from lightrag.utils import wrap_embedding_func_with_attrs
 nest_asyncio.apply()
 
 WORKING_DIR = "./rag_storage"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "your-api-key-here")
+BOOK_FILE = "./book.txt"
+
+# Validate API key
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError(
+        "GEMINI_API_KEY environment variable is not set. "
+        "Please set it with: export GEMINI_API_KEY='your-api-key'"
+    )
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -65,10 +89,17 @@ async def initialize_rag():
 # Main
 # --------------------------------------------------
 def main():
+    # Validate book file exists
+    if not os.path.exists(BOOK_FILE):
+        raise FileNotFoundError(
+            f"'{BOOK_FILE}' not found. "
+            "Please provide a text file to index in the current directory."
+        )
+    
     rag = asyncio.run(initialize_rag())
 
     # Insert text
-    with open("./book.txt", "r", encoding="utf-8") as f:
+    with open(BOOK_FILE, "r", encoding="utf-8") as f:
         rag.insert(f.read())
 
     query = "What are the top themes?"
