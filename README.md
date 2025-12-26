@@ -128,9 +128,9 @@ uv sync --extra api
 source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # Or on Windows: .venv\Scripts\activate
 
-# Or using pip with virtual environment
+### Or using pip with virtual environment
 # python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
+### source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
 # Build front-end artifacts
