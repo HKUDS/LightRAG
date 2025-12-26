@@ -355,7 +355,7 @@ export const useAuthStore = create<AuthState>(set => {
 
     setTokenRenewal: (renewalTime, expiresAt) => {
       const formattedTime = formatTimestampToLocalString(renewalTime);
-      
+
       // Update localStorage with human-readable format
       localStorage.setItem('LIGHTRAG-LAST-TOKEN-RENEWAL', formattedTime);
 
