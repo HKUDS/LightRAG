@@ -31,10 +31,12 @@ _RENEWAL_MIN_INTERVAL = 60  # Minimum 60 seconds between renewals for same user
 # ========== Token Renewal Path Exclusions ==========
 # Paths that should NOT trigger token auto-renewal
 # - /health: Health check endpoint, no login required
-# - /documents/paginated: Client polls this frequently, renewal not needed
+# - /documents/paginated: Client polls this frequently (5-30s), renewal not needed
+# - /documents/pipeline_status: Client polls this very frequently (2s), renewal not needed
 _TOKEN_RENEWAL_SKIP_PATHS = [
     "/health",
     "/documents/paginated",
+    "/documents/pipeline_status",
 ]
 
 
