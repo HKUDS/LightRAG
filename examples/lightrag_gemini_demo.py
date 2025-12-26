@@ -7,13 +7,14 @@ for text generation and the text-embedding-004 model for embeddings.
 Prerequisites:
     1. Set GEMINI_API_KEY environment variable:
        export GEMINI_API_KEY='your-actual-api-key'
-    
+
     2. Prepare a text file named 'book.txt' in the current directory
        (or modify BOOK_FILE constant to point to your text file)
 
 Usage:
     python examples/lightrag_gemini_demo.py
 """
+
 import os
 import asyncio
 import nest_asyncio
@@ -95,7 +96,7 @@ def main():
             f"'{BOOK_FILE}' not found. "
             "Please provide a text file to index in the current directory."
         )
-    
+
     rag = asyncio.run(initialize_rag())
 
     # Insert text
