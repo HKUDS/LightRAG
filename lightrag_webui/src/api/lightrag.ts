@@ -313,7 +313,14 @@ const silentRefreshGuestToken = async (): Promise<string> => {
         // Update localStorage
         localStorage.setItem('LIGHTRAG-API-TOKEN', newToken);
         // Update auth state
-        useAuthStore.getState().login(newToken, true, response.data);
+        useAuthStore.getState().login(
+          newToken,
+          true,
+          response.data.core_version,
+          response.data.api_version,
+          response.data.webui_title || null,
+          response.data.webui_description || null
+        );
         return newToken;
       } else {
         throw new Error('Failed to get guest token');
