@@ -26,23 +26,24 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
         history_messages=history_messages,
         api_key=GEMINI_API_KEY,
         model_name="gemini-2.0-flash",
-        **kwargs
+        **kwargs,
     )
+
 
 # --------------------------------------------------
 # Embedding function
 # --------------------------------------------------
 @wrap_embedding_func_with_attrs(
     embedding_dim=768,
+    send_dimensions=True,
     max_token_size=2048,
-    model_name="models/text-embedding-004"
+    model_name="models/text-embedding-004",
 )
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await gemini_embed.func(
-        texts,
-        api_key=GEMINI_API_KEY,
-        model="models/text-embedding-004"
+        texts, api_key=GEMINI_API_KEY, model="models/text-embedding-004"
     )
+
 
 # --------------------------------------------------
 # Initialize RAG
