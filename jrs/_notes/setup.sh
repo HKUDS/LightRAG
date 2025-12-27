@@ -51,24 +51,34 @@
 
 
 
+
 #*******************Start of Script******************
-# Exit immediately if a command exits with a non-zero status
 set -e
 
 echo "🚀 Starting RAGAnywhere Environment Setup..."
 
-# 1. Install uv (Python package manager) if not present
+# 1. Install uv (Python package manager)
 if ! command -v uv &> /dev/null
 then
     echo "📦 Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Source the cargo env to make uv available immediately in this session
     source $HOME/.cargo/env
 else
     echo "✅ uv is already installed."
 fi
 
-# 2. Clone the repository
+# 2. Install bun (Needed for Web UI)
+if ! command -v bun &> /dev/null
+then
+    echo "📦 Installing bun..."
+    curl -fsSL https://bun.sh/install | bash
+    # For a script, we source the specific bin path rather than the whole bashrc
+    export PATH="$HOME/.bun/bin:$PATH"
+else
+    echo "✅ bun is already installed."
+fi
+
+# 3. Clone the repository
 REPO_URL="https://github.com/johnshearing/LightRAG.git"
 REPO_DIR="LightRAG"
 
@@ -77,28 +87,56 @@ if [ ! -d "$REPO_DIR" ]; then
     git clone "$REPO_URL"
     cd "$REPO_DIR"
 else
-    echo "🏠 Directory $REPO_DIR already exists. Entering directory..."
+    echo "🏠 Directory $REPO_DIR already exists. Updating..."
     cd "$REPO_DIR"
     git pull origin main
 fi
 
-# 3. Create Virtual Environment and Sync Dependencies
-echo "⚙️ Syncing dependencies with uv..."
-# This installs core + api + offline + evaluation dependencies found in your pyproject.toml
+# 4. Create Virtual Environment and Sync Dependencies
+echo "⚙️ Syncing Python dependencies with uv..."
 uv sync --all-extras
 
-# 4. Check for .env file
-if [ ! -f ".env" ]; then
-    echo "⚠️  WARNING: No .env file detected."
-    echo "   If you have a .env.example, run: cp .env.example .env"
-    echo "   Then add your API keys to the .env file."
-    echo "   Or for better security, add API keys to your .bashrc file instead."    
-    echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings"    
+# 5. Build the Web UI
+echo "🌐 Building Web UI..."
+if [ -d "lightrag_webui" ]; then
+    cd lightrag_webui
+    bun install --frozen-lockfile
+    bun run build
+    cd ..
+    echo "✅ Web UI built successfully."
+else
+    echo "❌ Error: lightrag_webui directory not found!"
+    exit 1
 fi
 
-# 4. Final Verification
-echo "-----------------------------------------------"
-echo "🎉 Setup Complete!"
-echo "To activate your environment, run: source .venv/bin/activate"
-echo "To run your scripts: python jrs/your_script.py"
-echo "-----------------------------------------------"
+# 6. Check for .env file
+if [ ! -f ".env" ]; then
+    echo "⚠️  WARNING: No .env file detected."
+    echo "   Action: cp env.example .env"
+    echo "   Then add your API keys to the .env file."
+    echo "   Or for better security, add API keys to your .bashrc file instead."    
+    echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings" 
+    echo "   If you prefer, you can use the .env file I have in this directory which is working for me."
+    echo "   Just copy that file to the LightRAG folder."            
+fi
+
+
+# 7. Final Verification and Instructions
+cat << EOF
+-----------------------------------------------
+🎉 Setup Complete!
+
+To use LightRAG, run these commands:
+  1. source .venv/bin/activate
+  This activates the virtual environment.
+
+  2. export PS1='(.venv) \w\$ '
+  This creates a better looking prompt that takes up less space on the screen.
+
+  3. lightrag-server
+  This starts the server.
+
+  4. Visit: http://localhost:9621/webui/ 
+  This is where you interact with the server.
+-----------------------------------------------
+EOF
