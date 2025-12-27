@@ -3,10 +3,10 @@
 # This script installs LightRAG and RAGAnywhere into a directory named LightRAG
 
 
-# The following checklist is for me only.
+# The following pre-migration checklist is for me only.
 # It ensures I am giving you my latest code and the latest code from LightRAG too.
 # ==============================================================================
-# PRE-MIGRATION CHECKLIST (Run these on your OLD computer first!)
+# PRE-MIGRATION CHECKLIST (Run these on the computer with original source!)
 # ==============================================================================
 # 1. cd ~/LightRAG
 # 2. git add .
@@ -30,6 +30,7 @@
 # Move this file to your home directory before running it.
 # This will cause the LightRAG directory to be created in your home directory.
 
+# !!!!!!!!!!!!!!!!     Important!      !!!!!!!!!!!!!!!!!
 # If you already have a directory named LightRAG then name it something else so that it will not be overwritten.
 # run the following bash command:
 # mv ~/LightRAG ~/LightRAG_BACKUP
@@ -96,6 +97,9 @@ fi
 echo "⚙️ Syncing Python dependencies with uv..."
 uv sync --all-extras
 
+echo "📦 Installing additional RAGAnything components..."
+uv pip install raganything
+
 # 5. Build the Web UI
 echo "🌐 Building Web UI..."
 if [ -d "lightrag_webui" ]; then
@@ -109,6 +113,9 @@ else
     exit 1
 fi
 
+echo "-----------------------------------------------"
+echo "🎉 Setup Complete!"
+
 # 6. Check for .env file
 if [ ! -f ".env" ]; then
     echo "⚠️  WARNING: No .env file detected."
@@ -116,15 +123,14 @@ if [ ! -f ".env" ]; then
     echo "   Then add your API keys to the .env file."
     echo "   Or for better security, add API keys to your .bashrc file instead."    
     echo "   No matter where you decide to put your API keys, you will still need a .env file for other required settings" 
-    echo "   If you prefer, you can use the .env file I have in this directory which is working for me."
+    echo "   If you prefer, you can use the .env file I have in the "LightRAG/jrs/_notes" directory which is working for me."
     echo "   Just copy that file to the LightRAG folder."            
 fi
 
 
 # 7. Final Verification and Instructions
 cat << EOF
------------------------------------------------
-🎉 Setup Complete!
+
 
 To use LightRAG, run these commands:
   1. source .venv/bin/activate
