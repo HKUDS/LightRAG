@@ -90,6 +90,9 @@ CLAUDE.md
 # 4. Allow specific files directly inside 'jrs'
 !/jrs/*.*
 
+# 5. Allow the _notes folder specifically
+!/jrs/_notes/
 
-
+# 6. Allow everything inside the _notes folder
+!/jrs/_notes/**
 
