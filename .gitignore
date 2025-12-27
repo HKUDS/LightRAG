@@ -74,3 +74,17 @@ download_models_hf.py
 memory-bank
 .claude/CLAUDE.md
 .claude/
+
+
+# My changes to the gitignore file
+# 1. Ignore everything in the repository
+/*
+
+# 2. Allow the 'jrs' folder itself
+!/jrs/
+
+# 3. Ignore everything inside 'jrs' (including the 'work' folder)
+/jrs/*
+
+# 4. Allow specific files directly inside 'jrs'
+!/jrs/*.*
