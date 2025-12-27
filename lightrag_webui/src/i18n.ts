@@ -7,6 +7,10 @@ import zh from './locales/zh.json'
 import fr from './locales/fr.json'
 import ar from './locales/ar.json'
 import zh_TW from './locales/zh_TW.json'
+import ru from './locales/ru.json'
+import ja from './locales/ja.json'
+import de from './locales/de.json'
+import uk from './locales/uk.json'
 
 const getStoredLanguage = () => {
   try {
@@ -29,7 +33,11 @@ i18n
       zh: { translation: zh },
       fr: { translation: fr },
       ar: { translation: ar },
-      zh_TW: { translation: zh_TW }
+      zh_TW: { translation: zh_TW },
+      ru: { translation: ru },
+      ja: { translation: ja },
+      de: { translation: de },
+      uk: { translation: uk }
     },
     lng: getStoredLanguage(), // Use stored language settings
     fallbackLng: 'en',

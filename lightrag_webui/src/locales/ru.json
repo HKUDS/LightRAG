@@ -1,0 +1,465 @@
+{
+  "settings": {
+    "language": "Язык",
+    "theme": "Тема",
+    "light": "Светлая",
+    "dark": "Тёмная",
+    "system": "Системная"
+  },
+  "header": {
+    "documents": "Документы",
+    "knowledgeGraph": "Граф знаний",
+    "retrieval": "Поиск",
+    "api": "API",
+    "projectRepository": "Репозиторий проекта",
+    "logout": "Выйти",
+    "frontendNeedsRebuild": "Требуется пересборка фронтенда",
+    "themeToggle": {
+      "switchToLight": "Переключить на светлую тему",
+      "switchToDark": "Переключить на тёмную тему"
+    }
+  },
+  "login": {
+    "description": "Пожалуйста, введите ваш аккаунт и пароль для входа в систему",
+    "username": "Имя пользователя",
+    "usernamePlaceholder": "Введите имя пользователя",
+    "password": "Пароль",
+    "passwordPlaceholder": "Введите пароль",
+    "loginButton": "Войти",
+    "loggingIn": "Вход в систему...",
+    "successMessage": "Вход выполнен успешно",
+    "errorEmptyFields": "Пожалуйста, введите имя пользователя и пароль",
+    "errorInvalidCredentials": "Ошибка входа, проверьте имя пользователя и пароль",
+    "authDisabled": "Аутентификация отключена. Используется режим без входа.",
+    "guestMode": "Без входа"
+  },
+  "common": {
+    "cancel": "Отмена",
+    "save": "Сохранить",
+    "saving": "Сохранение...",
+    "saveFailed": "Ошибка сохранения"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Очистить",
+      "tooltip": "Очистить документы",
+      "title": "Очистить документы",
+      "description": "Это действие удалит все документы из системы",
+      "warning": "ВНИМАНИЕ: Это действие навсегда удалит все документы и не может быть отменено!",
+      "confirm": "Вы действительно хотите очистить все документы?",
+      "confirmPrompt": "Введите 'yes' для подтверждения действия",
+      "confirmPlaceholder": "Введите yes для подтверждения",
+      "clearCache": "Очистить кэш LLM",
+      "confirmButton": "ДА",
+      "clearing": "Очистка...",
+      "timeout": "Операция очистки превысила время ожидания, попробуйте снова",
+      "success": "Документы успешно очищены",
+      "cacheCleared": "Кэш успешно очищен",
+      "cacheClearFailed": "Не удалось очистить кэш:\n{{error}}",
+      "failed": "Ошибка очистки документов:\n{{message}}",
+      "error": "Ошибка очистки документов:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Удалить",
+      "tooltip": "Удалить выбранные документы",
+      "title": "Удалить документы",
+      "description": "Это действие навсегда удалит выбранные документы из системы",
+      "warning": "ВНИМАНИЕ: Это действие навсегда удалит выбранные документы и не может быть отменено!",
+      "confirm": "Вы действительно хотите удалить {{count}} выбранный(ых) документ(ов)?",
+      "confirmPrompt": "Введите 'yes' для подтверждения действия",
+      "confirmPlaceholder": "Введите yes для подтверждения",
+      "confirmButton": "ДА",
+      "deleteFileOption": "Также удалить загруженные файлы",
+      "deleteFileTooltip": "Отметьте эту опцию, чтобы также удалить соответствующие загруженные файлы на сервере",
+      "deleteLLMCacheOption": "Также удалить извлечённый кэш LLM",
+      "success": "Конвейер удаления документов успешно запущен",
+      "failed": "Ошибка удаления документов:\n{{message}}",
+      "error": "Ошибка удаления документов:\n{{error}}",
+      "busy": "Конвейер занят, попробуйте позже",
+      "notAllowed": "Нет разрешения на выполнение этой операции"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Выбрать текущую страницу ({{count}})",
+      "deselectAll": "Снять все выделения ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "Загрузить",
+      "tooltip": "Загрузить документы",
+      "title": "Загрузить документы",
+      "description": "Перетащите ваши документы сюда или нажмите для просмотра.",
+      "single": {
+        "uploading": "Загрузка {{name}}: {{percent}}%",
+        "success": "Загрузка успешна:\n{{name}} успешно загружен",
+        "failed": "Ошибка загрузки:\n{{name}}\n{{message}}",
+        "error": "Ошибка загрузки:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Загрузка файлов...",
+        "success": "Файлы успешно загружены",
+        "error": "Некоторые файлы не удалось загрузить"
+      },
+      "generalError": "Ошибка загрузки\n{{error}}",
+      "fileTypes": "Поддерживаемые типы: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Нельзя загрузить более 1 файла за раз",
+        "maxFilesLimit": "Нельзя загрузить более {{count}} файлов",
+        "fileRejected": "Файл {{name}} был отклонён",
+        "unsupportedType": "Неподдерживаемый тип файла",
+        "fileTooLarge": "Файл слишком большой, максимальный размер {{maxSize}}",
+        "dropHere": "Перетащите файлы сюда",
+        "dragAndDrop": "Перетащите файлы сюда или нажмите для выбора файлов",
+        "removeFile": "Удалить файл",
+        "uploadDescription": "Вы можете загрузить {{isMultiple ? 'несколько' : count}} файлов (до {{maxSize}} каждый)",
+        "duplicateFile": "Имя файла уже существует в кэше сервера"
+      }
+    },
+    "documentManager": {
+      "title": "Управление документами",
+      "scanButton": "Сканировать/Повторить",
+      "scanTooltip": "Сканировать и обработать документы во входной папке, а также повторно обработать все неудачные документы",
+      "refreshTooltip": "Сбросить список документов",
+      "pipelineStatusButton": "Конвейер",
+      "pipelineStatusTooltip": "Просмотр статуса конвейера обработки документов",
+      "uploadedTitle": "Загруженные документы",
+      "uploadedDescription": "Список загруженных документов и их статусы.",
+      "emptyTitle": "Нет документов",
+      "emptyDescription": "Документы ещё не загружены.",
+      "columns": {
+        "id": "ID",
+        "fileName": "Имя файла",
+        "summary": "Краткое содержание",
+        "status": "Статус",
+        "length": "Длина",
+        "chunks": "Фрагменты",
+        "created": "Создан",
+        "updated": "Обновлён",
+        "metadata": "Метаданные",
+        "select": "Выбрать"
+      },
+      "status": {
+        "all": "Все",
+        "completed": "Завершено",
+        "preprocessed": "Предобработано",
+        "processing": "Обработка",
+        "pending": "Ожидание",
+        "failed": "Ошибка"
+      },
+      "errors": {
+        "loadFailed": "Не удалось загрузить документы\n{{error}}",
+        "scanFailed": "Не удалось просканировать документы\n{{error}}",
+        "scanProgressFailed": "Не удалось получить прогресс сканирования\n{{error}}"
+      },
+      "fileNameLabel": "Имя файла",
+      "showButton": "Показать",
+      "hideButton": "Скрыть",
+      "showFileNameTooltip": "Показать имя файла",
+      "hideFileNameTooltip": "Скрыть имя файла"
+    },
+    "pipelineStatus": {
+      "title": "Статус конвейера",
+      "busy": "Конвейер занят",
+      "requestPending": "Запрос ожидает",
+      "cancellationRequested": "Запрошена отмена",
+      "jobName": "Название задачи",
+      "startTime": "Время начала",
+      "progress": "Прогресс",
+      "unit": "Пакет",
+      "pipelineMessages": "Сообщения конвейера",
+      "cancelButton": "Отмена",
+      "cancelTooltip": "Отменить обработку конвейера",
+      "cancelConfirmTitle": "Подтверждение отмены конвейера",
+      "cancelConfirmDescription": "Это прервёт текущую обработку конвейера. Вы уверены, что хотите продолжить?",
+      "cancelConfirmButton": "Подтвердить отмену",
+      "cancelInProgress": "Отмена выполняется...",
+      "pipelineNotRunning": "Конвейер не запущен",
+      "cancelSuccess": "Запрошена отмена конвейера",
+      "cancelFailed": "Не удалось отменить конвейер\n{{error}}",
+      "cancelNotBusy": "Конвейер не запущен, отмена не требуется",
+      "errors": {
+        "fetchFailed": "Не удалось получить статус конвейера\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "Данные графа обрезаны до максимального количества узлов",
+    "statusDialog": {
+      "title": "Настройки сервера LightRAG",
+      "description": "Просмотр текущего статуса системы и информации о подключении"
+    },
+    "legend": "Легенда",
+    "nodeTypes": {
+      "person": "Персона",
+      "category": "Категория",
+      "geo": "Географическое",
+      "location": "Местоположение",
+      "organization": "Организация",
+      "event": "Событие",
+      "equipment": "Оборудование",
+      "weapon": "Оружие",
+      "animal": "Животное",
+      "unknown": "Неизвестно",
+      "object": "Объект",
+      "group": "Группа",
+      "technology": "Технология",
+      "product": "Продукт",
+      "document": "Документ",
+      "content": "Содержимое",
+      "data": "Данные",
+      "artifact": "Артефакт",
+      "concept": "Концепция",
+      "naturalobject": "Природный объект",
+      "method": "Метод",
+      "creature": "Существо",
+      "plant": "Растение",
+      "disease": "Болезнь",
+      "drug": "Лекарство",
+      "food": "Еда",
+      "other": "Другое"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "Настройки",
+        "healthCheck": "Проверка здоровья",
+        "showPropertyPanel": "Показать панель свойств",
+        "showSearchBar": "Показать панель поиска",
+        "showNodeLabel": "Показать метки узлов",
+        "nodeDraggable": "Узлы перетаскиваемые",
+        "showEdgeLabel": "Показать метки рёбер",
+        "hideUnselectedEdges": "Скрыть невыбранные рёбра",
+        "edgeEvents": "События рёбер",
+        "maxQueryDepth": "Максимальная глубина запроса",
+        "maxNodes": "Максимальное количество узлов",
+        "maxLayoutIterations": "Максимальное количество итераций раскладки",
+        "resetToDefault": "Сбросить к значениям по умолчанию",
+        "edgeSizeRange": "Диапазон размера рёбер",
+        "depth": "Г",
+        "max": "Макс",
+        "degree": "Степень",
+        "apiKey": "API ключ",
+        "enterYourAPIkey": "Введите ваш API ключ",
+        "save": "Сохранить",
+        "refreshLayout": "Обновить раскладку"
+      },
+      "zoomControl": {
+        "zoomIn": "Увеличить",
+        "zoomOut": "Уменьшить",
+        "resetZoom": "Сбросить масштаб",
+        "rotateCamera": "Поворот по часовой стрелке",
+        "rotateCameraCounterClockwise": "Поворот против часовой стрелки"
+      },
+      "layoutsControl": {
+        "startAnimation": "Продолжить анимацию раскладки",
+        "stopAnimation": "Остановить анимацию раскладки",
+        "layoutGraph": "Раскладка графа",
+        "layouts": {
+          "Circular": "Круговой",
+          "Circlepack": "Упаковка кругов",
+          "Random": "Случайный",
+          "Noverlaps": "Без перекрытий",
+          "Force Directed": "Силовой",
+          "Force Atlas": "Силовой Атлас"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Полный экран",
+        "windowed": "Оконный режим"
+      },
+      "legendControl": {
+        "toggleLegend": "Переключить легенду"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Подключено",
+      "disconnected": "Отключено"
+    },
+    "statusCard": {
+      "unavailable": "Информация о статусе недоступна",
+      "serverInfo": "Информация о сервере",
+      "workingDirectory": "Рабочая директория",
+      "inputDirectory": "Входная директория",
+      "maxParallelInsert": "Параллельная обработка документов",
+      "summarySettings": "Настройки краткого содержания",
+      "llmConfig": "Конфигурация LLM",
+      "llmBinding": "Привязка LLM",
+      "llmBindingHost": "Конечная точка LLM",
+      "llmModel": "Модель LLM",
+      "embeddingConfig": "Конфигурация встраивания",
+      "embeddingBinding": "Привязка встраивания",
+      "embeddingBindingHost": "Конечная точка встраивания",
+      "embeddingModel": "Модель встраивания",
+      "storageConfig": "Конфигурация хранилища",
+      "kvStorage": "KV хранилище",
+      "docStatusStorage": "Хранилище статуса документов",
+      "graphStorage": "Хранилище графа",
+      "vectorStorage": "Векторное хранилище",
+      "workspace": "Рабочее пространство",
+      "maxGraphNodes": "Максимальное количество узлов графа",
+      "rerankerConfig": "Конфигурация ранжирования",
+      "rerankerBindingHost": "Конечная точка ранжирования",
+      "rerankerModel": "Модель ранжирования",
+      "lockStatus": "Статус блокировки",
+      "threshold": "Порог"
+    },
+    "propertiesView": {
+      "editProperty": "Редактировать {{property}}",
+      "editPropertyDescription": "Отредактируйте значение свойства в текстовой области ниже.",
+      "errors": {
+        "duplicateName": "Имя узла уже существует",
+        "updateFailed": "Не удалось обновить узел",
+        "tryAgainLater": "Пожалуйста, попробуйте позже",
+        "updateSuccessButMergeFailed": "Свойства обновлены, но слияние не удалось: {{error}}",
+        "mergeFailed": "Слияние не удалось: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "Узел успешно обновлён",
+        "relationUpdated": "Связь успешно обновлена",
+        "entityMerged": "Узлы успешно объединены"
+      },
+      "mergeOptionLabel": "Автоматически объединять при обнаружении дублирующегося имени",
+      "mergeOptionDescription": "Если включено, переименование в существующее имя объединит этот узел с существующим вместо ошибки.",
+      "mergeDialog": {
+        "title": "Узел объединён",
+        "description": "\"{{source}}\" был объединён в \"{{target}}\".",
+        "refreshHint": "Обновите граф, чтобы загрузить последнюю структуру.",
+        "keepCurrentStart": "Обновить и сохранить текущий начальный узел",
+        "useMergedStart": "Обновить и использовать объединённый узел",
+        "refreshing": "Обновление графа..."
+      },
+      "node": {
+        "title": "Узел",
+        "id": "ID",
+        "labels": "Метки",
+        "degree": "Степень",
+        "properties": "Свойства",
+        "relationships": "Связи (в подграфе)",
+        "expandNode": "Развернуть узел",
+        "pruneNode": "Обрезать узел",
+        "deleteAllNodesError": "Отказ в удалении всех узлов в графе",
+        "nodesRemoved": "{{count}} узлов удалено, включая изолированные узлы",
+        "noNewNodes": "Расширяемых узлов не найдено",
+        "propertyNames": {
+          "description": "Описание",
+          "entity_id": "Имя",
+          "entity_type": "Тип",
+          "source_id": "C-ID",
+          "Neighbour": "Сосед",
+          "file_path": "Файл",
+          "keywords": "Ключи",
+          "weight": "Вес"
+        }
+      },
+      "edge": {
+        "title": "Связь",
+        "id": "ID",
+        "type": "Тип",
+        "source": "Источник",
+        "target": "Цель",
+        "properties": "Свойства"
+      }
+    },
+    "search": {
+      "placeholder": "Поиск узлов на странице...",
+      "message": "И ещё {{count}} других"
+    },
+    "graphLabels": {
+      "selectTooltip": "Получить подграф узла (метка)",
+      "noLabels": "Соответствующих узлов не найдено",
+      "label": "Поиск имени узла",
+      "placeholder": "Поиск имени узла...",
+      "andOthers": "И ещё {{count}} других",
+      "refreshGlobalTooltip": "Обновить глобальные данные графа и сбросить историю поиска",
+      "refreshCurrentLabelTooltip": "Обновить данные графа текущей страницы",
+      "refreshingTooltip": "Обновление данных..."
+    },
+    "emptyGraph": "Пусто (попробуйте перезагрузить снова)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "Копировать в буфер обмена",
+      "copyError": "Не удалось скопировать текст в буфер обмена",
+      "copyEmpty": "Нет содержимого для копирования",
+      "copySuccess": "Содержимое скопировано в буфер обмена",
+      "copySuccessLegacy": "Содержимое скопировано (устаревший метод)",
+      "copySuccessManual": "Содержимое скопировано (ручной метод)",
+      "copyFailed": "Не удалось скопировать содержимое",
+      "copyManualInstruction": "Пожалуйста, выберите и скопируйте текст вручную",
+      "thinking": "Размышление...",
+      "thinkingTime": "Время размышления {{time}}с",
+      "thinkingInProgress": "Размышление в процессе..."
+    },
+    "retrieval": {
+      "startPrompt": "Начните поиск, введя ваш запрос ниже",
+      "clear": "Очистить",
+      "send": "Отправить",
+      "placeholder": "Введите ваш запрос (Поддержка префикса: /<Режим запроса>)",
+      "error": "Ошибка: Не удалось получить ответ",
+      "queryModeError": "Поддерживаются только следующие режимы запроса: {{modes}}",
+      "queryModePrefixInvalid": "Неверный префикс режима запроса. Используйте: /<режим> [пробел] ваш запрос"
+    },
+    "querySettings": {
+      "parametersTitle": "Параметры",
+      "parametersDescription": "Настройте параметры вашего запроса",
+      "queryMode": "Режим запроса",
+      "queryModeTooltip": "Выберите стратегию поиска:\n• Naive: Традиционный поиск по вектору текстовых фрагментов\n• Local: Фокус на поиске сущностей\n• Global: Фокус на поиске связей\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Пропустить поиск, отправить историю разговора и текущий вопрос в LLM",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "Формат ответа",
+      "responseFormatTooltip": "Определяет формат ответа. Примеры:\n• Несколько абзацев\n• Один абзац\n• Маркированный список",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Несколько абзацев",
+        "singleParagraph": "Один абзац",
+        "bulletPoints": "Маркированный список"
+      },
+      "topK": "KG Top K",
+      "topKTooltip": "Количество извлекаемых сущностей и связей. Применимо для режимов, отличных от naive.",
+      "topKPlaceholder": "Введите значение top_k",
+      "chunkTopK": "Chunk Top K",
+      "chunkTopKTooltip": "Количество извлекаемых текстовых фрагментов, применимо для всех режимов.",
+      "chunkTopKPlaceholder": "Введите значение chunk_top_k",
+      "maxEntityTokens": "Макс. токенов сущностей",
+      "maxEntityTokensTooltip": "Максимальное количество токенов, выделенных для контекста сущностей в системе единого управления токенами",
+      "maxRelationTokens": "Макс. токенов связей",
+      "maxRelationTokensTooltip": "Максимальное количество токенов, выделенных для контекста связей в системе единого управления токенами",
+      "maxTotalTokens": "Макс. общее количество токенов",
+      "maxTotalTokensTooltip": "Максимальный общий бюджет токенов для всего контекста запроса (сущности + связи + фрагменты + системный промпт)",
+      "historyTurns": "История ходов",
+      "historyTurnsTooltip": "Количество полных ходов разговора (пары пользователь-ассистент) для учёта в контексте ответа",
+      "historyTurnsPlaceholder": "Количество ходов истории",
+      "onlyNeedContext": "Только контекст",
+      "onlyNeedContextTooltip": "Если True, возвращает только извлечённый контекст без генерации ответа",
+      "onlyNeedPrompt": "Только промпт",
+      "onlyNeedPromptTooltip": "Если True, возвращает только сгенерированный промпт без создания ответа",
+      "streamResponse": "Потоковый ответ",
+      "streamResponseTooltip": "Если True, включает потоковый вывод для ответов в реальном времени",
+      "userPrompt": "Дополнительный промпт вывода",
+      "userPromptTooltip": "Предоставьте дополнительные требования к ответу для LLM (не связанные с содержимым запроса, только для обработки вывода).",
+      "userPromptPlaceholder": "Введите пользовательский промпт (необязательно)",
+      "enableRerank": "Включить ранжирование",
+      "enableRerankTooltip": "Включить ранжирование для извлечённых текстовых фрагментов. Если True, но модель ранжирования не настроена, будет выдано предупреждение. По умолчанию True."
+    }
+  },
+  "apiSite": {
+    "loading": "Загрузка документации API..."
+  },
+  "apiKeyAlert": {
+    "title": "Требуется API ключ",
+    "description": "Пожалуйста, введите ваш API ключ для доступа к сервису",
+    "placeholder": "Введите ваш API ключ",
+    "save": "Сохранить"
+  },
+  "pagination": {
+    "showing": "Показано {{start}} - {{end}} из {{total}} записей",
+    "page": "Страница",
+    "pageSize": "Размер страницы",
+    "firstPage": "Первая страница",
+    "prevPage": "Предыдущая страница",
+    "nextPage": "Следующая страница",
+    "lastPage": "Последняя страница"
+  }
+}
