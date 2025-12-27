@@ -10,7 +10,7 @@ import numpy as np
 import pipmaster as pm
 
 from ..base import BaseVectorStorage
-from ..exceptions import QdrantMigrationError
+from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock
 from ..utils import compute_mdhash_id, logger
 
@@ -66,6 +66,51 @@ def workspace_filter_condition(workspace: str) -> models.FieldCondition:
     )
 
 
+def _find_legacy_collection(
+    client: QdrantClient,
+    namespace: str,
+    workspace: str = None,
+    model_suffix: str = None,
+) -> str | None:
+    """
+    Find legacy collection with backward compatibility support.
+
+    This function tries multiple naming patterns to locate legacy collections
+    created by older versions of LightRAG:
+
+    1. lightrag_vdb_{namespace} - if model_suffix is provided (HIGHEST PRIORITY)
+    2. {workspace}_{namespace} or {namespace} - no matter if model_suffix is provided or not
+    3. lightrag_vdb_{namespace} - fall back value no matter if model_suffix is provided or not (LOWEST PRIORITY)
+
+    Args:
+        client: QdrantClient instance
+        namespace: Base namespace (e.g., "chunks", "entities")
+        workspace: Optional workspace identifier
+        model_suffix: Optional model suffix for new collection
+
+    Returns:
+        Collection name if found, None otherwise
+    """
+    # Try multiple naming patterns for backward compatibility
+    # More specific names (with workspace) have higher priority
+    candidates = [
+        f"lightrag_vdb_{namespace}" if model_suffix else None,
+        f"{workspace}_{namespace}" if workspace else None,
+        f"lightrag_vdb_{namespace}",
+        namespace,
+    ]
+
+    for candidate in candidates:
+        if candidate and client.collection_exists(candidate):
+            logger.info(
+                f"Qdrant: Found legacy collection '{candidate}' "
+                f"(namespace={namespace}, workspace={workspace or 'none'})"
+            )
+            return candidate
+
+    return None
+
+
 @final
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
@@ -85,57 +130,46 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     def setup_collection(
         client: QdrantClient,
         collection_name: str,
-        legacy_namespace: str = None,
-        workspace: str = None,
-        **kwargs,
+        namespace: str,
+        workspace: str,
+        vectors_config: models.VectorParams,
+        hnsw_config: models.HnswConfigDiff,
+        model_suffix: str,
     ):
         """
         Setup Qdrant collection with migration support from legacy collections.
 
+        Ensure final collection has workspace isolation index.
+        Check vector dimension compatibility before new collection creation.
+        Drop legacy collection if it exists and is empty.
+        Only migrate data from legacy collection to new collection when new collection first created and legacy collection is not empty.
+
         Args:
             client: QdrantClient instance
-            collection_name: Name of the new collection
-            legacy_namespace: Name of the legacy collection (if exists)
+            collection_name: Name of the final collection
+            namespace: Base namespace (e.g., "chunks", "entities")
             workspace: Workspace identifier for data isolation
-            **kwargs: Additional arguments for collection creation (vectors_config, hnsw_config, etc.)
+            vectors_config: Vector configuration parameters for the collection
+            hnsw_config: HNSW index configuration diff for the collection
         """
+        if not namespace or not workspace:
+            raise ValueError("namespace and workspace must be provided")
+
+        workspace_count_filter = models.Filter(
+            must=[workspace_filter_condition(workspace)]
+        )
+
         new_collection_exists = client.collection_exists(collection_name)
-        legacy_exists = legacy_namespace and client.collection_exists(legacy_namespace)
+        legacy_collection = _find_legacy_collection(
+            client, namespace, workspace, model_suffix
+        )
 
-        # Case 1: Both new and legacy collections exist - Warning only (no migration)
-        if new_collection_exists and legacy_exists:
-            logger.warning(
-                f"Qdrant: Legacy collection '{legacy_namespace}' still exist. Remove it if migration is complete."
-            )
-            return
-
-        # Case 2: Only new collection exists - Ensure index exists
-        if new_collection_exists:
-            # Check if workspace index exists, create if missing
-            try:
-                collection_info = client.get_collection(collection_name)
-                if WORKSPACE_ID_FIELD not in collection_info.payload_schema:
-                    logger.info(
-                        f"Qdrant: Creating missing workspace index for '{collection_name}'"
-                    )
-                    client.create_payload_index(
-                        collection_name=collection_name,
-                        field_name=WORKSPACE_ID_FIELD,
-                        field_schema=models.KeywordIndexParams(
-                            type=models.KeywordIndexType.KEYWORD,
-                            is_tenant=True,
-                        ),
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Qdrant: Could not verify/create workspace index for '{collection_name}': {e}"
-                )
-            return
-
-        # Case 3: Neither exists - Create new collection
-        if not legacy_exists:
-            logger.info(f"Qdrant: Creating new collection '{collection_name}'")
-            client.create_collection(collection_name, **kwargs)
+        # Case 1: Only new collection exists or  new collection is the same as legacy collection
+        #         No data migration needed,  and ensuring index is created then return
+        if (new_collection_exists and not legacy_collection) or (
+            collection_name == legacy_collection
+        ):
+            # create_payload_index return without error if index already exists
             client.create_payload_index(
                 collection_name=collection_name,
                 field_name=WORKSPACE_ID_FIELD,
@@ -144,132 +178,242 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     is_tenant=True,
                 ),
             )
-            logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
+            new_workspace_count = client.count(
+                collection_name=collection_name,
+                count_filter=workspace_count_filter,
+                exact=True,
+            ).count
+
+            # Skip data migration if new collection already has workspace data
+            if new_workspace_count == 0 and not (collection_name == legacy_collection):
+                logger.warning(
+                    f"Qdrant: workspace data in collection '{collection_name}' is empty. "
+                    f"Ensure it is caused by new workspace setup and not an unexpected embedding model change."
+                )
+
             return
 
-        # Case 4: Only legacy exists - Migrate data
-        logger.info(
-            f"Qdrant: Migrating data from legacy collection '{legacy_namespace}'"
+        legacy_count = None
+        if not new_collection_exists:
+            # Check vector dimension compatibility before creating new collection
+            if legacy_collection:
+                legacy_count = client.count(
+                    collection_name=legacy_collection, exact=True
+                ).count
+                if legacy_count > 0:
+                    legacy_info = client.get_collection(legacy_collection)
+                    legacy_dim = legacy_info.config.params.vectors.size
+
+                    if vectors_config.size and legacy_dim != vectors_config.size:
+                        logger.error(
+                            f"Qdrant: Dimension mismatch detected! "
+                            f"Legacy collection '{legacy_collection}' has {legacy_dim}d vectors, "
+                            f"but new embedding model expects {vectors_config.size}d."
+                        )
+
+                        raise DataMigrationError(
+                            f"Dimension mismatch between legacy collection '{legacy_collection}' "
+                            f"and new collection. Expected {vectors_config.size}d but got {legacy_dim}d."
+                        )
+
+            client.create_collection(
+                collection_name, vectors_config=vectors_config, hnsw_config=hnsw_config
+            )
+            logger.info(f"Qdrant: Collection '{collection_name}' created successfully")
+            if not legacy_collection:
+                logger.warning(
+                    "Qdrant: Ensure this new collection creation is caused by new workspace setup and not an unexpected embedding model change."
+                )
+
+        # create_payload_index return without error if index already exists
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=WORKSPACE_ID_FIELD,
+            field_schema=models.KeywordIndexParams(
+                type=models.KeywordIndexType.KEYWORD,
+                is_tenant=True,
+            ),
         )
 
-        try:
-            # Get legacy collection count
-            legacy_count = client.count(
-                collection_name=legacy_namespace, exact=True
-            ).count
-            logger.info(f"Qdrant: Found {legacy_count} records in legacy collection")
-
+        # Case 2: Legacy collection exist
+        if legacy_collection:
+            # Only drop legacy collection if it's empty
+            if legacy_count is None:
+                legacy_count = client.count(
+                    collection_name=legacy_collection, exact=True
+                ).count
             if legacy_count == 0:
-                logger.info("Qdrant: Legacy collection is empty, skipping migration")
-                # Create new empty collection
-                client.create_collection(collection_name, **kwargs)
-                client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name=WORKSPACE_ID_FIELD,
-                    field_schema=models.KeywordIndexParams(
-                        type=models.KeywordIndexType.KEYWORD,
-                        is_tenant=True,
-                    ),
+                client.delete_collection(collection_name=legacy_collection)
+                logger.info(
+                    f"Qdrant: Empty legacy collection '{legacy_collection}' deleted successfully"
                 )
                 return
 
-            # Create new collection first
-            logger.info(f"Qdrant: Creating new collection '{collection_name}'")
-            client.create_collection(collection_name, **kwargs)
+            new_workspace_count = client.count(
+                collection_name=collection_name,
+                count_filter=workspace_count_filter,
+                exact=True,
+            ).count
 
-            # Batch migration (500 records per batch)
-            migrated_count = 0
-            offset = None
-            batch_size = 500
-
-            while True:
-                # Scroll through legacy data
-                result = client.scroll(
-                    collection_name=legacy_namespace,
-                    limit=batch_size,
-                    offset=offset,
-                    with_vectors=True,
-                    with_payload=True,
+            # Skip data migration if new collection already has workspace data
+            if new_workspace_count > 0:
+                logger.warning(
+                    f"Qdrant: Both new and legacy collection have data. "
+                    f"{legacy_count} records in {legacy_collection} require manual deletion after migration verification."
                 )
-                points, next_offset = result
+                return
 
-                if not points:
-                    break
+            # Case 3: Only legacy exists - migrate data from legacy collection to new collection
+            # Check if legacy collection has workspace_id to determine migration strategy
+            # Note: payload_schema only reflects INDEXED fields, so we also sample
+            # actual payloads to detect unindexed workspace_id fields
+            legacy_info = client.get_collection(legacy_collection)
+            has_workspace_index = WORKSPACE_ID_FIELD in (
+                legacy_info.payload_schema or {}
+            )
 
-                # Transform points for new collection
-                new_points = []
-                for point in points:
-                    # Add workspace_id to payload
-                    new_payload = dict(point.payload or {})
-                    new_payload[WORKSPACE_ID_FIELD] = workspace or DEFAULT_WORKSPACE
-
-                    # Create new point with workspace-prefixed ID
-                    original_id = new_payload.get(ID_FIELD)
-                    if original_id:
-                        new_point_id = compute_mdhash_id_for_qdrant(
-                            original_id, prefix=workspace or DEFAULT_WORKSPACE
+            # Detect workspace_id field presence by sampling payloads if not indexed
+            # This prevents cross-workspace data leakage when workspace_id exists but isn't indexed
+            has_workspace_field = has_workspace_index
+            if not has_workspace_index:
+                # Sample a small batch of points to check for workspace_id in payloads
+                # All points must have workspace_id if any point has it
+                sample_result = client.scroll(
+                    collection_name=legacy_collection,
+                    limit=10,  # Small sample is sufficient for detection
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                sample_points, _ = sample_result
+                for point in sample_points:
+                    if point.payload and WORKSPACE_ID_FIELD in point.payload:
+                        has_workspace_field = True
+                        logger.info(
+                            f"Qdrant: Detected unindexed {WORKSPACE_ID_FIELD} field "
+                            f"in legacy collection '{legacy_collection}' via payload sampling"
                         )
-                    else:
-                        # Fallback: use original point ID
-                        new_point_id = str(point.id)
+                        break
 
-                    new_points.append(
-                        models.PointStruct(
-                            id=new_point_id,
-                            vector=point.vector,
-                            payload=new_payload,
+            # Build workspace filter if legacy collection has workspace support
+            # This prevents cross-workspace data leakage during migration
+            legacy_scroll_filter = None
+            if has_workspace_field:
+                legacy_scroll_filter = models.Filter(
+                    must=[workspace_filter_condition(workspace)]
+                )
+                # Recount with workspace filter for accurate migration tracking
+                legacy_count = client.count(
+                    collection_name=legacy_collection,
+                    count_filter=legacy_scroll_filter,
+                    exact=True,
+                ).count
+                logger.info(
+                    f"Qdrant: Legacy collection has workspace support, "
+                    f"filtering to {legacy_count} records for workspace '{workspace}'"
+                )
+
+            logger.info(
+                f"Qdrant: Found legacy collection '{legacy_collection}' with {legacy_count} records to migrate."
+            )
+            logger.info(
+                f"Qdrant: Migrating data from legacy collection '{legacy_collection}' to new collection '{collection_name}'"
+            )
+
+            try:
+                # Batch migration (500 records per batch)
+                migrated_count = 0
+                offset = None
+                batch_size = 500
+
+                while True:
+                    # Scroll through legacy data with optional workspace filter
+                    result = client.scroll(
+                        collection_name=legacy_collection,
+                        scroll_filter=legacy_scroll_filter,
+                        limit=batch_size,
+                        offset=offset,
+                        with_vectors=True,
+                        with_payload=True,
+                    )
+                    points, next_offset = result
+
+                    if not points:
+                        break
+
+                    # Transform points for new collection
+                    new_points = []
+                    for point in points:
+                        # Set workspace_id in payload
+                        new_payload = dict(point.payload or {})
+                        new_payload[WORKSPACE_ID_FIELD] = workspace
+
+                        # Create new point with workspace-prefixed ID
+                        original_id = new_payload.get(ID_FIELD)
+                        if original_id:
+                            new_point_id = compute_mdhash_id_for_qdrant(
+                                original_id, prefix=workspace
+                            )
+                        else:
+                            # Fallback: use original point ID
+                            new_point_id = str(point.id)
+
+                        new_points.append(
+                            models.PointStruct(
+                                id=new_point_id,
+                                vector=point.vector,
+                                payload=new_payload,
+                            )
                         )
+
+                    # Upsert to new collection
+                    client.upsert(
+                        collection_name=collection_name, points=new_points, wait=True
                     )
 
-                # Upsert to new collection
-                client.upsert(
-                    collection_name=collection_name, points=new_points, wait=True
+                    migrated_count += len(points)
+                    logger.info(
+                        f"Qdrant: {migrated_count}/{legacy_count} records migrated"
+                    )
+
+                    # Check if we've reached the end
+                    if next_offset is None:
+                        break
+                    offset = next_offset
+
+                new_count_after = client.count(
+                    collection_name=collection_name,
+                    count_filter=workspace_count_filter,
+                    exact=True,
+                ).count
+                inserted_count = new_count_after - new_workspace_count
+                if inserted_count != legacy_count:
+                    error_msg = (
+                        "Qdrant: Migration verification failed, expected "
+                        f"{legacy_count} inserted records, got {inserted_count}."
+                    )
+                    logger.error(error_msg)
+                    raise DataMigrationError(error_msg)
+
+            except DataMigrationError:
+                # Re-raise DataMigrationError as-is to preserve specific error messages
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Qdrant: Failed to migrate data from legacy collection '{legacy_collection}' to new collection '{collection_name}': {e}"
                 )
-
-                migrated_count += len(points)
-                logger.info(f"Qdrant: {migrated_count}/{legacy_count} records migrated")
-
-                # Check if we've reached the end
-                if next_offset is None:
-                    break
-                offset = next_offset
-
-            # Verify migration by comparing counts
-            logger.info("Verifying migration...")
-            new_count = client.count(collection_name=collection_name, exact=True).count
-
-            if new_count != legacy_count:
-                error_msg = f"Qdrant: Migration verification failed, expected {legacy_count} records, got {new_count} in new collection"
-                logger.error(error_msg)
-                raise QdrantMigrationError(error_msg)
+                raise DataMigrationError(
+                    f"Failed to migrate data from legacy collection '{legacy_collection}' to new collection '{collection_name}'"
+                ) from e
 
             logger.info(
-                f"Qdrant: Migration completed successfully: {migrated_count} records migrated"
+                f"Qdrant: Migration from '{legacy_collection}' to '{collection_name}' completed successfully"
             )
-
-            # Create payload index after successful migration
-            logger.info("Qdrant: Creating workspace payload index...")
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name=WORKSPACE_ID_FIELD,
-                field_schema=models.KeywordIndexParams(
-                    type=models.KeywordIndexType.KEYWORD,
-                    is_tenant=True,
-                ),
+            logger.warning(
+                "Qdrant: Manual deletion is required after data migration verification."
             )
-            logger.info(
-                f"Qdrant: Migration from '{legacy_namespace}' to '{collection_name}' completed successfully"
-            )
-
-        except QdrantMigrationError:
-            # Re-raise migration errors without wrapping
-            raise
-        except Exception as e:
-            error_msg = f"Qdrant: Migration failed with error: {e}"
-            logger.error(error_msg)
-            raise QdrantMigrationError(error_msg) from e
 
     def __post_init__(self):
+        self._validate_embedding_func()
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Qdrant storage instances
         qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
@@ -277,7 +421,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = qdrant_workspace.strip()
             logger.info(
-                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -287,20 +431,23 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
-        # Get legacy namespace for data migration from old version
-        if effective_workspace:
-            self.legacy_namespace = f"{effective_workspace}_{self.namespace}"
-        else:
-            self.legacy_namespace = self.namespace
-
         self.effective_workspace = effective_workspace or DEFAULT_WORKSPACE
 
-        # Use a shared collection with payload-based partitioning (Qdrant's recommended approach)
-        # Ref: https://qdrant.tech/documentation/guides/multiple-partitions/
-        self.final_namespace = f"lightrag_vdb_{self.namespace}"
-        logger.debug(
-            f"Using shared collection '{self.final_namespace}' with workspace '{self.effective_workspace}' for payload-based partitioning"
-        )
+        # Generate model suffix
+        self.model_suffix = self._generate_collection_suffix()
+
+        # New naming scheme with model isolation
+        # Example: "lightrag_vdb_chunks_text_embedding_ada_002_1536d"
+        # Ensure model_suffix is not empty before appending
+        if self.model_suffix:
+            self.final_namespace = f"lightrag_vdb_{self.namespace}_{self.model_suffix}"
+            logger.info(f"Qdrant collection: {self.final_namespace}")
+        else:
+            # Fallback: use legacy namespace if model_suffix is unavailable
+            self.final_namespace = f"lightrag_vdb_{self.namespace}"
+            logger.warning(
+                f"Qdrant collection: {self.final_namespace} missing suffix. Pls add model_name to embedding_func for proper workspace data isolation."
+            )
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -338,11 +485,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     )
 
                 # Setup collection (create if not exists and configure indexes)
-                # Pass legacy_namespace and workspace for migration support
+                # Pass namespace and workspace for backward-compatible migration support
                 QdrantVectorDBStorage.setup_collection(
                     self._client,
                     self.final_namespace,
-                    legacy_namespace=self.legacy_namespace,
+                    namespace=self.namespace,
                     workspace=self.effective_workspace,
                     vectors_config=models.VectorParams(
                         size=self.embedding_func.embedding_dim,
@@ -352,7 +499,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         payload_m=16,
                         m=0,
                     ),
+                    model_suffix=self.model_suffix,
                 )
+
+                # Removed duplicate max batch size initialization
 
                 self._initialized = True
                 logger.info(
@@ -481,21 +631,44 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             entity_name: Name of the entity to delete
         """
         try:
-            # Generate the entity ID using the same function as used for storage
+            # Compute entity ID from name (same as Milvus)
             entity_id = compute_mdhash_id(entity_name, prefix=ENTITY_PREFIX)
-            qdrant_entity_id = compute_mdhash_id_for_qdrant(
-                entity_id, prefix=self.effective_workspace
+            logger.debug(
+                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
             )
 
-            # Delete the entity point by its Qdrant ID directly
-            self._client.delete(
+            # Scroll to find the entity by its ID field in payload with workspace filtering
+            # This is safer than reconstructing the Qdrant point ID
+            results = self._client.scroll(
                 collection_name=self.final_namespace,
-                points_selector=models.PointIdsList(points=[qdrant_entity_id]),
-                wait=True,
+                scroll_filter=models.Filter(
+                    must=[
+                        workspace_filter_condition(self.effective_workspace),
+                        models.FieldCondition(
+                            key=ID_FIELD, match=models.MatchValue(value=entity_id)
+                        ),
+                    ]
+                ),
+                with_payload=False,
+                limit=1,
             )
-            logger.debug(
-                f"[{self.workspace}] Successfully deleted entity {entity_name}"
-            )
+
+            # Extract point IDs to delete
+            points = results[0]
+            if points:
+                ids_to_delete = [point.id for point in points]
+                self._client.delete(
+                    collection_name=self.final_namespace,
+                    points_selector=models.PointIdsList(points=ids_to_delete),
+                    wait=True,
+                )
+                logger.debug(
+                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
+                )
+            else:
+                logger.debug(
+                    f"[{self.workspace}] Entity {entity_name} not found in storage"
+                )
         except Exception as e:
             logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
 
@@ -506,38 +679,60 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             entity_name: Name of the entity whose relations should be deleted
         """
         try:
-            # Find relations where the entity is either source or target, with workspace filtering
-            results = self._client.scroll(
-                collection_name=self.final_namespace,
-                scroll_filter=models.Filter(
-                    must=[workspace_filter_condition(self.effective_workspace)],
-                    should=[
-                        models.FieldCondition(
-                            key="src_id", match=models.MatchValue(value=entity_name)
-                        ),
-                        models.FieldCondition(
-                            key="tgt_id", match=models.MatchValue(value=entity_name)
-                        ),
-                    ],
-                ),
-                with_payload=True,
-                limit=1000,  # Adjust as needed for your use case
+            # Build the filter to find relations where entity is either source or target
+            # must + should = workspace_id matches AND (src_id matches OR tgt_id matches)
+            relation_filter = models.Filter(
+                must=[workspace_filter_condition(self.effective_workspace)],
+                should=[
+                    models.FieldCondition(
+                        key="src_id", match=models.MatchValue(value=entity_name)
+                    ),
+                    models.FieldCondition(
+                        key="tgt_id", match=models.MatchValue(value=entity_name)
+                    ),
+                ],
             )
 
-            # Extract points that need to be deleted
-            relation_points = results[0]
-            ids_to_delete = [point.id for point in relation_points]
+            # Paginate through all matching relations to handle large datasets
+            total_deleted = 0
+            offset = None
+            batch_size = 1000
 
-            if ids_to_delete:
-                # Delete the relations with workspace filtering
-                assert isinstance(self._client, QdrantClient)
+            while True:
+                # Scroll to find relations, using with_payload=False for efficiency
+                # since we only need point IDs for deletion
+                results = self._client.scroll(
+                    collection_name=self.final_namespace,
+                    scroll_filter=relation_filter,
+                    with_payload=False,
+                    with_vectors=False,
+                    limit=batch_size,
+                    offset=offset,
+                )
+
+                points, next_offset = results
+                if not points:
+                    break
+
+                # Extract point IDs to delete
+                ids_to_delete = [point.id for point in points]
+
+                # Delete the batch of relations
                 self._client.delete(
                     collection_name=self.final_namespace,
                     points_selector=models.PointIdsList(points=ids_to_delete),
                     wait=True,
                 )
+                total_deleted += len(ids_to_delete)
+
+                # Check if we've reached the end
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            if total_deleted > 0:
                 logger.debug(
-                    f"[{self.workspace}] Deleted {len(ids_to_delete)} relations for {entity_name}"
+                    f"[{self.workspace}] Deleted {total_deleted} relations for {entity_name}"
                 )
             else:
                 logger.debug(

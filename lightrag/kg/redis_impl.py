@@ -133,7 +133,7 @@ class RedisKVStorage(BaseKVStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = redis_workspace.strip()
             logger.info(
-                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -526,7 +526,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = redis_workspace.strip()
             logger.info(
-                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization

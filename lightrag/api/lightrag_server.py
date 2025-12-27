@@ -451,6 +451,9 @@ def create_app(args):
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[
+            "X-New-Token"
+        ],  # Expose token renewal header for cross-origin requests
     )
 
     # Create combined auth dependency for all endpoints
@@ -868,6 +871,7 @@ def create_app(args):
             func=optimized_embedding_function,
             max_token_size=final_max_token_size,
             send_dimensions=False,  # Will be set later based on binding requirements
+            model_name=model,
         )
 
         # Log final embedding configuration
@@ -965,7 +969,9 @@ def create_app(args):
             f"Embedding max_token_size: {embedding_func.max_token_size} (from {source})"
         )
     else:
-        logger.info("Embedding max_token_size: not set (90% token warning disabled)")
+        logger.info(
+            "Embedding max_token_size: None (Embedding token limit is disabled)."
+        )
 
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None

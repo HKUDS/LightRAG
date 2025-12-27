@@ -74,6 +74,7 @@ download_models_hf.py
 memory-bank
 .claude/CLAUDE.md
 .claude/
+CLAUDE.md
 
 
 # My changes to the gitignore file
@@ -88,3 +89,7 @@ memory-bank
 
 # 4. Allow specific files directly inside 'jrs'
 !/jrs/*.*
+
+
+
+

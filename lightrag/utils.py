@@ -6,6 +6,7 @@ import sys
 import asyncio
 import html
 import csv
+import inspect
 import json
 import logging
 import logging.handlers
@@ -409,22 +410,69 @@ class TaskState:
 @dataclass
 class EmbeddingFunc:
     """Embedding function wrapper with dimension validation
+
     This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
-    This class should not be wrapped multiple times.
+    If wrapped multiple times, the inner wrappers will be automatically unwrapped to prevent
+    configuration conflicts where inner wrapper settings would override outer wrapper settings.
+
+    Using functools.partial for parameter binding:
+        A common pattern is to use functools.partial to pre-bind model and host parameters
+        to an embedding function. When the base embedding function is already decorated with
+        @wrap_embedding_func_with_attrs (e.g., ollama_embed), use `.func` to access the
+        original unwrapped function to avoid double wrapping:
+
+        Example:
+            from functools import partial
+
+            # ❌ Wrong - causes double wrapping (inner EmbeddingFunc still executes)
+            func=partial(ollama_embed, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+            # ✅ Correct - access the unwrapped function via .func
+            func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
 
     Args:
-        embedding_dim: Expected dimension of the embeddings
+        embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
-        max_token_size: Optional token limit for the embedding model
-        send_dimensions: Whether to inject embedding_dim as a keyword argument
+        max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
+        send_dimensions: Whether to inject embedding_dim argument to underlying function
+        model_name: Model name for implementing workspace data isolation in vector DB
     """
 
     embedding_dim: int
     func: callable
-    max_token_size: int | None = None  # Token limit for the embedding model
-    send_dimensions: bool = (
-        False  # Control whether to send embedding_dim to the function
+    max_token_size: int | None = None
+    send_dimensions: bool = False
+    model_name: str | None = (
+        None  # Model name for implementing workspace data isolation in vector DB
     )
+
+    def __post_init__(self):
+        """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
+
+        When an EmbeddingFunc wraps another EmbeddingFunc, the inner wrapper's
+        __call__ preprocessing would override the outer wrapper's settings.
+        This method detects and unwraps nested EmbeddingFunc instances to ensure
+        that only the outermost wrapper's configuration is applied.
+        """
+        # Check if func is already an EmbeddingFunc instance and unwrap it
+        max_unwrap_depth = 3  # Safety limit to prevent infinite loops
+        unwrap_count = 0
+        while isinstance(self.func, EmbeddingFunc):
+            unwrap_count += 1
+            if unwrap_count > max_unwrap_depth:
+                raise ValueError(
+                    f"EmbeddingFunc unwrap depth exceeded {max_unwrap_depth}. "
+                    "Possible circular reference detected."
+                )
+            # Unwrap to get the original function
+            self.func = self.func.func
+
+        if unwrap_count > 0:
+            logger.warning(
+                f"Detected nested EmbeddingFunc wrapping (depth: {unwrap_count}), "
+                "auto-unwrapped to prevent configuration conflicts. "
+                "Consider using .func to access the unwrapped function directly."
+            )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
@@ -444,6 +492,12 @@ class EmbeddingFunc:
 
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
+
+        # Check if underlying function supports max_token_size and inject if not provided
+        if self.max_token_size is not None and "max_token_size" not in kwargs:
+            sig = inspect.signature(self.func)
+            if "max_token_size" in sig.parameters:
+                kwargs["max_token_size"] = self.max_token_size
 
         # Call the actual embedding function
         result = await self.func(*args, **kwargs)
@@ -1016,64 +1070,43 @@ def wrap_embedding_func_with_attrs(**kwargs):
 
     Correct usage patterns:
 
-    1. Direct implementation (decorated):
+    1. Direct decoration:
         ```python
-        @wrap_embedding_func_with_attrs(embedding_dim=1536)
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
         async def my_embed(texts, embedding_dim=None):
             # Direct implementation
             return embeddings
         ```
-
-    2. Wrapper calling decorated function (DO NOT decorate wrapper):
+    2. Double decoration:
         ```python
-        # my_embed is already decorated above
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
+        @retry(...)
+        async def my_embed(texts, ...):
+            # Base implementation
+            pass
 
-        async def my_wrapper(texts, **kwargs):  # ❌ DO NOT decorate this!
-            # Must call .func to access unwrapped implementation
-            return await my_embed.func(texts, **kwargs)
-        ```
-
-    3. Wrapper calling decorated function (properly decorated):
-        ```python
-        @wrap_embedding_func_with_attrs(embedding_dim=1536)
-        async def my_wrapper(texts, **kwargs):  # ✅ Can decorate if calling .func
-            # Calling .func avoids double decoration
-            return await my_embed.func(texts, **kwargs)
+        @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=4096, model_name="another_embedding_model")
+        # Note: No @retry here!
+        async def my_new_embed(texts, ...):
+            # CRITICAL: Call .func to access unwrapped function
+            return await my_embed.func(texts, ...)  # ✅ Correct
+            # return await my_embed(texts, ...)     # ❌ Wrong - double decoration!
         ```
 
     The decorated function becomes an EmbeddingFunc instance with:
     - embedding_dim: The embedding dimension
     - max_token_size: Maximum token limit (optional)
+    - model_name: Model name (optional)
     - func: The original unwrapped function (access via .func)
     - __call__: Wrapper that injects embedding_dim parameter
-
-    Double decoration causes:
-    - Double injection of embedding_dim parameter
-    - Incorrect parameter passing to the underlying implementation
-    - Runtime errors due to parameter conflicts
 
     Args:
         embedding_dim: The dimension of embedding vectors
         max_token_size: Maximum number of tokens (optional)
-        send_dimensions: Whether to inject embedding_dim as a keyword argument (optional)
+        send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance
-
-    Example of correct wrapper implementation:
-        ```python
-        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
-        @retry(...)
-        async def openai_embed(texts, ...):
-            # Base implementation
-            pass
-
-        @wrap_embedding_func_with_attrs(embedding_dim=1536)  # Note: No @retry here!
-        async def azure_openai_embed(texts, ...):
-            # CRITICAL: Call .func to access unwrapped function
-            return await openai_embed.func(texts, ...)  # ✅ Correct
-            # return await openai_embed(texts, ...)     # ❌ Wrong - double decoration!
-        ```
     """
 
     def final_decro(func) -> EmbeddingFunc:
