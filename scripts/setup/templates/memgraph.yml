@@ -1,0 +1,7 @@
+  memgraph:
+    image: memgraph/memgraph:${MEMGRAPH_IMAGE_TAG:-3.7.2}
+    ports:
+      - "7687:7687"
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+    restart: unless-stopped
