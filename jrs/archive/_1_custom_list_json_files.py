@@ -1,3 +1,6 @@
+# Creates a text file containing a list of all json files in a specified directory.
+
+
 import os
 
 # Set the directory to search and the output file name

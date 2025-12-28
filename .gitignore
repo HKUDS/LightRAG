@@ -96,3 +96,9 @@ CLAUDE.md
 # 6. Allow everything inside the _notes folder
 !/jrs/_notes/**
 
+# 7. Allow the archive folder specifically
+!/jrs/archive/
+
+# 7. Allow everything inside the _notes folder
+!/jrs/archive/**
+
