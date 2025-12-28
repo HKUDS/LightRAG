@@ -1,0 +1,465 @@
+{
+  "settings": {
+    "language": "Sprache",
+    "theme": "Design",
+    "light": "Hell",
+    "dark": "Dunkel",
+    "system": "System"
+  },
+  "header": {
+    "documents": "Dokumente",
+    "knowledgeGraph": "Wissensgraph",
+    "retrieval": "Abruf",
+    "api": "API",
+    "projectRepository": "Projekt-Repository",
+    "logout": "Abmelden",
+    "frontendNeedsRebuild": "Frontend muss neu erstellt werden",
+    "themeToggle": {
+      "switchToLight": "Zu hellem Design wechseln",
+      "switchToDark": "Zu dunklem Design wechseln"
+    }
+  },
+  "login": {
+    "description": "Bitte geben Sie Ihr Konto und Passwort ein, um sich im System anzumelden",
+    "username": "Benutzername",
+    "usernamePlaceholder": "Bitte geben Sie einen Benutzernamen ein",
+    "password": "Passwort",
+    "passwordPlaceholder": "Bitte geben Sie ein Passwort ein",
+    "loginButton": "Anmelden",
+    "loggingIn": "Anmeldung läuft...",
+    "successMessage": "Anmeldung erfolgreich",
+    "errorEmptyFields": "Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein",
+    "errorInvalidCredentials": "Anmeldung fehlgeschlagen, bitte überprüfen Sie Benutzername und Passwort",
+    "authDisabled": "Authentifizierung ist deaktiviert. Verwenden des anmeldefreien Modus.",
+    "guestMode": "Anmeldefrei"
+  },
+  "common": {
+    "cancel": "Abbrechen",
+    "save": "Speichern",
+    "saving": "Speichern...",
+    "saveFailed": "Speichern fehlgeschlagen"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Löschen",
+      "tooltip": "Dokumente löschen",
+      "title": "Dokumente löschen",
+      "description": "Dies entfernt alle Dokumente aus dem System",
+      "warning": "WARNUNG: Diese Aktion löscht alle Dokumente dauerhaft und kann nicht rückgängig gemacht werden!",
+      "confirm": "Möchten Sie wirklich alle Dokumente löschen?",
+      "confirmPrompt": "Geben Sie 'yes' ein, um diese Aktion zu bestätigen",
+      "confirmPlaceholder": "Geben Sie yes ein, um zu bestätigen",
+      "clearCache": "LLM-Cache löschen",
+      "confirmButton": "JA",
+      "clearing": "Löschen...",
+      "timeout": "Löschvorgang hat das Zeitlimit überschritten, bitte versuchen Sie es erneut",
+      "success": "Dokumente erfolgreich gelöscht",
+      "cacheCleared": "Cache erfolgreich gelöscht",
+      "cacheClearFailed": "Cache konnte nicht gelöscht werden:\n{{error}}",
+      "failed": "Dokumente löschen fehlgeschlagen:\n{{message}}",
+      "error": "Dokumente löschen fehlgeschlagen:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Löschen",
+      "tooltip": "Ausgewählte Dokumente löschen",
+      "title": "Dokumente löschen",
+      "description": "Dies löscht die ausgewählten Dokumente dauerhaft aus dem System",
+      "warning": "WARNUNG: Diese Aktion löscht die ausgewählten Dokumente dauerhaft und kann nicht rückgängig gemacht werden!",
+      "confirm": "Möchten Sie wirklich {{count}} ausgewählte(s) Dokument(e) löschen?",
+      "confirmPrompt": "Geben Sie 'yes' ein, um diese Aktion zu bestätigen",
+      "confirmPlaceholder": "Geben Sie yes ein, um zu bestätigen",
+      "confirmButton": "JA",
+      "deleteFileOption": "Auch hochgeladene Dateien löschen",
+      "deleteFileTooltip": "Aktivieren Sie diese Option, um auch die entsprechenden hochgeladenen Dateien auf dem Server zu löschen",
+      "deleteLLMCacheOption": "Auch extrahierten LLM-Cache löschen",
+      "success": "Dokumentlösch-Pipeline erfolgreich gestartet",
+      "failed": "Dokumente löschen fehlgeschlagen:\n{{message}}",
+      "error": "Dokumente löschen fehlgeschlagen:\n{{error}}",
+      "busy": "Pipeline ist beschäftigt, bitte versuchen Sie es später erneut",
+      "notAllowed": "Keine Berechtigung, diese Operation auszuführen"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Aktuelle Seite auswählen ({{count}})",
+      "deselectAll": "Alle Auswahl aufheben ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "Hochladen",
+      "tooltip": "Dokumente hochladen",
+      "title": "Dokumente hochladen",
+      "description": "Ziehen Sie Ihre Dokumente hierher oder klicken Sie zum Durchsuchen.",
+      "single": {
+        "uploading": "Hochladen {{name}}: {{percent}}%",
+        "success": "Upload erfolgreich:\n{{name}} erfolgreich hochgeladen",
+        "failed": "Upload fehlgeschlagen:\n{{name}}\n{{message}}",
+        "error": "Upload fehlgeschlagen:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Dateien werden hochgeladen...",
+        "success": "Dateien erfolgreich hochgeladen",
+        "error": "Einige Dateien konnten nicht hochgeladen werden"
+      },
+      "generalError": "Upload fehlgeschlagen\n{{error}}",
+      "fileTypes": "Unterstützte Typen: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Es kann nicht mehr als 1 Datei gleichzeitig hochgeladen werden",
+        "maxFilesLimit": "Es können nicht mehr als {{count}} Dateien hochgeladen werden",
+        "fileRejected": "Datei {{name}} wurde abgelehnt",
+        "unsupportedType": "Nicht unterstützter Dateityp",
+        "fileTooLarge": "Datei zu groß, maximale Größe ist {{maxSize}}",
+        "dropHere": "Dateien hier ablegen",
+        "dragAndDrop": "Dateien hierher ziehen oder klicken, um Dateien auszuwählen",
+        "removeFile": "Datei entfernen",
+        "uploadDescription": "Sie können {{isMultiple ? 'mehrere' : count}} Dateien hochladen (bis zu {{maxSize}} pro Datei)",
+        "duplicateFile": "Dateiname existiert bereits im Server-Cache"
+      }
+    },
+    "documentManager": {
+      "title": "Dokumentenverwaltung",
+      "scanButton": "Scannen/Wiederholen",
+      "scanTooltip": "Dokumente im Eingabeordner scannen und verarbeiten sowie alle fehlgeschlagenen Dokumente erneut verarbeiten",
+      "refreshTooltip": "Dokumentenliste zurücksetzen",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "Status der Dokumentverarbeitungs-Pipeline anzeigen",
+      "uploadedTitle": "Hochgeladene Dokumente",
+      "uploadedDescription": "Liste der hochgeladenen Dokumente und ihrer Status.",
+      "emptyTitle": "Keine Dokumente",
+      "emptyDescription": "Es wurden noch keine Dokumente hochgeladen.",
+      "columns": {
+        "id": "ID",
+        "fileName": "Dateiname",
+        "summary": "Zusammenfassung",
+        "status": "Status",
+        "length": "Länge",
+        "chunks": "Chunks",
+        "created": "Erstellt",
+        "updated": "Aktualisiert",
+        "metadata": "Metadaten",
+        "select": "Auswählen"
+      },
+      "status": {
+        "all": "Alle",
+        "completed": "Abgeschlossen",
+        "preprocessed": "Vorverarbeitet",
+        "processing": "Verarbeitung",
+        "pending": "Ausstehend",
+        "failed": "Fehlgeschlagen"
+      },
+      "errors": {
+        "loadFailed": "Dokumente konnten nicht geladen werden\n{{error}}",
+        "scanFailed": "Dokumente konnten nicht gescannt werden\n{{error}}",
+        "scanProgressFailed": "Scan-Fortschritt konnte nicht abgerufen werden\n{{error}}"
+      },
+      "fileNameLabel": "Dateiname",
+      "showButton": "Anzeigen",
+      "hideButton": "Ausblenden",
+      "showFileNameTooltip": "Dateiname anzeigen",
+      "hideFileNameTooltip": "Dateiname ausblenden"
+    },
+    "pipelineStatus": {
+      "title": "Pipeline-Status",
+      "busy": "Pipeline beschäftigt",
+      "requestPending": "Anfrage ausstehend",
+      "cancellationRequested": "Stornierung angefordert",
+      "jobName": "Auftragsname",
+      "startTime": "Startzeit",
+      "progress": "Fortschritt",
+      "unit": "Batch",
+      "pipelineMessages": "Pipeline-Nachrichten",
+      "cancelButton": "Abbrechen",
+      "cancelTooltip": "Pipeline-Verarbeitung abbrechen",
+      "cancelConfirmTitle": "Pipeline-Stornierung bestätigen",
+      "cancelConfirmDescription": "Dies unterbricht die laufende Pipeline-Verarbeitung. Möchten Sie wirklich fortfahren?",
+      "cancelConfirmButton": "Stornierung bestätigen",
+      "cancelInProgress": "Stornierung läuft...",
+      "pipelineNotRunning": "Pipeline läuft nicht",
+      "cancelSuccess": "Pipeline-Stornierung angefordert",
+      "cancelFailed": "Pipeline konnte nicht abgebrochen werden\n{{error}}",
+      "cancelNotBusy": "Pipeline läuft nicht, keine Stornierung erforderlich",
+      "errors": {
+        "fetchFailed": "Pipeline-Status konnte nicht abgerufen werden\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "Graphdaten wurden auf maximale Knotenanzahl gekürzt",
+    "statusDialog": {
+      "title": "LightRAG Server-Einstellungen",
+      "description": "Aktuellen Systemstatus und Verbindungsinformationen anzeigen"
+    },
+    "legend": "Legende",
+    "nodeTypes": {
+      "person": "Person",
+      "category": "Kategorie",
+      "geo": "Geografisch",
+      "location": "Ort",
+      "organization": "Organisation",
+      "event": "Ereignis",
+      "equipment": "Ausrüstung",
+      "weapon": "Waffe",
+      "animal": "Tier",
+      "unknown": "Unbekannt",
+      "object": "Objekt",
+      "group": "Gruppe",
+      "technology": "Technologie",
+      "product": "Produkt",
+      "document": "Dokument",
+      "content": "Inhalt",
+      "data": "Daten",
+      "artifact": "Artefakt",
+      "concept": "Konzept",
+      "naturalobject": "Natürliches Objekt",
+      "method": "Methode",
+      "creature": "Kreatur",
+      "plant": "Pflanze",
+      "disease": "Krankheit",
+      "drug": "Medikament",
+      "food": "Lebensmittel",
+      "other": "Sonstiges"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "Einstellungen",
+        "healthCheck": "Gesundheitsprüfung",
+        "showPropertyPanel": "Eigenschaften-Panel anzeigen",
+        "showSearchBar": "Suchleiste anzeigen",
+        "showNodeLabel": "Knotenbezeichnung anzeigen",
+        "nodeDraggable": "Knoten verschiebbar",
+        "showEdgeLabel": "Kantenbezeichnung anzeigen",
+        "hideUnselectedEdges": "Nicht ausgewählte Kanten ausblenden",
+        "edgeEvents": "Kanten-Ereignisse",
+        "maxQueryDepth": "Maximale Abfragetiefe",
+        "maxNodes": "Maximale Knotenanzahl",
+        "maxLayoutIterations": "Maximale Layout-Iterationen",
+        "resetToDefault": "Auf Standard zurücksetzen",
+        "edgeSizeRange": "Kantengrößenbereich",
+        "depth": "T",
+        "max": "Max",
+        "degree": "Grad",
+        "apiKey": "API-Schlüssel",
+        "enterYourAPIkey": "Geben Sie Ihren API-Schlüssel ein",
+        "save": "Speichern",
+        "refreshLayout": "Layout aktualisieren"
+      },
+      "zoomControl": {
+        "zoomIn": "Vergrößern",
+        "zoomOut": "Verkleinern",
+        "resetZoom": "Zoom zurücksetzen",
+        "rotateCamera": "Im Uhrzeigersinn drehen",
+        "rotateCameraCounterClockwise": "Gegen den Uhrzeigersinn drehen"
+      },
+      "layoutsControl": {
+        "startAnimation": "Layout-Animation fortsetzen",
+        "stopAnimation": "Layout-Animation stoppen",
+        "layoutGraph": "Graph layouten",
+        "layouts": {
+          "Circular": "Kreisförmig",
+          "Circlepack": "Kreis-Packung",
+          "Random": "Zufällig",
+          "Noverlaps": "Keine Überlappungen",
+          "Force Directed": "Kraftgerichtet",
+          "Force Atlas": "Force Atlas"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Vollbild",
+        "windowed": "Fenstermodus"
+      },
+      "legendControl": {
+        "toggleLegend": "Legende umschalten"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Verbunden",
+      "disconnected": "Getrennt"
+    },
+    "statusCard": {
+      "unavailable": "Statusinformationen nicht verfügbar",
+      "serverInfo": "Server-Informationen",
+      "workingDirectory": "Arbeitsverzeichnis",
+      "inputDirectory": "Eingabeverzeichnis",
+      "maxParallelInsert": "Gleichzeitige Dokumentenverarbeitung",
+      "summarySettings": "Zusammenfassungseinstellungen",
+      "llmConfig": "LLM-Konfiguration",
+      "llmBinding": "LLM-Bindung",
+      "llmBindingHost": "LLM-Endpunkt",
+      "llmModel": "LLM-Modell",
+      "embeddingConfig": "Einbettungskonfiguration",
+      "embeddingBinding": "Einbettungsbindung",
+      "embeddingBindingHost": "Einbettungs-Endpunkt",
+      "embeddingModel": "Einbettungsmodell",
+      "storageConfig": "Speicherkonfiguration",
+      "kvStorage": "KV-Speicher",
+      "docStatusStorage": "Dokumentstatus-Speicher",
+      "graphStorage": "Graph-Speicher",
+      "vectorStorage": "Vektor-Speicher",
+      "workspace": "Arbeitsbereich",
+      "maxGraphNodes": "Maximale Graph-Knotenanzahl",
+      "rerankerConfig": "Reranker-Konfiguration",
+      "rerankerBindingHost": "Reranker-Endpunkt",
+      "rerankerModel": "Reranker-Modell",
+      "lockStatus": "Sperrstatus",
+      "threshold": "Schwellenwert"
+    },
+    "propertiesView": {
+      "editProperty": "{{property}} bearbeiten",
+      "editPropertyDescription": "Bearbeiten Sie den Eigenschaftswert im Textbereich unten.",
+      "errors": {
+        "duplicateName": "Knotenname existiert bereits",
+        "updateFailed": "Knoten konnte nicht aktualisiert werden",
+        "tryAgainLater": "Bitte versuchen Sie es später erneut",
+        "updateSuccessButMergeFailed": "Eigenschaften aktualisiert, aber Zusammenführung fehlgeschlagen: {{error}}",
+        "mergeFailed": "Zusammenführung fehlgeschlagen: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "Knoten erfolgreich aktualisiert",
+        "relationUpdated": "Beziehung erfolgreich aktualisiert",
+        "entityMerged": "Knoten erfolgreich zusammengeführt"
+      },
+      "mergeOptionLabel": "Automatisch zusammenführen, wenn ein doppelter Name gefunden wird",
+      "mergeOptionDescription": "Wenn aktiviert, wird beim Umbenennen in einen bestehenden Namen dieser Knoten in den bestehenden zusammengeführt, anstatt zu scheitern.",
+      "mergeDialog": {
+        "title": "Knoten zusammengeführt",
+        "description": "\"{{source}}\" wurde in \"{{target}}\" zusammengeführt.",
+        "refreshHint": "Aktualisieren Sie den Graph, um die neueste Struktur zu laden.",
+        "keepCurrentStart": "Aktualisieren und aktuellen Startknoten beibehalten",
+        "useMergedStart": "Aktualisieren und zusammengeführten Knoten verwenden",
+        "refreshing": "Graph wird aktualisiert..."
+      },
+      "node": {
+        "title": "Knoten",
+        "id": "ID",
+        "labels": "Bezeichnungen",
+        "degree": "Grad",
+        "properties": "Eigenschaften",
+        "relationships": "Beziehungen (innerhalb des Teilgraphen)",
+        "expandNode": "Knoten erweitern",
+        "pruneNode": "Knoten beschneiden",
+        "deleteAllNodesError": "Löschen aller Knoten im Graph verweigert",
+        "nodesRemoved": "{{count}} Knoten entfernt, einschließlich verwaister Knoten",
+        "noNewNodes": "Keine erweiterbaren Knoten gefunden",
+        "propertyNames": {
+          "description": "Beschreibung",
+          "entity_id": "Name",
+          "entity_type": "Typ",
+          "source_id": "C-ID",
+          "Neighbour": "Nachbar",
+          "file_path": "Datei",
+          "keywords": "Schlüssel",
+          "weight": "Gewicht"
+        }
+      },
+      "edge": {
+        "title": "Beziehung",
+        "id": "ID",
+        "type": "Typ",
+        "source": "Quelle",
+        "target": "Ziel",
+        "properties": "Eigenschaften"
+      }
+    },
+    "search": {
+      "placeholder": "Knoten auf der Seite suchen...",
+      "message": "Und {{count}} weitere"
+    },
+    "graphLabels": {
+      "selectTooltip": "Teilgraph eines Knotens (Bezeichnung) abrufen",
+      "noLabels": "Keine passenden Knoten gefunden",
+      "label": "Knotenname suchen",
+      "placeholder": "Knotenname suchen...",
+      "andOthers": "Und {{count}} weitere",
+      "refreshGlobalTooltip": "Globale Graphdaten aktualisieren und Suchverlauf zurücksetzen",
+      "refreshCurrentLabelTooltip": "Graphdaten der aktuellen Seite aktualisieren",
+      "refreshingTooltip": "Daten werden aktualisiert..."
+    },
+    "emptyGraph": "Leer (Bitte erneut laden)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "In Zwischenablage kopieren",
+      "copyError": "Text konnte nicht in die Zwischenablage kopiert werden",
+      "copyEmpty": "Kein Inhalt zum Kopieren",
+      "copySuccess": "Inhalt in Zwischenablage kopiert",
+      "copySuccessLegacy": "Inhalt kopiert (Legacy-Methode)",
+      "copySuccessManual": "Inhalt kopiert (manuelle Methode)",
+      "copyFailed": "Inhalt konnte nicht kopiert werden",
+      "copyManualInstruction": "Bitte wählen Sie den Text manuell aus und kopieren Sie ihn",
+      "thinking": "Denken...",
+      "thinkingTime": "Denkzeit {{time}}s",
+      "thinkingInProgress": "Denken läuft..."
+    },
+    "retrieval": {
+      "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
+      "clear": "Löschen",
+      "send": "Senden",
+      "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
+      "error": "Fehler: Antwort konnte nicht abgerufen werden",
+      "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",
+      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage"
+    },
+    "querySettings": {
+      "parametersTitle": "Parameter",
+      "parametersDescription": "Konfigurieren Sie Ihre Abfrageparameter",
+      "queryMode": "Abfragemodus",
+      "queryModeTooltip": "Abfragestrategie auswählen:\n• Naive: Traditionelle Text-Chunk-Vektorabfrage\n• Local: Fokus auf Entitätsabfrage\n• Global: Fokus auf Beziehungsabfrage\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Abfrage überspringen, Konversationsverlauf und aktuelle Frage an LLM senden",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "Antwortformat",
+      "responseFormatTooltip": "Definiert das Antwortformat. Beispiele:\n• Mehrere Absätze\n• Einzelner Absatz\n• Aufzählungspunkte",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Mehrere Absätze",
+        "singleParagraph": "Einzelner Absatz",
+        "bulletPoints": "Aufzählungspunkte"
+      },
+      "topK": "KG Top K",
+      "topKTooltip": "Anzahl der abzurufenden Entitäten und Beziehungen. Gilt für Nicht-Naive-Modi.",
+      "topKPlaceholder": "top_k-Wert eingeben",
+      "chunkTopK": "Chunk Top K",
+      "chunkTopKTooltip": "Anzahl der abzurufenden Text-Chunks, gilt für alle Modi.",
+      "chunkTopKPlaceholder": "chunk_top_k-Wert eingeben",
+      "maxEntityTokens": "Max. Entitäts-Tokens",
+      "maxEntityTokensTooltip": "Maximale Anzahl von Tokens, die für den Entitätskontext im einheitlichen Token-Kontrollsystem zugewiesen werden",
+      "maxRelationTokens": "Max. Beziehungs-Tokens",
+      "maxRelationTokensTooltip": "Maximale Anzahl von Tokens, die für den Beziehungskontext im einheitlichen Token-Kontrollsystem zugewiesen werden",
+      "maxTotalTokens": "Max. Gesamt-Tokens",
+      "maxTotalTokensTooltip": "Maximales Gesamt-Token-Budget für den gesamten Abfragekontext (Entitäten + Beziehungen + Chunks + System-Prompt)",
+      "historyTurns": "Verlaufsturns",
+      "historyTurnsTooltip": "Anzahl der vollständigen Konversationsturns (Benutzer-Assistenten-Paare), die im Antwortkontext berücksichtigt werden sollen",
+      "historyTurnsPlaceholder": "Anzahl der Verlaufsturns",
+      "onlyNeedContext": "Nur Kontext benötigt",
+      "onlyNeedContextTooltip": "Wenn True, wird nur der abgerufene Kontext ohne Generierung einer Antwort zurückgegeben",
+      "onlyNeedPrompt": "Nur Prompt benötigt",
+      "onlyNeedPromptTooltip": "Wenn True, wird nur der generierte Prompt ohne Erzeugung einer Antwort zurückgegeben",
+      "streamResponse": "Stream-Antwort",
+      "streamResponseTooltip": "Wenn True, aktiviert Streaming-Ausgabe für Echtzeit-Antworten",
+      "userPrompt": "Zusätzlicher Ausgabe-Prompt",
+      "userPromptTooltip": "Geben Sie zusätzliche Antwortanforderungen an das LLM an (unabhängig vom Abfrageinhalt, nur für die Ausgabeverarbeitung).",
+      "userPromptPlaceholder": "Benutzerdefinierten Prompt eingeben (optional)",
+      "enableRerank": "Rerank aktivieren",
+      "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
+    }
+  },
+  "apiSite": {
+    "loading": "API-Dokumentation wird geladen..."
+  },
+  "apiKeyAlert": {
+    "title": "API-Schlüssel ist erforderlich",
+    "description": "Bitte geben Sie Ihren API-Schlüssel ein, um auf den Dienst zuzugreifen",
+    "placeholder": "API-Schlüssel eingeben",
+    "save": "Speichern"
+  },
+  "pagination": {
+    "showing": "Zeige {{start}} bis {{end}} von {{total}} Einträgen",
+    "page": "Seite",
+    "pageSize": "Seitengröße",
+    "firstPage": "Erste Seite",
+    "prevPage": "Vorherige Seite",
+    "nextPage": "Nächste Seite",
+    "lastPage": "Letzte Seite"
+  }
+}
