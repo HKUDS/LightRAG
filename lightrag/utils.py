@@ -515,14 +515,38 @@ class EmbeddingFunc:
             )
 
         # Optional: Verify vector count matches input text count
+        # actual_vectors = total_elements // expected_dim
+        # if args and isinstance(args[0], (list, tuple)):
+        #     expected_vectors = len(args[0])
+        #     if actual_vectors != expected_vectors:
+        #         raise ValueError(
+        #             f"Vector count mismatch: "
+        #             f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+        #         )
+
+
+        # Optional: Verify vector count matches input text count
         actual_vectors = total_elements // expected_dim
         if args and isinstance(args[0], (list, tuple)):
             expected_vectors = len(args[0])
             if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
+                # WORKAROUND: Handle the doubling bug in multimodal/mineru pipelines
+                if actual_vectors == 2 * expected_vectors:
+                    logger.warning(f"Vector count doubling detected ({actual_vectors} vs {expected_vectors}). Slicing result to match.")
+                    # Reshape if it's a 2D array, slice, then return
+                    if len(result.shape) > 1:
+                        return result[:expected_vectors]
+                    else:
+                        # Fallback for flat arrays
+                        new_size = expected_vectors * expected_dim
+                        return result[:new_size]
+                else:
+                    raise ValueError(
+                        f"Vector count mismatch: "
+                        f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+                    )
+
+        
 
         return result
 

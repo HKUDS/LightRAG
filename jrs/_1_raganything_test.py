@@ -159,7 +159,6 @@ async def process_with_rag(
             else:
                 return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
 
-        # Define embedding function
         embedding_func = EmbeddingFunc(
             embedding_dim=3072,
             max_token_size=8192,
@@ -261,21 +260,21 @@ def main():
     # 1. Input Argument (The file to be indexed)
     parser.add_argument(
         "--file_path", "-f",
-        default="/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_docs/nir_through_fabrics.pdf",
+        default="/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_docs/nir_through_fabrics.pdf",
         help="Path to the document to process"
     )
     
     # 2. Working Directory Arguments
     parser.add_argument(                   
         "--working_dir", "-w", 
-        default=os.getenv("RAG_WORKING_DIR", "/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_work_dir"), 
+        default=os.getenv("RAG_WORKING_DIR", "/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir"), 
         help="Working directory path"
     )
     
     # 3. Output Files Directory Arguments
     parser.add_argument(
         "--output", "-o", 
-        default=os.getenv("RAG_OUTPUT_DIR", "/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir"), 
+        default=os.getenv("RAG_OUTPUT_DIR", "/home/js/LightRAG_BACKUP/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_output_dir"), 
         help="Output directory path"
     )
     

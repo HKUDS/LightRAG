@@ -133,16 +133,22 @@ cat << EOF
 
 
 To use LightRAG, run these commands:
-  1. source .venv/bin/activate
+  1. cd LightRAG
+
+  2. source .venv/bin/activate
   This activates the virtual environment.
 
-  2. export PS1='(.venv) \w\$ '
+  3. export PS1='(.venv) \w\$ '
   This creates a better looking prompt that takes up less space on the screen.
 
-  3. lightrag-server
+  4. lightrag-server
   This starts the server.
 
-  4. Visit: http://localhost:9621/webui/ 
-  This is where you interact with the server.
+  5. Visit: http://localhost:9621/webui/ 
+  This WebUI is where you interact with the server.
+
+  6. You can interact directly with LightRAG using the
+     Python scripts in the jrs directory without the need
+     for the lightrag server or the WebUI 
 -----------------------------------------------
 EOF
