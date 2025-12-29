@@ -74,7 +74,7 @@ def main():
     parser.add_argument("query", help="The question you want to ask")
     parser.add_argument("--working_dir", "-w", 
                         default="/home/js/LightRAG/jrs/work/seheult/_ra/nir_through_fabrics/_ra_seheult_work_dir")
-    parser.add_argument("--mode", "-m", default="hybrid", choices=["naive", "local", "global", "hybrid"])
+    parser.add_argument("--mode", "-m", default="hybrid", choices=["naive", "local", "global", "hybrid", "mix"])
     parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY"))
     parser.add_argument("--base-url", "-b", default=os.getenv("OPENAI_BASE_URL"))
 

@@ -197,6 +197,26 @@ async def process_with_rag(
             result = await rag.aquery(query, mode="hybrid")
             logger.info(f"Answer: {result}")
 
+
+
+
+        # logger.info(  
+        #     "\n[Multimodal Query]: Analyzing fabric attenuation chart data"  
+        # )  
+        # multimodal_result = await rag.aquery_with_multimodal(  
+        #     "What fabric offers the least attenuation of near infrared light?",  
+        #     multimodal_content=[  
+        #         {  
+        #             "type": "image",  
+        #             "image_data": "base64_encoded_image_data_here",  # Base64 encoded image of Figure 7  
+        #             "image_caption": "Figure 7: Point measurements showing drop in NIR intensity across multiple fabric layers",  
+        #         }  
+        #     ],  
+        #     mode="hybrid",  
+        # )  
+        # logger.info(f"Answer: {multimodal_result}")
+
+
         
         # 2. Multimodal query with specific multimodal content using aquery_with_multimodal()
         # logger.info(
