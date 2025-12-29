@@ -13,7 +13,7 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 # load_dotenv()
 
 # Configuration
-WORKING_DIR = "_0_seheult_work_dir"
+WORKING_DIR = "/home/js/LightRAG/jrs/work/mod_linx/_mod_linx_work_dir"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 3072))
 API_KEY = os.getenv("EMBEDDING_BINDING_API_KEY")
@@ -116,7 +116,7 @@ async def main():
         # Perform query
 
         query = (
-            "With regard to document mGDvmVhrVQw.txt, Is the cause of vitamin D toxicity from sunshine or from supplements?"
+            "What does wire 130 do and what is each end of the wire connected to?"
         )
       
          
