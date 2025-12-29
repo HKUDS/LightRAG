@@ -1,0 +1,465 @@
+{
+  "settings": {
+    "language": "Мова",
+    "theme": "Тема",
+    "light": "Світла",
+    "dark": "Темна",
+    "system": "Системна"
+  },
+  "header": {
+    "documents": "Документи",
+    "knowledgeGraph": "Граф знань",
+    "retrieval": "Пошук",
+    "api": "API",
+    "projectRepository": "Репозиторій проекту",
+    "logout": "Вихід",
+    "frontendNeedsRebuild": "Потрібна перебудова фронтенду",
+    "themeToggle": {
+      "switchToLight": "Перемкнути на світлу тему",
+      "switchToDark": "Перемкнути на темну тему"
+    }
+  },
+  "login": {
+    "description": "Будь ласка, введіть ваш обліковий запис та пароль для входу в систему",
+    "username": "Ім'я користувача",
+    "usernamePlaceholder": "Будь ласка, введіть ім'я користувача",
+    "password": "Пароль",
+    "passwordPlaceholder": "Будь ласка, введіть пароль",
+    "loginButton": "Увійти",
+    "loggingIn": "Вхід...",
+    "successMessage": "Вхід успішний",
+    "errorEmptyFields": "Будь ласка, введіть ім'я користувача та пароль",
+    "errorInvalidCredentials": "Вхід не вдався, будь ласка, перевірте ім'я користувача та пароль",
+    "authDisabled": "Аутентифікацію вимкнено. Використовується режим без входу.",
+    "guestMode": "Без входу"
+  },
+  "common": {
+    "cancel": "Скасувати",
+    "save": "Зберегти",
+    "saving": "Збереження...",
+    "saveFailed": "Збереження не вдалося"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Очистити",
+      "tooltip": "Очистити документи",
+      "title": "Очистити документи",
+      "description": "Це видалить усі документи з системи",
+      "warning": "ПОПЕРЕДЖЕННЯ: Ця дія назавжди видалить усі документи і не може бути скасована!",
+      "confirm": "Ви дійсно хочете очистити всі документи?",
+      "confirmPrompt": "Введіть 'yes' для підтвердження цієї дії",
+      "confirmPlaceholder": "Введіть yes для підтвердження",
+      "clearCache": "Очистити кеш LLM",
+      "confirmButton": "ТАК",
+      "clearing": "Очищення...",
+      "timeout": "Операція очищення перевищила час очікування, будь ласка, спробуйте ще раз",
+      "success": "Документи успішно очищено",
+      "cacheCleared": "Кеш успішно очищено",
+      "cacheClearFailed": "Не вдалося очистити кеш:\n{{error}}",
+      "failed": "Очищення документів не вдалося:\n{{message}}",
+      "error": "Очищення документів не вдалося:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Видалити",
+      "tooltip": "Видалити вибрані документи",
+      "title": "Видалити документи",
+      "description": "Це назавжди видалить вибрані документи з системи",
+      "warning": "ПОПЕРЕДЖЕННЯ: Ця дія назавжди видалить вибрані документи і не може бути скасована!",
+      "confirm": "Ви дійсно хочете видалити {{count}} вибраний(их) документ(ів)?",
+      "confirmPrompt": "Введіть 'yes' для підтвердження цієї дії",
+      "confirmPlaceholder": "Введіть yes для підтвердження",
+      "confirmButton": "ТАК",
+      "deleteFileOption": "Також видалити завантажені файли",
+      "deleteFileTooltip": "Встановіть цю опцію, щоб також видалити відповідні завантажені файли на сервері",
+      "deleteLLMCacheOption": "Також видалити витягнутий кеш LLM",
+      "success": "Пайплайн видалення документів успішно запущено",
+      "failed": "Видалення документів не вдалося:\n{{message}}",
+      "error": "Видалення документів не вдалося:\n{{error}}",
+      "busy": "Пайплайн зайнятий, будь ласка, спробуйте пізніше",
+      "notAllowed": "Немає дозволу на виконання цієї операції"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Вибрати поточну сторінку ({{count}})",
+      "deselectAll": "Зняти всі вибрані ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "Завантажити",
+      "tooltip": "Завантажити документи",
+      "title": "Завантажити документи",
+      "description": "Перетягніть ваші документи сюди або натисніть для перегляду.",
+      "single": {
+        "uploading": "Завантаження {{name}}: {{percent}}%",
+        "success": "Завантаження успішне:\n{{name}} успішно завантажено",
+        "failed": "Завантаження не вдалося:\n{{name}}\n{{message}}",
+        "error": "Завантаження не вдалося:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Завантаження файлів...",
+        "success": "Файли успішно завантажено",
+        "error": "Деякі файли не вдалося завантажити"
+      },
+      "generalError": "Завантаження не вдалося\n{{error}}",
+      "fileTypes": "Підтримувані типи: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Не можна завантажити більше 1 файлу одночасно",
+        "maxFilesLimit": "Не можна завантажити більше {{count}} файлів",
+        "fileRejected": "Файл {{name}} було відхилено",
+        "unsupportedType": "Непідтримуваний тип файлу",
+        "fileTooLarge": "Файл занадто великий, максимальний розмір {{maxSize}}",
+        "dropHere": "Перетягніть файли сюди",
+        "dragAndDrop": "Перетягніть файли сюди або натисніть для вибору файлів",
+        "removeFile": "Видалити файл",
+        "uploadDescription": "Ви можете завантажити {{isMultiple ? 'кілька' : count}} файлів (до {{maxSize}} кожен)",
+        "duplicateFile": "Ім'я файлу вже існує в кеші сервера"
+      }
+    },
+    "documentManager": {
+      "title": "Управління документами",
+      "scanButton": "Сканувати/Повторити",
+      "scanTooltip": "Сканувати та обробити документи в папці введення, а також повторно обробити всі невдалі документи",
+      "refreshTooltip": "Скинути список документів",
+      "pipelineStatusButton": "Пайплайн",
+      "pipelineStatusTooltip": "Переглянути статус пайплайну обробки документів",
+      "uploadedTitle": "Завантажені документи",
+      "uploadedDescription": "Список завантажених документів та їх статусів.",
+      "emptyTitle": "Немає документів",
+      "emptyDescription": "Ще немає завантажених документів.",
+      "columns": {
+        "id": "ID",
+        "fileName": "Ім'я файлу",
+        "summary": "Резюме",
+        "status": "Статус",
+        "length": "Довжина",
+        "chunks": "Чанки",
+        "created": "Створено",
+        "updated": "Оновлено",
+        "metadata": "Метадані",
+        "select": "Вибрати"
+      },
+      "status": {
+        "all": "Всі",
+        "completed": "Завершено",
+        "preprocessed": "Попередньо оброблено",
+        "processing": "Обробка",
+        "pending": "Очікування",
+        "failed": "Невдало"
+      },
+      "errors": {
+        "loadFailed": "Не вдалося завантажити документи\n{{error}}",
+        "scanFailed": "Не вдалося відсканувати документи\n{{error}}",
+        "scanProgressFailed": "Не вдалося отримати прогрес сканування\n{{error}}"
+      },
+      "fileNameLabel": "Ім'я файлу",
+      "showButton": "Показати",
+      "hideButton": "Приховати",
+      "showFileNameTooltip": "Показати ім'я файлу",
+      "hideFileNameTooltip": "Приховати ім'я файлу"
+    },
+    "pipelineStatus": {
+      "title": "Статус пайплайну",
+      "busy": "Пайплайн зайнятий",
+      "requestPending": "Запит очікує",
+      "cancellationRequested": "Запит на скасування",
+      "jobName": "Назва завдання",
+      "startTime": "Час початку",
+      "progress": "Прогрес",
+      "unit": "Пакет",
+      "pipelineMessages": "Повідомлення пайплайну",
+      "cancelButton": "Скасувати",
+      "cancelTooltip": "Скасувати обробку пайплайну",
+      "cancelConfirmTitle": "Підтвердити скасування пайплайну",
+      "cancelConfirmDescription": "Це перерве поточну обробку пайплайну. Ви впевнені, що хочете продовжити?",
+      "cancelConfirmButton": "Підтвердити скасування",
+      "cancelInProgress": "Скасування в процесі...",
+      "pipelineNotRunning": "Пайплайн не працює",
+      "cancelSuccess": "Запит на скасування пайплайну",
+      "cancelFailed": "Не вдалося скасувати пайплайн\n{{error}}",
+      "cancelNotBusy": "Пайплайн не працює, немає потреби скасовувати",
+      "errors": {
+        "fetchFailed": "Не вдалося отримати статус пайплайну\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "Дані графа обрізано до максимальної кількості вузлів",
+    "statusDialog": {
+      "title": "Налаштування сервера LightRAG",
+      "description": "Переглянути поточний статус системи та інформацію про підключення"
+    },
+    "legend": "Легенда",
+    "nodeTypes": {
+      "person": "Особа",
+      "category": "Категорія",
+      "geo": "Географічне",
+      "location": "Місце",
+      "organization": "Організація",
+      "event": "Подія",
+      "equipment": "Обладнання",
+      "weapon": "Зброя",
+      "animal": "Тварина",
+      "unknown": "Невідомо",
+      "object": "Об'єкт",
+      "group": "Група",
+      "technology": "Технологія",
+      "product": "Продукт",
+      "document": "Документ",
+      "content": "Контент",
+      "data": "Дані",
+      "artifact": "Артефакт",
+      "concept": "Концепція",
+      "naturalobject": "Природний об'єкт",
+      "method": "Метод",
+      "creature": "Істота",
+      "plant": "Рослина",
+      "disease": "Хвороба",
+      "drug": "Ліки",
+      "food": "Їжа",
+      "other": "Інше"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "Налаштування",
+        "healthCheck": "Перевірка здоров'я",
+        "showPropertyPanel": "Показати панель властивостей",
+        "showSearchBar": "Показати панель пошуку",
+        "showNodeLabel": "Показати мітку вузла",
+        "nodeDraggable": "Вузол перетягуваний",
+        "showEdgeLabel": "Показати мітку ребра",
+        "hideUnselectedEdges": "Приховати невибрані ребра",
+        "edgeEvents": "Події ребер",
+        "maxQueryDepth": "Максимальна глибина запиту",
+        "maxNodes": "Максимальна кількість вузлів",
+        "maxLayoutIterations": "Максимальна кількість ітерацій макета",
+        "resetToDefault": "Скинути до за замовчуванням",
+        "edgeSizeRange": "Діапазон розміру ребер",
+        "depth": "Г",
+        "max": "Макс",
+        "degree": "Ступінь",
+        "apiKey": "API ключ",
+        "enterYourAPIkey": "Введіть ваш API ключ",
+        "save": "Зберегти",
+        "refreshLayout": "Оновити макет"
+      },
+      "zoomControl": {
+        "zoomIn": "Збільшити",
+        "zoomOut": "Зменшити",
+        "resetZoom": "Скинути масштаб",
+        "rotateCamera": "Повернути за годинниковою стрілкою",
+        "rotateCameraCounterClockwise": "Повернути проти годинникової стрілки"
+      },
+      "layoutsControl": {
+        "startAnimation": "Продовжити анімацію макета",
+        "stopAnimation": "Зупинити анімацію макета",
+        "layoutGraph": "Макет графа",
+        "layouts": {
+          "Circular": "Круговий",
+          "Circlepack": "Кругове упакування",
+          "Random": "Випадковий",
+          "Noverlaps": "Без перекриттів",
+          "Force Directed": "Силово-направлений",
+          "Force Atlas": "Force Atlas"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Повноекранний режим",
+        "windowed": "Віконний режим"
+      },
+      "legendControl": {
+        "toggleLegend": "Перемкнути легенду"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Підключено",
+      "disconnected": "Відключено"
+    },
+    "statusCard": {
+      "unavailable": "Інформація про статус недоступна",
+      "serverInfo": "Інформація про сервер",
+      "workingDirectory": "Робоча директорія",
+      "inputDirectory": "Вхідна директорія",
+      "maxParallelInsert": "Паралельна обробка документів",
+      "summarySettings": "Налаштування резюме",
+      "llmConfig": "Конфігурація LLM",
+      "llmBinding": "Прив'язка LLM",
+      "llmBindingHost": "Кінцева точка LLM",
+      "llmModel": "Модель LLM",
+      "embeddingConfig": "Конфігурація вбудовування",
+      "embeddingBinding": "Прив'язка вбудовування",
+      "embeddingBindingHost": "Кінцева точка вбудовування",
+      "embeddingModel": "Модель вбудовування",
+      "storageConfig": "Конфігурація сховища",
+      "kvStorage": "KV сховище",
+      "docStatusStorage": "Сховище статусу документів",
+      "graphStorage": "Сховище графа",
+      "vectorStorage": "Векторне сховище",
+      "workspace": "Робочий простір",
+      "maxGraphNodes": "Максимальна кількість вузлів графа",
+      "rerankerConfig": "Конфігурація реранкера",
+      "rerankerBindingHost": "Кінцева точка реранкера",
+      "rerankerModel": "Модель реранкера",
+      "lockStatus": "Статус блокування",
+      "threshold": "Поріг"
+    },
+    "propertiesView": {
+      "editProperty": "Редагувати {{property}}",
+      "editPropertyDescription": "Редагуйте значення властивості в текстовій області нижче.",
+      "errors": {
+        "duplicateName": "Ім'я вузла вже існує",
+        "updateFailed": "Не вдалося оновити вузол",
+        "tryAgainLater": "Будь ласка, спробуйте пізніше",
+        "updateSuccessButMergeFailed": "Властивості оновлено, але об'єднання не вдалося: {{error}}",
+        "mergeFailed": "Об'єднання не вдалося: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "Вузол успішно оновлено",
+        "relationUpdated": "Відношення успішно оновлено",
+        "entityMerged": "Вузли успішно об'єднано"
+      },
+      "mergeOptionLabel": "Автоматично об'єднувати, коли знайдено дублікат імені",
+      "mergeOptionDescription": "Якщо увімкнено, перейменування на існуюче ім'я об'єднає цей вузол з існуючим замість невдачі.",
+      "mergeDialog": {
+        "title": "Вузол об'єднано",
+        "description": "\"{{source}}\" було об'єднано з \"{{target}}\".",
+        "refreshHint": "Оновіть граф, щоб завантажити останню структуру.",
+        "keepCurrentStart": "Оновити та зберегти поточний початковий вузол",
+        "useMergedStart": "Оновити та використати об'єднаний вузол",
+        "refreshing": "Оновлення графа..."
+      },
+      "node": {
+        "title": "Вузол",
+        "id": "ID",
+        "labels": "Мітки",
+        "degree": "Ступінь",
+        "properties": "Властивості",
+        "relationships": "Відношення (в межах підграфа)",
+        "expandNode": "Розширити вузол",
+        "pruneNode": "Обрізати вузол",
+        "deleteAllNodesError": "Відмова видалити всі вузли в графі",
+        "nodesRemoved": "{{count}} вузлів видалено, включаючи сирітські вузли",
+        "noNewNodes": "Розширюваних вузлів не знайдено",
+        "propertyNames": {
+          "description": "Опис",
+          "entity_id": "Ім'я",
+          "entity_type": "Тип",
+          "source_id": "C-ID",
+          "Neighbour": "Сусід",
+          "file_path": "Файл",
+          "keywords": "Ключі",
+          "weight": "Вага"
+        }
+      },
+      "edge": {
+        "title": "Відношення",
+        "id": "ID",
+        "type": "Тип",
+        "source": "Джерело",
+        "target": "Ціль",
+        "properties": "Властивості"
+      }
+    },
+    "search": {
+      "placeholder": "Шукати вузли на сторінці...",
+      "message": "Та {{count}} інших"
+    },
+    "graphLabels": {
+      "selectTooltip": "Отримати підграф вузла (мітка)",
+      "noLabels": "Відповідних вузлів не знайдено",
+      "label": "Шукати ім'я вузла",
+      "placeholder": "Шукати ім'я вузла...",
+      "andOthers": "Та {{count}} інших",
+      "refreshGlobalTooltip": "Оновити глобальні дані графа та скинути історію пошуку",
+      "refreshCurrentLabelTooltip": "Оновити дані графа поточної сторінки",
+      "refreshingTooltip": "Оновлення даних..."
+    },
+    "emptyGraph": "Порожньо (Спробуйте перезавантажити знову)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "Копіювати в буфер обміну",
+      "copyError": "Не вдалося скопіювати текст в буфер обміну",
+      "copyEmpty": "Немає вмісту для копіювання",
+      "copySuccess": "Вміст скопійовано в буфер обміну",
+      "copySuccessLegacy": "Вміст скопійовано (застарілий метод)",
+      "copySuccessManual": "Вміст скопійовано (ручний метод)",
+      "copyFailed": "Не вдалося скопіювати вміст",
+      "copyManualInstruction": "Будь ласка, виберіть та скопіюйте текст вручну",
+      "thinking": "Мислення...",
+      "thinkingTime": "Час мислення {{time}}с",
+      "thinkingInProgress": "Мислення в процесі..."
+    },
+    "retrieval": {
+      "startPrompt": "Почніть пошук, ввівши ваш запит нижче",
+      "clear": "Очистити",
+      "send": "Відправити",
+      "placeholder": "Введіть ваш запит (Підтримка префіксу: /<Режим запиту>)",
+      "error": "Помилка: Не вдалося отримати відповідь",
+      "queryModeError": "Підтримуються лише наступні режими запиту: {{modes}}",
+      "queryModePrefixInvalid": "Недійсний префікс режиму запиту. Використовуйте: /<mode> [пробіл] ваш запит"
+    },
+    "querySettings": {
+      "parametersTitle": "Параметри",
+      "parametersDescription": "Налаштуйте параметри вашого запиту",
+      "queryMode": "Режим запиту",
+      "queryModeTooltip": "Виберіть стратегію пошуку:\n• Naive: Традиційний пошук векторів текстових чанків\n• Local: Фокус на пошуку сутностей\n• Global: Фокус на пошуку відношень\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Пропустити пошук, надіслати історію розмови та поточне питання в LLM",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "Формат відповіді",
+      "responseFormatTooltip": "Визначає формат відповіді. Приклади:\n• Кілька абзаців\n• Один абзац\n• Маркований список",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Кілька абзаців",
+        "singleParagraph": "Один абзац",
+        "bulletPoints": "Маркований список"
+      },
+      "topK": "KG Top K",
+      "topKTooltip": "Кількість сутностей та відношень для отримання. Застосовується для не-naive режимів.",
+      "topKPlaceholder": "Введіть значення top_k",
+      "chunkTopK": "Chunk Top K",
+      "chunkTopKTooltip": "Кількість текстових чанків для отримання, застосовується для всіх режимів.",
+      "chunkTopKPlaceholder": "Введіть значення chunk_top_k",
+      "maxEntityTokens": "Макс. токенів сутностей",
+      "maxEntityTokensTooltip": "Максимальна кількість токенів, виділених для контексту сутностей в уніфікованій системі контролю токенів",
+      "maxRelationTokens": "Макс. токенів відношень",
+      "maxRelationTokensTooltip": "Максимальна кількість токенів, виділених для контексту відношень в уніфікованій системі контролю токенів",
+      "maxTotalTokens": "Макс. загальна кількість токенів",
+      "maxTotalTokensTooltip": "Максимальний загальний бюджет токенів для всього контексту запиту (сутності + відношення + чанки + системний промпт)",
+      "historyTurns": "Хідів історії",
+      "historyTurnsTooltip": "Кількість повних ходів розмови (пари користувач-асистент) для врахування в контексті відповіді",
+      "historyTurnsPlaceholder": "Кількість ходів історії",
+      "onlyNeedContext": "Потрібен лише контекст",
+      "onlyNeedContextTooltip": "Якщо True, повертає лише отриманий контекст без генерації відповіді",
+      "onlyNeedPrompt": "Потрібен лише промпт",
+      "onlyNeedPromptTooltip": "Якщо True, повертає лише згенерований промпт без створення відповіді",
+      "streamResponse": "Потокова відповідь",
+      "streamResponseTooltip": "Якщо True, увімкнює потоковий вивід для відповідей у реальному часі",
+      "userPrompt": "Додатковий промпт виводу",
+      "userPromptTooltip": "Надайте додаткові вимоги до відповіді для LLM (не пов'язані з вмістом запиту, лише для обробки виводу).",
+      "userPromptPlaceholder": "Введіть користувацький промпт (необов'язково)",
+      "enableRerank": "Увімкнути реранк",
+      "enableRerankTooltip": "Увімкнути реранкінг для отриманих текстових чанків. Якщо True, але модель реранкера не налаштована, буде видано попередження. За замовчуванням True."
+    }
+  },
+  "apiSite": {
+    "loading": "Завантаження документації API..."
+  },
+  "apiKeyAlert": {
+    "title": "Потрібен API ключ",
+    "description": "Будь ласка, введіть ваш API ключ для доступу до сервісу",
+    "placeholder": "Введіть ваш API ключ",
+    "save": "Зберегти"
+  },
+  "pagination": {
+    "showing": "Показано {{start}} до {{end}} з {{total}} записів",
+    "page": "Сторінка",
+    "pageSize": "Розмір сторінки",
+    "firstPage": "Перша сторінка",
+    "prevPage": "Попередня сторінка",
+    "nextPage": "Наступна сторінка",
+    "lastPage": "Остання сторінка"
+  }
+}

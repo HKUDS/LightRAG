@@ -7,7 +7,7 @@ import inspect
 import os
 import time
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 from typing import (
@@ -260,13 +260,15 @@ class LightRAG:
         - `content`: The text to be split into chunks.
         - `split_by_character`: The character to split the text on. If None, the text is split into chunks of `chunk_token_size` tokens.
         - `split_by_character_only`: If True, the text is split only on the specified character.
-        - `chunk_token_size`: The maximum number of tokens per chunk.
         - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
+        - `chunk_token_size`: The maximum number of tokens per chunk.
+
 
     The function should return a list of dictionaries (or an awaitable that resolves to a list),
     where each dictionary contains the following keys:
-        - `tokens`: The number of tokens in the chunk.
-        - `content`: The text content of the chunk.
+        - `tokens` (int): The number of tokens in the chunk.
+        - `content` (str): The text content of the chunk.
+        - `chunk_order_index` (int): Zero-based index indicating the chunk's order in the document.
 
     Defaults to `chunking_by_token_size` if not specified.
     """
@@ -516,14 +518,9 @@ class LightRAG:
                 f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
-        # Fix global_config now
-        global_config = asdict(self)
-
-        _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
-        logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
-
         # Init Embedding
-        # Step 1: Capture max_token_size before applying decorator (decorator strips dataclass attributes)
+        # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
+        original_embedding_func = self.embedding_func
         embedding_max_token_size = None
         if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
             embedding_max_token_size = self.embedding_func.max_token_size
@@ -532,12 +529,26 @@ class LightRAG:
             )
         self.embedding_token_limit = embedding_max_token_size
 
-        # Step 2: Apply priority wrapper decorator
-        self.embedding_func = priority_limit_async_func_call(
-            self.embedding_func_max_async,
-            llm_timeout=self.default_embedding_timeout,
-            queue_name="Embedding func",
-        )(self.embedding_func)
+        # Fix global_config now
+        global_config = asdict(self)
+        # Restore original EmbeddingFunc object (asdict converts it to dict)
+        global_config["embedding_func"] = original_embedding_func
+
+        _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
+        logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
+
+        # Step 2: Apply priority wrapper decorator to EmbeddingFunc's inner func
+        # Create a NEW EmbeddingFunc instance with the wrapped func to avoid mutating the caller's object
+        # This ensures _generate_collection_suffix can still access attributes (model_name, embedding_dim)
+        # while preventing side effects when the same EmbeddingFunc is reused across multiple LightRAG instances
+        if self.embedding_func is not None:
+            wrapped_func = priority_limit_async_func_call(
+                self.embedding_func_max_async,
+                llm_timeout=self.default_embedding_timeout,
+                queue_name="Embedding func",
+            )(self.embedding_func.func)
+            # Use dataclasses.replace() to create a new instance, leaving the original unchanged
+            self.embedding_func = replace(self.embedding_func, func=wrapped_func)
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (

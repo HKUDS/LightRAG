@@ -3,15 +3,12 @@ This module contains all query-related routes for the LightRAG API.
 """
 
 import json
-import logging
 from typing import Any, Dict, List, Literal, Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
-
-from ascii_colors import trace_exception
 
 router = APIRouter(tags=["query"])
 
@@ -85,7 +82,7 @@ class QueryRequest(BaseModel):
 
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
+        description="History messages are only sent to LLM for context, not used for retrieval. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
     user_prompt: Optional[str] = Field(
@@ -453,7 +450,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             else:
                 return QueryResponse(response=response_content, references=None)
         except Exception as e:
-            trace_exception(e)
+            logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -713,7 +710,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 if chunk:  # Only send non-empty content
                                     yield f"{json.dumps({'response': chunk})}\n"
                         except Exception as e:
-                            logging.error(f"Streaming error: {str(e)}")
+                            logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
                 else:
                     # Non-streaming mode: send complete response in one message
@@ -739,7 +736,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 },
             )
         except Exception as e:
-            trace_exception(e)
+            logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -1156,7 +1153,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     data={},
                 )
         except Exception as e:
-            trace_exception(e)
+            logger.error(f"Error processing data query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     return router

@@ -1,0 +1,58 @@
+name: "Copilot Setup Steps"
+
+# Automatically run the setup steps when they are changed to allow for easy validation, and
+# allow manual testing through the repository's "Actions" tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+
+    # Timeout after 30 minutes (maximum is 59)
+    timeout-minutes: 30
+
+    # You can define any steps you want, and they will run before the agent starts.
+    # If you do not check out your code, Copilot will do this for you.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-copilot-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-copilot-
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api]"
+          pip install pytest pytest-asyncio httpx
+
+      - name: Create minimal frontend stub for Copilot agent
+        run: |
+          mkdir -p lightrag/api/webui
+          echo '<!DOCTYPE html><html><head><title>LightRAG - Copilot Agent</title></head><body><h1>Copilot Agent Mode</h1></body></html>' > lightrag/api/webui/index.html
+          echo "Created minimal frontend stub for Copilot agent environment"
+
+      - name: Verify installation
+        run: |
+          python --version
+          pip list | grep lightrag
+          lightrag-server --help || echo "Note: Server requires .env configuration to run"

@@ -36,6 +36,7 @@ class MemgraphStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         # Priority: 1) MEMGRAPH_WORKSPACE env 2) user arg 3) default 'base'
         memgraph_workspace = os.environ.get("MEMGRAPH_WORKSPACE")
+        original_workspace = workspace  # Save original value for logging
         if memgraph_workspace and memgraph_workspace.strip():
             workspace = memgraph_workspace
 
@@ -48,6 +49,13 @@ class MemgraphStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+
+        # Log after super().__init__() to ensure self.workspace is initialized
+        if memgraph_workspace and memgraph_workspace.strip():
+            logger.info(
+                f"Using MEMGRAPH_WORKSPACE environment variable: '{memgraph_workspace}' (overriding '{original_workspace}/{namespace}')"
+            )
+
         self._driver = None
 
     def _get_workspace_label(self) -> str:

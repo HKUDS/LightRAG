@@ -351,7 +351,9 @@ async def bedrock_complete(
     return result
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=8192, model_name="amazon.titan-embed-text-v2:0"
+)
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=4, max=60),

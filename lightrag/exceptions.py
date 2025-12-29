@@ -106,8 +106,30 @@ class PipelineCancelledException(Exception):
         self.message = message
 
 
-class QdrantMigrationError(Exception):
-    """Raised when Qdrant data migration from legacy collections fails."""
+class ChunkTokenLimitExceededError(ValueError):
+    """Raised when a chunk exceeds the configured token limit."""
+
+    def __init__(
+        self,
+        chunk_tokens: int,
+        chunk_token_limit: int,
+        chunk_preview: str | None = None,
+    ) -> None:
+        preview = chunk_preview.strip() if chunk_preview else None
+        truncated_preview = preview[:80] if preview else None
+        preview_note = f" Preview: '{truncated_preview}'" if truncated_preview else ""
+        message = (
+            f"Chunk token length {chunk_tokens} exceeds chunk_token_size {chunk_token_limit}."
+            f"{preview_note}"
+        )
+        super().__init__(message)
+        self.chunk_tokens = chunk_tokens
+        self.chunk_token_limit = chunk_token_limit
+        self.chunk_preview = truncated_preview
+
+
+class DataMigrationError(Exception):
+    """Raised when data migration from legacy collection/table fails."""
 
     def __init__(self, message: str):
         super().__init__(message)

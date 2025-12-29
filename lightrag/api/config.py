@@ -365,8 +365,12 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
-    args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
-    args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
+    # EMBEDDING_MODEL defaults to None - each binding will use its own default model
+    # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
+    args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
+    # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
+    # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
+    args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
     args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration
@@ -399,9 +403,13 @@ def parse_args() -> argparse.Namespace:
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
     args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
-    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
-    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
+    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
+    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
+
+    # Token auto-renewal configuration (sliding window expiration)
+    args.token_auto_renew = get_env_value("TOKEN_AUTO_RENEW", True, bool)
+    args.token_renew_threshold = get_env_value("TOKEN_RENEW_THRESHOLD", 0.5, float)
 
     # Rerank model configuration
     args.rerank_model = get_env_value("RERANK_MODEL", None)

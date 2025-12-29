@@ -163,7 +163,9 @@ class UnifiedLock(Generic[T]):
                     enable_output=self._enable_logging,
                 )
 
-            # Then acquire the main lock
+            # Acquire the main lock
+            # Note: self._lock should never be None here as the check has been moved
+            # to get_internal_lock() and get_data_init_lock() functions
             if self._is_async:
                 await self._lock.acquire()
             else:
@@ -193,19 +195,21 @@ class UnifiedLock(Generic[T]):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         main_lock_released = False
+        async_lock_released = False
         try:
             # Release main lock first
-            if self._is_async:
-                self._lock.release()
-            else:
-                self._lock.release()
-            main_lock_released = True
+            if self._lock is not None:
+                if self._is_async:
+                    self._lock.release()
+                else:
+                    self._lock.release()
 
-            direct_log(
-                f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
-                level="INFO",
-                enable_output=self._enable_logging,
-            )
+                direct_log(
+                    f"== Lock == Process {self._pid}: Released lock {self._name} (async={self._is_async})",
+                    level="INFO",
+                    enable_output=self._enable_logging,
+                )
+                main_lock_released = True
 
             # Then release async lock if in multiprocess mode
             if not self._is_async and self._async_lock is not None:
@@ -215,6 +219,7 @@ class UnifiedLock(Generic[T]):
                     level="DEBUG",
                     enable_output=self._enable_logging,
                 )
+                async_lock_released = True
 
         except Exception as e:
             direct_log(
@@ -223,9 +228,10 @@ class UnifiedLock(Generic[T]):
                 enable_output=True,
             )
 
-            # If main lock release failed but async lock hasn't been released, try to release it
+            # If main lock release failed but async lock hasn't been attempted yet, try to release it
             if (
                 not main_lock_released
+                and not async_lock_released
                 and not self._is_async
                 and self._async_lock is not None
             ):
@@ -255,6 +261,10 @@ class UnifiedLock(Generic[T]):
         try:
             if self._is_async:
                 raise RuntimeError("Use 'async with' for shared_storage lock")
+
+            # Acquire the main lock
+            # Note: self._lock should never be None here as the check has been moved
+            # to get_internal_lock() and get_data_init_lock() functions
             direct_log(
                 f"== Lock == Process {self._pid}: Acquiring lock {self._name} (sync)",
                 level="DEBUG",
@@ -1060,6 +1070,10 @@ class _KeyedLockContext:
 
 def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
+    if _internal_lock is None:
+        raise RuntimeError(
+            "Shared data not initialized. Call initialize_share_data() before using locks!"
+        )
     async_lock = _async_locks.get("internal_lock") if _is_multiprocess else None
     return UnifiedLock(
         lock=_internal_lock,
@@ -1090,6 +1104,10 @@ def get_storage_keyed_lock(
 
 def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified data initialization lock for ensuring atomic data initialization"""
+    if _data_init_lock is None:
+        raise RuntimeError(
+            "Shared data not initialized. Call initialize_share_data() before using locks!"
+        )
     async_lock = _async_locks.get("data_init_lock") if _is_multiprocess else None
     return UnifiedLock(
         lock=_data_init_lock,
@@ -1683,3 +1701,17 @@ def get_default_workspace() -> str:
     """
     global _default_workspace
     return _default_workspace
+
+
+def get_pipeline_status_lock(
+    enable_logging: bool = False, workspace: str = None
+) -> NamespaceLock:
+    """Return unified storage lock for pipeline status data consistency.
+
+    This function is for compatibility with legacy code only.
+    """
+    global _default_workspace
+    actual_workspace = workspace if workspace else _default_workspace
+    return get_namespace_lock(
+        "pipeline_status", workspace=actual_workspace, enable_logging=enable_logging
+    )

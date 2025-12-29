@@ -25,6 +25,7 @@ from .shared_storage import (
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
+        self._validate_embedding_func()
         # Initialize basic attributes
         self._client = None
         self._storage_lock = None
