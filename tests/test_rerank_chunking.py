@@ -40,7 +40,7 @@ class TestChunkDocumentsForRerank:
         long_doc = "a" * 2000  # 2000 characters
         documents = [long_doc, "short doc"]
 
-        with patch("lightrag.rerank.TiktokenTokenizer", side_effect=ImportError):
+        with patch("lightrag.utils.TiktokenTokenizer", side_effect=ImportError):
             chunked_docs, doc_indices = chunk_documents_for_rerank(
                 documents,
                 max_tokens=100,  # 100 tokens = ~400 chars
@@ -361,10 +361,15 @@ class TestEndToEndChunking:
         mock_response.history = None
         mock_response.headers = {}
 
+        # Create a proper async context manager for the post response
+        mock_post_cm = AsyncMock()
+        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_cm.__aexit__ = AsyncMock(return_value=None)
+
         mock_session = Mock()
-        mock_session.post = AsyncMock(return_value=mock_response)
+        mock_session.post = Mock(return_value=mock_post_cm)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        mock_session.__aexit__ = AsyncMock(return_value=None)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = await cohere_rerank(
