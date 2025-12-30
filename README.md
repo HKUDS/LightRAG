@@ -380,6 +380,7 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
+    # Deprecated (ids filter lead to potential hallucination effects)
     ids: list[str] | None = None
     """List of ids to filter the results."""
 
