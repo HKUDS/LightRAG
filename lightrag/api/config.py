@@ -466,6 +466,16 @@ def parse_args() -> argparse.Namespace:
         "MAX_UPLOAD_SIZE", 104857600, int, special_none=True
     )
 
+    # Embedding prefix configuration for context-aware embeddings
+    args.embedding_document_prefix = get_env_value(
+        "EMBEDDING_DOCUMENT_PREFIX", None, special_none=True
+    )
+    args.embedding_query_prefix = get_env_value(
+        "EMBEDDING_QUERY_PREFIX", None, special_none=True
+    )
+    # Asymmetric embedding behavior toggle
+    args.embedding_asymmetric = get_env_value("EMBEDDING_ASYMMETRIC", False, bool)
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 

@@ -3407,7 +3407,9 @@ class PGVectorStorage(BaseVectorStorage):
             len(batches),
         )
 
-        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_tasks = [
+            self.embedding_func(batch, context="document") for batch in batches
+        ]
         embedding_generation_start = time.perf_counter()
         embeddings_list = await asyncio.gather(*embedding_tasks)
         performance_timing_log(
@@ -3489,7 +3491,7 @@ class PGVectorStorage(BaseVectorStorage):
             embedding = query_embedding
         else:
             embeddings = await self.embedding_func(
-                [query], _priority=5
+                [query], context="query", _priority=5
             )  # higher priority for query
             embedding = embeddings[0]
 
