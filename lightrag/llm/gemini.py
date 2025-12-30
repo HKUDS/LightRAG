@@ -462,7 +462,7 @@ async def gemini_model_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1536, max_token_size=2048, model_name="gemini-embedding-001"
+    embedding_dim=1536, max_token_size=2048, model_name="gemini-embedding-001", supports_context=True
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -485,9 +485,10 @@ async def gemini_embed(
     api_key: str | None = None,
     embedding_dim: int | None = None,
     max_token_size: int | None = None,
-    task_type: str = "RETRIEVAL_DOCUMENT",
+    task_type: str | None = None,
     timeout: int | None = None,
     token_tracker: Any | None = None,
+    context: str = "document",
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Gemini's API.
 
@@ -517,6 +518,9 @@ async def gemini_embed(
             QUESTION_ANSWERING, FACT_VERIFICATION.
         timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
         token_tracker: Optional token usage tracker for monitoring API usage.
+        context: The embedding context - "query" for search queries, "document" for indexed content.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            when supports_context=True. Default is "document".
 
     Returns:
         A numpy array of embeddings, one per input text. For dimensions < 3072,
@@ -545,8 +549,14 @@ async def gemini_embed(
     config_kwargs: dict[str, Any] = {}
 
     # Add task_type to config
-    if task_type:
-        config_kwargs["task_type"] = task_type
+    if task_type is None:
+        if context == "query":
+            task_type = "RETRIEVAL_QUERY"
+        elif context == "document":
+            task_type = "RETRIEVAL_DOCUMENT"
+        else:
+            task_type = "RETRIEVAL_DOCUMENT" # Default for backward compatibility
+    config_kwargs["task_type"] = task_type
 
     # Add output_dimensionality if embedding_dim is provided
     if embedding_dim is not None:

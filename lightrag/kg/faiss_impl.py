@@ -137,7 +137,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
-        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_tasks = [self.embedding_func(batch, context="document") for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         # Flatten the list of arrays
@@ -192,7 +192,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             embedding = np.array([query_embedding], dtype=np.float32)
         else:
             embedding = await self.embedding_func(
-                [query], _priority=5
+                [query], context="query", _priority=5
             )  # higher priority for query
             # embedding is shape (1, dim)
             embedding = np.array(embedding, dtype=np.float32)

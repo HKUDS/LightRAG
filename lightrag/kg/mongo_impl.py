@@ -2211,7 +2211,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
-        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_tasks = [self.embedding_func(batch, context="document") for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
@@ -2239,7 +2239,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         else:
             # Generate the embedding
             embedding = await self.embedding_func(
-                [query], _priority=5
+                [query], context="query", _priority=5
             )  # higher priority for query
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()

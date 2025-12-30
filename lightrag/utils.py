@@ -430,12 +430,22 @@ class EmbeddingFunc:
             # ✅ Correct - access the unwrapped function via .func
             func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
 
+    Context-aware embedding:
+        The wrapper supports passing a 'context' parameter to distinguish between query and document
+        embeddings. This allows wrapped functions to apply different processing (e.g., prefixes,
+        different models) based on the context:
+
+        Example:
+            embeddings = await embed_func(texts, context="document")  # For indexing
+            embeddings = await embed_func([query], context="query")   # For search
+
     Args:
         embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
         max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
         send_dimensions: Whether to inject embedding_dim argument to underlying function
         model_name: Model name for implementing workspace data isolation in vector DB
+        supports_context: Whether the underlying function supports context parameter so it can be injected
     """
 
     embedding_dim: int
@@ -445,6 +455,7 @@ class EmbeddingFunc:
     model_name: str | None = (
         None  # Model name for implementing workspace data isolation in vector DB
     )
+    supports_context: bool = False  # Whether underlying function accepts context parameter
 
     def __post_init__(self):
         """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
@@ -474,7 +485,7 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
-    async def __call__(self, *args, **kwargs) -> np.ndarray:
+    async def __call__(self, *args, **kwargs) -> np.ndarray:        
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
             # Check if user provided embedding_dim parameter
@@ -492,6 +503,23 @@ class EmbeddingFunc:
 
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
+
+        # Extract context parameter and track if it was explicitly provided
+        if "context" in kwargs:
+            context = kwargs.pop("context")
+            is_context_provided = True
+        else:
+            context = "document"
+            is_context_provided = False
+
+        # Only inject context when supports_context is True
+        if self.supports_context:
+            kwargs["context"] = context
+        elif is_context_provided:
+            # Log when a user-provided context is ignored due to lack of support
+            logger.debug(
+                "Context parameter was provided but supports_context=False. The context value has been ignored."
+            )
 
         # Check if underlying function supports max_token_size and inject if not provided
         if self.max_token_size is not None and "max_token_size" not in kwargs:
@@ -1092,18 +1120,35 @@ def wrap_embedding_func_with_attrs(**kwargs):
             return await my_embed.func(texts, ...)  # ✅ Correct
             # return await my_embed(texts, ...)     # ❌ Wrong - double decoration!
         ```
+    3. Context-aware decoration:
+        ```python
+        @wrap_embedding_func_with_attrs(
+            embedding_dim=1536, 
+            model_name="my_embedding_model",
+            supports_context=True
+        )
+        async def my_embed(texts, context="document"):
+            # Apply different prefixes based on context
+            if context == "query":
+                texts = ["search_query: " + t for t in texts]
+            elif context == "document":
+                texts = ["search_document: " + t for t in texts]
+            return embeddings
+        ```
 
     The decorated function becomes an EmbeddingFunc instance with:
     - embedding_dim: The embedding dimension
     - max_token_size: Maximum token limit (optional)
     - model_name: Model name (optional)
+    - supports_context: Whether context parameter is supported (optional)
     - func: The original unwrapped function (access via .func)
-    - __call__: Wrapper that injects embedding_dim parameter
+    - __call__: Wrapper that injects embedding_dim parameter and context
 
     Args:
         embedding_dim: The dimension of embedding vectors
         max_token_size: Maximum number of tokens (optional)
         send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
+        supports_context: Whether the function supports context parameter (optional)
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance

@@ -514,10 +514,10 @@ class GeminiEmbeddingOptions(BindingOptions):
 
     _binding_name: ClassVar[str] = "gemini_embedding"
 
-    task_type: str = "RETRIEVAL_DOCUMENT"
+    task_type: str | None = None
 
     _help: ClassVar[dict[str, str]] = {
-        "task_type": "Task type for embedding optimization (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION)",
+        "task_type": "Task type for embedding optimization. If not specified, automatically determined from context (RETRIEVAL_QUERY for queries, RETRIEVAL_DOCUMENT for documents). Supported types: RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, CODE_RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION",
     }
 
 

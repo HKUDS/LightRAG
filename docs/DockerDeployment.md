@@ -48,6 +48,8 @@ LightRAG can be configured using environment variables in the `.env` file:
 - `EMBEDDING_BINDING`: Embedding backend (lollms/ollama/openai)
 - `EMBEDDING_BINDING_HOST`: Embedding server host URL
 - `EMBEDDING_MODEL`: Embedding model name
+- `EMBEDDING_DOCUMENT_PREFIX`: Optional prefix for document embeddings (e.g., "search_document: ")
+- `EMBEDDING_QUERY_PREFIX`: Optional prefix for query embeddings (e.g., "search_query: ")
 
 **RAG Configuration**
 

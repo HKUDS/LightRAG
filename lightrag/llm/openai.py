@@ -703,7 +703,7 @@ async def nvidia_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small"
+    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small", supports_context=True
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -726,6 +726,9 @@ async def openai_embed(
     use_azure: bool = False,
     azure_deployment: str | None = None,
     api_version: str | None = None,
+    context: str = "document",
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API with automatic text truncation.
 
@@ -763,6 +766,11 @@ async def openai_embed(
         api_version: Azure OpenAI API version (e.g., "2024-02-15-preview"). Only used
             when use_azure=True. If not specified, falls back to AZURE_EMBEDDING_API_VERSION
             environment variable.
+        context: The embedding context - "query" for search queries, "document" for indexed content.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            when supports_context=True. Default is "document".
+        query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
+        document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -772,6 +780,11 @@ async def openai_embed(
         RateLimitError: If the OpenAI API rate limit is exceeded.
         APITimeoutError: If the OpenAI API request times out.
     """
+    # Apply context-based prefixes if provided
+    if context == "query" and query_prefix:
+        texts = [query_prefix + text for text in texts]
+    elif context == "document" and document_prefix:
+        texts = [document_prefix + text for text in texts]
     # Apply text truncation if max_token_size is provided
     if max_token_size is not None and max_token_size > 0:
         encoding = _get_tiktoken_encoding_for_model(model)
