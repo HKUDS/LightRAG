@@ -107,16 +107,13 @@ async def initialize_rag() -> LightRAG:
         llm_model_name="gemini-2.0-flash",
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
-
         # Performance tuning
         embedding_func_max_async=4,
         embedding_batch_num=8,
         llm_model_max_async=2,
-
         # Chunking
         chunk_token_size=1200,
         chunk_overlap_token_size=100,
-
         # PostgreSQL-backed storages
         graph_storage="PGGraphStorage",
         vector_storage="PGVectorStorage",
@@ -169,6 +166,7 @@ async def main():
     except Exception as e:
         print("An error occurred:", e)
         import traceback
+
         traceback.print_exc()
 
     finally:
