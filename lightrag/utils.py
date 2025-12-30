@@ -1081,16 +1081,16 @@ def wrap_embedding_func_with_attrs(**kwargs):
         ```python
         @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
         @retry(...)
-        async def my_embed(texts, ...):
+        async def openai_embed(texts, ...):
             # Base implementation
             pass
 
         @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=4096, model_name="another_embedding_model")
         # Note: No @retry here!
-        async def my_new_embed(texts, ...):
+        async def new_openai_embed(texts, ...):
             # CRITICAL: Call .func to access unwrapped function
-            return await my_embed.func(texts, ...)  # ✅ Correct
-            # return await my_embed(texts, ...)     # ❌ Wrong - double decoration!
+            return await openai_embed.func(texts, ...)  # ✅ Correct
+            # return await openai_embed(texts, ...)     # ❌ Wrong - double decoration!
         ```
 
     The decorated function becomes an EmbeddingFunc instance with:
@@ -1103,7 +1103,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
     Args:
         embedding_dim: The dimension of embedding vectors
         max_token_size: Maximum number of tokens (optional)
-        send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
+        send_dimensions: Whether to inject embedding_dim as a keyword argument (optional)
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance

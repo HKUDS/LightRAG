@@ -128,9 +128,9 @@ uv sync --extra api
 source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
 # Or on Windows: .venv\Scripts\activate
 
-### Or using pip with virtual environment
+# Or using pip with virtual environment
 # python -m venv .venv
-### source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install -e ".[api]"
 
 # Build front-end artifacts
@@ -255,8 +255,7 @@ async def initialize_rag():
         llm_model_func=gpt_4o_mini_complete,
     )
     # IMPORTANT: Both initialization calls are required!
-    await rag.initialize_storages()  # Initialize storage backends
-    return rag
+    await rag.initialize_storages()  # Initialize storage backends    return rag
 
 async def main():
     try:
@@ -718,18 +717,18 @@ If you want to use Google Gemini models, you only need to set up LightRAG as fol
 import os
 import numpy as np
 from lightrag.utils import wrap_embedding_func_with_attrs
-from lightrag.llm.gemini import gemini_model_complete, gemini_embed
+from lightrag.llm.gemini import gemini_complete, gemini_embed
 
 # Configure the generation model
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    return await gemini_model_complete(
+    return await gemini_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model_name="gemini-2.0-flash",
+        model="gemini-1.5-flash",
         **kwargs
     )
 
@@ -749,7 +748,6 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
-    llm_model_name="gemini-2.0-flash",
     embedding_func=embedding_func
 )
 ```
@@ -973,7 +971,7 @@ For production level scenarios you will most likely want to leverage an enterpri
 
 * PostgreSQL is lightweight,the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
 * If you prefer docker, please start with this image if you are a beginner to avoid hiccups (Default user password:rag/rag): https://hub.docker.com/r/gzdaniel/postgres-for-rag
-* How to start? Ref to: [examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
+* How to start? Ref to: [examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
 * For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 
 </details>

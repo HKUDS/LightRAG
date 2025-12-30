@@ -9,6 +9,8 @@ implementation mirrors the OpenAI helpers while relying on the official
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 from functools import lru_cache
@@ -41,6 +43,10 @@ from google import genai  # type: ignore
 from google.genai import types  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
+DEFAULT_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com"
+
+LOG = logging.getLogger(__name__)
+
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
@@ -56,57 +62,36 @@ def _get_gemini_client(
     Create (or fetch cached) Gemini client.
 
     Args:
-        api_key: Google Gemini API key (not used in Vertex AI mode).
+        api_key: Google Gemini API key.
         base_url: Optional custom API endpoint.
         timeout: Optional request timeout in milliseconds.
 
     Returns:
         genai.Client: Configured Gemini client instance.
     """
-    client_kwargs: dict[str, Any] = {}
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
 
-    # Add Vertex AI support
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
-    if use_vertexai:
-        # Vertex AI mode: use project/location, NOT api_key
-        client_kwargs["vertexai"] = True
-        project = os.getenv("GOOGLE_CLOUD_PROJECT")
-        if project:
-            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-            client_kwargs["project"] = project
-            if location:
-                client_kwargs["location"] = location
-        else:
-            raise ValueError(
-                "GOOGLE_CLOUD_PROJECT must be set when using Vertex AI mode"
-            )
-    else:
-        # Standard Gemini API mode: use api_key
-        client_kwargs["api_key"] = api_key
-
-    if base_url and base_url != "DEFAULT_GEMINI_ENDPOINT" or timeout is not None:
+    if base_url and base_url != DEFAULT_GEMINI_ENDPOINT or timeout is not None:
         try:
             http_options_kwargs = {}
-            if base_url and base_url != "DEFAULT_GEMINI_ENDPOINT":
-                http_options_kwargs["base_url"] = base_url
+            if base_url and base_url != DEFAULT_GEMINI_ENDPOINT:
+                http_options_kwargs["api_endpoint"] = base_url
             if timeout is not None:
                 http_options_kwargs["timeout"] = timeout
 
             client_kwargs["http_options"] = types.HttpOptions(**http_options_kwargs)
-        except Exception as e:
-            logger.error("Failed to apply custom Gemini http_options: %s", e)
-            raise e
+        except Exception as exc:  # pragma: no cover - defensive
+            LOG.warning("Failed to apply custom Gemini http_options: %s", exc)
 
-    return genai.Client(**client_kwargs)
+    try:
+        return genai.Client(**client_kwargs)
+    except TypeError:
+        # Older google-genai releases don't accept http_options; retry without it.
+        client_kwargs.pop("http_options", None)
+        return genai.Client(**client_kwargs)
 
 
 def _ensure_api_key(api_key: str | None) -> str:
-    # In Vertex AI mode, API key is not required
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
-    if use_vertexai:
-        # Return empty string for Vertex AI mode (not used)
-        return ""
-
     key = api_key or os.getenv("LLM_BINDING_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
@@ -266,6 +251,8 @@ async def gemini_complete_if_cache(
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
     """
+    loop = asyncio.get_running_loop()
+
     key = _ensure_api_key(api_key)
     # Convert timeout from seconds to milliseconds for Gemini API
     timeout_ms = timeout * 1000 if timeout else None
@@ -291,25 +278,26 @@ async def gemini_complete_if_cache(
     if config_obj is not None:
         request_kwargs["config"] = config_obj
 
-    if stream:
+    def _call_model():
+        return client.models.generate_content(**request_kwargs)
 
-        async def _async_stream() -> AsyncIterator[str]:
+    if stream:
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        usage_container: dict[str, Any] = {}
+
+        def _stream_model() -> None:
             # COT state tracking for streaming
             cot_active = False
             cot_started = False
             initial_content_seen = False
-            usage_metadata = None
 
             try:
-                # Use native async streaming from genai SDK
-                # Note: generate_content_stream returns Awaitable[AsyncIterator], need to await first
-                stream = await client.aio.models.generate_content_stream(
-                    **request_kwargs
-                )
-                async for chunk in stream:
+                stream_kwargs = dict(request_kwargs)
+                stream_iterator = client.models.generate_content_stream(**stream_kwargs)
+                for chunk in stream_iterator:
                     usage = getattr(chunk, "usage_metadata", None)
                     if usage is not None:
-                        usage_metadata = usage
+                        usage_container["usage"] = usage
 
                     # Extract both regular and thought content
                     regular_text, thought_text = _extract_response_text(
@@ -324,74 +312,78 @@ async def gemini_complete_if_cache(
 
                             # Close COT section if it was active
                             if cot_active:
-                                yield "</think>"
+                                loop.call_soon_threadsafe(queue.put_nowait, "</think>")
                                 cot_active = False
 
-                            # Process and yield regular content
-                            if "\\u" in regular_text:
-                                regular_text = safe_unicode_decode(
-                                    regular_text.encode("utf-8")
-                                )
-                            yield regular_text
+                            # Send regular content
+                            loop.call_soon_threadsafe(queue.put_nowait, regular_text)
 
                         # Process thought content
                         if thought_text:
                             if not initial_content_seen and not cot_started:
                                 # Start COT section
-                                yield "<think>"
+                                loop.call_soon_threadsafe(queue.put_nowait, "<think>")
                                 cot_active = True
                                 cot_started = True
 
-                            # Yield thought content if COT is active
+                            # Send thought content if COT is active
                             if cot_active:
-                                if "\\u" in thought_text:
-                                    thought_text = safe_unicode_decode(
-                                        thought_text.encode("utf-8")
-                                    )
-                                yield thought_text
-                    else:
-                        # COT disabled - only yield regular content
-                        if regular_text:
-                            if "\\u" in regular_text:
-                                regular_text = safe_unicode_decode(
-                                    regular_text.encode("utf-8")
+                                loop.call_soon_threadsafe(
+                                    queue.put_nowait, thought_text
                                 )
-                            yield regular_text
+                    else:
+                        # COT disabled - only send regular content
+                        if regular_text:
+                            loop.call_soon_threadsafe(queue.put_nowait, regular_text)
 
                 # Ensure COT is properly closed if still active
                 if cot_active:
-                    yield "</think>"
-                    cot_active = False
+                    loop.call_soon_threadsafe(queue.put_nowait, "</think>")
 
-            except Exception as exc:
-                # Try to close COT tag before re-raising
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as exc:  # pragma: no cover - surface runtime issues
+                # Try to close COT tag before reporting error
                 if cot_active:
                     try:
-                        yield "</think>"
+                        loop.call_soon_threadsafe(queue.put_nowait, "</think>")
                     except Exception:
                         pass
-                raise exc
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+
+        loop.run_in_executor(None, _stream_model)
+
+        async def _async_stream() -> AsyncIterator[str]:
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+
+                    chunk_text = str(item)
+                    if "\\u" in chunk_text:
+                        chunk_text = safe_unicode_decode(chunk_text.encode("utf-8"))
+
+                    # Yield the chunk directly without filtering
+                    # COT filtering is already handled in _stream_model()
+                    yield chunk_text
             finally:
-                # Track token usage after streaming completes
-                if token_tracker and usage_metadata:
+                usage = usage_container.get("usage")
+                if token_tracker and usage:
                     token_tracker.add_usage(
                         {
-                            "prompt_tokens": getattr(
-                                usage_metadata, "prompt_token_count", 0
-                            ),
+                            "prompt_tokens": getattr(usage, "prompt_token_count", 0),
                             "completion_tokens": getattr(
-                                usage_metadata, "candidates_token_count", 0
+                                usage, "candidates_token_count", 0
                             ),
-                            "total_tokens": getattr(
-                                usage_metadata, "total_token_count", 0
-                            ),
+                            "total_tokens": getattr(usage, "total_token_count", 0),
                         }
                     )
 
         return _async_stream()
 
-    # Non-streaming: use native async client
-    response = await client.aio.models.generate_content(**request_kwargs)
+    response = await asyncio.to_thread(_call_model)
 
     # Extract both regular text and thought text
     regular_text, thought_text = _extract_response_text(response, extract_thoughts=True)
@@ -535,6 +527,7 @@ async def gemini_embed(
     # Note: max_token_size is received but not used for client-side truncation.
     # Gemini API handles truncation automatically with autoTruncate=True (default).
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
+    loop = asyncio.get_running_loop()
 
     key = _ensure_api_key(api_key)
     # Convert timeout from seconds to milliseconds for Gemini API
@@ -555,15 +548,19 @@ async def gemini_embed(
     # Create config object if we have parameters
     config_obj = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
 
-    request_kwargs: dict[str, Any] = {
-        "model": model,
-        "contents": texts,
-    }
-    if config_obj is not None:
-        request_kwargs["config"] = config_obj
+    def _call_embed() -> Any:
+        """Call Gemini embedding API in executor thread."""
+        request_kwargs: dict[str, Any] = {
+            "model": model,
+            "contents": texts,
+        }
+        if config_obj is not None:
+            request_kwargs["config"] = config_obj
 
-    # Use native async client for embedding
-    response = await client.aio.models.embed_content(**request_kwargs)
+        return client.models.embed_content(**request_kwargs)
+
+    # Execute API call in thread pool
+    response = await loop.run_in_executor(None, _call_embed)
 
     # Extract embeddings from response
     if not hasattr(response, "embeddings") or not response.embeddings:

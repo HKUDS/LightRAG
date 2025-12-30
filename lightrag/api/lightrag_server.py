@@ -451,9 +451,6 @@ def create_app(args):
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=[
-            "X-New-Token"
-        ],  # Expose token renewal header for cross-origin requests
     )
 
     # Create combined auth dependency for all endpoints

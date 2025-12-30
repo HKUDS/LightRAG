@@ -1015,10 +1015,10 @@ def _extract_docx(file_bytes: bytes) -> str:
         # CRITICAL: Escape backslash first to avoid double-escaping
         return (
             text.replace("\\", "\\\\")  # Must be first: \ -> \\
-            .replace("\t", "&emsp;&emsp;")  # Tab -> \t (visible)
-            .replace("\r\n", "<br>")  # Windows newline -> \n
-            .replace("\r", "<br>")  # Mac newline -> \n
-            .replace("\n", "<br>")  # Unix newline -> \n
+            .replace("\t", "\\t")  # Tab -> \t (visible)
+            .replace("\r\n", "\\n")  # Windows newline -> \n
+            .replace("\r", "\\n")  # Mac newline -> \n
+            .replace("\n", "\\n")  # Unix newline -> \n
         )
 
     content_parts = []

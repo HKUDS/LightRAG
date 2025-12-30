@@ -33,14 +33,11 @@ interface AuthState {
   username: string | null; // login username
   webuiTitle: string | null; // Custom title
   webuiDescription: string | null; // Title description
-  lastTokenRenewal: string | null; // Human-readable local time of last token renewal (for debugging and monitoring)
-  tokenExpiresAt: number | null; // Token expiration timestamp (extracted from JWT)
 
   login: (token: string, isGuest?: boolean, coreVersion?: string | null, apiVersion?: string | null, webuiTitle?: string | null, webuiDescription?: string | null) => void;
   logout: () => void;
   setVersion: (coreVersion: string | null, apiVersion: string | null) => void;
   setCustomTitle: (webuiTitle: string | null, webuiDescription: string | null) => void;
-  setTokenRenewal: (renewalTime: number, expiresAt: number) => void; // Track token renewal
 }
 
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
@@ -159,19 +156,7 @@ const useBackendState = createSelectors(useBackendStateStoreBase)
 
 export { useBackendState }
 
-// Format timestamp to human-readable local time with timezone
-const formatTimestampToLocalString = (timestamp: number): string => {
-  const date = new Date(timestamp);
-  // Use Swedish locale 'sv-SE' to get YYYY-MM-DD HH:mm:ss format
-  const localTime = date.toLocaleString('sv-SE', { hour12: false });
-  // Get timezone offset
-  const offsetMinutes = -date.getTimezoneOffset();
-  const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60);
-  const offsetSign = offsetMinutes >= 0 ? '+' : '-';
-  return `${localTime} (UTC${offsetSign}${offsetHours})`;
-};
-
-const parseTokenPayload = (token: string): { sub?: string; role?: string; exp?: number } => {
+const parseTokenPayload = (token: string): { sub?: string; role?: string } => {
   try {
     // JWT tokens are in the format: header.payload.signature
     const parts = token.split('.');
@@ -194,20 +179,13 @@ const isGuestToken = (token: string): boolean => {
   return payload.role === 'guest';
 };
 
-const getTokenExpiresAt = (token: string): number | null => {
-  const payload = parseTokenPayload(token);
-  return payload.exp ? payload.exp * 1000 : null; // Convert to milliseconds
-};
-
-const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
+const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null } => {
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
   const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
   const webuiTitle = localStorage.getItem('LIGHTRAG-WEBUI-TITLE');
   const webuiDescription = localStorage.getItem('LIGHTRAG-WEBUI-DESCRIPTION');
-  const lastTokenRenewal = localStorage.getItem('LIGHTRAG-LAST-TOKEN-RENEWAL');
   const username = token ? getUsernameFromToken(token) : null;
-  const tokenExpiresAt = token ? getTokenExpiresAt(token) : null;
 
   if (!token) {
     return {
@@ -218,8 +196,6 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
       username: null,
       webuiTitle: webuiTitle,
       webuiDescription: webuiDescription,
-      lastTokenRenewal: null,
-      tokenExpiresAt: null,
     };
   }
 
@@ -231,8 +207,6 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
     username: username,
     webuiTitle: webuiTitle,
     webuiDescription: webuiDescription,
-    lastTokenRenewal: lastTokenRenewal,
-    tokenExpiresAt: tokenExpiresAt,
   };
 };
 
@@ -248,8 +222,6 @@ export const useAuthStore = create<AuthState>(set => {
     username: initialState.username,
     webuiTitle: initialState.webuiTitle,
     webuiDescription: initialState.webuiDescription,
-    lastTokenRenewal: initialState.lastTokenRenewal,
-    tokenExpiresAt: initialState.tokenExpiresAt,
 
     login: (token, isGuest = false, coreVersion = null, apiVersion = null, webuiTitle = null, webuiDescription = null) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
@@ -274,13 +246,6 @@ export const useAuthStore = create<AuthState>(set => {
       }
 
       const username = getUsernameFromToken(token);
-      const tokenExpiresAt = getTokenExpiresAt(token);
-      const now = Date.now();
-      const formattedTime = formatTimestampToLocalString(now);
-
-      // Initialize token issuance time with human-readable format
-      localStorage.setItem('LIGHTRAG-LAST-TOKEN-RENEWAL', formattedTime);
-
       set({
         isAuthenticated: true,
         isGuestMode: isGuest,
@@ -289,14 +254,11 @@ export const useAuthStore = create<AuthState>(set => {
         apiVersion: apiVersion,
         webuiTitle: webuiTitle,
         webuiDescription: webuiDescription,
-        tokenExpiresAt: tokenExpiresAt,
-        lastTokenRenewal: formattedTime,
       });
     },
 
     logout: () => {
       localStorage.removeItem('LIGHTRAG-API-TOKEN');
-      localStorage.removeItem('LIGHTRAG-LAST-TOKEN-RENEWAL');
 
       const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
       const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
@@ -311,8 +273,6 @@ export const useAuthStore = create<AuthState>(set => {
         apiVersion: apiVersion,
         webuiTitle: webuiTitle,
         webuiDescription: webuiDescription,
-        lastTokenRenewal: null,
-        tokenExpiresAt: null,
       });
     },
 
@@ -350,19 +310,6 @@ export const useAuthStore = create<AuthState>(set => {
       set({
         webuiTitle: webuiTitle,
         webuiDescription: webuiDescription
-      });
-    },
-
-    setTokenRenewal: (renewalTime, expiresAt) => {
-      const formattedTime = formatTimestampToLocalString(renewalTime);
-
-      // Update localStorage with human-readable format
-      localStorage.setItem('LIGHTRAG-LAST-TOKEN-RENEWAL', formattedTime);
-
-      // Update state
-      set({
-        lastTokenRenewal: formattedTime,
-        tokenExpiresAt: expiresAt
       });
     }
   };
