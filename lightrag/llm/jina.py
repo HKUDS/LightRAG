@@ -77,7 +77,7 @@ async def jina_embed(
     base_url: str = None,
     api_key: str = None,
     context: str = "document",
-    task: str | None = None,
+    task: str | None = "text-matching",
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Jina AI's API.
 
