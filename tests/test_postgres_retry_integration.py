@@ -32,7 +32,7 @@ class TestPostgresRetryIntegration:
     @pytest.fixture
     def db_config(self):
         """Load database configuration from environment variables.
-        
+
         Uses new HA-optimized defaults that match postgres_impl.py ClientManager.get_config():
         - 10 retry attempts (up from 3)
         - 3.0s initial backoff (up from 0.5s)
@@ -49,13 +49,20 @@ class TestPostgresRetryIntegration:
             # Connection retry configuration - mirrors postgres_impl.py ClientManager.get_config()
             # NEW DEFAULTS optimized for HA deployments
             "connection_retry_attempts": min(
-                100, int(os.getenv("POSTGRES_CONNECTION_RETRIES", "10"))  # 3 → 10
+                100,
+                int(os.getenv("POSTGRES_CONNECTION_RETRIES", "10")),  # 3 → 10
             ),
             "connection_retry_backoff": min(
-                300.0, float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "3.0"))  # 0.5 → 3.0
+                300.0,
+                float(
+                    os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF", "3.0")
+                ),  # 0.5 → 3.0
             ),
             "connection_retry_backoff_max": min(
-                600.0, float(os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "30.0"))  # 5.0 → 30.0
+                600.0,
+                float(
+                    os.getenv("POSTGRES_CONNECTION_RETRY_BACKOFF_MAX", "30.0")
+                ),  # 5.0 → 30.0
             ),
             "pool_close_timeout": min(
                 30.0, float(os.getenv("POSTGRES_POOL_CLOSE_TIMEOUT", "5.0"))
