@@ -646,7 +646,14 @@ def create_app(args):
         return {}
 
     def create_optimized_embedding_function(
-        config_cache: LLMConfigCache, binding, model, host, api_key, args, document_prefix=None, query_prefix=None
+        config_cache: LLMConfigCache,
+        binding,
+        model,
+        host,
+        api_key,
+        args,
+        document_prefix=None,
+        query_prefix=None,
     ) -> EmbeddingFunc:
         """
         Create optimized embedding function and return an EmbeddingFunc instance

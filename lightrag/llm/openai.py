@@ -703,7 +703,10 @@ async def nvidia_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small", supports_context=True
+    embedding_dim=1536,
+    max_token_size=8192,
+    model_name="text-embedding-3-small",
+    supports_context=True,
 )
 @retry(
     stop=stop_after_attempt(3),

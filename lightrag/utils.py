@@ -455,7 +455,9 @@ class EmbeddingFunc:
     model_name: str | None = (
         None  # Model name for implementing workspace data isolation in vector DB
     )
-    supports_context: bool = False  # Whether underlying function accepts context parameter
+    supports_context: bool = (
+        False  # Whether underlying function accepts context parameter
+    )
 
     def __post_init__(self):
         """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
@@ -485,7 +487,7 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
-    async def __call__(self, *args, **kwargs) -> np.ndarray:        
+    async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
             # Check if user provided embedding_dim parameter
@@ -1123,7 +1125,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
     3. Context-aware decoration:
         ```python
         @wrap_embedding_func_with_attrs(
-            embedding_dim=1536, 
+            embedding_dim=1536,
             model_name="my_embedding_model",
             supports_context=True
         )

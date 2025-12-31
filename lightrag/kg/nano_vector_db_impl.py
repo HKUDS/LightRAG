@@ -120,7 +120,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         ]
 
         # Execute embedding outside of lock to avoid long lock times
-        embedding_tasks = [self.embedding_func(batch, context="document") for batch in batches]
+        embedding_tasks = [
+            self.embedding_func(batch, context="document") for batch in batches
+        ]
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
