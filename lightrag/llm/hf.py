@@ -143,7 +143,10 @@ async def hf_model_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1024, max_token_size=8192, model_name="hf_embedding_model", supports_context=True
+    embedding_dim=1024,
+    max_token_size=8192,
+    model_name="hf_embedding_model",
+    supports_context=True,
 )
 async def hf_embed(
     texts: list[str],
@@ -152,7 +155,7 @@ async def hf_embed(
     context: str = "document",
     query_prefix: str | None = None,
     document_prefix: str | None = None,
-    ) -> np.ndarray:
+) -> np.ndarray:
     """Generate embeddings for a list of texts using a Hugging Face model.
 
     Args:

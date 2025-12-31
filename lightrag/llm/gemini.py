@@ -462,7 +462,10 @@ async def gemini_model_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1536, max_token_size=2048, model_name="gemini-embedding-001", supports_context=True
+    embedding_dim=1536,
+    max_token_size=2048,
+    model_name="gemini-embedding-001",
+    supports_context=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -555,7 +558,7 @@ async def gemini_embed(
         elif context == "document":
             task_type = "RETRIEVAL_DOCUMENT"
         else:
-            task_type = "RETRIEVAL_DOCUMENT" # Default for backward compatibility
+            task_type = "RETRIEVAL_DOCUMENT"  # Default for backward compatibility
     config_kwargs["task_type"] = task_type
 
     # Add output_dimensionality if embedding_dim is provided

@@ -173,7 +173,10 @@ async def ollama_model_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1024, max_token_size=8192, model_name="bge-m3:latest", supports_context=True
+    embedding_dim=1024,
+    max_token_size=8192,
+    model_name="bge-m3:latest",
+    supports_context=True,
 )
 async def ollama_embed(
     texts: list[str],
@@ -213,7 +216,7 @@ async def ollama_embed(
         texts = [query_prefix + text for text in texts]
     elif context == "document" and document_prefix:
         texts = [document_prefix + text for text in texts]
-    
+
     # Note: max_token_size is received but not used for client-side truncation.
     # Ollama API handles truncation automatically based on the model's num_ctx setting.
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning

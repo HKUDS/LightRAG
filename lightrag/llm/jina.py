@@ -59,7 +59,10 @@ async def fetch_data(url, headers, data):
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=2048, max_token_size=8192, model_name="jina-embeddings-v4", supports_context=True
+    embedding_dim=2048,
+    max_token_size=8192,
+    model_name="jina-embeddings-v4",
+    supports_context=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -120,7 +123,7 @@ async def jina_embed(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {os.environ['JINA_API_KEY']}",
     }
-    
+
     # Determine task based on context if not explicitly provided
     if task is None:
         if context == "query":
@@ -128,8 +131,8 @@ async def jina_embed(
         elif context == "document":
             task = "retrieval.passage"
         else:
-            task = "text-matching" # Default for backward compatibility
-    
+            task = "text-matching"  # Default for backward compatibility
+
     data = {
         "model": model,
         "task": task,
