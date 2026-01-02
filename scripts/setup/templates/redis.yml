@@ -1,0 +1,7 @@
+  redis:
+    image: redis:${REDIS_IMAGE_TAG:-8.4}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
