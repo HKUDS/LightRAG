@@ -646,7 +646,14 @@ def create_app(args):
         return {}
 
     def create_optimized_embedding_function(
-        config_cache: LLMConfigCache, binding, model, host, api_key, args
+        config_cache: LLMConfigCache,
+        binding,
+        model,
+        host,
+        api_key,
+        args,
+        document_prefix=None,
+        query_prefix=None,
     ) -> EmbeddingFunc:
         """
         Create optimized embedding function and return an EmbeddingFunc instance
@@ -813,6 +820,8 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    # Jina supports context via task parameter (handled internally by jina_embed)
+                    # The function will receive context from EmbeddingFunc wrapper
                     return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
@@ -861,6 +870,11 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    # OpenAI supports explicit prefix parameters
+                    if query_prefix:
+                        kwargs["query_prefix"] = query_prefix
+                    if document_prefix:
+                        kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
@@ -875,9 +889,12 @@ def create_app(args):
         )
 
         # Log final embedding configuration
+        prefix_info = ""
+        if document_prefix or query_prefix:
+            prefix_info = f" document_prefix={repr(document_prefix)} query_prefix={repr(query_prefix)}"
         logger.info(
             f"Embedding config: binding={binding} model={model} "
-            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}"
+            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}{prefix_info}"
         )
 
         return embedding_func_instance
@@ -925,6 +942,8 @@ def create_app(args):
         host=args.embedding_binding_host,
         api_key=args.embedding_binding_api_key,
         args=args,
+        document_prefix=args.embedding_document_prefix,
+        query_prefix=args.embedding_query_prefix,
     )
 
     # Get embedding_send_dim from centralized configuration
