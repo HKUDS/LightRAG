@@ -769,6 +769,7 @@ class DocumentManager:
         supported_extensions: tuple = (
             ".txt",
             ".md",
+            ".mdx",  # MDX (Markdown + JSX)
             ".pdf",
             ".docx",
             ".pptx",
@@ -1268,6 +1269,7 @@ async def pipeline_enqueue_file(
                 case (
                     ".txt"
                     | ".md"
+                    | ".mdx"
                     | ".html"
                     | ".htm"
                     | ".tex"

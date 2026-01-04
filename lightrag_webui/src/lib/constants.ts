@@ -44,6 +44,7 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
+    '.mdx',  //# MDX (Markdown + JSX)
     '.rtf',  //# Rich Text Format
     '.odt', // # OpenDocument Text
     '.tex', // # LaTeX
