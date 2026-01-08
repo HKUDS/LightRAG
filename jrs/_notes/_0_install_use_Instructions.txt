@@ -1,61 +1,46 @@
 
-############## The commands is this section are used to install the libraries ####################
+############## The commands in this section are used to install the libraries ####################
 
 
 # I happen to be using Ubuntu on WSL.
-# Run the following commands at the bash terminal window
-
-# Do these only once to create a virtual environment and install packages.
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env
-# Install bun (needed for the Web UI)
-curl -fsSL https://bun.sh/install | bash
-source ~/.bashrc
-
-# Do these only once to create a local repository where you can make your adds, edits, and deletions.
-cd <location where you want to install the LightRAG library. Likely, this is your home directory.>
-git clone https://github.com/johnshearing/LightRAG.git
-cd lgt/LightRAG
-# This creates a virtual env and installs all dependencies (Core + API)
-uv sync --extra api
+# To install this fork of LightRAG run the following script: 
+# jrs/_notes/setup.sh
+# Be sure to read and understand the script before using it.
 
 
-# Be sure that you are in the LightRAG directory.
-# Now activate the .venv virtual environment with the following command.
-# Be sure to run the command everytime you open a new terminal and you want to use LightRAG. 
-# Any time when you wish to use the LightRAG library or install the required packages that the library uses, the virtual environment must be activated.
-source .venv/bin/activate
+# After running the script, do the following to continue setting up the LightRAG library:
 
-# Creates a better looking prompt that takes up less space on the screen.
-export PS1='(.venv) \w\$ '
-
-
-#Build the Web UI
-cd lightrag_webui
-bun install --frozen-lockfile
-bun run build
-cd ..
+# Add your API keys to the .env file."
+# Or for better security, add API keys to your .bashrc file instead."    
+# No matter where you decide to put your API keys, you will still need a .env file for other required settings" 
+# If you prefer, you can use the .env file I have in the "LightRAG/jrs/_notes" directory which is working for me."
+# Just copy that file to the LightRAG folder."
 
 
-# Modify the default environment variable file for best operation in your situation.
-# Warning! It is safer to put you API keys in your .bashrc file but you could put them in the .env file if you are sure you will never share it.
-# make an entry in the .gitignore file for the .env file to be sure that you never post the file on github.
-cp env.example .env
-# Edit .env using nano or VS Code to add your API Keys (OpenAI, Ollama, etc.) Read the warning above.
-# nano .env
+To use LightRAG, run these commands:
+  1. cd LightRAG
 
-# Start the LightRAG Server.
-lightrag-server
+  2. source .venv/bin/activate
+  This activates the virtual environment.
 
-# You can interact with the LightRAG Server interface at
-http://localhost:9621/webui/
+  3. export PS1='(.venv) \w\$ '
+  This creates a better looking prompt that takes up less space on the screen.
+
+  4. lightrag-server
+  This starts the server.
+
+  5. Visit: http://localhost:9621/webui/ 
+  This WebUI is where you interact with the server.
+
+  6. You can interact directly with LightRAG using the
+     Python scripts in the jrs directory without the need
+     for the lightrag server or the WebUI 
 
 
 ############## The commands is this section are for running the scripts in this repository ####################
 
 
-# To index documents so that the information is availale for query, use the following commands at the bash terminal.
+# To index documents so that the information is available for query, or to run a query, use the following commands at the bash terminal.
 
 # Navigate to the LightRAG directory.
 cd LightRAG
@@ -67,16 +52,10 @@ source .venv/bin/activate
 export PS1='(.venv) \w\$ '
 
 
-For detailed instructions follow all instructions in _0_sample_data/notes.txt
-But generally do the following:
-
-
 # To index the document of interest. 
 # First index the metadata json file if any with the following script:
 jrs/_1_custom_index_01.py
-
-
-# Open the following python script in your text editor.
+# Open the script in your text editor.
 nano jrs/_1_custom_index_01.py
 
 # Specify the WORKING_DIR where you wish to have the index created.
@@ -92,8 +71,8 @@ files_2b_indexed = [
     "/home/js/LightRAG/jrs/work/_0_seheult_metadata/0m1Qekrfs7w_metadata.json",
 ]
 
-# Then index the text with the following command:
-python3 jrs/_1_doc_index_01.py
+# Then run the script with the following command:
+python3 jrs/_1_custom_index_01.py
 
 # Now you have some metadata in your knowledge graph and vector database.
 # This is information about the YouTube videos from which transcripts were created.
@@ -101,36 +80,22 @@ python3 jrs/_1_doc_index_01.py
 
 
 # Now we want to index the transcripts so that we can see their knowledge graphs and so that we can talk to an a.i. about them.
-# Open the following python script in your text editor.
-nano _1_doc_index_01.py
 
-# Specify the WORKING_DIR where you wish to have the index created:
-# Below is an example of what you might specify
-WORKING_DIR = "/home/js/LightRAG/jrs/work/_0_seheult_work_dir"
+# The following script is used for indexing text, images, equations, and tables in your documents:
+# jrs/_1_ra_index.py
+# To see how to use the script and what arguments must be supplied, run the following command:
+python3 jrs/_1_ra_index.py --help
 
-# Specify the PDF_FILES, txt files or whatever to be indexed.
-# Below is an example.
-# You can specify as many documents as you want in the list.
-# The variable is called "PDF_FILES" but txt, csv, docx, can be specified as well.
-files_2b_indexed = [
-    "/home/js/LightRAG/jrs/work/_0_seheult_data/_bNySyEobfY.txt", 
-    "/home/js/LightRAG/jrs/work/_0_seheult_data/0m1Qekrfs7w.txt"
-]
+# Then index the text, images, equations, and tables in your document with the following command:
+python3 jrs/_1_ra_index.py <your arguments here>
 
-# Save your changes and close the text editor.
-
-# Run the script at the bash terminal with the following command:
-python3 /home/js/LightRAG/jrs/_1_doc_index_01.py
-
+# Text only documents can be indexed using the LightRAG server and the WebUI.
 
 # Index the document and it's metadata first in its own individual directory before indexing it with other documents.
 # Then examine the index with the following GUI to determine misspellings and duplicate entities with minor spelling differences:
 python3 /home/js/LightRAG/jrs/_1_merge_GUI_58.py
 # Fix all of the spelling errors in the orignial documents and consolidate the spellings of names and other entities.
 # Look for in the _0_sample_data folder for detailed notes on cleaning up dirty data.
-
-
-
 
 # To query your indexes use the following commands.
 
@@ -143,46 +108,15 @@ source .venv/bin/activate
 # Create a better looking prompt
 export PS1='(.venv) \w\$ '
 
-# Open the following python script in your text editor.
-nano _2_pdf_query_01.py
+# If your indexes contain text only, it is best to use the LightRAG Server and the WebUI for running your queries.
+# If your indexes contain text only and you need to run the query for several modes (naive, local, global, hybrid, or mix) then use the following script:
+python3 jrs/_2_ra_query_text.py --help
+python3 jrs/_2_ra_query_text.py <your arguments here>
 
-# Specify the WORKING_DIR which contains the information you wish to query:
-# Below is an example of what you might specify.
-WORKING_DIR = "/home/js/LightRAG/jrs/work/_0_seheult_work_dir"
+# If your indexes contain text, equations, images, or tables then the following script is the best tool for the job.
+python3 jrs/_2_ra_query_image.py --help
+python3 jrs/_2_ra_query_image.py <your arguments here>
 
-# Specify the question you wish to ask:
-query = "How does exposure to early and late day sun support health?"
-
-# Save your changes and close the text editor.
-
-# Run the script at the bash terminal with the following command:
-python3 /home/js/LightRAG/jrs/_2_index_query_01.py
-
-
-
-############## The commands is this section are for running the LightRAG Server ####################
-
-# Navigate to the LightRAG directory.
-cd LightRAG
-
-# Activate the LightRAG virtual environment with the following command.
-source .venv/bin/activate
-
-# Create a better looking prompt
-export PS1='(.venv) \w\$ '
-
-#Create the .env File:
-#Copy the example environment file provided in the repository:
-cp env.example .env
-
-# Edit the file as required.
-Any a.i. can help with this.
-
-# Run the following command at the bash terminal to load the .env file
-source .env
-
-# Start the LightRAG Server with the following command:
-lightrag-server
 
 # WSL Networking: 
 # In WSL, you may need to access the server from Windows. 
